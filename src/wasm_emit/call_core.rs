@@ -619,11 +619,48 @@ impl WasmEmitter {
                 let mut saved: Vec<(String, Option<u32>)> = Vec::new();
                 // numeric-provenance shadow tracking (see numeric_locals)
                 let mut saved_num: Vec<(String, bool)> = Vec::new();
+                // limb-pair shadow tracking (see limb_locals.rs, 2026-09-15)
+                let mut saved_limb: Vec<(String, Option<(u32, u32)>)> = Vec::new();
                 if let LispVal::List(bs) = &a[0] {
                     for b in bs {
                         if let LispVal::List(p) = b {
                             if p.len() == 2 {
                                 if let LispVal::Sym(n) = &p[0] {
+                                    // u128 Level 1 limb locals: the binding is
+                                    // a (lo, hi) i64 pair when the pre-scan proved
+                                    // every store u128-pure. Init compiles in the
+                                    // OUTER scope first (let* semantics — the
+                                    // mapping inserts only after), and the name is
+                                    // NOT registered in `locals` (reads resolve
+                                    // through limb_slots in the Sym arm).
+                                    if self.limb_eligible.contains(n)
+                                        && !self.captured_map.contains_key(n)
+                                    {
+                                        // limb names are never numeric-provenance
+                                        // (function-wide store purity guarantees
+                                        // it; this is belt-and-braces — a numeric
+                                        // fast-path read of a limb local would
+                                        // mis-add the materialized TAG_STR)
+                                        self.numeric_locals.remove(n);
+                                        let lo = self.free_locals.pop().unwrap_or(self.next_local);
+                                        if lo == self.next_local {
+                                            self.next_local += 1;
+                                            self.local_type_map.push(ValType::I64);
+                                        }
+                                        let hi = self.free_locals.pop().unwrap_or(self.next_local);
+                                        if hi == self.next_local {
+                                            self.next_local += 1;
+                                            self.local_type_map.push(ValType::I64);
+                                        }
+                                        let init = self.emit_u128_val(&p[1], lo, hi)?;
+                                        let old = self.limb_slots.remove(n);
+                                        self.limb_slots.insert(n.clone(), (lo, hi));
+                                        saved_limb.push((n.clone(), old));
+                                        saved_num
+                                            .push((n.clone(), self.numeric_locals.contains(n)));
+                                        v.extend(init);
+                                        continue;
+                                    }
                                     // INIT FIRST, then bind: let* inits evaluate in
                                     // the OUTER scope — binding the name before
                                     // compiling the init made (let* ((x (+ x 1))))
@@ -666,7 +703,8 @@ impl WasmEmitter {
                     }
                 }
                 // restore outer scope mappings; release shadow slots; restore
-                // numeric-provenance flags for shadowed names
+                // numeric-provenance flags for shadowed names; restore limb
+                // pair mappings (u128 Level 1)
                 for ((n, old), (_, was_num)) in
                     saved.into_iter().rev().zip(saved_num.into_iter().rev())
                 {
@@ -686,6 +724,7 @@ impl WasmEmitter {
                         self.numeric_locals.remove(&n);
                     }
                 }
+                self.limb_restore(saved_limb);
                 Ok(v)
             }
             "loop" => {
@@ -936,6 +975,19 @@ impl WasmEmitter {
                 let LispVal::Sym(n) = &a[0] else {
                     return Err("set!: expected symbol".into());
                 };
+                // u128 Level 1 limb locals: set! to a limb-represented local
+                // stores the (lo, hi) pair directly (no stringify). The
+                // value must be u128-pure — guaranteed by the per-function
+                // eligibility pre-scan (any non-pure store demotes the name
+                // to a tagged slot everywhere in the function).
+                if let Some(&(lo, hi)) = self.limb_slots.get(n) {
+                    if self.captured_map.contains_key(n) {
+                        return Err(format!("internal: limb local '{}' captured by closure", n));
+                    }
+                    let mut v = self.emit_u128_val(&a[1], lo, hi)?;
+                    v.push(Instruction::I64Const(TAG_NIL));
+                    return Ok(v);
+                }
                 // numeric-provenance maintenance: the union of a local's
                 // assignments must be all-numeric for the fast path to be
                 // sound — a non-numeric assignment demotes it

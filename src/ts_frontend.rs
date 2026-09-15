@@ -1015,14 +1015,24 @@ fn lower_prefix_around_with_return(
                     // real type at runtime.
                     // (Bug 2: `const b = writeAndReturn(a)` wrote storage
                     // even after an early return set __fn_done = 1)
-                    bindings.push(list(vec![
-                        Sym(name.clone()),
-                        list(vec![Sym("quote"), LispVal::Nil]),
-                    ]));
+                    //
+                    // u128 Level 1 (2026-09-15): bigint-shaped initializers
+                    // hoist with a "0" dummy instead of nil — the nil poisoned
+                    // limb-local eligibility (every store must be u128-pure)
+                    // and killed the optimization for the most common shape
+                    // (loop accumulators). The dummy is never observed: TDZ
+                    // guarantees the guarded set! runs before any read.
+                    let lowered_init = lower_expr(init_e)?;
+                    let dummy = if init_is_u128_pure(&lowered_init) {
+                        Str("0".to_string())
+                    } else {
+                        list(vec![Sym("quote"), LispVal::Nil])
+                    };
+                    bindings.push(list(vec![Sym(name.clone()), dummy]));
                     guarded_inits.push(list(vec![
                         Sym("if"),
                         list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
-                        list(vec![Sym("set!"), Sym(name), lower_expr(init_e)?]),
+                        list(vec![Sym("set!"), Sym(name), lowered_init]),
                         Num(0),
                     ]));
                 } else {
@@ -1829,11 +1839,15 @@ fn lower_for_of_parts(fo: &oxc_ast::ast::ForOfStatement<'_>) -> Result<(bool, Li
         Sym(name),
         list(vec![Sym("vec-nth"), Sym("__of_a"), Sym("__of_i")]),
     ])];
-    for (hn, _) in &hoisted {
-        elem_binds.push(list(vec![
-            Sym(hn.clone()),
-            list(vec![Sym("quote"), LispVal::Nil]),
-        ]));
+    for (hn, init) in &hoisted {
+        // u128 Level 1: "0" dummies for u128-pure hoisted inits (see the
+        // while-core comment — nil poisons limb-local eligibility)
+        let dummy = if init_is_u128_pure(init) {
+            Str("0".to_string())
+        } else {
+            list(vec![Sym("quote"), LispVal::Nil])
+        };
+        elem_binds.push(list(vec![Sym(hn.clone()), dummy]));
     }
     let body_bound = list(vec![Sym("let"), list(elem_binds), body_e]);
 
@@ -1944,9 +1958,20 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
         if hoisted.is_empty() {
             return Ok((false, while_e));
         }
+        // u128 Level 1 (2026-09-15): u128-pure hoisted inits bind "0" dummies
+        // — nil would poison limb-local eligibility for loop accumulators
+        // (fib shape). TDZ guarantees the per-iteration set! precedes every
+        // read, so the dummy value is never observed.
         let binds: Vec<LispVal> = hoisted
             .iter()
-            .map(|(n, _)| list(vec![Sym(n.clone()), list(vec![Sym("quote"), LispVal::Nil])]))
+            .map(|(n, init)| {
+                let dummy = if init_is_u128_pure(init) {
+                    Str("0".to_string())
+                } else {
+                    list(vec![Sym("quote"), LispVal::Nil])
+                };
+                list(vec![Sym(n.clone()), dummy])
+            })
             .collect();
         return Ok((false, list(vec![Sym("let"), list(binds), while_e])));
     }
@@ -2103,11 +2128,15 @@ fn lower_while_parts_core(w: &oxc_ast::ast::WhileStatement<'_>) -> Result<(bool,
     // or the value wrapper) — a return inside the loop must be visible
     // AFTER the loop, so the flags must outlive this let.
     let mut binds = Vec::new();
-    for (n, _) in &hoisted {
-        binds.push(list(vec![
-            Sym(n.clone()),
-            list(vec![Sym("quote"), LispVal::Nil]),
-        ]));
+    for (n, init) in &hoisted {
+        // u128 Level 1: "0" dummies for u128-pure hoisted inits (see the
+        // simple-path comment — nil poisons limb-local eligibility)
+        let dummy = if init_is_u128_pure(init) {
+            Str("0".to_string())
+        } else {
+            list(vec![Sym("quote"), LispVal::Nil])
+        };
+        binds.push(list(vec![Sym(n.clone()), dummy]));
     }
     let while_e = list(vec![Sym("while"), cond_e, body_e]);
     if binds.is_empty() {
@@ -2164,11 +2193,15 @@ fn loop_body_expr(stmts: &[Statement<'_>]) -> Result<LispVal, String> {
         return Ok(Num(0));
     }
     // collect top-level declarations for the wrapper let
-    let mut hoisted: Vec<String> = Vec::new();
+    // (u128 Level 1: bigint-shaped inits get "0" dummies — see the while-core
+    // comment; nil would poison limb-local eligibility)
+    let mut hoisted: Vec<(String, bool)> = Vec::new();
     for s in stmts {
         if let Statement::VariableDeclaration(v) = s {
             for d in &v.declarations {
-                hoisted.push(binding_name(&d.id)?);
+                let name = binding_name(&d.id)?;
+                let is_big = d.init.as_ref().is_some_and(expr_is_bigint);
+                hoisted.push((name, is_big));
             }
         }
     }
@@ -2213,7 +2246,14 @@ fn loop_body_expr(stmts: &[Statement<'_>]) -> Result<LispVal, String> {
     } else {
         let binds: Vec<LispVal> = hoisted
             .into_iter()
-            .map(|n| list(vec![Sym(n), list(vec![Sym("quote"), LispVal::Nil])]))
+            .map(|(n, is_big)| {
+                let dummy = if is_big {
+                    Str("0".to_string())
+                } else {
+                    list(vec![Sym("quote"), LispVal::Nil])
+                };
+                list(vec![Sym(n), dummy])
+            })
             .collect();
         Ok(list(vec![Sym("let"), list(binds), body]))
     }
@@ -2446,11 +2486,15 @@ fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal
             }
         }
     }
-    for (hn, _) in &hoisted {
-        bindings.push(list(vec![
-            Sym(hn.clone()),
-            list(vec![Sym("quote"), LispVal::Nil]),
-        ]));
+    for (hn, init) in &hoisted {
+        // u128 Level 1: "0" dummies for u128-pure hoisted inits (see the
+        // while-core comment — nil poisons limb-local eligibility)
+        let dummy = if init_is_u128_pure(init) {
+            Str("0".to_string())
+        } else {
+            list(vec![Sym("quote"), LispVal::Nil])
+        };
+        bindings.push(list(vec![Sym(hn.clone()), dummy]));
     }
 
     let mut body_items: Vec<LispVal> = vec![Sym("begin")];
@@ -3350,6 +3394,22 @@ fn mark_string_local(n: &str) {
             b.push(n.to_string());
         }
     });
+}
+
+/// Lowered-init form check for hoisted bindings (u128 Level 1, 2026-09-15):
+/// a u128 arith op form re-initializes the binding before any read (TDZ),
+/// so these hoist with a "0" dummy — keeping limb-local eligibility —
+/// instead of the nil that would demote the local function-wide.
+fn init_is_u128_pure(init: &LispVal) -> bool {
+    if let LispVal::List(items) = init {
+        if let Some(LispVal::Sym(head)) = items.first() {
+            return matches!(
+                head.as_str(),
+                "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod"
+            ) && items.len() == 3;
+        }
+    }
+    false
 }
 
 fn expr_is_bigint(e: &Expression<'_>) -> bool {

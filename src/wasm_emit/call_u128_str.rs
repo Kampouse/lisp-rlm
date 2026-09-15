@@ -17,9 +17,9 @@ use super::*;
 
 // Dedicated scratch cells (8480..8528 — free region between KEY_BUF end 8480
 // and INPUT_BUF 16384; not part of PROTECTED_REGIONS so mem-set! stays legal).
-const U128_A: i64 = 8480; // operand A / arithmetic destination
-const U128_B: i64 = 8496; // operand B
-const U128_R: i64 = 8512; // remainder (divmod)
+pub(crate) const U128_A: i64 = 8480; // operand A / arithmetic destination
+pub(crate) const U128_B: i64 = 8496; // operand B
+pub(crate) const U128_R: i64 = 8512; // remainder (divmod)
 
 /// Function-table indices of the synthesized helpers (positions in `funcs`).
 #[derive(Clone, Copy)]
@@ -48,7 +48,7 @@ fn ma() -> wasm_encoder::MemArg {
         memory_index: 0,
     }
 }
-fn ma8() -> wasm_encoder::MemArg {
+pub(crate) fn ma8() -> wasm_encoder::MemArg {
     wasm_encoder::MemArg {
         offset: 0,
         align: 3,
@@ -1247,37 +1247,34 @@ impl WasmEmitter {
                     return Err(format!("{}: need 2 args", op));
                 }
                 let h = self.ensure_u128_str_helpers();
-                let av = self.expr(&a[0])?;
-                let bv = self.expr(&a[1])?;
-                // (2026-08-31) FRESH locals per invocation: a u128 op nested
-                // in the second operand reused __u128sa/__u128sb and
-                // clobbered the outer op's saved first operand —
-                // (u128/lt (u128/mul A B) (u128/mul C D)) compared C's
-                // operand instead of A*B's result (interp was right).
-                let gen = self.u128_call_count;
-                self.u128_call_count += 1;
-                let va = self.local_idx(&format!("__u128sa_{gen}"));
-                let vb = self.local_idx(&format!("__u128sb_{gen}"));
+                // Limb-aware operand slots (u128 Level 1, 2026-09-15):
+                // limb locals and nested u128 arith feed (lo, hi) pairs
+                // directly — no tagged string round-trip. Generic operands
+                // parse once, exactly as before. Fresh per-gen slots keep
+                // the 2026-08-31 nested-clobber rule (operands are saved
+                // BEFORE any scratch use).
+                let gen = self.limb_call_count;
+                self.limb_call_count += 1;
+                let alo = self.local_idx(&format!("__u128la_{gen}"));
+                let ahi = self.local_idx(&format!("__u128ha_{gen}"));
+                let blo = self.local_idx(&format!("__u128lb_{gen}"));
+                let bhi = self.local_idx(&format!("__u128hb_{gen}"));
                 let mut v = Vec::new();
-                v.extend(av);
-                v.push(Instruction::LocalSet(va));
-                v.extend(bv);
-                v.push(Instruction::LocalSet(vb));
-                self.u128_parse_call(&mut v, va, U128_A, &h);
-                self.u128_parse_call(&mut v, vb, U128_B, &h);
+                self.emit_u128_operand(&mut v, &a[0], alo, ahi)?;
+                self.emit_u128_operand(&mut v, &a[1], blo, bhi)?;
+                v.extend(self.limb_pair_store(alo, ahi, U128_A));
+                v.extend(self.limb_pair_store(blo, bhi, U128_B));
                 let (hf, hf_ck) = match op {
                     "u128/add" => (h.add, h.add_ck),
                     "u128/sub" => (h.sub, h.sub_ck),
                     _ => (h.mul, h.mul_ck),
                 };
+                v.push(Instruction::I64Const(U128_A));
+                v.push(Instruction::I64Const(U128_B));
                 if self.try_stack.is_empty() {
-                    v.push(Instruction::I64Const(U128_A));
-                    v.push(Instruction::I64Const(U128_B));
                     v.push(Self::call_user(hf));
                     v.push(Instruction::Drop);
                 } else {
-                    v.push(Instruction::I64Const(U128_A));
-                    v.push(Instruction::I64Const(U128_B));
                     let call = Self::call_user(hf_ck);
                     self.ck_guarded(&mut v, call, "u128: overflow/underflow");
                 }
@@ -1290,34 +1287,27 @@ impl WasmEmitter {
                     return Err(format!("{}: need 2 args", op));
                 }
                 let h = self.ensure_u128_str_helpers();
-                let av = self.expr(&a[0])?;
-                let bv = self.expr(&a[1])?;
-                // (2026-08-31) FRESH locals per invocation: a u128 op nested
-                // in the second operand reused __u128sa/__u128sb and
-                // clobbered the outer op's saved first operand —
-                // (u128/lt (u128/mul A B) (u128/mul C D)) compared C's
-                // operand instead of A*B's result (interp was right).
-                let gen = self.u128_call_count;
-                self.u128_call_count += 1;
-                let va = self.local_idx(&format!("__u128sa_{gen}"));
-                let vb = self.local_idx(&format!("__u128sb_{gen}"));
+                // Limb-aware operand slots (u128 Level 1) — same discipline
+                // as the add/sub/mul arm: limb locals and nested u128 arith
+                // feed (lo, hi) pairs without a tagged round-trip.
+                let gen = self.limb_call_count;
+                self.limb_call_count += 1;
+                let alo = self.local_idx(&format!("__u128la_{gen}"));
+                let ahi = self.local_idx(&format!("__u128ha_{gen}"));
+                let blo = self.local_idx(&format!("__u128lb_{gen}"));
+                let bhi = self.local_idx(&format!("__u128hb_{gen}"));
                 let mut v = Vec::new();
-                v.extend(av);
-                v.push(Instruction::LocalSet(va));
-                v.extend(bv);
-                v.push(Instruction::LocalSet(vb));
-                self.u128_parse_call(&mut v, va, U128_A, &h);
-                self.u128_parse_call(&mut v, vb, U128_B, &h);
+                self.emit_u128_operand(&mut v, &a[0], alo, ahi)?;
+                self.emit_u128_operand(&mut v, &a[1], blo, bhi)?;
+                v.extend(self.limb_pair_store(alo, ahi, U128_A));
+                v.extend(self.limb_pair_store(blo, bhi, U128_B));
+                v.push(Instruction::I64Const(U128_A));
+                v.push(Instruction::I64Const(U128_B));
+                v.push(Instruction::I64Const(U128_R));
                 if self.try_stack.is_empty() {
-                    v.push(Instruction::I64Const(U128_A));
-                    v.push(Instruction::I64Const(U128_B));
-                    v.push(Instruction::I64Const(U128_R));
                     v.push(Self::call_user(h.divmod));
                     v.push(Instruction::Drop);
                 } else {
-                    v.push(Instruction::I64Const(U128_A));
-                    v.push(Instruction::I64Const(U128_B));
-                    v.push(Instruction::I64Const(U128_R));
                     let call = Self::call_user(h.divmod_ck);
                     self.ck_guarded(&mut v, call, "u128: division by zero");
                 }
@@ -1330,103 +1320,64 @@ impl WasmEmitter {
                 if a.len() != 2 {
                     return Err(format!("{}: need 2 args", op));
                 }
-                let h = self.ensure_u128_str_helpers();
-                let av = self.expr(&a[0])?;
-                let bv = self.expr(&a[1])?;
-                // (2026-08-31) FRESH locals per invocation: a u128 op nested
-                // in the second operand reused __u128sa/__u128sb and
-                // clobbered the outer op's saved first operand —
-                // (u128/lt (u128/mul A B) (u128/mul C D)) compared C's
-                // operand instead of A*B's result (interp was right).
-                let gen = self.u128_call_count;
-                self.u128_call_count += 1;
-                let va = self.local_idx(&format!("__u128sa_{gen}"));
-                let vb = self.local_idx(&format!("__u128sb_{gen}"));
+                // Limb-aware operand slots (u128 Level 1): operands land in
+                // (lo, hi) local pairs — limb locals and nested u128 arith
+                // with zero stringification; generic operands parse once.
+                // The comparison then runs on the LOCALS (no scratch memory
+                // round-trip). Fresh per-gen slots keep the 2026-08-31
+                // nested-clobber rule; u128_parse_call inside the generic
+                // operand path keeps the round-4 CERR fix (catchable parse
+                // errors under try, wasm-fuzz find #5).
+                let gen = self.limb_call_count;
+                self.limb_call_count += 1;
+                let alo = self.local_idx(&format!("__u128la_{gen}"));
+                let ahi = self.local_idx(&format!("__u128ha_{gen}"));
+                let blo = self.local_idx(&format!("__u128lb_{gen}"));
+                let bhi = self.local_idx(&format!("__u128hb_{gen}"));
                 let mut v = Vec::new();
-                v.extend(av);
-                v.push(Instruction::LocalSet(va));
-                v.extend(bv);
-                v.push(Instruction::LocalSet(vb));
-                // Round-4 CERR sweep miss (wasm-fuzz find #5, 2026-08-27):
-                // these inlined parse calls bypassed u128_parse_call, so
-                // invalid operands TRAPPED uncatchably under try instead of
-                // raising a catchable error (interp catches).
-                self.u128_parse_call(&mut v, va, U128_A, &h);
-                self.u128_parse_call(&mut v, vb, U128_B, &h);
-                // compare (A) vs (B)
+                self.emit_u128_operand(&mut v, &a[0], alo, ahi)?;
+                self.emit_u128_operand(&mut v, &a[1], blo, bhi)?;
                 match op {
                     "u128/lt" => {
-                        // (A.hi <u B.hi) | ((A.hi == B.hi) & (A.lo <u B.lo))
-                        v.push(Instruction::I64Const(U128_A + 8));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64Load(ma8()));
-                        v.push(Instruction::I64Const(U128_B + 8));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64Load(ma8()));
+                        // (a.hi <u b.hi) | ((a.hi == b.hi) & (a.lo <u b.lo))
+                        v.push(Instruction::LocalGet(ahi));
+                        v.push(Instruction::LocalGet(bhi));
                         v.push(Instruction::I64LtU);
                         v.push(Instruction::I64ExtendI32U);
-                        v.push(Instruction::I64Const(U128_A + 8));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64Load(ma8()));
-                        v.push(Instruction::I64Const(U128_B + 8));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64Load(ma8()));
+                        v.push(Instruction::LocalGet(ahi));
+                        v.push(Instruction::LocalGet(bhi));
                         v.push(Instruction::I64Eq);
                         v.push(Instruction::I64ExtendI32U);
-                        v.push(Instruction::I64Const(U128_A));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64Load(ma8()));
-                        v.push(Instruction::I64Const(U128_B));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64Load(ma8()));
+                        v.push(Instruction::LocalGet(alo));
+                        v.push(Instruction::LocalGet(blo));
                         v.push(Instruction::I64LtU);
                         v.push(Instruction::I64ExtendI32U);
                         v.push(Instruction::I64And);
                         v.push(Instruction::I64Or);
                     }
                     "u128/gt" => {
-                        v.push(Instruction::I64Const(U128_A + 8));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64Load(ma8()));
-                        v.push(Instruction::I64Const(U128_B + 8));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64Load(ma8()));
+                        v.push(Instruction::LocalGet(ahi));
+                        v.push(Instruction::LocalGet(bhi));
                         v.push(Instruction::I64GtU);
                         v.push(Instruction::I64ExtendI32U);
-                        v.push(Instruction::I64Const(U128_A + 8));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64Load(ma8()));
-                        v.push(Instruction::I64Const(U128_B + 8));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64Load(ma8()));
+                        v.push(Instruction::LocalGet(ahi));
+                        v.push(Instruction::LocalGet(bhi));
                         v.push(Instruction::I64Eq);
                         v.push(Instruction::I64ExtendI32U);
-                        v.push(Instruction::I64Const(U128_A));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64Load(ma8()));
-                        v.push(Instruction::I64Const(U128_B));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64Load(ma8()));
+                        v.push(Instruction::LocalGet(alo));
+                        v.push(Instruction::LocalGet(blo));
                         v.push(Instruction::I64GtU);
                         v.push(Instruction::I64ExtendI32U);
                         v.push(Instruction::I64And);
                         v.push(Instruction::I64Or);
                     }
                     _ => {
-                        v.push(Instruction::I64Const(U128_A));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64Load(ma8()));
-                        v.push(Instruction::I64Const(U128_B));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64Load(ma8()));
+                        v.push(Instruction::LocalGet(alo));
+                        v.push(Instruction::LocalGet(blo));
                         v.push(Instruction::I64Eq);
                         v.push(Instruction::I64ExtendI32U);
-                        v.push(Instruction::I64Const(U128_A + 8));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64Load(ma8()));
-                        v.push(Instruction::I64Const(U128_B + 8));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64Load(ma8()));
+                        v.push(Instruction::LocalGet(ahi));
+                        v.push(Instruction::LocalGet(bhi));
                         v.push(Instruction::I64Eq);
                         v.push(Instruction::I64ExtendI32U);
                         v.push(Instruction::I64And);
@@ -1535,7 +1486,7 @@ impl WasmEmitter {
     /// Guarded helper call (try-aware): call a _ck helper, and if it returns
     /// TAGGED_FALSE, emit a catch jump. Emits nothing extra when no try is
     /// active (caller should then use the trapping variant instead).
-    fn ck_guarded(
+    pub(crate) fn ck_guarded(
         &mut self,
         v: &mut Vec<Instruction<'static>>,
         call: Instruction<'static>,
@@ -1550,7 +1501,7 @@ impl WasmEmitter {
     }
 
     /// parse call — trapping or checked depending on try context.
-    fn u128_parse_call(
+    pub(crate) fn u128_parse_call(
         &mut self,
         v: &mut Vec<Instruction<'static>>,
         val_local: u32,

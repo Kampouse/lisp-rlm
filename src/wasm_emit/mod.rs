@@ -42,6 +42,7 @@ pub mod host_calls;
 pub mod intrinsics;
 pub mod json;
 pub mod lambda;
+pub mod limb_locals;
 pub mod name_map;
 use call_u128_str::U128Helpers;
 pub mod call_bitwise;
@@ -718,6 +719,14 @@ pub struct WasmEmitter {
     /// the memoize lesson: three zeroed slots aliased one address).
     pub(crate) input_flag_slot: Option<i32>,
     pub(crate) input_len_slot: Option<i32>,
+    /// u128 Level 1 limb locals (2026-09-15): locals whose every store is
+    /// u128-pure are kept as (lo, hi) i64 limb pairs — parse/render
+    /// round-trips vanish for loop accumulators. `limb_eligible` is the
+    /// per-function pre-scan result; `limb_slots` is the live scoped
+    /// mapping (shadowed via limb_bind/limb_restore like `locals`).
+    pub(crate) limb_eligible: std::collections::HashSet<String>,
+    pub(crate) limb_slots: std::collections::HashMap<String, (u32, u32)>,
+    pub(crate) limb_call_count: u32,
     /// Next emit_define call is a top-level value define → wrap the body
     /// with a memoization guard (evaluate-once per tx; see emit_define).
     pub(crate) memoize_next: bool,
@@ -782,6 +791,9 @@ impl WasmEmitter {
             raw_locals: std::collections::HashSet::new(),
             input_flag_slot: None,
             input_len_slot: None,
+            limb_eligible: std::collections::HashSet::new(),
+            limb_slots: std::collections::HashMap::new(),
+            limb_call_count: 0,
             memoize_next: false,
             arr_str_helper: None,
             val_eq_helper: None,
@@ -1163,6 +1175,8 @@ impl WasmEmitter {
         self.local_type_map.clear();
         self.numeric_locals.clear();
         self.raw_locals.clear();
+        self.limb_slots.clear();
+        self.limb_eligible = self.scan_limb_eligible(body, &params.to_vec());
         self.needs_frame = false;
         for p in params {
             self.local_idx(p);
@@ -1690,6 +1704,11 @@ impl WasmEmitter {
                 }
                 if let Some(&i) = self.locals.get(n) {
                     Ok(vec![Instruction::LocalGet(i)])
+                } else if let Some(&(lo, hi)) = self.limb_slots.get(n) {
+                    // u128 Level 1 limb local read in a generic context —
+                    // materialize the tagged decimal form (parse/render only
+                    // at true edges; see limb_locals.rs)
+                    self.emit_limb_materialize(lo, hi)
                 } else if self.value_defines.contains(n) {
                     // Top-level value define: interpreter semantics is a VALUE
                     // binding — call the synthesized 0-param fn to get the value.
