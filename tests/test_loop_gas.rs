@@ -298,3 +298,52 @@ export function thr(v: string): string {
         assert!(val.contains(want), "thr({v}): {val}");
     }
 }
+
+#[test]
+fn licm_hoists_vec_length_and_stays_correct() {
+    // (while (< j (vec-length arr))) hoists the length call out of the
+    // loop when arr is never assigned in the body — values must be
+    // identical and gas under budget (0.0118 vs 0.0126 pre-LICM @100 elems)
+    let src = r#"
+export function bigSum(): string {
+  const arr = [2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+               2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+               2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+               2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2];
+  let s = 0;
+  for (let j = 0; j < arr.length; j = j + 1) { s = s + arr[j]; }
+  return toStr(s);
+}
+export function mutatingLoopKeepsSemantics(): string {
+  const arr = [1,2,3];
+  let s = 0;
+  for (let j = 0; j < arr.length; j = j + 1) { arr = arr; s = s + arr[j]; }
+  return toStr(s);
+}"#;
+    let ir = lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(src).unwrap();
+    let exprs = parse_all(&ir).unwrap();
+    lisp_rlm_wasm::typing::type_check_program(&exprs, true).unwrap();
+    let wasm = compile_near_from_exprs(&exprs).unwrap();
+    let p = std::env::temp_dir().join(format!("licm_{}.wasm", std::process::id()));
+    std::fs::write(&p, &wasm).unwrap();
+    let st = std::env::temp_dir().join(format!("licm_{}.bin", std::process::id()));
+    for (m, want) in [("bigSum", "240"), ("mutatingLoopKeepsSemantics", "6")] {
+        let _ = std::fs::remove_file(&st);
+        let out = std::process::Command::new("./target/release/near-mock")
+            .arg("cross")
+            .arg(st.to_str().unwrap())
+            .arg(format!("licm.t.near={}", p.display()))
+            .arg("licm.t.near")
+            .arg(m)
+            .arg("{}")
+            .output()
+            .unwrap();
+        let all = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let val = all.lines().rev().find(|l| l.contains('📄')).unwrap_or(&all);
+        assert!(val.contains(want), "{m}: {val}");
+    }
+}

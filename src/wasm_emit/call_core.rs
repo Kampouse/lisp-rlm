@@ -813,6 +813,24 @@ impl WasmEmitter {
                 let id = self.while_id.get();
                 self.while_id.set(id + 1);
                 let mut v = Vec::new();
+                // LICM for loop-invariant cond reads (2026-09-14, gas):
+                // (while (< i (vec-length a)) …) re-evaluates the length
+                // CALL every iteration — the classic TS array-loop shape.
+                // If the operand is a local never set!-ed in the body, hoist
+                // the call into a temp before the loop. Only vec-length is
+                // hoisted (pure, non-trapping on arrays, result tagged-num).
+                let cond_licm = hoist_cond_reads(&a[0], &a[1..]);
+                if !cond_licm.hoists.is_empty() {
+                    for (i, (_, src)) in cond_licm.hoists.iter().enumerate() {
+                        let tmp = self.local_idx(&format!("__licm_{}", i));
+                        v.extend(self.expr(src)?);
+                        v.push(Instruction::LocalSet(tmp));
+                    }
+                }
+                let a0 = cond_licm.cond;
+                let mut a = a.to_vec();
+                a[0] = a0.clone();
+                let a: &[LispVal] = &a;
                 // block $exit (result i64)
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 // loop $loop
@@ -1413,5 +1431,87 @@ impl WasmEmitter {
             }
             _ => Err("__not_handled__".into()),
         }
+    }
+}
+
+// ── LICM: loop-invariant cond reads (2026-09-14) ──────────────────────────
+
+/// Collect every symbol that is `set!`-ed anywhere in these forms
+/// (recursively — nested begins/ifs/lets all count). Conservative: `let`
+/// bindings of the same name are treated as assignments too (shadowing
+/// changes the value the cond would read).
+fn collect_set_targets(forms: &[LispVal], out: &mut std::collections::HashSet<String>) {
+    for f in forms {
+        if let LispVal::List(items) = f {
+            if let Some(LispVal::Sym(head)) = items.first() {
+                match head.as_str() {
+                    "set!" | "=" => {
+                        if let Some(LispVal::Sym(n)) = items.get(1) {
+                            out.insert(n.clone());
+                        }
+                    }
+                    "let" | "let*" => {
+                        if let Some(LispVal::List(bs)) = items.get(1) {
+                            for b in bs {
+                                if let LispVal::List(p) = b {
+                                    if let Some(LispVal::Sym(n)) = p.first() {
+                                        out.insert(n.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            collect_set_targets(items, out);
+        }
+    }
+}
+
+struct CondHoist {
+    cond: LispVal,
+    /// (temp-name, original expr) pairs
+    hoists: Vec<(String, LispVal)>,
+}
+
+/// Rewrite `cond`, hoisting `(vec-length Y)` subforms into fresh temps
+/// when `Y` is a plain local never assigned in the loop body. Everything
+/// else (calls, host reads, non-sym operands) stays put — conservative.
+fn hoist_cond_reads(cond: &LispVal, body: &[LispVal]) -> CondHoist {
+    let mut assigned = std::collections::HashSet::new();
+    collect_set_targets(body, &mut assigned);
+    let mut hoists: Vec<(String, LispVal)> = Vec::new();
+
+    fn walk(
+        e: &LispVal,
+        assigned: &std::collections::HashSet<String>,
+        hoists: &mut Vec<(String, LispVal)>,
+    ) -> LispVal {
+        let LispVal::List(items) = e else {
+            return e.clone();
+        };
+        // hoistable shape: (vec-length Y) with Y an unassigned plain local
+        if items.len() == 2 {
+            if let (LispVal::Sym(h), LispVal::Sym(y)) = (&items[0], &items[1]) {
+                if h == "vec-length" && !assigned.contains(y) {
+                    let name = format!("__licm_{}", hoists.len());
+                    hoists.push((name.clone(), e.clone()));
+                    return LispVal::Sym(name);
+                }
+            }
+        }
+        // recurse into subforms
+        let mut out = Vec::with_capacity(items.len());
+        for it in items {
+            out.push(walk(it, assigned, hoists));
+        }
+        LispVal::List(out)
+    }
+
+    let cond2 = walk(cond, &assigned, &mut hoists);
+    CondHoist {
+        cond: cond2,
+        hoists,
     }
 }
