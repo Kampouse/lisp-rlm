@@ -40,7 +40,26 @@ declare function strJoin(separator: string, parts: LispArr<string>): string;
 // rebuild via jsonSet with an ENCODED value (jsonQuote(s) for strings,
 // toStr(n) for numbers — object literals self-encode).
 declare type LispObj = string;
-/** integer aliases — the compiler treats these as number */
+
+// ── JSON API v3 (2026-09-15) — the JS-like layer ────────────────────────
+// READING ARGS, the 10-line story:
+//
+//   // 1. The handle (zero copies — reads rewrite to the shared input
+//   //    scanner + per-tx input cache):
+//   const o = near.input();
+//   const name = o.name ?? "anon";      // string, fallback on missing
+//   const amt  = o.amount ?? 0;         // NUMBER — typed read, no strToNum
+//   const deep = o.user.name;           // nested ("" on miss — guard it)
+//
+//   // 2. Typed destructuring (ONE single-pass scan for all keys):
+//   const { who, count } = near.args<{ who: string, count: number }>();
+//
+//   // 3. Legacy getters (also nil-on-miss, pair with ??):
+//   const k = near.jsonGetStr("k") ?? "";
+//   const n = near.jsonGetInt("n") ?? 0;
+//
+// Handles are nil-ON-MISS (?? fires exactly when JS ?? would). Legacy
+// `o.key` on PLAIN strings keeps the "" contract (back-compat).
 declare type i32 = number;
 declare type i64 = number;
 declare type u128 = number;
@@ -147,6 +166,21 @@ declare const near: {
    *  input) — same behavior as jsonGet(key, json), dot-paths supported.
    *  (Previously compiled but silently ignored the second arg.) */
   jsonGetStr(key: string, json: string): string | null;
+  /** JSON API v3 (2026-09-15): the tx-input HANDLE — `const o =
+   *  near.input()` then `o.prop` / `o.prop ?? fallback`. Property reads
+   *  rewrite at compile time to the shared input scanner + per-tx input
+   *  cache (zero copies). nil-ON-MISS: `o.k ?? fb` fires exactly when JS
+   *  ?? would; a NUMBER fallback selects the typed INT getter (no
+   *  strToNum ceremony). Nested `o.a.b` works ("" contract — guard it);
+   *  ?? on nested paths is rejected until the str-nil buffer op lands.
+   *  The handle itself is not a value (binds a dead nil — never read it
+   *  bare). */
+  input(): LispObj;
+  /** JSON API v3 (2026-09-15): typed single-pass arg binding —
+   *  `const {a, n} = near.args<{a: string, n: number}>()`. ONE
+   *  jsonExtract scan for all keys; number-typed fields arrive parsed.
+   *  Missing fields: str → "", num → 0. Max 8 fields. */
+  args<T>(): T;
   /** {"k": ["a", 12, {"n":1}]} → LispArr of raw span strings — strings
    * unquoted, numbers as text, nested objects/arrays as full JSON text
    * (2026-09-14: nested elements + max raised 64 → 512). nil if missing */

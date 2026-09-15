@@ -106,6 +106,14 @@ thread_local! {
     /// dot-access never carried the shape's bigint typing).
     static SHAPE_BIGINT_FIELDS: std::cell::RefCell<Vec<(String, String)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// `const o = near.input()` handles (JSON API v3, 2026-09-15): property
+    /// reads on these names rewrite at compile time to the CACHED-INPUT
+    /// getters — `o.name` → (near/json_get_str "name") (nil-on-miss), and
+    /// `o.prop ?? fb` dispatches on the fallback type: number fb → the INT
+    /// getter (no strToNum ceremony), string fb → the STR getter. Zero
+    /// copies: the handle never materializes the input as a string.
+    static INPUT_HANDLES: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
     /// Object-typed params in scope: (param, props) where props carry
     /// is_number per key. Drives (1) read-time auto str->num on
     /// `param.numericProp`, (2) encode-time raw embedding of the param
@@ -619,9 +627,66 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
 /// STRING_LOCALS uses the same forward scan: `let out = "";` must be
 /// marked before the `out + x` binary-+ site lowers.
 fn scan_bigint_lets(stmts: &[Statement<'_>]) {
+    scan_input_handles(stmts);
     for s in stmts {
         scan_one_bigint_let(s);
     }
+}
+
+/// JSON API v3 (2026-09-15): forward-register `const o = near.input()`
+/// handles — property reads on these names rewrite to the cached-input
+/// getters, so the registration must exist before ANY statement lowers
+/// (same CPS-ordering rationale as scan_one_bigint_let). Recurses into
+/// blocks/ifs/loops (handles are per-function; lower_function clears).
+fn scan_input_handles(stmts: &[Statement<'_>]) {
+    for s in stmts {
+        match s {
+            Statement::VariableDeclaration(v) => {
+                for d in &v.declarations {
+                    if let Some(Expression::CallExpression(c)) = &d.init {
+                        if let Expression::StaticMemberExpression(sm) = &c.callee {
+                            if let Expression::Identifier(oid) = &sm.object {
+                                if oid.name == "near" && sm.property.name == "input" {
+                                    if let Ok(name) = binding_name(&d.id) {
+                                        INPUT_HANDLES.with(|h| {
+                                            h.borrow_mut().push(name);
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Statement::BlockStatement(b) => scan_input_handles(&b.body),
+            Statement::IfStatement(i) => {
+                scan_input_handles(stmts_of(&i.consequent));
+                if let Some(alt) = &i.alternate {
+                    scan_input_handles(stmts_of(alt));
+                }
+            }
+            Statement::WhileStatement(w) => scan_input_handles(stmts_of(&w.body)),
+            _ => {}
+        }
+    }
+}
+
+fn is_input_handle(n: &str) -> bool {
+    INPUT_HANDLES.with(|h| h.borrow().iter().any(|x| x == n))
+}
+
+/// `near.input()` used as a declaration initializer: the handle is the
+/// NAME (registered by scan_input_handles) — the binding itself is a dead
+/// nil (property reads rewrite to input getters and never touch it).
+fn init_is_input_handle(e: &Expression<'_>) -> bool {
+    if let Expression::CallExpression(c) = e {
+        if let Expression::StaticMemberExpression(sm) = &c.callee {
+            if let Expression::Identifier(oid) = &sm.object {
+                return oid.name == "near" && sm.property.name == "input";
+            }
+        }
+    }
+    false
 }
 
 fn scan_one_bigint_let(s: &Statement<'_>) {
@@ -673,6 +738,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
     BIGINT_LOCALS.with(|s| s.borrow_mut().clear());
     STRING_LOCALS.with(|s| s.borrow_mut().clear());
     SHAPE_BIGINT_FIELDS.with(|s| s.borrow_mut().clear());
+    INPUT_HANDLES.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
     for p in &f.params.items {
         let n = binding_name(&p.pattern)?;
@@ -910,6 +976,16 @@ fn lower_prefix_around_with_return(
     let (init, last) = stmts.split_at(stmts.len() - 1);
     let inner = match &last[0] {
         Statement::VariableDeclaration(v) => {
+            // JSON API v3: `const {..} = near.args<{..}>()` — typed
+            // single-pass binding replaces the whole declaration
+            if let Some(res) = lower_args_destructuring(v) {
+                let binds = res?;
+                return lower_prefix_around_with_return(
+                    init,
+                    list(vec![Sym("let"), list(binds), tail]),
+                    view,
+                );
+            }
             let mut bindings = Vec::new();
             let mut guarded_inits = Vec::new();
             for d in &v.declarations {
@@ -918,6 +994,14 @@ fn lower_prefix_around_with_return(
                     .init
                     .as_ref()
                     .ok_or("ts_frontend: local declaration needs initializer")?;
+                if init_is_input_handle(init_e) {
+                    // near.input() handle: dead nil binding (name-level)
+                    bindings.push(list(vec![
+                        Sym(name),
+                        list(vec![Sym("quote"), LispVal::Nil]),
+                    ]));
+                    continue;
+                }
                 if expr_is_bigint(init_e) {
                     BIGINT_LOCALS.with(|s| s.borrow_mut().push(name.clone()));
                 }
@@ -1198,6 +1282,11 @@ fn lower_prefix_around(
     let (init, last) = stmts.split_at(stmts.len() - 1);
     let inner = match &last[0] {
         Statement::VariableDeclaration(v) => {
+            // JSON API v3: `const {..} = near.args<{..}>()`
+            if let Some(res) = lower_args_destructuring(v) {
+                let binds = res?;
+                return lower_prefix_around(init, list(vec![Sym("let*"), list(binds), tail]), view);
+            }
             let mut bindings = Vec::new();
             for d in &v.declarations {
                 let name = binding_name(&d.id)?;
@@ -1205,6 +1294,13 @@ fn lower_prefix_around(
                     .init
                     .as_ref()
                     .ok_or("ts_frontend: local declaration needs initializer")?;
+                if init_is_input_handle(init_e) {
+                    bindings.push(list(vec![
+                        Sym(name),
+                        list(vec![Sym("quote"), LispVal::Nil]),
+                    ]));
+                    continue;
+                }
                 if expr_is_bigint(init_e) {
                     BIGINT_LOCALS.with(|s| s.borrow_mut().push(name.clone()));
                 }
@@ -1442,6 +1538,10 @@ fn lower_tail_stmt(s: &Statement<'_>, view: bool) -> Result<LispVal, String> {
         }
         Statement::VariableDeclaration(v) => {
             // trailing let: bind, value 0
+            if let Some(res) = lower_args_destructuring(v) {
+                let binds = res?;
+                return Ok(list(vec![Sym("let*"), list(binds), Num(0)]));
+            }
             let mut bindings = Vec::new();
             for d in &v.declarations {
                 let name = binding_name(&d.id)?;
@@ -1449,7 +1549,12 @@ fn lower_tail_stmt(s: &Statement<'_>, view: bool) -> Result<LispVal, String> {
                     .init
                     .as_ref()
                     .ok_or("ts_frontend: local declaration needs initializer")?;
-                bindings.push(list(vec![Sym(name), lower_expr(init_e)?]));
+                let val = if init_is_input_handle(init_e) {
+                    list(vec![Sym("quote"), LispVal::Nil])
+                } else {
+                    lower_expr(init_e)?
+                };
+                bindings.push(list(vec![Sym(name), val]));
             }
             Ok(list(vec![Sym("let"), list(bindings), Num(0)]))
         }
@@ -3423,6 +3528,34 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 path.last().unwrap()
                             ));
                         }
+                        // JSON API v3 (2026-09-15): property read on a
+                        // near.input() handle → the CACHED-INPUT getter,
+                        // dot-path preserved, NIL-ON-MISS (unlike legacy
+                        // o.k on plain strings — "" contract). `o.prop ?? fb`
+                        // fires its fallback; bare `o.prop` on a miss yields
+                        // nil (to-string renders "nil" — visible, not silent).
+                        if is_input_handle(id.name.as_str()) {
+                            let dotted: Vec<&str> = path.iter().rev().map(|s| s.as_str()).collect();
+                            if dotted.len() == 1 {
+                                return Ok(list(vec![
+                                    Sym("near/json_get_str"),
+                                    Str(dotted.join(".")),
+                                ]));
+                            }
+                            // Nested handle path `o.a.b.c`: top key via the
+                            // input getter (its span is a full JSON value —
+                            // buffer-compatible), remainder via the buffer
+                            // dot-path scanner. Buffer reads are ""-on-miss
+                            // (legacy contract) — `??` on nested paths is
+                            // rejected in the Coalesce arm below.
+                            let top = dotted[0].to_string();
+                            let rest = dotted[1..].join(".");
+                            return Ok(list(vec![
+                                Sym("json-get-str"),
+                                Str(rest),
+                                list(vec![Sym("near/json_get_str"), Str(top)]),
+                            ]));
+                        }
                     }
                     let recv = lower_expr(base)?;
                     // Object-param numeric prop: `user.votes` where the
@@ -3671,12 +3804,74 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 LogicalOperator::Or => {
                     list(vec![Sym("if"), a, list(vec![Sym("="), Num(1), Num(1)]), b])
                 }
-                // `a ?? b` — value-level nil-handling: (default a b)
-                LogicalOperator::Coalesce => list(vec![
-                    Sym("default"),
-                    lower_expr(&l.left)?,
-                    lower_expr(&l.right)?,
-                ]),
+                // `a ?? b` — value-level nil-handling: (default a b).
+                // JSON API v3 (2026-09-15): `handle.prop ?? fb` dispatches on
+                // the FALLBACK's literal type — number fb → the INT getter
+                // (typed read, no strToNum ceremony), string fb → the STR
+                // getter. Both input getters are nil-on-miss so `default`
+                // fires exactly when JS `??` would (missing key).
+                LogicalOperator::Coalesce => {
+                    if let Expression::StaticMemberExpression(sm) = &l.left {
+                        let mut root = &sm.object;
+                        let mut path = vec![sm.property.name.as_str().to_string()];
+                        loop {
+                            match root {
+                                Expression::StaticMemberExpression(inner) => {
+                                    path.push(inner.property.name.as_str().to_string());
+                                    root = &inner.object;
+                                }
+                                _ => break,
+                            }
+                        }
+                        if let Expression::Identifier(id) = root {
+                            if is_input_handle(id.name.as_str()) {
+                                let dotted: Vec<&str> =
+                                    path.iter().rev().map(|s| s.as_str()).collect();
+                                if dotted.len() > 1 {
+                                    return Err(
+                                        "ts_frontend: `handle.a.b ?? fb` — nested paths don't support ?? yet; read `handle.a` into a local first"
+                                            .into(),
+                                    );
+                                }
+                                let dotted = dotted.join(".");
+                                match &l.right {
+                                    Expression::NumericLiteral(n) => {
+                                        let fb = n.value as i64;
+                                        return Ok(list(vec![
+                                            Sym("default"),
+                                            list(vec![
+                                                Sym("near/json_get_int"),
+                                                Str(dotted),
+                                            ]),
+                                            Num(fb),
+                                        ]));
+                                    }
+                                    Expression::StringLiteral(s) => {
+                                        return Ok(list(vec![
+                                            Sym("default"),
+                                            list(vec![
+                                                Sym("near/json_get_str"),
+                                                Str(dotted),
+                                            ]),
+                                            Str(s.value.to_string()),
+                                        ]));
+                                    }
+                                    _ => {
+                                        return Err(
+                                            "ts_frontend: `handle.prop ?? fb` — fallback must be a string or number literal (v3)"
+                                                .into(),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    list(vec![
+                        Sym("default"),
+                        lower_expr(&l.left)?,
+                        lower_expr(&l.right)?,
+                    ])
+                }
             })
         }
         Expression::UnaryExpression(u) => match u.operator {
@@ -3800,9 +3995,19 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                         }
                         ("JSON", "parse") => {
                             return Err(
-                                "ts_frontend: JSON.parse not needed — tx args arrive parsed (use near.jsonGet(key) / typed params)"
+                                "ts_frontend: JSON.parse not needed — tx args arrive parsed (use near.input() + property reads, or near.args<T>())"
                                     .into(),
                             );
+                        }
+                        // ── JSON API v3 (2026-09-15): the input handle ──
+                        // near.input() is the NAME-level handle: `const o =
+                        // near.input()` registers o (scan_input_handles)
+                        // and property reads rewrite to the cached-input
+                        // getters. The VALUE is a dead nil everywhere (decl
+                        // bindings and any stray bare use alike) — the input
+                        // never materializes as a string.
+                        ("near", "input") => {
+                            return Ok(list(vec![Sym("quote"), LispVal::Nil]));
                         }
                         _ => {} // fall through
                     }
@@ -4528,8 +4733,126 @@ fn binding_name(p: &oxc_ast::ast::BindingPattern<'_>) -> Result<String, String> 
     use oxc_ast::ast::BindingPattern::*;
     match p {
         BindingIdentifier(b) => Ok(b.name.as_str().to_string()),
+        ObjectPattern(_) => {
+            // JSON API v3: the ONLY destructuring form is
+            // `const {a, b} = near.args<{...}>()` — handled by
+            // lower_args_destructuring before binding_name is reached.
+            Err(
+                "ts_frontend: destructuring only supported for `const {..} = near.args<{..}>()`"
+                    .into(),
+            )
+        }
         _ => Err("ts_frontend: destructuring patterns not in M1".into()),
     }
+}
+
+/// JSON API v3 (2026-09-15): `const {a, b, n} = near.args<{a: string, b:
+/// string, n: number}>()` — single-pass typed arg binding. One
+/// json-extract-input scan for ALL keys; number-typed fields wrap
+/// str->num (extract yields raw span strings). Returns the lisp bindings,
+/// or None when d is not an args-destructuring declaration.
+fn lower_args_destructuring(
+    v: &oxc_ast::ast::VariableDeclaration<'_>,
+) -> Option<Result<Vec<LispVal>, String>> {
+    let d = v.declarations.first()?;
+    let init = d.init.as_ref()?;
+    let Expression::CallExpression(c) = init else {
+        return None;
+    };
+    let Expression::StaticMemberExpression(sm) = &c.callee else {
+        return None;
+    };
+    let Expression::Identifier(oid) = &sm.object else {
+        return None;
+    };
+    if !(oid.name == "near" && sm.property.name == "args") {
+        return None;
+    }
+    if !c.arguments.is_empty() {
+        return Some(Err(
+            "ts_frontend: near.args takes its shape from the type parameter only".into(),
+        ));
+    }
+    // ObjectPattern with the field names; types from the type argument
+    let oxc_ast::ast::BindingPattern::ObjectPattern(op) = &d.id else {
+        return Some(Err("ts_frontend: near.args<T>() binds with an object pattern: `const {a, b} = near.args<{a: string, b: number}>()`".into()));
+    };
+    let mut fields: Vec<String> = Vec::new();
+    for p in &op.properties {
+        // BindingProperty is a plain struct in oxc 0.147
+        let Ok(n) = binding_name(&p.value) else {
+            return Some(Err(
+                "ts_frontend: args pattern must be plain identifiers".into()
+            ));
+        };
+        let key = match &p.key {
+            oxc_ast::ast::PropertyKey::StaticIdentifier(k) => k.name.as_str().to_string(),
+            _ => return Some(Err("ts_frontend: args keys must be static".into())),
+        };
+        let _ = n;
+        fields.push(key);
+    }
+    // types from the type argument (TSTypeLiteral)
+    let Some(targs) = c.type_arguments.as_ref() else {
+        return Some(Err(
+            "ts_frontend: near.args needs a type parameter: near.args<{a: string, n: number}>()"
+                .into(),
+        ));
+    };
+    let Some(targ) = targs.params.first() else {
+        return Some(Err("ts_frontend: near.args needs a type parameter".into()));
+    };
+    let oxc_ast::ast::TSType::TSTypeLiteral(tl) = &targ else {
+        return Some(Err(
+            "ts_frontend: near.args type parameter must be an inline object literal type".into(),
+        ));
+    };
+    let mut num_fields = Vec::new();
+    for m in &tl.members {
+        let oxc_ast::ast::TSSignature::TSPropertySignature(ps) = m else {
+            return Some(Err("ts_frontend: args type must be plain properties".into()));
+        };
+        let key = match &ps.key {
+            oxc_ast::ast::PropertyKey::StaticIdentifier(k) => k.name.as_str().to_string(),
+            _ => return Some(Err("ts_frontend: args type keys must be static".into())),
+        };
+        let is_num = matches!(
+            ps.type_annotation.as_ref().map(|a| &a.type_annotation),
+            Some(oxc_ast::ast::TSType::TSNumberKeyword(_))
+        );
+        if is_num {
+            num_fields.push(key);
+        }
+    }
+    // build the bindings: one extract + per-field vec-nth (+ str->num for numbers)
+    let keys: Vec<String> = fields.clone();
+    if keys.is_empty() {
+        return Some(Err("ts_frontend: near.args needs at least one field".into()));
+    }
+    if keys.len() > 8 {
+        return Some(Err(
+            "ts_frontend: near.args supports at most 8 fields (jsonExtract cap)".into(),
+        ));
+    }
+    let mut extract_items = vec![Sym("json-extract-input")];
+    for k in &keys {
+        extract_items.push(Str(k.clone()));
+    }
+    let tmp = "__args_v3".to_string();
+    let mut bindings = vec![list(vec![Sym(tmp.clone()), list(extract_items)])];
+    for (i, k) in fields.iter().enumerate() {
+        let nth = list(vec![Sym("vec-nth"), Sym(tmp.clone()), Num(i as i64)]);
+        let val = if num_fields.contains(k) {
+            list(vec![Sym("str->num"), nth])
+        } else {
+            nth
+        };
+        bindings.push(list(vec![Sym(k.clone()), val]));
+    }
+    // NOTE: callers MUST bind with let* — field inits reference __args_v3
+    // bound in the same clause group (plain let evaluates inits in the
+    // outer scope — the "undefined variable __args_v3" trap)
+    Some(Ok(bindings))
 }
 
 // ── LispVal helpers + s-expression printer ───────────────────────────────
