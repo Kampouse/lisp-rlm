@@ -2188,6 +2188,14 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
         }
         PROMISE_DAG.with(|d| d.borrow_mut().clear());
         EXECUTED_PROMISES.with(|e| e.borrow_mut().clear());
+        // Execute-once memo is PER-DAG scope (see fresh_tx_state): receipt
+        // indices restart at 0 every step, so a memo entry surviving from the
+        // PREVIOUS step aliases THIS step's receipts — replaying stale results
+        // and skipping execution entirely. Found via the flashloan stiff
+        // scenario: the second flashLoan's transfer/settle receipts replayed
+        // the first loan's memoized outcomes (no value moved, settle never
+        // aborted) — the tx was a silent no-op.
+        PROMISE_OUTCOMES.with(|o| o.borrow_mut().clear());
         fail_receipts_set(&[]); // clear between steps
         PENDING_RETURN.with(|p| *p.borrow_mut() = None);
         state.lock().unwrap().view = old_view;
