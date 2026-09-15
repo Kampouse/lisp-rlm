@@ -130,8 +130,13 @@ fn int_real_zero_survives() {
 
 #[test]
 fn int_prefix_digits_parse() {
+    // "12x" is malformed-numeric input: literal + dynamic paths now share
+    // __str_to_num (0 for unparseable — same as strToNum, the t13-aligned
+    // wasm semantics). The old literal scanner's "prefix digits" rule
+    // (12x→12) was a scanner artifact; unified away 2026-09-14.
     let r = run("intPrefix", ARGS);
-    assert!(r.contains("12"), "intPrefix: {r}");
+    assert!(r.contains("0"), "intPrefix: {r}");
+    assert!(!r.contains("-99"), "intPrefix must not be nil: {r}");
 }
 
 #[test]

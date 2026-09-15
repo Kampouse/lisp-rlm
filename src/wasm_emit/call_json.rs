@@ -13,69 +13,25 @@ impl WasmEmitter {
                 }
                 match &a[0] {
                     LispVal::Str(key) => {
-                        // (2026-08-31) returns TAGGED NUM on hit / TAG_NIL on
-                        // miss (d.ts `number | null`; `?? 7` must fire) —
-                        // tagging now happens inside json_get_int's found-gate.
-                        self.json_get_int(key)
+                        // Shared-function route (2026-09-14, code size): the
+                        // literal key builds a data-section pattern and goes
+                        // through __json_get + __str_to_num — SAME path as
+                        // dynamic keys. The old inline ~550-instr scanner per
+                        // call site made a 6-getter entrypoint ~3.8k instrs;
+                        // now it's ~15 per getter + one shared helper.
+                        // Semantics UNIFY with the dynamic path: miss → nil,
+                        // found-non-numeric → nil (first-byte gate),
+                        // found → parse (2026-08-31 + 2026-09-14 rules).
+                        let lookup = self.json_lit_lookup_str(key);
+                        self.emit_int_parse_gated(lookup)
                     }
-                    // Dynamic key (2026-09-13): same __json_get lookup as the
-                    // str path, then parse the raw value bytes with the shared
-                    // __str_to_num. Miss → TAG_NIL (?? fallback fires, same
-                    // semantics as the literal path). Found-but-non-numeric
-                    // ("n": "abc", true, {…}) → TAG_NIL too — first-byte
-                    // digit/minus gate, same rule as the literal scanner
-                    // (2026-09-14): a silent 0 is indistinguishable from a
-                    // real zero; nil makes `??` fire.
+                    // Dynamic key (2026-09-13): same __json_get lookup, then
+                    // parse the raw value bytes with the shared __str_to_num.
+                    // Miss → TAG_NIL (?? fallback fires). Found-but-non-
+                    // numeric ("n": "abc", true, {…}) → TAG_NIL too (2026-09-14).
                     _ => {
                         let lookup = self.json_dyn_lookup_str(&a[0])?;
-                        let s2n = self.ensure_str_to_num_func();
-                        let t = self.local_idx("__jgi_miss");
-                        let fb = self.local_idx_i32("__jgi_fb");
-                        let ma8 = wasm_encoder::MemArg {
-                            offset: 0,
-                            align: 0,
-                            memory_index: 0,
-                        };
-                        let mut v = lookup;
-                        v.push(Instruction::LocalSet(t));
-                        v.push(Instruction::LocalGet(t));
-                        v.push(Instruction::I64Const(TAG_NIL));
-                        v.push(Instruction::I64Eq);
-                        v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                        v.push(Instruction::I64Const(TAG_NIL));
-                        v.push(Instruction::Else);
-                        {
-                            // first byte of the span (untag: payload = t>>3,
-                            // ptr = payload & 0xFFFFFFFF)
-                            v.push(Instruction::LocalGet(t));
-                            v.push(Instruction::I64Const(3));
-                            v.push(Instruction::I64ShrU);
-                            v.push(Instruction::I64Const(0xFFFFFFFF));
-                            v.push(Instruction::I64And);
-                            v.push(Instruction::I32WrapI64);
-                            v.push(Instruction::I32Load8U(ma8));
-                            v.push(Instruction::LocalSet(fb));
-                            // fb in [0x30..=0x39] or == 0x2D ?
-                            v.push(Instruction::LocalGet(fb));
-                            v.push(Instruction::I32Const(0x30));
-                            v.push(Instruction::I32GeS);
-                            v.push(Instruction::LocalGet(fb));
-                            v.push(Instruction::I32Const(0x39));
-                            v.push(Instruction::I32LeS);
-                            v.push(Instruction::I32And);
-                            v.push(Instruction::LocalGet(fb));
-                            v.push(Instruction::I32Const(0x2D));
-                            v.push(Instruction::I32Eq);
-                            v.push(Instruction::I32Or);
-                            v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                            v.push(Instruction::LocalGet(t));
-                            v.push(Instruction::Call(crate::wasm_emit::USER_BASE | s2n));
-                            v.push(Instruction::Else);
-                            v.push(Instruction::I64Const(TAG_NIL));
-                            v.push(Instruction::End);
-                        }
-                        v.push(Instruction::End);
-                        Ok(v)
+                        self.emit_int_parse_gated(lookup)
                     }
                 }
             }
@@ -221,7 +177,11 @@ impl WasmEmitter {
                             // Copy string to INPUT_BUF (NEAR) or JSON_FIXED_BUF (WASI), then scan
                             // JSON_FIXED_BUF must NOT overlap STDIN_BUF (32768) — json-get overwrites
                             // this buffer, which would corrupt any str-slice pointers into stdin.
-                            let target_buf = if self.wasi_mode { 65536i64 } else { JSON_SCAN_BUF }; // 2026-09-14: was INPUT_BUF — clobbered the input cache
+                            let target_buf = if self.wasi_mode {
+                                65536i64
+                            } else {
+                                JSON_SCAN_BUF
+                            }; // 2026-09-14: was INPUT_BUF — clobbered the input cache
                             let src_ptr_l = self.local_idx("__jgs_sp");
                             let copy_i = self.local_idx("__jgs_ci");
                             let ma8 = wasm_encoder::MemArg {
@@ -365,7 +325,11 @@ impl WasmEmitter {
                         setup.push(Instruction::I64ShrU);
                         setup.push(Instruction::LocalSet(tmp));
                         // Copy string to fixed buffer at 65536 (JSON_FIXED_BUF, not STDIN_BUF 32768)
-                        let target_buf = if self.wasi_mode { 65536i64 } else { JSON_SCAN_BUF }; // 2026-09-14: was INPUT_BUF — clobbered the input cache
+                        let target_buf = if self.wasi_mode {
+                            65536i64
+                        } else {
+                            JSON_SCAN_BUF
+                        }; // 2026-09-14: was INPUT_BUF — clobbered the input cache
                         let src_ptr_l = self.local_idx("__jgs_sp");
                         let copy_i = self.local_idx("__jgs_ci");
                         let ma8 = wasm_encoder::MemArg {
@@ -859,6 +823,135 @@ impl WasmEmitter {
     /// heap-copies the result out of the shared stdout_buf scratch so
     /// consecutive dynamic reads don't clobber each other. Miss → TAG_NIL so
     /// `?? fallback` fires (2026-08-31 miss-gate semantics).
+    /// Literal-key lookup via the SHARED __json_get (2026-09-14, code
+    /// size): data-section pattern + cached-input pack + one Call. Replaces
+    /// the ~550-instr inline scanner that used to be embedded at every
+    /// literal jsonGetInt/jsonGetStr call site.
+    pub(crate) fn json_lit_lookup_str(&mut self, key: &str) -> Vec<Instruction<'static>> {
+        self.need_host(7);
+        self.need_host(0);
+        self.need_host(1);
+        let mut pat = vec![b'"'];
+        pat.extend(key.as_bytes());
+        pat.push(b'"');
+        let pat_off = self.alloc_data(&pat) as i64;
+        let pat_packed = (pat_off as u64) | ((pat.len() as u64) << 32);
+        let ilen_l = self.local_idx_i32("__jli_len");
+        let mut v = Vec::new();
+        self.emit_input_read_cached(ilen_l, &mut v);
+        v.push(Instruction::LocalGet(ilen_l));
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64Shl);
+        v.push(Instruction::I64Const(INPUT_CACHE_BUF));
+        v.push(Instruction::I64Or);
+        v.push(Instruction::I64Const(pat_packed as i64));
+        let f = self.ensure_json_get_func();
+        v.push(Instruction::Call(crate::wasm_emit::USER_BASE | f));
+        // __json_get returns UNtagged (ptr|len<<32) at stdout_buf — same
+        // post-processing as the dynamic path: miss(0) → TAG_NIL, else
+        // heap-copy + TAG_STR (consumers like emit_int_parse_gated expect
+        // the tagged form; the heap copy survives later __json_get calls)
+        let res_l = self.local_idx("__jli_res");
+        v.push(Instruction::LocalSet(res_l));
+        v.push(Instruction::LocalGet(res_l));
+        v.push(Instruction::I64Eqz);
+        v.push(Instruction::If(BlockType::Result(ValType::I64)));
+        v.push(Instruction::I64Const(TAG_NIL));
+        v.push(Instruction::Else);
+        {
+            let res_len_l = self.local_idx_i32("__jli_rl");
+            let res_ptr_l = self.local_idx_i32("__jli_rp");
+            v.push(Instruction::LocalGet(res_l));
+            v.push(Instruction::I64Const(32));
+            v.push(Instruction::I64ShrU);
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::LocalSet(res_len_l));
+            v.push(Instruction::LocalGet(res_l));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::LocalSet(res_ptr_l));
+            let dst_l = self.local_idx("__jli_dst");
+            let alen_l = self.local_idx("__jli_al");
+            v.push(Instruction::LocalGet(res_len_l));
+            v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::LocalSet(alen_l));
+            v.extend(self.emit_rtheap_alloc(dst_l, alen_l));
+            v.push(Instruction::LocalGet(dst_l));
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::LocalGet(res_ptr_l));
+            v.push(Instruction::LocalGet(res_len_l));
+            v.push(Instruction::MemoryCopy {
+                src_mem: 0,
+                dst_mem: 0,
+            });
+            v.push(Instruction::LocalGet(res_len_l));
+            v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::I64Const(32));
+            v.push(Instruction::I64Shl);
+            v.push(Instruction::LocalGet(dst_l));
+            v.push(Instruction::I64Or);
+            v.extend(self.emit_tag_str());
+        }
+        v.push(Instruction::End);
+        v
+    }
+
+    /// Shared int-parse tail for jsonGetInt (literal + dynamic): span on
+    /// stack → miss? nil : (first-byte digit/minus? __str_to_num : nil).
+    pub(crate) fn emit_int_parse_gated(
+        &mut self,
+        lookup: Vec<Instruction<'static>>,
+    ) -> Result<Vec<Instruction<'static>>, String> {
+        let s2n = self.ensure_str_to_num_func();
+        let t = self.local_idx("__jgi_miss");
+        let fb = self.local_idx_i32("__jgi_fb");
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
+        let mut v = lookup;
+        v.push(Instruction::LocalSet(t));
+        v.push(Instruction::LocalGet(t));
+        v.push(Instruction::I64Const(TAG_NIL));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Result(ValType::I64)));
+        v.push(Instruction::I64Const(TAG_NIL));
+        v.push(Instruction::Else);
+        {
+            // first byte of the span (untag: payload = t>>3,
+            // ptr = payload & 0xFFFFFFFF)
+            v.push(Instruction::LocalGet(t));
+            v.push(Instruction::I64Const(3));
+            v.push(Instruction::I64ShrU);
+            v.push(Instruction::I64Const(0xFFFFFFFF));
+            v.push(Instruction::I64And);
+            v.push(Instruction::I32WrapI64);
+            v.push(Instruction::I32Load8U(ma8));
+            v.push(Instruction::LocalSet(fb));
+            // fb in [0x30..=0x39] or == 0x2D ?
+            v.push(Instruction::LocalGet(fb));
+            v.push(Instruction::I32Const(0x30));
+            v.push(Instruction::I32GeS);
+            v.push(Instruction::LocalGet(fb));
+            v.push(Instruction::I32Const(0x39));
+            v.push(Instruction::I32LeS);
+            v.push(Instruction::I32And);
+            v.push(Instruction::LocalGet(fb));
+            v.push(Instruction::I32Const(0x2D));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::If(BlockType::Result(ValType::I64)));
+            v.push(Instruction::LocalGet(t));
+            v.push(Instruction::Call(crate::wasm_emit::USER_BASE | s2n));
+            v.push(Instruction::Else);
+            v.push(Instruction::I64Const(TAG_NIL));
+            v.push(Instruction::End);
+        }
+        v.push(Instruction::End);
+        Ok(v)
+    }
+
     pub(crate) fn json_dyn_lookup_str(
         &mut self,
         key_ast: &LispVal,
