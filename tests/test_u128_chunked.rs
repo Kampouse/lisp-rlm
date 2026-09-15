@@ -37,6 +37,10 @@ export function acc(n: number): string {
   for (let i = 0; i < n; i = i + 1) { a = u128Add(a, delta); }
   return a;
 }
+export function zeroAdd(): string { return u128Add("0", "0"); }
+export function zeroSub(): string { return u128Sub("5", "5"); }
+export function zeroMul(): string { return u128Mul("0", "340282366920938463463374607431768211455"); }
+export function zeroDiv(): string { return u128Div("0", "7"); }
 "#;
 
 fn lock() -> std::sync::MutexGuard<'static, ()> {
@@ -134,4 +138,25 @@ fn accumulator_gas_under_budget() {
         gas < 1.6,
         "acc(100) gas regressed past 1.6 Tgas: {gas} (pre-fix 8.04, post-fix 1.02)"
     );
+}
+
+#[test]
+fn zero_renders_zero() {
+    // The zero fast-path built its tagged string from the 48-byte buffer's
+    // BASE (uninitialized heap → 1-byte NUL string) instead of the position
+    // where '0' was written — u128Add("0","0") returned "\u0000", which
+    // trapped downstream parsers (AMM wallet zeros, published in 0.1.12;
+    // found 2026-09-15 via bisect). Pin EVERY zero-producing op.
+    let (v, trap) = run("zeroAdd", "{}");
+    assert!(!trap, "{v}");
+    assert!(v.contains("📄 0"), "zeroAdd: {v}");
+    let (v, trap) = run("zeroSub", "{}");
+    assert!(!trap, "{v}");
+    assert!(v.contains("📄 0"), "zeroSub: {v}");
+    let (v, trap) = run("zeroMul", "{}");
+    assert!(!trap, "{v}");
+    assert!(v.contains("📄 0"), "zeroMul: {v}");
+    let (v, trap) = run("zeroDiv", "{}");
+    assert!(!trap, "{v}");
+    assert!(v.contains("📄 0"), "zeroDiv: {v}");
 }

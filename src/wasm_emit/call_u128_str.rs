@@ -423,7 +423,11 @@ impl WasmEmitter {
         e(&Instruction::I32WrapI64);
         e(&Instruction::I32Const(48));
         e(&Instruction::I32Store8(ma()));
-        e(&Instruction::LocalGet(3));
+        // tagged string from POS (where '0' was written) — dst[0] is
+        // uninitialized heap. The dst-based pointer returned a 1-byte NUL
+        // string instead of "0" (AMM wallet zeros → downstream u128 parse
+        // traps; found 2026-09-15 bisecting the published 74900a4)
+        e(&Instruction::LocalGet(4));
         e(&Instruction::I64Const(1));
         e(&Instruction::I64Const(32));
         e(&Instruction::I64Shl);
