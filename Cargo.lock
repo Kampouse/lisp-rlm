@@ -2372,7 +2372,7 @@ dependencies = [
 
 [[package]]
 name = "lisp-rlm-wasm"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "base64 0.22.1",
  "bincode",
@@ -2567,7 +2567,7 @@ dependencies = [
 
 [[package]]
 name = "near-compile"
-version = "0.1.14"
+version = "0.1.15"
 dependencies = [
  "base64 0.22.1",
  "bs58 0.5.1",
