@@ -1,7 +1,7 @@
 # zk-NEAR Stack — Session Continuity Plan
 
 > Living document. Update at end of each session. Read at start of each session.
-> Last updated: 2026-09-15 (session 5 — u128 Level 1 limb locals LANDED, fib −62%; chunked-to_str zero-NUL bug found in published 0.1.12 and fixed; 0.1.13/0.1.14 published)
+> Last updated: 2026-09-15 (session 5 — u128 L1+L1.5 LANDED, PLONK LANDED (53 Tgas, universal setup),, fib −62%; chunked-to_str zero-NUL bug found in published 0.1.12 and fixed; 0.1.13/0.1.14 published)
 
 ---
 
@@ -159,25 +159,18 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 
 **First benchmark**: fib(185) loop + an accrual loop — ✅ done (fib above; accrual covered by `mixed_generic_operand_accrues_exactly` + acc(100) budget in test_u128_chunked).
 
-### 2. 🟡 PLONK verifier completion (eliminates trusted setup — 2-3 hours remaining)
+### 2. ✅ PLONK verifier COMPLETE (2026-09-15, 80ecb25) — universal setup DONE
 
-**What**: complete the PLONK verifier TS port — transcript + Lagrange + pairing
-**Why**: universal setup (one ceremony, all circuits, reuse Ethereum's public powers-of-tau) vs Groth16's per-circuit ceremony. Solves the "not good enough" trust concern.
-**Breakthrough**: analyzed the Solidity — ALL operations map to existing alt_bn128 hosts. The G2 scalar mul I initially feared doesn't exist in the implementation (xi multiplication happens on G1 side). Both G2 points are static VK values.
-**Done**: skeleton, init (deployed), bridge, transcript spec, field arithmetic helpers
-**Remaining**: transcript implementation (5 keccak calls), Lagrange basis (field inversions), G1 multiexp assembly, pairing check, e2e test
-**Estimated verify cost**: ~35-41 Tgas (optimized) or ~160 Tgas (simple version)
-**Files**: `zk/identity/plonk_verifier.ts`, `zk/identity/plonk_transcript.md`, `zk/identity/plonk_on_near.md`
+**Shipped**: honest → OK, tampered → BAD:pairing, **53.4 Tgas** (300 cap). No per-circuit ceremony — one powers-of-tau for all circuits.
 
-### 2. 🟡 PLONK verifier completion (eliminates trusted setup — 2-3 hours remaining)
+The port that taught us the most (6 distinct bugs, each oracle-pinned):
+- string literals can't carry bytes ≥ 0xC0 → hexDecode byte tables
+- CIOS was correct Montgomery all along (a·b·R⁻¹) — the oracle was wrong
+- zero inversions via D0-scaling both pairing sides (bil. 1^D0=1) — killed the ~380-mul batch inversion
+- L2/L3 need ω/ω² prefactors; d2b must NOT double-scale; d3 uses β not βξ
+- **OPEN compiler bug**: ciosMul(x, F_THREE_M) garbage while (x, F_TWO_M) exact — array-literal/slot aliasing in the emitter; worked around via (2x+x) decomposition. Worth isolating: it's a silent-wrong-code class.
 
-**What**: complete the PLONK verifier TS port — transcript + Lagrange + pairing
-**Why**: universal setup (one ceremony, all circuits, reuse Ethereum's public powers-of-tau) vs Groth16's per-circuit ceremony. Solves the "not good enough" trust concern.
-**Breakthrough**: analyzed the Solidity — ALL operations map to existing alt_bn128 hosts. The G2 scalar mul I initially feared doesn't exist in the implementation (xi multiplication happens on G1 side). Both G2 points are static VK values.
-**Done**: skeleton, init (deployed), bridge, transcript spec, field arithmetic helpers
-**Remaining**: transcript implementation (5 keccak calls), Lagrange basis (field inversions), G1 multiexp assembly, pairing check, e2e test
-**Estimated verify cost**: ~35-41 Tgas (optimized) or ~160 Tgas (simple version)
-**Files**: `zk/identity/plonk_verifier.ts`, `zk/identity/plonk_transcript.md`, `zk/identity/plonk_on_near.md`
+Files: zk/identity/plonk_verifier.ts (+gen_oracle.js oracle), tests/test_plonk_verifier.rs. Transcript exports kept for oracle diffing.
 
 ### 3. 🟡 zk-Vote v4 hardening (production trust fixes)
 
