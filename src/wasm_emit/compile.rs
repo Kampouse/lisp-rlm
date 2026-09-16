@@ -966,6 +966,12 @@ fn parse_and_compile_opts(
 }
 
 pub fn compile_pure(source: &str) -> Result<Vec<u8>, String> {
+    // big-stack: the emitter's recursion depth grows with IR nesting (see
+    // run_deep) — 2 MiB threads abort on large real contracts
+    crate::helpers::run_deep(move || compile_pure_inner(source))
+}
+
+fn compile_pure_inner(source: &str) -> Result<Vec<u8>, String> {
     let mut em = parse_and_compile(source, false)?;
     // Add a "run" export for the last defined function (or the implicit top-level begin)
     // so that the export wrapper (which calls value_return) is included.
@@ -984,6 +990,10 @@ pub fn compile_standalone(source: &str) -> Result<Vec<u8>, String> {
 
 /// Compile standalone without type checking (for host functions not in type env).
 pub fn compile_standalone_opts(source: &str, typecheck: bool) -> Result<Vec<u8>, String> {
+    crate::helpers::run_deep(move || compile_standalone_opts_inner(source, typecheck))
+}
+
+fn compile_standalone_opts_inner(source: &str, typecheck: bool) -> Result<Vec<u8>, String> {
     let mut em = parse_and_compile_opts(source, false, typecheck)?;
     // No tree_shake — standalone _start references em.funcs directly
     let mut m = Module::new();
@@ -1223,6 +1233,10 @@ pub fn compile_standalone_opts(source: &str, typecheck: bool) -> Result<Vec<u8>,
 }
 
 pub fn compile_fuzz(source: &str) -> Result<Vec<u8>, String> {
+    crate::helpers::run_deep(move || compile_fuzz_inner(source))
+}
+
+fn compile_fuzz_inner(source: &str) -> Result<Vec<u8>, String> {
     let mut em = parse_and_compile(source, false)?;
     // Export the ENTRY: prefer "run", then "main". NEVER the blanket
     // last-non-helper fallback — a desugar-generated LAMBDA can trail the
@@ -1243,6 +1257,12 @@ pub fn compile_fuzz(source: &str) -> Result<Vec<u8>, String> {
 /// tree-shaking. Keyed by NAME (not index), so it stays valid across the
 /// schnorr stitch and wasm-opt renumbering. `compile_near` delegates here.
 pub fn compile_near_with_map(source: &str) -> Result<(Vec<u8>, serde_json::Value), String> {
+    // big-stack: see run_deep (emit recursion — the PLONK verifier needed
+    // 4+ MiB; the default 2 MiB thread stack aborts)
+    crate::helpers::run_deep(move || compile_near_with_map_inner(source))
+}
+
+fn compile_near_with_map_inner(source: &str) -> Result<(Vec<u8>, serde_json::Value), String> {
     let resolved = resolve_modules(source, std::path::Path::new("."))?;
     let mut em = parse_and_compile(&resolved, true)?;
     if std::env::var("DEBUG_FUNCS").is_ok() {
@@ -1282,6 +1302,10 @@ pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
 /// Compile NEAR WASM from source, skipping type checking.
 /// Useful for dynamically-typed generated code (e.g. Solidity translation).
 pub fn compile_near_untyped(source: &str) -> Result<Vec<u8>, String> {
+    crate::helpers::run_deep(move || compile_near_untyped_inner(source))
+}
+
+fn compile_near_untyped_inner(source: &str) -> Result<Vec<u8>, String> {
     let resolved = resolve_modules(source, std::path::Path::new("."))?;
     let mut em = parse_and_compile_opts(&resolved, true, false)?;
     if em.exports.is_empty() {
@@ -1302,6 +1326,14 @@ pub fn compile_near_untyped(source: &str) -> Result<Vec<u8>, String> {
 /// Compile NEAR WASM from pre-parsed exprs, also returning the symbolication
 /// sidecar (function name → source form) for tree-shake survivors.
 pub fn compile_near_from_exprs_with_map(
+    exprs: &[LispVal],
+) -> Result<(Vec<u8>, serde_json::Value), String> {
+    // big-stack: see run_deep — also runs the typechecker (which consumes
+    // the now-thread-independent TYPE_REGISTRY) inside the same thread
+    crate::helpers::run_deep(move || compile_near_from_exprs_with_map_inner(exprs))
+}
+
+fn compile_near_from_exprs_with_map_inner(
     exprs: &[LispVal],
 ) -> Result<(Vec<u8>, serde_json::Value), String> {
     // Type check pass

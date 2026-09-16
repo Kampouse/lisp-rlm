@@ -37,39 +37,31 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
 
 fn run(state: &str, method: &str, args: &str) -> String {
     let _l = lock();
-    // the TS→wasm compile of this file recurses deeper than the default
-    // 2 MiB test-thread stack — run it on a dedicated big-stack thread
-    let state = state.to_string();
-    let method = method.to_string();
-    let args = args.to_string();
-    std::thread::Builder::new()
-        .stack_size(64 * 1024 * 1024)
-        .spawn(move || {
-            let ir = ts_to_lisp_source(&SRC).unwrap();
-            let exprs = parse_all(&ir).unwrap();
-            lisp_rlm_wasm::typing::type_check_program(&exprs, true).unwrap();
-            let wasm = compile_near_from_exprs(&exprs).unwrap();
-            let p = std::env::temp_dir().join(format!("plonk_{}.wasm", std::process::id()));
-            std::fs::write(&p, &wasm).unwrap();
-            let manifest = format!("pv.t.near={}", p.display());
-            let out = std::process::Command::new("./target/release/near-mock")
-                .arg("cross")
-                .arg(&state)
-                .arg(&manifest)
-                .arg("pv.t.near")
-                .arg(&method)
-                .arg(&args)
-                .output()
-                .expect("near-mock spawn");
-            format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            )
-        })
-        .unwrap()
-        .join()
-        .unwrap()
+    // NOTE: no big-stack workaround needed anymore — the compile entry
+    // points run on a dedicated deep-stack thread internally (run_deep);
+    // before that fix this compile aborted with a stack overflow on the
+    // default 2 MiB test thread (the PLONK verifier's IR is deep enough)
+    let ir = ts_to_lisp_source(SRC).unwrap();
+    let exprs = parse_all(&ir).unwrap();
+    lisp_rlm_wasm::typing::type_check_program(&exprs, true).unwrap();
+    let wasm = compile_near_from_exprs(&exprs).unwrap();
+    let p = std::env::temp_dir().join(format!("plonk_{}.wasm", std::process::id()));
+    std::fs::write(&p, &wasm).unwrap();
+    let manifest = format!("pv.t.near={}", p.display());
+    let out = std::process::Command::new("./target/release/near-mock")
+        .arg("cross")
+        .arg(state)
+        .arg(&manifest)
+        .arg("pv.t.near")
+        .arg(method)
+        .arg(args)
+        .output()
+        .expect("near-mock spawn");
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
 }
 
 const INIT: &str = include_str!("../zk/identity/plonk_init_args.json");

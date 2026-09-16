@@ -1043,33 +1043,58 @@ pub struct TypeVariant {
     pub n_fields: u8,
 }
 
-thread_local! {
-    static TYPE_REGISTRY: RefCell<HashMap<String, TypeVariant>> = RefCell::new(HashMap::new());
-}
+// Type registry: a REAL global (Mutex), not thread_local. The compile
+// entry points run on a dedicated big-stack thread (see run_deep — the
+// wasm emitter's recursive descent needs 4+ MB of stack for large real
+// contracts; a thread_local registry would silently empty on that thread
+// and break deftype constructor resolution across parse→emit splits).
+static TYPE_REGISTRY: std::sync::LazyLock<std::sync::Mutex<HashMap<String, TypeVariant>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 /// Register a type definition. Silently ignores duplicate constructor names.
 pub fn register_type(type_name: &str, variants: &[(&str, u8)]) {
-    TYPE_REGISTRY.with(|reg| {
-        let mut reg = reg.borrow_mut();
-        for (i, (name, n_fields)) in variants.iter().enumerate() {
-            let variant = TypeVariant {
-                type_name: type_name.to_string(),
-                variant_id: i as u16,
-                n_fields: *n_fields,
-            };
-            reg.entry(name.to_string()).or_insert(variant);
-        }
-    });
+    let mut reg = TYPE_REGISTRY.lock().unwrap();
+    for (i, (name, n_fields)) in variants.iter().enumerate() {
+        let variant = TypeVariant {
+            type_name: type_name.to_string(),
+            variant_id: i as u16,
+            n_fields: *n_fields,
+        };
+        reg.entry(name.to_string()).or_insert(variant);
+    }
 }
 
 /// Look up a constructor. Returns None if not a registered constructor.
 pub fn lookup_constructor(name: &str) -> Option<TypeVariant> {
-    TYPE_REGISTRY.with(|reg| reg.borrow().get(name).cloned())
+    TYPE_REGISTRY.lock().unwrap().get(name).cloned()
 }
 
 /// Clear all registered types. Used by tests.
 pub fn clear_type_registry() {
-    TYPE_REGISTRY.with(|reg| reg.borrow_mut().clear());
+    TYPE_REGISTRY.lock().unwrap().clear();
+}
+
+/// Stack headroom for the compiler's recursive passes. The wasm emitter's
+/// expr() descent over deeply nested IR (long function bodies chain into
+/// nested let/begin forms — one level per statement) needs ~4 MB for a
+/// 1300-line real contract and grows with body size; the default 2 MiB
+/// thread stack overflows (found compiling the PLONK verifier inside a
+/// cargo-test thread — abort, not a catchable panic). 256 MiB of VIRTUAL
+/// reservation costs nothing until touched.
+const DEEP_STACK_BYTES: usize = 256 * 1024 * 1024;
+
+/// Run `f` on a dedicated big-stack thread (scoped — borrows non-'static
+/// data). Panics inside propagate to the caller on join, preserving error
+/// reporting. Every public compile entry point runs through this.
+pub(crate) fn run_deep<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(DEEP_STACK_BYTES)
+            .spawn_scoped(s, f)
+            .expect("spawn deep-stack compiler thread")
+            .join()
+            .expect("deep-stack compiler thread panicked")
+    })
 }
 
 /// Split a define's trailing items into (optional type annotation, body items).
