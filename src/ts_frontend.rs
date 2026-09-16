@@ -248,6 +248,47 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
     let mut consts: Vec<LispVal> = Vec::new();
     let mut hoisted: Vec<LispVal> = Vec::new();
     let mut out: Vec<LispVal> = Vec::new();
+    // Pre-scan ALL top-level const declarations BEFORE lowering anything:
+    // the frontend is single-pass, so a function ABOVE a const referenced
+    // it as a bare Sym (no fold, no define → "undefined variable" in the
+    // checker). Literals register in CONST_FOLDS now; use-site substitution
+    // then works regardless of declaration order. (Non-literal consts
+    // still emit (define ...) forms in source order — those were never
+    // forward-referenceable and stay that way; found compiling the PLONK
+    // verifier, 2026-09-15.)
+    for stmt in &p.body {
+        if let Statement::VariableDeclaration(v) = stmt {
+            for d in &v.declarations {
+                if let (Ok(name), Some(init)) = (binding_name(&d.id), d.init.as_ref()) {
+                    let mut is_bigint = false;
+                    let literal = match init {
+                        Expression::NumericLiteral(n) => Some(Num(n.value as i64)),
+                        Expression::StringLiteral(s) => Some(Str(s.value.as_str().to_string())),
+                        Expression::BooleanLiteral(b) => Some(Num(if b.value { 1 } else { 0 })),
+                        Expression::BigIntLiteral(b) => {
+                            is_bigint = true;
+                            Some(Str(b
+                                .raw
+                                .as_ref()
+                                .map(|s| s.as_str().trim_end_matches('n').to_string())
+                                .unwrap_or_default()))
+                        }
+                        _ => None,
+                    };
+                    if let Some(v) = literal {
+                        if is_bigint {
+                            BIGINT_CONSTS.with(|m| m.borrow_mut().push(name.clone()));
+                        }
+                        // don't double-register when the main pass reaches
+                        // this declaration again (it re-pushes to CONST_FOLDS
+                        // — harmless: use-site find() takes the FIRST match,
+                        // same value both times)
+                        CONST_FOLDS.with(|m| m.borrow_mut().push((name.clone(), v)));
+                    }
+                }
+            }
+        }
+    }
     for stmt in &p.body {
         match stmt {
             Statement::ExportDeclaration(decl) => {

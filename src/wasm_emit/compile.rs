@@ -1364,6 +1364,56 @@ fn compile_near_from_exprs_with_map_inner(
         }
     }
 
+    // Pre-scan: register ALL function + value define names BEFORE any body
+    // emits, so forward references (helper defined below its caller,
+    // mutual recursion, consts used before their define) resolve. Without
+    // this the from_exprs path compiled defines strictly in source order —
+    // a call to a later-defined function died with "unknown function"
+    // (the checker pre-registers names for mutual recursion, so the
+    // checker PASSED and the emitter failed — found compiling the PLONK
+    // verifier; parse_and_compile's source path always had this scan).
+    for e in exprs {
+        if let LispVal::List(items) = e {
+            if items.len() >= 3 {
+                if let LispVal::Sym(s) = &items[0] {
+                    if s == "define" {
+                        // Function define: (define (name params...) body)
+                        if let LispVal::List(sig) = &items[1] {
+                            if !sig.is_empty() {
+                                if let LispVal::Sym(name) = &sig[0] {
+                                    if !em.funcs.iter().any(|f| &f.name == name) {
+                                        em.funcs.push(FuncDef {
+                                            name: name.clone(),
+                                            param_count: sig.len() - 1,
+                                            local_count: 0,
+                                            instrs: Vec::new(),
+                                            local_entries: None,
+                                            custom_type: None,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        // Value define: (define name value)
+                        if let LispVal::Sym(name) = &items[1] {
+                            if !em.funcs.iter().any(|f| &f.name == name) {
+                                em.funcs.push(FuncDef {
+                                    name: name.clone(),
+                                    param_count: 0,
+                                    local_count: 0,
+                                    instrs: Vec::new(),
+                                    local_entries: None,
+                                    custom_type: None,
+                                });
+                            }
+                            em.value_defines.insert(name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     for e in exprs {
         if let LispVal::List(items) = e {
             if items.is_empty() {

@@ -1686,6 +1686,10 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
     // polymorphic placeholder so forward references (mutual recursion like
     // even?/odd?) type-check. The ordered pass below re-registers each name
     // with its precise inferred type, shadowing the placeholder.
+    // Value defines (define name value) get the same treatment — a const
+    // referenced by a function defined ABOVE it previously failed with
+    // "undefined variable" (found compiling the PLONK verifier, where
+    // ZERO_BE_HEX sits below its first consumer after function reordering).
     for expr in exprs {
         if let LispVal::List(items) = expr {
             if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") {
@@ -1699,6 +1703,16 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
                             },
                         );
                     }
+                }
+                // Value define: (define NAME value) — NAME is a Sym at [1]
+                if let Some(LispVal::Sym(name)) = items.get(1) {
+                    env.insert(
+                        name.clone(),
+                        Scheme {
+                            vars: vec![0],
+                            ty: TcType::Var(0),
+                        },
+                    );
                 }
             }
         }
