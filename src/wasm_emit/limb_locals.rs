@@ -251,6 +251,36 @@ impl WasmEmitter {
         lo: u32,
         hi: u32,
     ) -> Result<Vec<Instruction<'static>>, String> {
+        // Level 1.5 runtime parse-cache for tagged Sym sources (see the
+        // operand path — same guard + fill + invalidation contract)
+        if let LispVal::Sym(n) = e {
+            if self.locals.contains_key(n) && !self.captured_map.contains_key(n) {
+                let key = n.clone();
+                let (flag, clo, chi) = self.parse_cache_alloc(&key);
+                let h = self.ensure_u128_str_helpers();
+                let mut v = Vec::new();
+                v.push(Instruction::LocalGet(flag));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(clo));
+                v.push(Instruction::LocalSet(lo));
+                v.push(Instruction::LocalGet(chi));
+                v.push(Instruction::LocalSet(hi));
+                v.push(Instruction::Else);
+                let tv = self.expr(e)?;
+                let t = self.local_idx(&format!("__u128lv_{}", self.limb_call_count));
+                self.limb_call_count += 1;
+                v.extend(tv);
+                v.push(Instruction::LocalSet(t));
+                self.u128_parse_call(&mut v, t, U128_A, &h);
+                v.extend(self.limb_pair_load(U128_A, lo, hi));
+                v.extend(self.limb_pair_load(U128_A, clo, chi));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::LocalSet(flag));
+                v.push(Instruction::End);
+                return Ok(v);
+            }
+        }
         let h = self.ensure_u128_str_helpers();
         let tv = self.expr(e)?;
         let t = self.local_idx(&format!("__u128lv_{}", self.limb_call_count));
@@ -261,6 +291,33 @@ impl WasmEmitter {
         self.u128_parse_call(&mut v, t, U128_A, &h);
         v.extend(self.limb_pair_load(U128_A, lo, hi));
         Ok(v)
+    }
+
+    /// Allocate (or fetch) the runtime memo triple for a cached name:
+    /// (flag, lo, hi) — flag defaults to 0 (invalid) in a fresh local.
+    fn parse_cache_alloc(&mut self, n: &str) -> (u32, u32, u32) {
+        if let Some(&t) = self.parse_cache.get(n) {
+            return t;
+        }
+        let flag = self.local_idx(&format!("__pc_f_{}", n));
+        let clo = self.local_idx(&format!("__pc_lo_{}", n));
+        let chi = self.local_idx(&format!("__pc_hi_{}", n));
+        let t = (flag, clo, chi);
+        self.parse_cache.insert(n.to_string(), t);
+        t
+    }
+
+    /// Emit `flag = 0` for the name's memo (if one exists — lazily
+    /// allocated at first use). Stack-neutral; safe to splice anywhere.
+    pub(crate) fn emit_parse_cache_invalidate(
+        &mut self,
+        v: &mut Vec<Instruction<'static>>,
+        n: &str,
+    ) {
+        if let Some(&(flag, _, _)) = self.parse_cache.get(n) {
+            v.push(Instruction::I64Const(0));
+            v.push(Instruction::LocalSet(flag));
+        }
     }
 
     /// (u128/op x y) with the result left in limb locals (lo, hi) instead
@@ -379,7 +436,44 @@ impl WasmEmitter {
                 }
             }
             _ => {
-                // tagged path: expr → temp local → parse → limb pair
+                // tagged path: expr → temp local → parse → limb pair.
+                // Level 1.5 runtime parse-cache: a plain tagged Sym operand
+                // emits `if flag { copy } else { parse+fill+flag }` — a
+                // loop-invariant string (bigint param, storage-read local)
+                // parses ONCE at runtime instead of ~140 Mgas/use. Binding
+                // events emit flag=0 (see emit_parse_cache_invalidate).
+                let is_cacheable_sym = matches!(e, LispVal::Sym(n)
+                    if self.locals.contains_key(n) && !self.captured_map.contains_key(n));
+                if is_cacheable_sym {
+                    let n = match e {
+                        LispVal::Sym(n) => n.clone(),
+                        _ => unreachable!(),
+                    };
+                    let (flag, clo, chi) = self.parse_cache_alloc(&n);
+                    // hit: copy cached limbs (flag is i64 — wrap to i32 for the if)
+                    v.push(Instruction::LocalGet(flag));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::LocalGet(clo));
+                    v.push(Instruction::LocalSet(lo));
+                    v.push(Instruction::LocalGet(chi));
+                    v.push(Instruction::LocalSet(hi));
+                    v.push(Instruction::Else);
+                    // miss: parse once, fill operand slots AND the cache
+                    let h = self.ensure_u128_str_helpers();
+                    let tv = self.expr(e)?;
+                    let t = self.local_idx(&format!("__u128lt_{}", self.limb_call_count));
+                    self.limb_call_count += 1;
+                    v.extend(tv);
+                    v.push(Instruction::LocalSet(t));
+                    self.u128_parse_call(v, t, U128_A, &h);
+                    v.extend(self.limb_pair_load(U128_A, lo, hi));
+                    v.extend(self.limb_pair_load(U128_A, clo, chi));
+                    v.push(Instruction::I64Const(1));
+                    v.push(Instruction::LocalSet(flag));
+                    v.push(Instruction::End);
+                    return Ok(());
+                }
                 let h = self.ensure_u128_str_helpers();
                 let tv = self.expr(e)?;
                 let t = self.local_idx(&format!("__u128lt_{}", self.limb_call_count));

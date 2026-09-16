@@ -719,7 +719,7 @@ pub struct WasmEmitter {
     /// the memoize lesson: three zeroed slots aliased one address).
     pub(crate) input_flag_slot: Option<i32>,
     pub(crate) input_len_slot: Option<i32>,
-    /// u128 Level 1 limb locals (2026-09-15): locals whose every store is
+    /// u128 Level 1 (2026-09-15): locals whose every store is
     /// u128-pure are kept as (lo, hi) i64 limb pairs — parse/render
     /// round-trips vanish for loop accumulators. `limb_eligible` is the
     /// per-function pre-scan result; `limb_slots` is the live scoped
@@ -727,6 +727,18 @@ pub struct WasmEmitter {
     pub(crate) limb_eligible: std::collections::HashSet<String>,
     pub(crate) limb_slots: std::collections::HashMap<String, (u32, u32)>,
     pub(crate) limb_call_count: u32,
+    /// u128 Level 1.5 parse-cache (2026-09-15): tagged string locals
+    /// (bigint params, storage-read locals) re-parsed their decimal string
+    /// on EVERY u128-op use (~140 Mgas/use). Runtime memo per local name:
+    /// (flag, lo, hi) wasm locals — each use emits `if flag { copy limbs }
+    /// else { parse + fill + set flag }`; binding events (let/set!/for)
+    /// emit `flag = 0`. A compile-time map alone cannot express this (the
+    /// loop body's single emitted path runs every iteration). Trap timing
+    /// is identical to the uncached path: the first use always parses.
+    /// Captured (closure) names never enter the cache (reads bypass
+    /// `locals`); limb locals never enter (function-wide eligibility keeps
+    /// the two worlds disjoint).
+    pub(crate) parse_cache: std::collections::HashMap<String, (u32, u32, u32)>,
     /// Next emit_define call is a top-level value define → wrap the body
     /// with a memoization guard (evaluate-once per tx; see emit_define).
     pub(crate) memoize_next: bool,
@@ -794,6 +806,7 @@ impl WasmEmitter {
             limb_eligible: std::collections::HashSet::new(),
             limb_slots: std::collections::HashMap::new(),
             limb_call_count: 0,
+            parse_cache: std::collections::HashMap::new(),
             memoize_next: false,
             arr_str_helper: None,
             val_eq_helper: None,
@@ -1176,6 +1189,7 @@ impl WasmEmitter {
         self.numeric_locals.clear();
         self.raw_locals.clear();
         self.limb_slots.clear();
+        self.parse_cache.clear();
         self.limb_eligible = self.scan_limb_eligible(body, &params.to_vec());
         self.needs_frame = false;
         for p in params {

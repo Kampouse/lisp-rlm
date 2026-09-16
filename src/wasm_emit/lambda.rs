@@ -272,6 +272,7 @@ impl WasmEmitter {
         let saved_next_local = self.next_local;
         let saved_captured_map = self.captured_map.clone();
         let saved_limb_slots = self.limb_slots.clone();
+        let saved_parse_cache = self.parse_cache.clone();
 
         // Set up lambda function
         self.locals.clear();
@@ -279,8 +280,11 @@ impl WasmEmitter {
         self.captured_map.clear();
         // outer limb slots reference the OUTER function's local numbering —
         // meaningless here; eligible-name lets inside the body re-bind fresh
-        // pairs under the lambda's own numbering
+        // pairs under the lambda's own numbering. Same for the parse cache:
+        // outer cache pairs are outer-numbered and outer-valued — both
+        // worlds would alias this lambda's locals if left live.
         self.limb_slots.clear();
+        self.parse_cache.clear();
         let _env_idx = self.local_idx("__closure_ptr"); // first param: closure pointer
         for p in params {
             self.local_idx(p);
@@ -340,6 +344,7 @@ impl WasmEmitter {
         self.next_local = saved_next_local;
         self.captured_map = saved_captured_map;
         self.limb_slots = saved_limb_slots;
+        self.parse_cache = saved_parse_cache;
 
         // Build closure value: allocate heap memory [fn_idx, cap1, cap2, ...]
         let mut v = Vec::new();

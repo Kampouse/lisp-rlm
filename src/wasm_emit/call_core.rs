@@ -684,6 +684,10 @@ impl WasmEmitter {
                                     saved.push((n.clone(), old));
                                     v.extend(init);
                                     v.push(Instruction::LocalSet(i));
+                                    // fresh binding = fresh string value — any
+                                    // memoized u128 limbs for this name (an
+                                    // outer binding's, or a re-let) are stale
+                                    self.emit_parse_cache_invalidate(&mut v, n);
                                 }
                             }
                         }
@@ -704,10 +708,17 @@ impl WasmEmitter {
                 }
                 // restore outer scope mappings; release shadow slots; restore
                 // numeric-provenance flags for shadowed names; restore limb
-                // pair mappings (u128 Level 1)
+                // pair mappings (u128 Level 1). Parse-cache (L1.5): every
+                // name bound by THIS let leaves scope — drop its entry so an
+                // inner binding's cached limbs can never alias a same-named
+                // outer binding (the outer one re-parses once on next use).
                 for ((n, old), (_, was_num)) in
                     saved.into_iter().rev().zip(saved_num.into_iter().rev())
                 {
+                    // names bound by THIS let leave scope — clear their memo
+                    // so an inner binding's limbs can never alias a
+                    // same-named outer binding (the outer one re-parses once)
+                    self.emit_parse_cache_invalidate(&mut v, &n);
                     match old {
                         Some(prev) => {
                             self.locals.insert(n.clone(), prev);
@@ -1020,6 +1031,10 @@ impl WasmEmitter {
                         self.numeric_locals.remove(n);
                     }
                 }
+                // Level 1.5 parse-cache invalidation: the local's string
+                // value just changed — its memoized u128 limbs (if any) are
+                // stale. First u128-op use after this re-parses.
+                self.emit_parse_cache_invalidate(&mut v, n);
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
             }
@@ -1033,6 +1048,8 @@ impl WasmEmitter {
                 };
                 let idx = self.local_idx(var);
                 let mut v = Vec::new();
+                // fresh binding — clear any memoized parse limbs
+                self.emit_parse_cache_invalidate(&mut v, var);
                 // init: var = start (untag for raw counter)
                 v.extend(self.expr(&a[1])?);
                 v.extend(self.emit_untag());

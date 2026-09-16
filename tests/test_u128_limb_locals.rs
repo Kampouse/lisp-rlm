@@ -85,6 +85,33 @@ export function subMul(): string {
   a = u128Sub(a, "18446744073709551615");
   return a;
 }
+export function cacheInvalidation(): string {
+  // the param string is REBOUND mid-loop — the parse-cache memo must
+  // invalidate on set! and re-parse, or every iteration would use the
+  // stale limbs (the classic memo bug, pinned here)
+  let amt = near.jsonGetStr("amt") ?? "1";
+  let acc = 0n;
+  let i = 0;
+  while (i < 4) {
+    acc = u128Add(acc, amt);        // iter 0: parses "1"; iters 1-3 use
+                                     // the memo UNLESS invalidated below
+    if (i === 1) { amt = "1000"; }  // set! — memo must go stale
+    i = i + 1;
+  }
+  return acc;                       // 1 + 1 + 1000 + 1000 = 2002
+}
+export function cacheTwoUses(): string {
+  // two ops on the same cached operand in one loop — both hit the memo
+  let amt = near.jsonGetStr("amt") ?? "3";
+  let acc = 0n;
+  let i = 0;
+  while (i < 10) {
+    acc = u128Add(acc, amt);
+    acc = u128Add(acc, amt);
+    i = i + 1;
+  }
+  return acc;                       // 10 * 2 * 3 = 60
+}
 "#;
 
 fn lock() -> std::sync::MutexGuard<'static, ()> {
@@ -113,6 +140,7 @@ fn run(method: &str, args: &str) -> (String, bool) {
         .arg("u128ll.t.near")
         .arg(method)
         .arg(args)
+        .arg("--json")
         .output()
         .expect("near-mock spawn");
     let all = format!(
@@ -128,9 +156,9 @@ fn run(method: &str, args: &str) -> (String, bool) {
         .to_string();
     let gas = all
         .lines()
-        .find(|l| l.contains("Tgas burnt"))
-        .and_then(|l| l.split("gas:").nth(1))
-        .and_then(|g| g.split("Tgas").next())
+        .find(|l| l.starts_with("JSON"))
+        .and_then(|l| l.split("gas_burned_tgas\":").nth(1))
+        .and_then(|g| g.split(',').next())
         .and_then(|g| g.trim().parse::<f64>().ok())
         .unwrap_or(0.0);
     (format!("{val}|{gas}"), all.contains("unreachable"))
@@ -153,12 +181,13 @@ fn fib_185_exact_and_cheap() {
     assert!(!trap, "fib trapped: {v}");
     assert!(v.contains(&expected), "fib(185) wrong: {v} want {expected}");
     let gas: f64 = v.split('|').nth(1).unwrap().parse().unwrap();
-    // 8.0 Tgas pre-chunked-to_str, 1.6 with chunked to_str alone, ~0.1
-    // with limb locals. Budget with generous margin: a regression past
-    // this means values are stringifying inside the loop again.
+    // measured 0.925 total = ~0.9 entry overhead + ~25 Ggas loop (the
+    // pre---json harness parsed gas vacuously; budgets are REAL totals
+    // now). 8.0 Tgas pre-chunked-to_str, 2.45 pre-limb. A regression past
+    // 1.0 means values are stringifying inside the loop again.
     assert!(
-        gas < 0.5,
-        "fib(185) gas regressed past 0.5 Tgas: {gas} (limb target ~0.1)"
+        gas < 1.0,
+        "fib(185) gas regressed past 1.0 Tgas: {gas} (limb measured 0.925)"
     );
 }
 
@@ -223,6 +252,37 @@ fn u128_max_boundary_math() {
     assert!(
         v.contains("340282366920938463426481119284349108225"),
         "subMul wrong: {v}"
+    );
+}
+
+#[test]
+fn parse_cache_invalidates_on_set() {
+    // amt is rebound to "1000" mid-loop: without set! invalidation the
+    // memo would keep serving the stale "1" limbs (result 4, not 2002)
+    let (v, trap) = run("cacheInvalidation", r#"{"amt":"1"}"#);
+    assert!(!trap, "{v}");
+    assert!(v.contains("2002"), "cacheInvalidation: {v}");
+}
+
+#[test]
+fn parse_cache_two_use_sites() {
+    let (v, trap) = run("cacheTwoUses", r#"{"amt":"3"}"#);
+    assert!(!trap, "{v}");
+    assert!(v.contains("60"), "cacheTwoUses: {v}");
+}
+
+#[test]
+fn parse_cache_gas_budget() {
+    // the param-operand loop: 263 Mgas/iter pre-cache, ~125 post — same
+    // as the hand-hoisted shape. Budget with margin; a regression past
+    // 0.2 Tgas means the memo stopped engaging (re-parse per iteration).
+    let (v, trap) = run("withParam", r#"{"amt":"7"}"#);
+    assert!(!trap, "{v}");
+    assert!(v.contains("70"), "withParam: {v}");
+    let gas: f64 = v.split('|').nth(1).unwrap().parse().unwrap_or(0.0);
+    assert!(
+        gas > 0.0 && gas < 0.95,
+        "withParam gas regressed past 0.95 Tgas: {gas}"
     );
 }
 
