@@ -429,7 +429,7 @@ const K_2P256: number[] = [65531,20479,13340,44182,52521,40800,30357,14076,17966
 const R2_MOD: number[] = [28071,44577,58949,7096,23011,58204,15025,21502,32901,21435,33597,35913,17573,32590,53425,534];
 const FR_N_4096_M: number[] = [43868,16383,8826,24234,14506,11332,27041,13959,54049,38948,29846,38323,46283,29607,3203,5632];
 const F_TWO_M: number[] = [65526,40959,26680,22828,39507,16065,60715,28152,35932,61682,18142,52445,48734,13327,61315,7188];
-const F_THREE_M: number[] = [65521,61439,40020,1474,26493,56886,25536,42229,53898,26987,59982,13131,40334,52759,26436,10783];
+const F_THREE_M: number[] = [65521,61439,40020,1474,26493,56866,25536,42229,53898,26987,59982,13131,40334,52759,26436,10783];
 const FR_ONE_M: number[] = [65531,20479,13340,44182,52521,40800,30357,14076,17966,30841,41839,26222,57135,39431,30657,3594]; // R mod q
 const F_ONE_PLAIN: number[] = [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
 
@@ -608,12 +608,7 @@ export function verify(): string {
   // d2 scalar parts
   const val1 = fadd(fadd(evalAL, betaxi), gamma);
   const val2 = fadd(fadd(evalBL, ciosMul(betaxi, F_TWO_M)), gamma);
-  // betaxi·3 via (·2 + ·1): ciosMul(betaxi, F_THREE_M) hits a compiler
-  // array-literal/slot bug (same code, same inputs — F_TWO_M path verified,
-  // F_THREE_M path returns garbage; the TS CIOS itself is exact — proven
-  // by a 200-pair BigInt fuzz of the verbatim algorithm). Decomposed
-  // instead of multiplied.
-  const betaxi3 = fadd(ciosMul(betaxi, F_TWO_M), betaxi);
+  const betaxi3 = ciosMul(betaxi, F_THREE_M);
   const val3 = fadd(fadd(evalCL, betaxi3), gamma);
   const d2a = ciosMul(ciosMul(ciosMul(val1, val2), val3), alpha);
   // d2b = L1p·alpha² is ALREADY D0-scaled (L1p = D0·L1) — adding it INSIDE
@@ -788,12 +783,7 @@ export function dbgScalars(): string {
   const r0p = fsub(fsub(PIp, ciosMul(L1p, alpha2)), ciosMul(D0, e3));
   const val1 = fadd(fadd(evalAL, betaxi), gamma);
   const val2 = fadd(fadd(evalBL, ciosMul(betaxi, F_TWO_M)), gamma);
-  // betaxi·3 via (·2 + ·1): ciosMul(betaxi, F_THREE_M) hits a compiler
-  // array-literal/slot bug (same code, same inputs — F_TWO_M path verified,
-  // F_THREE_M path returns garbage; the TS CIOS itself is exact — proven
-  // by a 200-pair BigInt fuzz of the verbatim algorithm). Decomposed
-  // instead of multiplied.
-  const betaxi3 = fadd(ciosMul(betaxi, F_TWO_M), betaxi);
+  const betaxi3 = ciosMul(betaxi, F_THREE_M);
   const val3 = fadd(fadd(evalCL, betaxi3), gamma);
   const d2a = ciosMul(ciosMul(ciosMul(val1, val2), val3), alpha);
   // d2b = L1p·alpha² is ALREADY D0-scaled (L1p = D0·L1) — adding it INSIDE
