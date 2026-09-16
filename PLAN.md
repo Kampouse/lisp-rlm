@@ -168,7 +168,7 @@ The port that taught us the most (6 distinct bugs, each oracle-pinned):
 - CIOS was correct Montgomery all along (a·b·R⁻¹) — the oracle was wrong
 - zero inversions via D0-scaling both pairing sides (bil. 1^D0=1) — killed the ~380-mul batch inversion
 - L2/L3 need ω/ω² prefactors; d2b must NOT double-scale; d3 uses β not βξ
-- **OPEN compiler bug**: ciosMul(x, F_THREE_M) garbage while (x, F_TWO_M) exact — array-literal/slot aliasing in the emitter; worked around via (2x+x) decomposition. Worth isolating: it's a silent-wrong-code class.
+- RETRACTED: the suspected "compiler array-literal bug" was a one-digit typo in F_THREE_M (limb 5: 56886 vs 56866) — ciosMul computed the correct product of a mistyped constant. The compiler is faithful; no open bug (fe1ba6b). Playbook lesson: when constant-input math is wrong, diff the constants digit-by-digit against a FRESH generation, and alias-hunt (multiply against every constant in the file) before suspecting the compiler.
 
 Files: zk/identity/plonk_verifier.ts (+gen_oracle.js oracle), tests/test_plonk_verifier.rs. Transcript exports kept for oracle diffing.
 
