@@ -1110,7 +1110,14 @@ fn lower_prefix_around_with_return(
         }
         Statement::IfStatement(i) => {
             let mut then_e = lower_block_tail(stmts_of(&i.consequent), view)?;
-            if stmt_has_return(&i.consequent) {
+            // Commit-at-site (2026-09-17): if the branch's own tail already
+            // carries the __fn_res commit (conditional-carrier lowering),
+            // do NOT wrap it again — a blanket capture would commit
+            // __fn_done on the branch's FALL-THROUGH path too, killing
+            // every statement after this if. Direct returns and nested
+            // carriers keep the blanket only when the branch is a
+            // guaranteed return (its value IS the function result).
+            if stmt_has_return(&i.consequent) && !is_commit_form(&then_e) {
                 // branch value becomes the function result
                 then_e = list(vec![
                     Sym("begin"),
@@ -1121,7 +1128,7 @@ fn lower_prefix_around_with_return(
             let else_e = match &i.alternate {
                 Some(alt) => {
                     let mut e = lower_block_tail(stmts_of(alt), view)?;
-                    if stmt_has_return(alt) {
+                    if stmt_has_return(alt) && !is_commit_form(&e) {
                         e = list(vec![
                             Sym("begin"),
                             list(vec![Sym("set!"), Sym("__fn_res"), e]),
@@ -1130,7 +1137,11 @@ fn lower_prefix_around_with_return(
                     }
                     e
                 }
-                None => Num(0),
+                // Same bottom-type idiom as lower_tail_stmt's if-arm: a
+                // statement-if with no else is not a numeric 0 value.
+                // (2026-09-17: `else { if (c) { return v; } }` reached this
+                // None arm with a str-branch inside → str ≠ int false reject)
+                None => list(vec![Sym("quote"), LispVal::Nil]),
             };
             list(vec![
                 Sym("begin"),
@@ -1567,11 +1578,43 @@ fn lower_tail_stmt(s: &Statement<'_>, view: bool) -> Result<LispVal, String> {
         },
         Statement::IfStatement(i) => {
             let then_e = lower_block_tail(stmts_of(&i.consequent), view)?;
+            let cond = truthy(&i.test)?;
+            // Conditional carrier (2026-09-17): `if (c) { return v; }` in a
+            // with-return context must commit __fn_res/__fn_done AT the
+            // return site — a fall-through path leaves the flags alone. A
+            // plain value-if here made the parent's blanket capture commit
+            // __fn_done on fall-through (statements after the if never ran).
+            // Flags not bound (single-exit value semantics) → plain value-if.
+            if i.alternate.is_none()
+                && stmt_has_return(&i.consequent)
+                && FN_FLAGS_BOUND.with(|f| f.get())
+            {
+                let commit = if is_commit_form(&then_e) {
+                    then_e
+                } else {
+                    list(vec![
+                        Sym("begin"),
+                        list(vec![Sym("set!"), Sym("__fn_res"), then_e]),
+                        list(vec![Sym("set!"), Sym("__fn_done"), Num(1)]),
+                    ])
+                };
+                return Ok(list(vec![
+                    Sym("if"),
+                    cond,
+                    commit,
+                    list(vec![Sym("quote"), LispVal::Nil]),
+                ]));
+            }
             let else_e = match &i.alternate {
                 Some(alt) => lower_block_tail(stmts_of(alt), view)?,
-                None => Num(0),
+                // Missing else = statement-if, NOT a 0 value: `if (c) { return s; }`
+                // lowered to (if c <str> 0) and the checker rejected str ≠ int —
+                // legal TS (branch falls through). Nil is bottom (unify unifies it
+                // with anything, same idiom as the __fn_res init) so the if types
+                // as the then-branch. (2026-09-17, found by cfg differential fuzz)
+                None => list(vec![Sym("quote"), LispVal::Nil]),
             };
-            Ok(list(vec![Sym("if"), truthy(&i.test)?, then_e, else_e]))
+            Ok(list(vec![Sym("if"), cond, then_e, else_e]))
         }
         Statement::BlockStatement(b) => lower_block_tail(&b.body, view),
         // Tail assignment (`u.k = v;` as last statement, void fn): route
@@ -2778,6 +2821,31 @@ fn fn_exit_form(view: bool) -> LispVal {
         list(vec![Sym("near/json_return_str"), Sym("__fn_res")])
     } else {
         Sym("__fn_res")
+    }
+}
+
+/// True when `e` already ends in the __fn_done commit (a (set! __fn_done 1)
+/// inside the form) — the conditional-carrier lowering marks its commit
+/// sites so the blanket branch-capture in lower_prefix_around_with_return
+/// never double-wraps them (a double commit would fire __fn_done on
+/// fall-through paths and skip post-if statements). (2026-09-17)
+fn is_commit_form(e: &LispVal) -> bool {
+    match e {
+        LispVal::List(items) => {
+            if items.len() >= 2
+                && items[0] == LispVal::Sym("set!".into())
+                && items[1] == LispVal::Sym("__fn_done".into())
+            {
+                return true;
+            }
+            // (if c commit nil-hole) — the conditional-carrier shape
+            if items[0] == LispVal::Sym("if".into()) && items.len() == 4 {
+                return is_commit_form(&items[2]) || is_commit_form(&items[3]);
+            }
+            // (begin a b c...) — scan elements
+            items.iter().skip(1).any(is_commit_form)
+        }
+        _ => false,
     }
 }
 
@@ -4132,14 +4200,15 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                         }
                         // ── JSON API v3 (2026-09-15): the input handle ──
                         // near.input() is the NAME-level handle: `const o =
-                        // near.input()` registers o (scan_input_handles)
-                        // and property reads rewrite to the cached-input
-                        // getters. The VALUE is a dead nil everywhere (decl
-                        // bindings and any stray bare use alike) — the input
-                        // never materializes as a string.
-                        ("near", "input") => {
-                            return Ok(list(vec![Sym("quote"), LispVal::Nil]));
-                        }
+                        // near.input()` registers o (scan_input_handles) and
+                        // property reads rewrite to the cached-input getters;
+                        // the DECL path nil-binds the name (dead binding).
+                        // Bare VALUE uses (`return near.input()`) lower to the
+                        // real (near/input) op — the full args JSON as a
+                        // tagged string, per the d.ts `input(): string`
+                        // contract. (2026-09-17: this arm used to swallow ALL
+                        // call sites to dead nil — `return near.input()`
+                        // silently returned nil, breaking tour2_input.)
                         _ => {} // fall through
                     }
                 }
