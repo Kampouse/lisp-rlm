@@ -70,24 +70,19 @@ impl WasmEmitter {
                     // I64ShrS (negative-safe) — without these patterns a
                     // raw-local read-tag + consumer-untag (and producer-tag
                     // + store-untag) pair never cancelled
-                    (
-                        Instruction::I64Const(3),
-                        Instruction::I64ShrS,
-                        Instruction::I64Const(3),
-                        Instruction::I64Shl,
-                    ) => {
-                        i += 4;
-                        continue;
-                    }
-                    (
-                        Instruction::I64Const(3),
-                        Instruction::I64Shl,
-                        Instruction::I64Const(3),
-                        Instruction::I64ShrS,
-                    ) => {
-                        i += 4;
-                        continue;
-                    }
+                    //
+                    // ⚠ REMOVED 2026-09-17 (fuzz campaign): these blind
+                    // cancellations ATE THE OVERFLOW CHECK inside
+                    // emit_tag_num_checked — the check is
+                    //   LocalGet(t); LocalGet(t); (3,Shl); (3,ShrS); I64Ne
+                    // and cancelling the (3,Shl)(3,ShrS) pair left
+                    // `t != t` (never fires) → silent 61-bit payload wrap
+                    // on shl/bor/bnot results. Regression pinned in
+                    // tests/test_money_safety.rs::shl_out_of_range_traps.
+                    // Flat adjacency peepholes must never cancel a
+                    // (3,Shl)(3,ShrS) pair: the checked-retag is built from
+                    // the same instructions. The raw-locals feature these
+                    // served was reverted in 9384836 anyway.
                     _ => {}
                 }
             }

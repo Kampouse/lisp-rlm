@@ -486,6 +486,17 @@ fn shl_out_of_range_traps() {
     // 2^55 << 10 = 2^65: overflows i64 entirely → trap
     let r = eval_wasm("(define (id x) x) (define (main) (shl (id 36028797018963968) (id 10)))");
     assert!(r.is_err(), "shl to 2^65 must trap, got {:?}", r);
+
+    // LITERAL-direct shape (no id indirection): the TS frontend const-folds
+    // to `Const(2^60); checked-retag`. Regression guard for BUG-2026-09-17:
+    // the gas.rs peephole's blind (3,Shl)(3,ShrS) cancellation ate the
+    // guard's round-trip, turning it into `t != t` — silent wrap, no trap.
+    let r = eval_wasm("(define (main) (shl 576460752303423488 1))");
+    assert!(
+        r.is_err(),
+        "literal shl to 2^60 must trap (const-fold path), got {:?}",
+        r
+    );
 }
 
 /// wasm-only: negative shift / huge shift masks like raw wasm (s & 63).
