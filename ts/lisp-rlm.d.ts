@@ -117,10 +117,12 @@ declare function u128Sub(a: any, b: any): string;
 declare function u128Mul(a: any, b: any): string;
 declare function u128Div(a: any, b: any): string;
 declare function u128Mod(a: any, b: any): string;
-declare function u128Lt(a: any, b: any): number;
-declare function u128Gt(a: any, b: any): number;
-declare function u128Eq(a: any, b: any): number;
-declare function u128IsZero(s: string): number;
+// comparisons lower to u128/lt|gt|eq : (str,str) → bool — use directly in
+// if(...); do NOT wrap in toStr() (checker rejects str ≠ bool).
+declare function u128Lt(a: any, b: any): boolean;
+declare function u128Gt(a: any, b: any): boolean;
+declare function u128Eq(a: any, b: any): boolean;
+declare function u128IsZero(s: string): boolean;
 
 // ── the `near` namespace (member passthrough, camelCase auto-snakifies) ─
 

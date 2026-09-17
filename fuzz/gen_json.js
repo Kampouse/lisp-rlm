@@ -1,13 +1,8 @@
-// JSON torture v3. Model:
-//  - tx input = canonical flat object { probeKey: "7", ... } (plain, tight
-//    colons, no escapes) — direct lookups (dynamic + literal) hit or miss on
-//    it with value "7" (string→"7", int→7).
-//  - stored doc (storageSet inside entrypoint) = tortured JSON — reached via
-//    the 2-arg form jsonGetStr(key, doc) / jsonGetInt(key, doc) + dot-paths.
-// Oracle semantics (documented):
-//  - strings  → unescaped content; objects/arrays → raw balanced span
-//  - ints     → prefix-digit parse of raw span, non-num → null
-//  - misses   → null ("~" / -1 in the result string)
+// JSON torture v4. API reality (verified by probe):
+//   - dynamic keys: tx-input lookups ONLY (jsonGetStr(k)/jsonGetInt(k))
+//   - provided-buffer reads (2-arg): literal keys only — jsonGetStr("k", doc),
+//     jsonGetInt("n", doc), dot-paths "a.b" — via a doc LOCAL from storage
+// Oracle: str part = "dyn,doc", int part = "dyn,doc", dot2 part = "doc".
 const { FS, PATH, genJson, KEYS, ri, pick, chance } = require("./gen_common.js");
 
 const OUT = PATH.join(__dirname, "corpus", "json");
@@ -31,18 +26,18 @@ for (let f = 0; f < FILES; f++) {
     const params = Array.from({ length: NP }, (_, i) => `k${i}: string`).join(", ");
     const body = probes.map((p, i) => {
       if (p.mode === "str") {
-        return `  r = r + "|" + (near.jsonGetStr(k${i}) ?? "~") + (near.jsonGetStr(${JSON.stringify(p.key)}) ?? "~") + (near.jsonGetStr(k${i}, near.storageGet("doc") ?? "{}") ?? "~");`;
+        return `  r = r + "|" + (near.jsonGetStr(k${i}) ?? "~") + "," + (near.jsonGetStr(${JSON.stringify(p.key)}, doc) ?? "~");`;
       }
       if (p.mode === "int") {
-        return `  r = r + "|" + (near.jsonGetInt(k${i}) ?? -1) + "," + (near.jsonGetInt(${JSON.stringify(p.key)}) ?? -1) + "," + (near.jsonGetInt(k${i}, near.storageGet("doc") ?? "{}") ?? -1);`;
+        return `  r = r + "|" + (near.jsonGetInt(k${i}) ?? -1) + "," + (near.jsonGetInt(${JSON.stringify(p.key)}, doc) ?? -1);`;
       }
-      // dot2: dot-path against the stored doc only
       const path = p.key.includes(".") ? p.key : p.key + ".x";
-      return `  r = r + "|" + (near.jsonGetStr(${JSON.stringify(path)}, near.storageGet("doc") ?? "{}") ?? "~");`;
+      return `  r = r + "|" + (near.jsonGetStr(${JSON.stringify(path)}, doc) ?? "~");`;
     }).join("\n");
     fns += `
 export function ${fname}(${params}): string {
   near.storageSet("doc", ${JSON.stringify(doc)});
+  let doc = near.storageGet("doc") ?? "{}";
   let r = "s";
 ${body}
   return r;
@@ -50,12 +45,9 @@ ${body}
 `;
     const input = {};
     for (const p of probes) if (!p.key.includes(".")) input[p.key] = "7";
-    manifest.push({
-      file: `json_${String(f).padStart(3, "0")}`, method: fname,
-      doc, probes, input, args: probes.map(p => p.key),
-    });
+    manifest.push({ file: `json_${String(f).padStart(3, "0")}`, method: fname, doc, probes, input });
   }
   FS.writeFileSync(PATH.join(OUT, `json_${String(f).padStart(3, "0")}.ts`), fns);
 }
-FS.writeFileSync(PATH.join(__dirname, "corpus", "json_manifest.json"), JSON.stringify(manifest));
+FS.writeFileSync(PATH.join(__dirname, "corpus", "json", "json_manifest.json"), JSON.stringify(manifest));
 console.log(JSON.stringify({ files: FILES, cases: manifest.length }));
