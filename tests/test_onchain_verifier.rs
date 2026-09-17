@@ -39,9 +39,12 @@ fn onchain_verifier_compiles() {
     );
 
     // Verify key functions exist in the lowered IR
+    // (zero-param exports lower to `(name)` — no trailing space — so accept
+    // both the with-params and zero-params print shapes)
     for name in &["init", "verify", "isInitialized", "debugMxLen"] {
         assert!(
-            ir.contains(&format!("(define ({} ", name)),
+            ir.contains(&format!("(define ({} ", name))
+                || ir.contains(&format!("(define ({})", name)),
             "function '{}' not found in lowered IR",
             name
         );
