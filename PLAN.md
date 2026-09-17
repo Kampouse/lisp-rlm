@@ -1,7 +1,7 @@
 # zk-NEAR Stack — Session Continuity Plan
 
 > Living document. Update at end of each session. Read at start of each session.
-> Last updated: 2026-09-15 (session 5 — u128 L1+L1.5 LANDED, PLONK LANDED (53 Tgas, universal setup),, fib −62%; chunked-to_str zero-NUL bug found in published 0.1.12 and fixed; 0.1.13/0.1.14 published)
+> Last updated: 2026-09-17 (overnight fuzz campaign, session 6 — CRITICAL: peephole regression found in PUBLISHED 0.1.15/0.1.16 — checked-retag overflow guard neutered, silent shl wrap; fixed on fuzz-campaign-0917, publish 0.1.17 ASAP. Plan-vs-reality audit: testnet accounts all LIVE, balances drifted, near-mock on crates.io is 0.7.2)
 
 ---
 
@@ -29,14 +29,15 @@ We have a working zero-knowledge application layer on NEAR: three zk apps live o
 
 | crate | version | what |
 |---|---|---|
-| lisp-rlm-wasm | 0.1.15 | TS→NEAR wasm compiler — + deep-stack compile (256 MiB), forward references |
+| lisp-rlm-wasm | 0.1.15 | TS→NEAR wasm compiler — + deep-stack compile (256 MiB), forward references. ⚠️ 0.1.15 CARRIES the peephole checked-retag regression (see graveyard 09-17) — publish 0.1.17 from fuzz-campaign-0917 |
 | | 0.1.14 | — parse-cache, compile-CLI data-loss fix |
-| near-compile | 0.1.16 | CLI: build/deploy/call/create |
-| near-mock | 0.7.1 | local runner, calibrated gas, real crypto hosts |
+| near-compile | 0.1.16 | CLI: build/deploy/call/create. ⚠️ same regression via lisp-rlm-wasm dep — bump with the patch release |
+| near-mock | 0.7.2 | local runner, calibrated gas, real crypto hosts (crates.io has 0.7.2 since 09-15; plan previously said 0.7.1 — stale) |
 
 ### Test infrastructure
 
 - **145+ tests green** across 33+ suites (lisp-rlm) + 46 tests (near-mock)
+- ⚠️ 2026-09-17: "all green" was FALSE on HEAD — `test_money_safety` was red since 9384836 and nobody ran the full suite before publishing 0.1.15/0.1.16. Session protocol now REQUIRES `cargo test --release 2>&1 | grep -c FAILED` == 0 (full, --no-fail-fast) before any publish.
 - Gas calibration: mock matches testnet within 0.2% (fp254 receipts)
 - Regression tests pin every bug we've fixed
 
@@ -61,14 +62,16 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 
 ### Key accounts (testnet, keys in ~/.near-credentials/testnet/)
 
+> ⚠️ 2026-09-17 audit: all six accounts VERIFIED LIVE with contracts deployed (RPC: `rpc.testnet.fastnear.com`, `finality:"final"`). Balances drifted from the table (poseidon funder 1.41, not ~4). Keys for these accounts are NOT on this machine (`asil`) — the plan's `/Users/j-p/dev/stuff/` paths are the other box.
+
 | account | purpose | status |
 |---|---|---|
-| poseidon.registry-nostrgov.testnet | funder + Poseidon contract | ~4 NEAR |
-| g16v2.poseidon.registry-nostrgov.testnet | Groth16 verifier (identity VK) | funded |
-| g16v.poseidon.registry-nostrgov.testnet | Groth16 verifier (x>y VK) | funded |
-| zkid.poseidon.registry-nostrgov.testnet | zk-Identity + PLONK verifier | ~1 NEAR |
-| zkvote.poseidon.registry-nostrgov.testnet | zk-Vote v3 + v4 | funded |
-| registry-nostrgov.testnet | top-level funder | ~0.5 NEAR |
+| poseidon.registry-nostrgov.testnet | funder + Poseidon contract | 1.41 NEAR (09-17) |
+| g16v2.poseidon.registry-nostrgov.testnet | Groth16 verifier (identity VK) | 0.99 NEAR, deployed |
+| g16v.poseidon.registry-nostrgov.testnet | Groth16 verifier (x>y VK) | 0.99 NEAR, deployed |
+| zkid.poseidon.registry-nostrgov.testnet | zk-Identity + PLONK verifier | 1.00 NEAR, deployed |
+| zkvote.poseidon.registry-nostrgov.testnet | zk-Vote v3 + v4 | 1.00 NEAR, deployed |
+| registry-nostrgov.testnet | top-level funder | 0.59 NEAR |
 
 ⚠️ Key file quirk: poseidon's key uses `secret_key` field (not `private_key`) — fixed once, check if regenerated.
 
@@ -76,7 +79,13 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 
 ## What We Fixed (the bug graveyard — don't re-fix, don't regress)
 
-### Compiler bugs (lisp-rlm) — 26 total, all fixed and tested
+### 2026-09-17 overnight campaign (session 6)
+
+| bug | symptom | fix | date |
+|---|---|---|---|
+| Peephole ate checked-retag | gas.rs blind `(3,Shl)(3,ShrS)` cancellation collapsed `emit_tag_num_checked`'s round-trip to `t != t` — every shl ≥2^60 silently wrapped negative instead of trapping (money-corruption class; shipped in 0.1.15/0.1.16; `shl_out_of_range_traps` red on HEAD) | removed 4 blind arms (raw_locals never populated — zero legit effect); literal-shape regression pinned | 09-17 |
+
+### Compiler bugs (lisp-rlm) — 27 total, all fixed and tested
 
 **2026-09-14 sweep note:** probed every "open" GAPS entry live before fixing — ~half were STALE (arity fixed 08-26, lisp-run surface gaps all work, kv asymmetry documented backwards). Probe before fixing claimed bugs.
 
@@ -291,12 +300,12 @@ This file IS the recovery point. It should contain everything needed to resume w
 ### Build commands
 ```bash
 # lisp-rlm (compiler + tools)
-cd /Users/j-p/dev/stuff/lisp-rlm
+cd ~/dev/lisp-rlm
 CARGO_INCREMENTAL=0 cargo build --release --bin compile --bin near-mock
 CARGO_INCREMENTAL=0 cargo build --release -p near-compile
 
 # near-mock (standalone)
-cd /Users/j-p/dev/stuff/near-mock
+cd ~/dev/near-mock
 CARGO_INCREMENTAL=0 cargo build --release
 
 # test a TS contract locally
@@ -355,11 +364,13 @@ cd ../near-mock && git add -A && git commit -m "..." && git push && cargo publis
 
 ### Important paths
 ```
-/Users/j-p/dev/stuff/lisp-rlm/          — compiler + tools + tests
-/Users/j-p/dev/stuff/lisp-rlm/zk/       — all zk apps + circuits + bridges
-/Users/j-p/dev/stuff/lisp-rlm/schnorr/  — stitched-wasm pattern (for Honk)
-/Users/j-p/dev/stuff/lisp-rlm/fixtures/ — verified contract sources
-/Users/j-p/dev/stuff/lisp-rlm/tests/    — regression suite
-/Users/j-p/dev/stuff/near-mock/         — the local runner
-/tmp/circom2                            — circom compiler 2.2.3 binary
+~/dev/lisp-rlm/          — compiler + tools + tests (THIS machine, asil)
+~/dev/lisp-rlm/zk/       — all zk apps + circuits + bridges
+~/dev/lisp-rlm/schnorr/  — stitched-wasm pattern (for Honk)
+~/dev/lisp-rlm/fixtures/ — verified contract sources
+~/dev/lisp-rlm/tests/    — regression suite
+~/dev/lisp-rlm/fuzz/     — differential campaign (09-17): gen_*.js + run_fuzz.js
+~/dev/near-mock/         — the local runner
+/tmp/circom2             — circom compiler 2.2.3 binary
+(historic, j-p box): /Users/j-p/dev/stuff/{lisp-rlm,near-mock}
 ```
