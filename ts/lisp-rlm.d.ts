@@ -195,6 +195,12 @@ declare const near: {
    * a silent 0 was indistinguishable from a real zero. "12x" → 12 (prefix).
    */
   jsonGetInt(key: string): number | null;
+  /** 2-arg form (2026-09-17): scan the GIVEN JSON string (not the tx
+   *  input) — mirrors jsonGetStr(key, json). Dot-paths supported.
+   *  Miss → null (?? fires). Found-but-non-numeric → null too.
+   *  (Previously compiled but silently ignored the second arg — the
+   *  literal/dynamic key was looked up in the tx input instead.) */
+  jsonGetInt(key: string, json: string): number | null;
   jsonReturnStr(v: string): void;
   jsonReturnInt(v: number): void;
 

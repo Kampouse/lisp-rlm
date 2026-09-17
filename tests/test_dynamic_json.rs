@@ -84,6 +84,28 @@ export function spacedSuffixKey(): string {
   const key = "su" + "b";
   return near.jsonGetStr(key) ?? "MISS"; // FOUND
 }
+// 2-arg jsonGetInt (2026-09-17 fix): must scan the GIVEN doc, not tx input.
+// Before: second arg silently ignored — literal+dynamic lookups hit tx input
+// or missed (jsonGetInt("n", doc) → -1 while input had no "n").
+export function int2argHit(): string {
+  return toStr(near.jsonGetInt("n", "{\"n\":42}") ?? -1); // 42
+}
+export function int2argMiss(): string {
+  return toStr(near.jsonGetInt("zz", "{\"n\":42}") ?? -1); // -1 (?? fires)
+}
+export function int2argDot(): string {
+  return toStr(near.jsonGetInt("p.q", "{\"p\":{\"q\":7}}") ?? -1); // 7
+}
+export function int2argSpaced(): string {
+  return toStr(near.jsonGetInt("n", "{ \"n\" : 42 }") ?? -1); // 42
+}
+export function int2argDocWins(): string {
+  // THE discriminator: doc value must win over tx input (the bug read 99)
+  return toStr(near.jsonGetInt("n", "{\"n\":7}") ?? -1); // 7, not input's 99
+}
+export function str2argStillWorks(): string {
+  return near.jsonGetStr("o", "{\"o\":\"x\"}") ?? "MISS"; // x
+}
 "#;
 
 fn lock() -> std::sync::MutexGuard<'static, ()> {
@@ -170,6 +192,50 @@ fn two_dynamic_reads_do_not_clobber() {
         args: r#"{"k1":"AAA","k2":"BBB"}"#,
     });
     assert!(r.contains("AAA-BBB"), "dynTwo: {r}");
+}
+
+#[test]
+fn int2arg_scans_doc_not_input() {
+    // THE discriminator: doc says 7, tx input says 99. Pre-fix the 2-arg
+    // jsonGetInt ignored the doc and returned 99.
+    let r = run(Call {
+        method: "int2argDocWins",
+        args: r#"{"n":99}"#,
+    });
+    assert!(r.contains("7"), "doc must win over input: {r}");
+}
+
+#[test]
+fn int2arg_hit_miss_dot_spaced() {
+    let r = run(Call {
+        method: "int2argHit",
+        args: "{}",
+    });
+    assert!(r.contains("42"), "hit: {r}");
+    let r = run(Call {
+        method: "int2argMiss",
+        args: "{}",
+    });
+    assert!(r.contains("-1"), "miss must fire ??: {r}");
+    let r = run(Call {
+        method: "int2argDot",
+        args: "{}",
+    });
+    assert!(r.contains("7"), "dot-path: {r}");
+    let r = run(Call {
+        method: "int2argSpaced",
+        args: "{}",
+    });
+    assert!(r.contains("42"), "spaced: {r}");
+}
+
+#[test]
+fn int2arg_str_twin_unaffected() {
+    let r = run(Call {
+        method: "str2argStillWorks",
+        args: "{}",
+    });
+    assert!(r.contains("x"), "str twin: {r}");
 }
 
 #[test]

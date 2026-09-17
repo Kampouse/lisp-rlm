@@ -11,6 +11,24 @@ impl WasmEmitter {
                 if a.is_empty() {
                     return Err("near/json_get_int requires a string key argument".into());
                 }
+                // 2-arg form (2026-09-17): jsonGetInt(key, json) scans the
+                // GIVEN JSON string, not the tx input — mirror of the
+                // jsonGetStr fix (2026-09-14). It used to compile fine and
+                // silently ignore the second arg (json_lit_lookup_str reads
+                // tx input only): a silent-wrong-answer footgun in money
+                // code. Composed as the nil-on-miss buffer scan
+                // (`json-get-str?`, dot-paths supported) + the shared
+                // int-parse tail: miss → nil (?? fallback fires), hit →
+                // first-byte gate + __str_to_num — same semantics as the
+                // unified 1-arg path (found-non-numeric → nil).
+                if a.len() >= 2 {
+                    if !matches!(&a[0], LispVal::Str(_)) {
+                        return Err("jsonGetInt(key, json): key must be a string literal".into());
+                    }
+                    let args2: Vec<LispVal> = a[..2].to_vec();
+                    let lookup = self.call_json("json-get-str?", &args2)?;
+                    return self.emit_int_parse_gated(lookup);
+                }
                 match &a[0] {
                     LispVal::Str(key) => {
                         // Shared-function route (2026-09-14, code size): the
