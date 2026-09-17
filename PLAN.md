@@ -117,6 +117,7 @@ zk/bridge.py           — SHARED format bridge (snarkjs → NEAR LE-halves)
 | Object-span truncation | jsonGetStr on `{"o": {...}}` returned `{` — quote-close check ungated by the string flag | ook branch: depth-tracked balanced span, raw copy (no unescape) | 09-14 |
 | jsonGetInt silent-0 | found-but-non-numeric (`"n": "abc"`) returned 0 — indistinguishable from real zero | no-digit → TAG_NIL (`??` fires); prefix digits still parse; literal + dynamic | 09-14 |
 | extract depth-clobber (latent) | an extracted OBJECT value left depth=0 + scan_i on the closer — all LATER keys silently dropped (lisp json-extract affected too) | depth=1 restore + scan_i past closer at all 3 extraction exits | 09-14 |
+| jsonGetInt 2-arg footgun | `jsonGetInt(key, json)` compiled but silently scanned tx input — doc's value ignored (doc `{"n":7}` + input `{"n":99}` → 99); the jsonGetStr 09-14 fix was never ported to the int twin | routes to nil-on-miss buffer scan (`json-get-str?`) + shared `emit_int_parse_gated`; d.ts declares the 2-arg form | 09-17 |
 
 ### near-mock bugs — 4 total
 
