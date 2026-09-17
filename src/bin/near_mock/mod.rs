@@ -3173,16 +3173,21 @@ fn run_state_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             std::fs::write(state_path, bincode::serialize(&map)?)?;
+            let replaced_note = if replace_acct {
+                if per_account.len() == 1 {
+                    " (partition replaced)".to_string()
+                } else {
+                    format!(" ({} partitions replaced)", per_account.len())
+                }
+            } else {
+                String::new()
+            };
             println!(
                 "📥 imported {} keys across {} account(s) → {}{}",
                 total,
                 per_account.len(),
                 state_path,
-                if replace_acct {
-                    " (partition(s) replaced)"
-                } else {
-                    ""
-                }
+                replaced_note
             );
             Ok(())
         }
