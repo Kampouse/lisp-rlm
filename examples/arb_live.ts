@@ -1,23 +1,31 @@
-// ─── arb_live.ts — on-chain arb brain: guarded 3-hop cross-contract cycle ───
-// One entry call fires a promise chain: swap A→B→C→A across three DEX pools
+// ─── arb_live.ts — on-chain arb brain: guarded cross-contract cycle ───
+// One entry call fires a promise chain: swap A→B→…→A across DEX pools
 // (examples/dex.ts), each leg carrying its own min_out slippage guard. The
 // caller (off-chain scout) pushes expected per-leg rates at configure time;
 // the contract verifies the expected cycle edge ITSELF before firing — a
 // fabricated/moved market makes a guard trap and no value moves beyond the
 // failed leg. Callbacks correlate via storage (leg1out/leg2out).
 //
+// Cycle shapes:
+//   nlegs=3  triangle A→B→C→A      callbacks: onLeg1 → onLeg2 → onLeg3
+//   nlegs=2  twin-pool A→B→A       callbacks: onLeg1 → onLeg2b (closer)
+//
 // NOTE: the demo dex moves pool reserves only (no per-account custody), so a
 // mid-chain failure here strands nothing. With real token custody, a failed
 // leg N leaves legs 1..N-1 executed (inventory held) — production needs an
 // unwind/retry receipt on the fail path. Per-leg min_out bounds that loss.
 //
+// Frontend lowering constraint (found by probe): never nest an `if { return }`
+// inside a block that continues after it — flat early-return ifs are fine.
+//
 // NOTE: exports are entry points, not callables — helpers are module-level.
 // All amounts: fixed-point integer micro-units (10^-6). No floats.
 //
 // Exports:
-//   configure({dex, c0,d0,r0, c1,d1,r1, c2,d2,r2, cap, tol_bps, min_edge_bps})
+//   configure({dex, c0,d0,r0, c1,d1,r1, c2,d2,r2, cap, tol_bps,
+//              min_edge_bps, nlegs})   (r2 ignored when nlegs=2)
 //   run()            → "FIRED:..." | "REFUSED:..."  (starts the chain)
-//   onLeg1/onLeg2/onLeg3   receipt callbacks (exported = valid entry points)
+//   onLeg1/onLeg2/onLeg2b/onLeg3   receipt callbacks (exported = valid entries)
 //   status()         → bookkeeping view
 
 const GAS: number = 20000000000000;
@@ -40,6 +48,7 @@ export function configure(
   cap: number,
   tol_bps: number,
   min_edge_bps: number,
+  nlegs: number,
 ): string {
   near.storageSet("dex", dex);
   near.storageSet("c0", c0); near.storageSet("d0", d0); near.storageSet("r0", toStr(r0));
@@ -48,6 +57,8 @@ export function configure(
   near.storageSet("cap", toStr(cap));
   near.storageSet("tol", toStr(tol_bps));
   near.storageSet("minedge", toStr(min_edge_bps));
+  // 2-leg (twin-pool) or 3-leg (triangle) cycle
+  near.storageSet("nlegs", toStr(nlegs));
   if (num("pos") == 0) {
     near.storageSet("pos", "0");
     near.storageSet("profit", "0");
@@ -57,22 +68,50 @@ export function configure(
   return "configured:" + dex;
 }
 
-// expected leg out = in × (10000 - tol)/10000 … guards are LOWER bounds
+// expected leg out = in × (10⁶ - tol·100)/10⁶; rates are out×10⁶/in.
+// Divide amount×rate FIRST — amount×rate×10⁶ overflows tagged ints (~2⁶⁰).
 function guardedMin(amount: number, rate: number): number {
   const tol = num("tol");
-  return (amount * rate * (10000 - tol)) / 10000 / 10000;
+  const expected = amount * rate / 1000000;
+  return expected * (1000000 - tol * 100) / 1000000;
 }
 
 export function run(): string {
-  const cap = num("cap");
-  // in-contract economics gate: expected cycle product (bps×bps×bps / 1e8
-  // = bps) must clear 10000 + min_edge. Integer-exact, no floats.
-  const exp = (num("r0") * num("r1") * num("r2")) / 100000000;
-  if (exp < 10000 + num("minedge")) {
+  const r0 = num("r0");
+  const r1 = num("r1");
+  // overflow guard (tagged ints cap near 2⁶⁰; refuse products beyond 10¹⁸)
+  let safe0 = r0;
+  if (safe0 == 0) {
+    safe0 = 1;
+  }
+  if (r1 > 1000000000000000000 / safe0) {
+    return "REFUSED:overflow";
+  }
+  const SC = 1000000;
+  const r2 = num("r2");
+  const half = r0 * r1 / SC;
+  // 3-leg second product guard; 2-leg skips r2 entirely (bridge sends dummies)
+  let sh = half;
+  if (sh == 0) {
+    sh = 1;
+  }
+  if (num("nlegs") != 2) {
+    if (r2 > 1000000000000000000 / sh) {
+      return "REFUSED:overflow";
+    }
+  }
+  // in-contract economics gate: combined edge in millionths. 2-leg: r0·r1/SC;
+  // 3-leg: ·r2/SC more. Integer-exact, no floats.
+  let exp = half;
+  if (num("nlegs") != 2) {
+    exp = half * r2 / SC;
+  }
+  if (exp < SC + num("minedge") * 100) {
     return "REFUSED:edge:" + toStr(exp);
   }
+  const cap = num("cap");
   const dex = near.storageGet("dex") ?? "";
-  const min0 = guardedMin(cap, num("r0"));
+  const min0 = guardedMin(cap, r0);
   near.storageSet("runs", toStr(num("runs") + 1));
   near.callAwait(dex, "swap", legJson(near.storageGet("c0") ?? "", near.storageGet("d0") ?? "", cap, min0),
     GAS, "onLeg1", CBGAS, "{}");
@@ -88,7 +127,15 @@ export function onLeg1(): string {
   near.storageSet("leg1out", toStr(strToNum(res)));
   const dex = near.storageGet("dex") ?? "";
   const in1 = strToNum(res);
-  const min1 = guardedMin(in1, num("r1"));
+  // 2-leg mode: this is the closing leg → profit guard (≥ cap) + onLeg2b;
+  // 3-leg mode: tolerance guard + onLeg2. (Callback names must be literals.)
+  let min1 = guardedMin(in1, num("r1"));
+  if (num("nlegs") == 2) {
+    min1 = num("cap");
+    near.callAwait(dex, "swap", legJson(near.storageGet("c1") ?? "", near.storageGet("d1") ?? "", in1, min1),
+      GAS, "onLeg2b", CBGAS, "{}");
+    return "FIRED:onLeg2b";
+  }
   near.callAwait(dex, "swap", legJson(near.storageGet("c1") ?? "", near.storageGet("d1") ?? "", in1, min1),
     GAS, "onLeg2", CBGAS, "{}");
   return "FIRED:leg2";
@@ -108,6 +155,27 @@ export function onLeg2(): string {
   near.callAwait(dex, "swap", legJson(near.storageGet("c2") ?? "", near.storageGet("d2") ?? "", in2, cap),
     GAS, "onLeg3", CBGAS, "{}");
   return "FIRED:leg3";
+}
+
+// 2-leg closer: the swap already ran with min = cap, so a success is profit
+export function onLeg2b(): string {
+  const res = near.promiseResult(0);
+  if (res == "") {
+    near.storageSet("fails", toStr(num("fails") + 1));
+    return "FAIL:leg2";
+  }
+  const in2 = strToNum(res);
+  near.storageSet("leg2out", toStr(in2));
+  const cap = num("cap");
+  const profit = in2 - cap;
+  if (profit >= 0) {
+    near.storageSet("pos", toStr(in2));
+    near.storageSet("profit", toStr(num("profit") + profit));
+    return "OK:" + toStr(profit);
+  }
+  near.storageSet("fails", toStr(num("fails") + 1));
+  near.storageSet("pos", toStr(in2));
+  return "LOSS:" + toStr(profit);
 }
 
 export function onLeg3(): string {
