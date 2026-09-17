@@ -58,11 +58,14 @@ fn run_near_mock(lisp: &str) -> (i32, String, String) {
     let wasm_path = format!("/tmp/u128_test_{}.wasm", id);
     std::fs::write(&tmp_path, lisp).unwrap();
 
-    // Compile
-    let compile_out = Command::new("cargo")
-        .args(["run", "--bin", "near-compile", "--", &tmp_path, &wasm_path])
+    // Compile — direct binary, NOT `cargo run --bin near-compile`: that bin
+    // name died in a rename (real name: `compile`), and cargo-run inside a
+    // running test suite deadlocks on the target-dir lock anyway. Same
+    // direct-binary pattern as test_compile_cli.rs. (2026-09-17)
+    let compile_out = Command::new("./target/release/compile")
+        .args([&tmp_path, &wasm_path])
         .output()
-        .expect("near-compile failed");
+        .expect("compile binary failed");
 
     if !compile_out.status.success() {
         return (
