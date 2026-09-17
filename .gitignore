@@ -28,3 +28,6 @@ verification/**/*.checked
 
 # build artifacts of the zk apps (npm install to restore)
 node_modules/
+# fuzz campaign artifacts (generators + harness stay; bulk corpora don't)
+fuzz/corpus/
+fuzz/results/
