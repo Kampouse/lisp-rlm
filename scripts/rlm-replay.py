@@ -15,10 +15,19 @@ a stopping rule can only truncate what actually happened.
 
 Usage: python3 scripts/rlm-replay.py [--pool data/rlm/traces]
 """
-import json, glob, os, sys, argparse
+import json, glob, os, re, sys, argparse
 from collections import defaultdict
 
 POOL_DEFAULT = os.path.join(os.path.dirname(__file__), "..", "data", "rlm", "traces")
+
+# Our lisp writer NEVER emits backslash escapes (sentinels only), so every
+# backslash in an old trace is raw data — blanket-double repairs them.
+def tolerant_load(path):
+    raw = open(path).read()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return json.loads(raw.replace('\\', '\\\\'))
 
 
 def load_pool(pool):
@@ -26,13 +35,14 @@ def load_pool(pool):
     seen, worlds = {}, []
     for path in sorted(glob.glob(os.path.join(pool, "*", "*.json"))):
         try:
-            w = json.load(open(path))
+            w = tolerant_load(path)
         except (json.JSONDecodeError, OSError):
             continue
         # reverse the lisp-side sentinels
         for node in w.get("nodes", []):
             for field in ("code", "out"):
                 node[field] = (node.get(field, "")
+                               .replace("~~BS~~", "\\")
                                .replace("~~NL~~", "\n")
                                .replace("~~QT~~", '"'))
         key = (w.get("task_id"), w.get("ts"))
