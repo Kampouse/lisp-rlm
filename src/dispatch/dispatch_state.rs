@@ -389,7 +389,9 @@ pub fn handle(
                 Some(LispVal::Str(s)) => s.clone(),
                 _ => return Err("rlm-get: need symbol or string key".to_string()),
             };
-            Ok(state.rlm_state.get(&key).cloned())
+            // Missing key → Nil (NOT Ok(None) — that means "unknown builtin"
+            // to the dispatcher and cascades into a bogus error).
+            Ok(Some(state.rlm_state.get(&key).cloned().unwrap_or(LispVal::Nil)))
         }
         "final" => {
             let v = args.first().cloned().unwrap_or(LispVal::Nil);
