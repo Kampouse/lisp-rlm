@@ -45,7 +45,10 @@ def load_pool(pool):
                                .replace("~~BS~~", "\\")
                                .replace("~~NL~~", "\n")
                                .replace("~~QT~~", '"'))
-        key = (w.get("task_id"), w.get("ts"))
+        # dedup by filename — task-<HHMMSS>.json is unique per cycle; the
+        # in-world "ts" field is set at runtime-load time and identical
+        # across a task's runs, so (task_id, ts) collapses real worlds.
+        key = os.path.basename(path)
         if key in seen:
             continue
         seen[key] = True
