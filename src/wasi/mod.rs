@@ -595,6 +595,7 @@ pub fn compile_outlayer_p2_browser(source: &str) -> Result<Vec<u8>, String> {
     let exprs = crate::parser::parse_all(source)?;
     let mut exprs = exprs;
     crate::clojure::desugar(&mut exprs);
+    type_check_p2(&exprs)?;
     compile_outlayer_p2_from_exprs(&exprs)
 }
 
@@ -604,6 +605,7 @@ pub fn compile_outlayer_p2_core_browser(source: &str) -> Result<Vec<u8>, String>
     let exprs = crate::parser::parse_all(source)?;
     let mut exprs = exprs;
     crate::clojure::desugar(&mut exprs);
+    type_check_p2(&exprs)?;
     let mut em = WasmEmitter::new();
     em.wasi_mode = true;
     em.p2_mode = true;
@@ -715,12 +717,26 @@ pub fn compile_outlayer_p2_from_exprs(exprs: &[crate::types::LispVal]) -> Result
     Ok(bytes)
 }
 
+/// Type check before P2 emission. The P2 emit path used to skip the type
+/// checker entirely, so ill-typed code (e.g. `if` branches of different
+/// types) silently miscompiled into a component that produces no output at
+/// runtime. The legacy NEAR path (bin/compile.rs / wasm_emit/compile.rs)
+/// has always checked with `near = true` builtins — that gate is the
+/// established semantics (vec-nth/byte-at/str-cat/... live in that env),
+/// so P2 uses the same. Extra NEAR host builtins in scope only make the
+/// check more permissive, never less.
+fn type_check_p2(exprs: &[crate::types::LispVal]) -> Result<(), String> {
+    crate::typing::type_check_program(exprs, true)
+        .map_err(|e| format!("P2 type check failed: {e}"))
+}
+
 pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
     // 1. Compile the core P1 module first
     let resolved = crate::wasm_emit::resolve_modules(source, std::path::Path::new("."))?;
     let exprs = crate::parser::parse_all(&resolved)?;
     let mut exprs = exprs;
     crate::clojure::desugar(&mut exprs);
+    type_check_p2(&exprs)?;
     let mut em = WasmEmitter::new();
     em.wasi_mode = true;
     em.p2_mode = true;

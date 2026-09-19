@@ -1198,8 +1198,25 @@ fn infer_if(
     if let Some(else_expr) = else_branch {
         let else_type = infer(else_expr, env, supply, subst)?;
         // Unify branches
-        let s = unify(&then_type, &else_type)
-            .map_err(|e| format!("if: branch types disagree — {}", e))?;
+        let s = unify(&then_type, &else_type).map_err(|e| {
+            // Render both branches (truncated) so the offending source is
+            // identifiable in a large module without a source map.
+            let trunc = |v: &LispVal| -> String {
+                let s = v.to_string();
+                if s.chars().count() > 120 {
+                    let t: String = s.chars().take(120).collect();
+                    format!("{t}…")
+                } else {
+                    s
+                }
+            };
+            format!(
+                "if: branch types disagree — {} (then: {}, else: {})",
+                e,
+                trunc(then_branch),
+                trunc(else_expr)
+            )
+        })?;
         *subst = s.compose(subst.clone());
     }
 
