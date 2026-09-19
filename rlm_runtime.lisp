@@ -257,12 +257,18 @@
 ;; 3. SINGLE STEP
 ;; Snapshot -> Generate -> Execute -> Log or Rollback
 ;; ============================================================
+(define (llm-retry ctx)
+  ;; one retry on transient shim failures ("model busy" during sweeps)
+  (let ((r (try (llm-code ctx) (catch e (str-concat "LLMFAIL:" (to-string e))))))
+    (if (str-contains r "LLMFAIL")
+      (begin (sleep 5) (llm-code ctx))
+      r)))
 (define (rlm-step)
   (begin
     (snapshot)
     (let ((qa (q-choose)))
       (let ((ctx (rlm-build-context qa)))
-        (let ((code (llm-code ctx)))
+        (let ((code (llm-retry ctx)))
           (let ((exec-result
                   (try
                     (eval (read code))
