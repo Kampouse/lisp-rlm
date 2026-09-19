@@ -108,7 +108,7 @@ def main():
     write_lisp(q, visits)
     save_q(q)
     with open(LEDGER, "a") as f:
-        f.write(json.dumps({"event": "qlearn",
+        f.write(json.dumps({"event": "qlearn", "ts": __import__("time").time(),
                             "states": n_states,
                             "episodes_seen": sum(1 for _ in episodes())}) + "\n")
     print(f"qlearn: {n_states} states, table written")

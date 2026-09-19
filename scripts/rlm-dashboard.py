@@ -41,6 +41,7 @@ def load_worlds():
             "iters": int(w.get("iterations", len(codes))),
             "distinct": len(set(codes)),
             "policy": w.get("policy", "?"),
+            "lesson": w.get("lesson", ""),
         })
     ws.sort(key=lambda x: x["ts"])
     return ws
@@ -105,7 +106,7 @@ def main():
                 d = json.loads(line)
             except Exception:
                 continue
-            d["t"] = time.strftime("%H:%M", time.localtime(d["ts"]))
+            d["t"] = time.strftime("%H:%M", time.localtime(d.get("ts", 0)))
             deploys.append(d)
 
     corpus = 0
@@ -122,6 +123,7 @@ def main():
         "rlm_cycles": rlm_cycles(ws),
         "rlvr_cycles": rlvr_cycles(),
         "latest": ws[-6:],
+        "lessons": [w for w in ws if w.get("lesson")][-8:],
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     json.dump(data, open(OUT, "w"))

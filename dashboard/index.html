@@ -41,6 +41,7 @@
 
 <div class="panel"><h2>RLVR pass rate per cycle</h2><div id="c2"></div></div>
 
+<div class="panel"><h2>📖 The Failure Journal — "Today I learned…" (the model, on itself)</h2><div id="les"></div></div>
 <div class="panel"><h2>Generations — solves by policy stamp</h2><div id="tbl"></div></div>
 <div class="panel"><h2>Dream ledger — the machine's own decisions</h2><div id="led"></div></div>
 
@@ -108,6 +109,14 @@ async function load(){
       r.setAttribute('height',Math.max(1,Y(0)-Y(c.rate)));r.setAttribute('fill','#3fb950');r.setAttribute('rx',2);s2.appendChild(r);
       if(i%Math.ceil(n/10)===0)txt(s2,X(i)-12,H-6,c.t);});
   } else txt(s2,W/2-30,H/2,'no rlvr yet');
+
+  // failure journal
+  $('les').innerHTML = d.lessons && d.lessons.length ?
+    '<table><tr><th>task</th><th>outcome</th><th>lesson (self-authored)</th></tr>'+
+    d.lessons.slice().reverse().map(x=>`<tr><td class="d">${x.task}</td>
+      <td class="${x.completed?'g':'r'}">${x.completed?'✅ '+x.iters+' iters':'❌ '+x.iters+' iters'}</td>
+      <td style="font-style:italic">"${x.lesson}"</td></tr>`).join('')+'</table>'
+    :'<span class="d">no lessons yet — first cycle with the journal lands soon</span>';
 
   // policy table
   const pk=Object.keys(d.policies).sort();
