@@ -20,7 +20,7 @@ QOUT = os.path.join(REPO, "scripts", "rlm-tasks", "q-table.lisp")
 LEDGER = os.path.join(REPO, "data", "rlm", "dream", "ledger.jsonl")
 
 ACTIONS = ["none", "temp08", "temp10", "doc", "hint", "ban",
-           "budget2", "stop", "ladder"]
+           "budget2", "stop", "ladder", "decompose"]
 ALPHA, GAMMA = 0.25, 0.85
 STEP_R, SOLVE_R, FAIL_R, NOVEL_R = -0.05, 1.0, -0.2, 0.05
 

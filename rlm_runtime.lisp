@@ -150,7 +150,7 @@
   (let ((parts (str-split s "|"))
         (fnok (not (= (error-fn-name (rlm-get __last_out)) ""))))
     (append
-      (list "none" "temp08" "temp10" "stop" "ladder")
+      (list "none" "temp08" "temp10" "stop" "ladder" "decompose")
       (map (lambda (e) (car e)) CUSTOM-ACTIONS)
       (if fnok (list "doc" "ban") (list))
       (if (str-contains s "argtype") (list "hint") (list))
@@ -158,17 +158,14 @@
 (define (q-entry s)
   (let ((e (assoc s Q-TABLE)))
     (if e (car (cdr e)) nil)))
+(define (q-best-pair acts)
+  ;; recursive max — set! inside map-lambdas cannot mutate closure vars
+  (if (= (len acts) 1) (car acts)
+    (let ((b (q-best-pair (cdr acts))))
+      (if (> (car (cdr (car acts))) (car (cdr b))) (car acts) b))))
 (define (q-best s)
   (let ((acts (q-entry s)))
-    (if acts
-      (let ((best-a "ladder") (best-v -9999))
-        (map (lambda (p)
-                (if (> (car (cdr p)) best-v)
-                  (begin (set! best-a (to-string (car p))) (set! best-v (car (cdr p))))
-                  nil))
-             acts)
-        best-a)
-      nil)))
+    (if (and acts (> (len acts) 0)) (to-string (car (q-best-pair acts))) nil)))
 (define (q-pick s)
   ;; deterministic-but-decorrelated pseudo-random: varies with state and history
   (let ((avail (q-avail s))
@@ -220,6 +217,14 @@
       ((equal? a "temp10") (esc-marker10 rc))
       ((equal? a "stop") "")
       ((equal? a "none") "")
+      ((equal? a "decompose")
+        (str-concat
+          "\n⚡ DECOMPOSITION REQUIRED. This problem is too big to solve flat.\n"
+          "Your next expression MUST delegate one piece to a sub-solver:\n"
+          "  (rlm-set <key> (sub-rlm \"<precise description of ONE sub-problem>\"))\n"
+          "Examples: (sub-rlm \"reverse the tail (2 3 4) and I'll prepend 1\"),\n"
+          "         (sub-rlm \"compute insert of 7 into the left subtree, return new subtree\")\n"
+          "Solve ONLY the piece you keep; delegate the rest.\n"))
       ;; 'ladder = hand-coded composite (bootstrap policy)
       (true (str-concat
               (if (>= rc 2) (esc-marker10 rc) (esc-marker rc))
@@ -278,7 +283,20 @@
     (let ((qa (q-choose)))
       (let ((ctx (rlm-build-context qa)))
         (let ((code (llm-retry ctx)))
-          (let ((exec-result
+          ;; FORCE GATE: the decompose action is not advice — the next
+          ;; expression MUST contain a sub-rlm delegation or it bounces.
+          (if (and (equal? qa "decompose") (not (str-contains code "sub-rlm")))
+            (begin
+              (rlm-set iteration (+ (rlm-get iteration) 1))
+              (rlm-set __last_code code)
+              (rlm-set __last_out "ERROR: decompose-rejected — this step MUST delegate via (sub-rlm \"...\"); resubmit with a delegation")
+              (rlm-set __err_streak (+ (rlm-get __err_streak) 1))
+              (rlm-set __trace_nodes
+                (append (rlm-get __trace_nodes)
+                  (list (trace-node-json (rlm-get iteration) code false (rlm-get __last_out) (rlm-get __q_s) qa))))
+              (println (str-concat "[RLM " (to-string (rlm-get iteration)) "] DECOMPOSE-REJECTED"))
+              (rlm-get __last_out))
+            (let ((exec-result
                   (try
                     (eval (read code))
                     (catch e
@@ -306,7 +324,7 @@
             (if is-error
               (println (str-concat "[RLM " (to-string (rlm-get iteration)) "] ERR - retrying"))
               (println (str-concat "[RLM " (to-string (rlm-get iteration)) "] OK")))
-            exec-result)))))))
+            exec-result))))))))
 
 ;; ============================================================
 ;; 4. MAIN LOOP
@@ -356,10 +374,13 @@
     (begin
       (init-rlm sub-prompt)
       (rlm-set max_iterations 5)
+      (rlm-set __trace_id (str-concat (rlm-get __trace_id) "-sub"))
       (let ((sub-result (rlm-loop)))
-        ;; Restore parent state
-        (begin
-          (rlm-set prompt saved-prompt)
+        ;; capture the sub-episode BEFORE restore so it banks into the
+        ;; parent world — sub iterations feed Q and the journal too
+        (let ((sub-nodes (rlm-get __trace_nodes)))
+          (begin
+            (rlm-set prompt saved-prompt)
           (rlm-set iteration saved-iter)
           (rlm-set result saved-result)
           (rlm-set exec_log saved-log)
@@ -367,10 +388,10 @@
           (rlm-set max_iterations saved-max)
           (rlm-set prompt_preview saved-preview)
           (rlm-set prompt_length saved-plen)
-          (rlm-set __trace_nodes saved-trace)
           (rlm-set __trace_id saved-tid)
           (rlm-set __policy saved-pol)
-          sub-result)))))
+          (rlm-set __trace_nodes (append saved-trace sub-nodes))
+          sub-result))))))
 
 ;; ============================================================
 ;; LESSON (the failure journal): one reflective sentence per run,
