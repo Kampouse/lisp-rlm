@@ -13,6 +13,13 @@
 ;; ============================================================
 ;; 1. INITIALIZATION
 ;; ============================================================
+;; Policy knob defaults — policy.lisp (loaded after the runtime)
+;; rebinds these via its own defines; env lookup at call time picks
+;; up the override. Defined HERE so init-rlm's body compiles them as
+;; variable refs, not symbol passthrough (cross-file forward refs
+;; compile to symbol values otherwise).
+(define POLICY_MAX_ITER 16)
+(define POLICY_STOP_ERRS 0)
 (define (init-rlm P)
   (begin
     (rlm-set prompt P)
@@ -27,6 +34,11 @@
     (rlm-set __last_code "")
     (rlm-set __last_out "")
     (rlm-set __repeat_count 0)
+    (rlm-set __err_streak 0)
+    ;; Exploration policy knobs (policy.lisp MUST define these; the
+    ;; generator guarantees them — see scripts/gen-grammar.py)
+    (rlm-set max_iterations POLICY_MAX_ITER)
+    (rlm-set stop_after_errs POLICY_STOP_ERRS)
     (println "RLM initialized")))
 
 ;; ============================================================
@@ -169,6 +181,9 @@
               (rlm-set __repeat_count 0))
             (rlm-set __last_code code)
             (rlm-set __last_out (to-string exec-result))
+            (if is-error
+              (rlm-set __err_streak (+ (rlm-get __err_streak) 1))
+              (rlm-set __err_streak 0))
             (rlm-set __trace_nodes
               (append (rlm-get __trace_nodes)
                 (list (trace-node-json (+ (rlm-get iteration) 1) code (not is-error) exec-result))))
@@ -195,9 +210,14 @@
       (begin
         (println "RLM: max iterations reached")
         (rlm-get result))
-      (begin
-        (rlm-step)
-        (rlm-loop)))))
+      (if (and (> (rlm-get stop_after_errs) 0)
+               (>= (rlm-get __err_streak) (rlm-get stop_after_errs)))
+        (begin
+          (println (str-concat "RLM: stopped after " (to-string (rlm-get __err_streak)) " consecutive errors (policy)"))
+          (rlm-get result))
+        (begin
+          (rlm-step)
+          (rlm-loop))))))
 
 ;; ============================================================
 ;; 5. SUB-RLM (recursive sub-problem solving)
