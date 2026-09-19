@@ -41,6 +41,8 @@ def build():
     grammar = (
         "Write lisp-rlm code ONLY. FULL SYNTAX SHEET follows. "
         "NO Common Lisp (no loop-for, no incf). Numbers are integers only. "
+        "CRITICAL: store your result with (rlm-set answer <value>) — plain (set! x v) "
+        "env vars are INVISIBLE outside; then finish with (final true). "
         "Output ONE lisp form.\n\n"
         "SPECIAL FORMS (exact shapes):\n- " + "\n- ".join(special) +
         "\n\nBUILTINS (signature — meaning):\n- " + "\n- ".join(lines)
