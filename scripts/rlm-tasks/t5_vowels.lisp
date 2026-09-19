@@ -4,6 +4,7 @@
 (load-file "rlm_runtime.lisp")
 (load-file "scripts/rlm-tasks/policy.lisp")
 (load-file "scripts/rlm-tasks/q-table.lisp")
+(load-file "scripts/rlm-tasks/custom-actions.lisp")
 (rlm-set __policy POLICY_ID)
 (rlm-set __trace_id "t5_vowels")
 (define (llm-code ctx)

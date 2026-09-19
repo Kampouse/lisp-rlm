@@ -26,6 +26,11 @@
 (define Q-ENABLED false)
 (define Q-EPS 10)
 (define Q-TABLE (list))
+;; Custom actions — proposed by the dream task (agent-written lisp),
+;; A/B-gated by rlm-abgate.py. Format: (name lambda(rc)->string).
+(define CUSTOM-ACTIONS (list))
+(define (rlm-register-action name fn)
+  (set! CUSTOM-ACTIONS (append CUSTOM-ACTIONS (list (list name fn)))))
 (define (init-rlm P)
   (begin
     (rlm-set prompt P)
@@ -146,6 +151,7 @@
         (fnok (not (= (error-fn-name (rlm-get __last_out)) ""))))
     (append
       (list "none" "temp08" "temp10" "stop" "ladder")
+      (map (lambda (e) (car e)) CUSTOM-ACTIONS)
       (if fnok (list "doc" "ban") (list))
       (if (str-contains s "argtype") (list "hint") (list))
       (if (< (rlm-get iteration) (- (rlm-get max_iterations) 2)) (list "budget2") (list)))))
@@ -198,8 +204,11 @@
 (define (esc-action a)
   (let ((out (rlm-get __last_out))
         (fname (error-fn-name (rlm-get __last_out)))
-        (rc (rlm-get __repeat_count)))
-    (cond
+        (rc (rlm-get __repeat_count))
+        (custom (assoc a CUSTOM-ACTIONS)))
+    (if custom
+      ((car (cdr custom)) rc)
+      (cond
       ((equal? a "doc") (error-fn-doc out))
       ((equal? a "hint") (error-class-hint out))
       ((equal? a "ban")
@@ -219,7 +228,7 @@
               (if (and (>= rc 2) (not (= fname "")))
                 (str-concat "\n⛔ " fname " is now BANNED for this task — your code must NOT contain the symbol " fname ".\n")
                 "")
-              (if (= rc 1) "\nWrite DIFFERENT code than your last attempt.\n" ""))))))
+              (if (= rc 1) "\nWrite DIFFERENT code than your last attempt.\n" "")))))))
 (define (build-escalation a)
   (let ((rc (rlm-get __repeat_count)))
     (if (or (< rc 1) (equal? a "none")) ""

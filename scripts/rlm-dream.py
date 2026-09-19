@@ -134,6 +134,21 @@ def main():
     }
     json.dump(digest, open(os.path.join(DREAM, "digest.json"), "w"), indent=1)
 
+    # worst states for the dream-action task (low-value, high-visit)
+    try:
+        import importlib.util as _il
+        _sp = _il.spec_from_file_location("q", os.path.join(HERE, "rlm-tasks", "q-values.json"))
+        qv = json.load(open(os.path.join(HERE, "rlm-tasks", "q-values.json")))
+        rows = []
+        for s, acts in qv.items():
+            best = max(acts.values()) if acts else 0.0
+            rows.append((best, s))
+        rows.sort()
+        open(os.path.join(DREAM, "worst-states.txt"), "w").write(
+            "\n".join(f"{s} — best Q: {b:.2f}" for b, s in rows[:4]))
+    except Exception as e:
+        pass  # no q-values yet
+
 
 if __name__ == "__main__":
     main()
