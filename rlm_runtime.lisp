@@ -24,6 +24,9 @@
     (rlm-set exec_log (list))
     (rlm-set result nil)
     (rlm-set __trace_nodes (list))
+    (rlm-set __last_code "")
+    (rlm-set __last_out "")
+    (rlm-set __repeat_count 0)
     (println "RLM initialized")))
 
 ;; ============================================================
@@ -61,6 +64,60 @@
           ",\"result\":\"" (json-safe (rlm-get result)) "\""
           ",\"nodes\":[" (join-nodes (rlm-get __trace_nodes)) "]}")))))
 
+;; Anti-repetition escalation: greedy sampling repeats identical code on
+;; identical context — so when code repeats, CHANGE the context:
+;; full error (untruncated) + the model's own failed code + the failing
+;; builtin's doc signature, then demand a strategy change.
+(define (error-fn-name out)
+  (if (str-contains out "ERROR: ")
+    (let ((rest (str-substring out 7 (str-length out))))
+      (let ((colon (str-index-of rest ": ")))
+        (if (>= colon 0)
+          (str-substring rest 0 colon)
+          "")))
+    ""))
+
+(define (error-fn-doc out)
+  (let ((fname (error-fn-name out)))
+    (if (not (= fname ""))
+      (let ((d (doc fname)))
+        (if (str-contains d " — ")
+          (str-concat "\nThe function you called is documented as:\n" d "\n")
+          ""))
+      "")))
+
+;; Concrete hints for the most common misunderstanding: 'sym is a SYMBOL,
+;; not a string and not a list. Errors of the "need list/need string" class
+;; almost always come from passing 'sym where data was meant.
+(define (error-class-hint out)
+  (if (str-contains out "need list")
+    (str-concat
+      "\nTYPE HINT: in lisp-rlm 'sym is a SYMBOL — it is NOT a string and NOT a list.\n"
+      "Strings use double quotes: \"precaution\". If a function needs a LIST, build one: (list a b c)\n"
+      "or convert: (str->list \"abc\") if available, else iterate the string by index.\n")
+    ""))
+
+(define (build-escalation)
+  (let ((rc (rlm-get __repeat_count)))
+    (if (>= rc 1)
+      (let ((out (rlm-get __last_out))
+            (fname (error-fn-name (rlm-get __last_out))))
+        (str-concat
+          "\n\n⚠ YOU REPEATED THE SAME CODE " (to-string rc) "+ TIMES AND IT FAILED.\n"
+          "YOUR LAST CODE (this FAILED — do not resubmit it):\n"
+          (rlm-get __last_code) "\n\n"
+          "FULL ERROR MESSAGE (not truncated):\n" out "\n"
+          (error-fn-doc out)
+          (error-class-hint out)
+          (if (>= rc 2)
+            (str-concat
+              (if (not (= fname ""))
+                (str-concat "\n⛔ " fname " is now BANNED for this task — your code must NOT contain the symbol " fname ".\n")
+                "")
+              "STRATEGY CHANGE REQUIRED: abandon the failing function entirely; solve it with a different construct (explicit while/dotimes loop with a set! counter, or plain recursion).\n")
+            "\nWrite DIFFERENT code than your last attempt.\n")))
+      "")))
+
 ;; ============================================================
 ;; 2. CONTEXT BUILDER
 ;; Only sends metadata + state, never the full prompt
@@ -79,7 +136,9 @@
       (str-substring preview 0 200) "...\n\n"
       "Current iteration: " (to-string iter) "\n"
       "Current result so far: " (to-string final_val) "\n\n"
-      "Generate ONE Lisp expression to execute. You can:\n"
+      "Recent execution log:\n" (to-string log) "\n"
+      (build-escalation)
+      "\nGenerate ONE Lisp expression to execute. You can:\n"
       "- Use (rlm-set key value) to store results (bare symbol keys, no quoting)\n"
       "- Use (rlm-set Final t) and (rlm-set result <val>) when done\n"
       "- Use (sub-rlm \"sub-task\") to delegate sub-problems\n"
@@ -104,6 +163,12 @@
                       (rollback)
                       (str-concat "ERROR: " (to-string e)))))))
           (let ((is-error (str-contains (to-string exec-result) "ERROR:")))
+            ;; anti-repetition tracking: consecutive identical generations
+            (if (equal? code (rlm-get __last_code))
+              (rlm-set __repeat_count (+ (rlm-get __repeat_count) 1))
+              (rlm-set __repeat_count 0))
+            (rlm-set __last_code code)
+            (rlm-set __last_out (to-string exec-result))
             (rlm-set __trace_nodes
               (append (rlm-get __trace_nodes)
                 (list (trace-node-json (+ (rlm-get iteration) 1) code (not is-error) exec-result))))
