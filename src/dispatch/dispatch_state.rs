@@ -370,6 +370,40 @@ pub fn handle(
             Ok(Some(LispVal::Str(response.content)))
         }
 
+        // --- RLM runtime state (MIT RLM paper Algorithm 1) ---
+        // rlm-set/rlm-get: persistent agent state, survives snapshot/rollback
+        // (iteration counters and exec_log must persist across code rollbacks).
+        "rlm-set" => {
+            let key = match args.first() {
+                Some(LispVal::Sym(s)) => s.clone(),
+                Some(LispVal::Str(s)) => s.clone(),
+                _ => return Err("rlm-set: need symbol or string key".to_string()),
+            };
+            let val = args.get(1).cloned().ok_or("rlm-set: need value")?;
+            state.rlm_state.insert(key, val);
+            Ok(Some(LispVal::Bool(true)))
+        }
+        "rlm-get" => {
+            let key = match args.first() {
+                Some(LispVal::Sym(s)) => s.clone(),
+                Some(LispVal::Str(s)) => s.clone(),
+                _ => return Err("rlm-get: need symbol or string key".to_string()),
+            };
+            Ok(state.rlm_state.get(&key).cloned())
+        }
+        "final" => {
+            let v = args.first().cloned().unwrap_or(LispVal::Nil);
+            state.rlm_state.insert("Final".to_string(), v.clone());
+            Ok(Some(v))
+        }
+        // eval: evaluate an already-parsed expression (pair with `read`).
+        "eval" => {
+            let expr = args.first().ok_or("eval: need expression")?.clone();
+            let v = crate::program::run_program(&[expr], env, state)
+                .map_err(|e| format!("eval: {}", e))?;
+            Ok(Some(v))
+        }
+
         _ => Ok(None),
     }
 }
