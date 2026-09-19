@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RLM Flywheel — live</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root{--bg:#0d1117;--card:#161b22;--line:#30363d;--txt:#e6edf3;--dim:#8b949e;
+        --green:#3fb950;--red:#f85149;--blue:#58a6ff;--gold:#d29922;--purple:#bc8cff}
+  *{box-sizing:border-box;margin:0}
+  body{background:var(--bg);color:var(--txt);font:14px/1.45 -apple-system,system-ui,sans-serif;padding:18px}
+  h1{font-size:18px;font-weight:600} .sub{color:var(--dim);font-size:12px;margin-bottom:14px}
+  .grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px}
+  .card .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:22px;font-weight:600;margin-top:2px}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:14px}
+  .panel h2{font-size:13px;font-weight:600;margin-bottom:8px;color:var(--blue)}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{padding:5px 8px;text-align:left;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:500;font-size:11px;text-transform:uppercase}
+  .g{color:var(--green)} .r{color:var(--red)} .d{color:var(--dim)} .gold{color:var(--gold)}
+  svg text{fill:var(--dim);font-size:9px}
+  .legend{display:flex;gap:14px;font-size:11px;color:var(--dim);margin-top:6px;flex-wrap:wrap}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px;vertical-align:middle}
+</style>
+</head>
+<body>
+<h1>⚙️ RLM Flywheel <span class="d" id="live"></span></h1>
+<div class="sub">spec → lisp → execute → verify → bank → dream → deploy — fully local · auto-refresh 30s</div>
+
+<div class="grid" id="cards"></div>
+
+<div class="panel"><h2>RLM solves per cycle <span class="d">(policies color-coded · ⚑ deploys)</span></h2>
+  <div id="c1"></div>
+  <div class="legend"><span><span class="dot" style="background:#58a6ff"></span>solved</span>
+  <span><span class="dot" style="background:#30363d"></span>total tasks</span>
+  <span><span class="dot" style="background:#d29922"></span>avg iters (line)</span>
+  <span>⚑ policy deploy</span></div>
+</div>
+
+<div class="panel"><h2>RLVR pass rate per cycle</h2><div id="c2"></div></div>
+
+<div class="panel"><h2>Generations — solves by policy stamp</h2><div id="tbl"></div></div>
+<div class="panel"><h2>Dream ledger — the machine's own decisions</h2><div id="led"></div></div>
+
+<script>
+const W=980,H=190,P={l:34,r:40,t:14,b:22};
+const $=id=>document.getElementById(id);
+function svg(el){const s=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  s.setAttribute('width',W);s.setAttribute('height',H);el.appendChild(s);return s;}
+function line(s,pts,cls,w,dash){if(pts.length<2)return;const p=document.createElementNS('http://www.w3.org/2000/svg','polyline');
+  p.setAttribute('points',pts.map(q=>q.join(',')).join(' '));p.setAttribute('fill','none');
+  p.setAttribute('stroke',cls);p.setAttribute('stroke-width',w||2);if(dash)p.setAttribute('stroke-dasharray',dash);s.appendChild(p);}
+function txt(s,x,y,v){const t=document.createElementNS('http://www.w3.org/2000/svg','text');
+  t.setAttribute('x',x);t.setAttribute('y',y);t.appendChild(document.createTextNode(v));s.appendChild(t);}
+
+async function load(){
+ try{
+  const d=await(await fetch('data.json?'+Date.now())).json();
+  $('live').textContent='· '+d.updated;
+  // cards
+  const tot=d.rlm_cycles.reduce((a,c)=>a+c.total,0)||1;
+  const solved=d.rlm_cycles.reduce((a,c)=>a+c.solved,0);
+  const last=d.rlm_cycles.slice(-3), tot3=last.reduce((a,c)=>a+c.total,0)||1,
+        sol3=last.reduce((a,c)=>a+c.solved,0);
+  const cur=Object.keys(d.policies).sort().pop();
+  $('cards').innerHTML=[
+    ['worlds banked',d.worlds,'#58a6ff'],['corpus rows',d.corpus_rows,'#3fb950'],
+    ['RLM solved (all)',solved+'/'+tot,'#bc8cff'],
+    ['last 3 cycles',Math.round(100*sol3/tot3)+'% ('+sol3+'/'+tot3+')','#d29922'],
+    ['current policy',cur,'#e6edf3'],['deploys',d.deploys.filter(x=>x.event==='deploy').length+' ('+d.deploys.filter(x=>x.event==='revert').length+' reverts)','#f85149'],
+  ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v" style="color:${c[2]}">${c[1]}</div></div>`).join('');
+
+  // chart 1: RLM per cycle
+  const cs=d.rlm_cycles; $('c1').innerHTML=''; const s1=svg($('c1'));
+  if(cs.length){
+    const iw=W-P.l-P.r, ih=H-P.t-P.b, n=cs.length;
+    const X=i=>P.l+(n<2?iw/2:i*iw/(n-1));
+    const maxY=Math.max(...cs.map(c=>c.total),3);
+    const Y=v=>P.t+ih-(v/maxY)*ih;
+    for(let g=0;g<=maxY;g+=Math.ceil(maxY/4)){line(s1,[[P.l,Y(g)],[W-P.r,Y(g)]],'#21262d',1);txt(s1,4,Y(g)+3,g);}
+    cs.forEach((c,i)=>{const bw=Math.min(14,iw/n*.5);
+      const t1=s1.querySelector('.tmp')||(()=>{const r=document.createElementNS('http://www.w3.org/2000/svg','rect');return r})();
+      [[c.total,'#30363d'],[c.solved,c.policies[0]&&c.policies[0].startsWith('p5-6')?'#58a6ff':'#3fb950']].forEach(([v,col],k)=>{
+        const r=document.createElementNS('http://www.w3.org/2000/svg','rect');
+        r.setAttribute('x',X(i)-bw/2+k*bw/2);r.setAttribute('y',Y(v));r.setAttribute('width',bw/1.4);r.setAttribute('height',Math.max(1,Y(0)-Y(v)));
+        r.setAttribute('fill',col);r.setAttribute('rx',2);s1.appendChild(r);});
+      if(i%Math.ceil(n/10)===0)txt(s1,X(i)-12,H-6,c.t);});
+    const mi=Math.max(...cs.map(c=>c.iters),8);
+    line(s1,cs.map((c,i)=>[X(i),P.t+ih-(c.iters/mi)*ih]),'#d29922',1.6,'4 3');
+    txt(s1,W-P.r+6,P.t+10,'iters');
+    d.deploys.filter(x=>x.event==='deploy').forEach(dp=>{
+      const i=cs.findIndex(c=>c.ts>=dp.ts*1); if(i<0)return;
+      line(s1,[[X(i),P.t],[X(i),P.t+ih]],'#f85149',1,'2 3');
+      txt(s1,X(i)+3,P.t+9,'⚑');});
+  } else txt(s1,W/2-30,H/2,'no cycles yet');
+
+  // chart 2: RLVR
+  const rc=d.rlvr_cycles; $('c2').innerHTML=''; const s2=svg($('c2'));
+  if(rc.length){
+    const iw=W-P.l-P.r, ih=H-P.t-P.b, n=rc.length;
+    const X=i=>P.l+(n<2?iw/2:i*iw/(n-1)), Y=v=>P.t+ih-v*ih;
+    for(const g of [0,.5,1]){line(s2,[[P.l,Y(g)],[W-P.r,Y(g)]],'#21262d',1);txt(s2,4,Y(g)+3,g*100+'%');}
+    rc.forEach((c,i)=>{const bw=Math.min(16,iw/n*.6);
+      const r=document.createElementNS('http://www.w3.org/2000/svg','rect');
+      r.setAttribute('x',X(i)-bw/2);r.setAttribute('y',Y(c.rate));r.setAttribute('width',bw);
+      r.setAttribute('height',Math.max(1,Y(0)-Y(c.rate)));r.setAttribute('fill','#3fb950');r.setAttribute('rx',2);s2.appendChild(r);
+      if(i%Math.ceil(n/10)===0)txt(s2,X(i)-12,H-6,c.t);});
+  } else txt(s2,W/2-30,H/2,'no rlvr yet');
+
+  // policy table
+  const pk=Object.keys(d.policies).sort();
+  $('tbl').innerHTML='<table><tr><th>policy</th><th>worlds</th><th>solved</th><th>rate</th><th>avg iters</th></tr>'+
+    pk.map(p=>{const b=d.policies[p];return `<tr><td>${p}</td><td>${b.n}</td><td class="g">${b.completed}</td><td>${Math.round(100*b.completed/b.n)}%</td><td>${b.avg_iters}</td></tr>`}).join('')+'</table>';
+
+  $('led').innerHTML=d.deploys.length?'<table><tr><th>time</th><th>event</th><th>detail</th></tr>'+
+    d.deploys.map(x=>`<tr><td class="d">${x.t}</td><td class="${x.event==='deploy'?'gold':'r'}">${x.event}</td><td class="d">${x.reason||(''+(x.rate_before??'')+' → '+(x.rate_after??''))}</td></tr>`).join('')+'</table>'
+    :'<span class="d">no decisions yet — accumulating evidence</span>';
+ }catch(e){$('live').textContent='· offline? '+e.message}
+}
+load(); setInterval(load,30000);
+</script>
+</body>
+</html>
