@@ -1,0 +1,79 @@
+{
+"ok||rc0|es0|i1": {
+"none": 0.0,
+"temp08": 0.0,
+"temp10": 0.0,
+"doc": 0.0,
+"hint": 0.0,
+"ban": 0.0,
+"budget2": 0.0,
+"stop": 0.0,
+"ladder": 0.0
+},
+"argtype| ~~QT~~fold-right|rc0|es1|i1": {
+"none": 0.0,
+"temp08": 0.0,
+"temp10": 0.0,
+"doc": 0.0,
+"hint": 0.0,
+"ban": 0.0,
+"budget2": 0.0,
+"stop": 0.0,
+"ladder": -0.0125
+},
+"argtype| ~~QT~~fold-right|rc1|es2|i2": {
+"none": 0.0,
+"temp08": 0.0,
+"temp10": 0.0,
+"doc": 0.0,
+"hint": 0.0,
+"ban": 0.0,
+"budget2": 0.0,
+"stop": 0.0,
+"ladder": -0.0125
+},
+"argtype| ~~QT~~fold-right|rc2|es3|i2": {
+"none": 0.0,
+"temp08": 0.0,
+"temp10": 0.0,
+"doc": 0.0,
+"hint": 0.0,
+"ban": 0.0,
+"budget2": 0.0,
+"stop": 0.0,
+"ladder": 0.0
+},
+"ok||rc0|es0|i3": {
+"none": 0.0,
+"temp08": 0.0,
+"temp10": 0.0,
+"doc": 0.0,
+"hint": 0.0,
+"ban": 0.0,
+"budget2": 0.0,
+"stop": 0.0,
+"ladder": -0.0125
+},
+"ok||rc1|es0|i3": {
+"none": 0.0,
+"temp08": 0.0,
+"temp10": 0.0,
+"doc": 0.0,
+"hint": 0.0,
+"ban": 0.0,
+"budget2": 0.0,
+"stop": 0.0,
+"ladder": -0.0125
+},
+"ok||rc2|es0|i3": {
+"none": 0.0,
+"temp08": 0.0,
+"temp10": 0.0,
+"doc": 0.0,
+"hint": 0.0,
+"ban": 0.0,
+"budget2": 0.0,
+"stop": 0.0,
+"ladder": -0.0625
+}
+}

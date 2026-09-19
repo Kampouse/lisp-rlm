@@ -3,6 +3,7 @@
 ;; injects it; every run emits a trace world to data/rlm/traces/.
 (load-file "rlm_runtime.lisp")
 (load-file "scripts/rlm-tasks/policy.lisp")
+(load-file "scripts/rlm-tasks/q-table.lisp")
 (rlm-set __policy POLICY_ID)
 (rlm-set __trace_id "t3_fib")
 (define (llm-code ctx)
