@@ -11,6 +11,7 @@
   (llm (build-prompt ctx)))
 (define (task-verify a) (equal? a "desserts"))
 (run-rlm "Reverse the string 'stressed' by writing and evaluating lisp code; store the result string as answer. When achieved, evaluate (final true).")
+(retry-with-feedback task-verify "desserts" 2)
 (if (task-verify (rlm-get answer)) nil (re-lesson))
 (write-trace)
 (println (str-concat "RLMDUMP task=t2_reverse"))

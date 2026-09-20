@@ -11,6 +11,7 @@
   (llm (build-prompt ctx)))
 (define (task-verify a) (equal? a (list 1 1 2 3 5 8 13)))
 (run-rlm "Build the list of Fibonacci numbers up to 13, that is 1 1 2 3 5 8 13, by writing and evaluating lisp code; store the list as answer. When achieved, evaluate (final true).")
+(retry-with-feedback task-verify "(list 1 1 2 3 5 8 13)" 2)
 (if (task-verify (rlm-get answer)) nil (re-lesson))
 (write-trace)
 (println (str-concat "RLMDUMP task=t3_fib"))

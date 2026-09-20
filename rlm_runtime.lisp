@@ -266,6 +266,10 @@
       "Current iteration: " (to-string iter) "\n"
       "Current result so far: " (to-string final_val) "\n\n"
       "Recent execution log:\n" (to-string log) "\n"
+      (let ((fb (rlm-get __gate_feedback)))
+        (if (and fb (not (= fb "")))
+          (begin (rlm-set __gate_feedback "") fb)
+          ""))
       (build-escalation (rlm-get __q_a))
       "\nGenerate ONE Lisp expression to execute. You can:\n"
       "- Use (rlm-set key value) to store results (bare symbol keys, no quoting)\n"
@@ -487,6 +491,34 @@
     (rlm-set __gate_failed true)
     (rlm-set __lesson (gen-lesson))
     (write-trace)))
+
+;; ============================================================
+;; RETRY-WITH-FEEDBACK: the gate speaks DURING the episode.
+;; On verify-fail, resume the same episode (Final=nil) with the
+;; expected-vs-actual verdict injected into the next context.
+;; ============================================================
+(define (retry-with-feedback verify-fn expected-str rounds)
+  (if (try (verify-fn (rlm-get answer)) (catch e false))
+    true
+    (if (<= rounds 0)
+      false
+      (begin
+        (rlm-set Final nil)
+        (rlm-set __gate_feedback
+          (str-concat
+            "\n*** VERIFY GATE VERDICT: WRONG ***\n"
+            "You finished, but the answer you stored is incorrect.\n"
+            "Your answer:    " (str-substring (to-string (rlm-get answer)) 0 120) "\n"
+            "Correct answer: " expected-str "\n"
+            "Compare them character by character, find the difference, then write\n"
+            "lisp that produces the correct value, (rlm-set answer <correct-value>),\n"
+            "and finish with (rlm-set Final t).\n"))
+        (let ((res (rlm-loop)))
+          (begin
+            (write-trace)
+            (if (try (verify-fn (rlm-get answer)) (catch e false))
+              true
+              (retry-with-feedback verify-fn expected-str (- rounds 1)))))))))
 
 ;; ============================================================
 ;; 6. ENTRY POINT

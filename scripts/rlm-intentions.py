@@ -80,7 +80,10 @@ def main():
 
     rows.sort(key=lambda r: -r["priority"])
     for r in rows:
-        if r["kind"] == "completable":
+        # only draw tasks whose .lisp still exists (dreamed tasks get swept;
+        # stale worlds would otherwise hold draw slots hostage forever)
+        if r["kind"] == "completable" and \
+                os.path.exists(os.path.join(TASKS_DIR, r["task"] + ".lisp")):
             draw.append(r["task"])
     # one mastered task for freshness (rotate by minute-of-hour)
     masters = [r["task"] for r in rows if r["kind"] == "perpetual"]
