@@ -14,6 +14,7 @@
 (define DOCS (read-file-or "data/rlm/dream/docs.txt" ""))
 (define OLD (read-file-or "scripts/rlm-tasks/tactics.txt" ""))
 (define CORRECTIONS (read-file-or "data/rlm/dream/facts-corrections.txt" ""))
+(define BRAIN (read-file-or "data/rlm/dream/last-brain.txt" "local"))
 
 (define PROPOSAL
   (llm (str-concat
@@ -46,7 +47,8 @@
 
 (if OK
   (begin
-    (write-file "scripts/rlm-tasks/tactics.txt" (str-concat CLEAN "\n"))
+    (write-file "scripts/rlm-tasks/tactics.txt"
+      (str-concat (str-replace CLEAN "# tactics gen" (str-concat "# tactics gen · brain " (str-trim BRAIN) " ·") ) "\n"))
     (println "RLMDUMP tactics=rewritten")
     (println (str-concat "RLMDUMP tactics_len=" (to-string LEN))))
   (begin
