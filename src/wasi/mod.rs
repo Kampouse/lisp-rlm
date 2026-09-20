@@ -610,6 +610,7 @@ pub fn compile_outlayer_p2_core_browser(source: &str) -> Result<Vec<u8>, String>
     em.wasi_mode = true;
     em.p2_mode = true;
     em.no_proc_exit = true;
+    sync_p2_memory_pages(&mut em);
     for e in exprs {
         if let crate::types::LispVal::List(items) = e {
             if items.is_empty() {
@@ -660,6 +661,7 @@ pub fn compile_outlayer_p2_from_exprs(exprs: &[crate::types::LispVal]) -> Result
     em.wasi_mode = true;
     em.p2_mode = true;
     em.no_proc_exit = true;
+    sync_p2_memory_pages(&mut em);
     for e in exprs {
         if let crate::types::LispVal::List(items) = e {
             if items.is_empty() {
@@ -729,6 +731,17 @@ fn type_check_p2(exprs: &[crate::types::LispVal]) -> Result<(), String> {
     crate::typing::type_check_program(exprs, true)
         .map_err(|e| format!("P2 type check failed: {e}"))
 }
+/// The runtime-heap ceiling guard (emit_rtheap_alloc) bakes in
+/// `memory_pages`, but every P2 memory section is built with
+/// `em.memory_pages.max(2048)`. Sync the emitter's view so the baked
+/// guard matches the real linear memory — otherwise allocations past
+/// 64 pages (4 MiB) trap `unreachable` although 128 MiB exist.
+/// Observed: the in-module BIP-340 pk ladder (a fresh 3-limb list per
+/// loop iteration) died at ~30 of 256 iterations (~4 MiB bump).
+fn sync_p2_memory_pages(em: &mut WasmEmitter) {
+    em.memory_pages = em.memory_pages.max(2048);
+}
+
 
 pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
     // 1. Compile the core P1 module first
@@ -741,6 +754,7 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
     em.wasi_mode = true;
     em.p2_mode = true;
     em.no_proc_exit = true; // wit-component adapter handles exit
+    sync_p2_memory_pages(&mut em);
     for e in &exprs {
         if let crate::types::LispVal::List(items) = e {
             if items.is_empty() {
