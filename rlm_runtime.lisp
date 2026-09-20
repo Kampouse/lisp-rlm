@@ -408,6 +408,9 @@
             (rlm-get result))
           (begin
             (rlm-step)
+            ;; bank partials: a wall episode killed by the harness alarm
+            ;; mid-retry still leaves an honest world (completed=false)
+            (write-trace)
             (rlm-loop)))))))
 
 ;; ============================================================
