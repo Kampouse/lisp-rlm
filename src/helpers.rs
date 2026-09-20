@@ -816,7 +816,7 @@ pub fn get_doc(name: &str) -> Option<&'static str> {
         "str-upcase" | "string-upcase" => "(str-upcase s) — Uppercase.",
         "str-downcase" | "string-downcase" => "(str-downcase s) — Lowercase.",
         "str-replace" | "string-replace" => "(str-replace s old new) — Replace substring.",
-        "str-join" => "(str-join lst sep) — Join list of strings with separator.",
+        "str-join" => "(str-join sep lst) — Join list of strings with separator. Separator FIRST.",
 
         // Predicates
         "nil?" | "null?" => "(nil? x) — Is x nil?",

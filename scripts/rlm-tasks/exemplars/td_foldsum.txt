@@ -1,0 +1,7 @@
+# auto — mined from own completed worlds
+(let ((lst (list 2 3 5 7)))
+  (let ((acc 0))
+    (fold-right (lambda (x acc) (+ x acc)) 0 lst)
+    (rlm-set answer (fold-right (lambda (x acc) (+ x acc)) 0 lst))
+    (rlm-set Final t)
+    (final true)))

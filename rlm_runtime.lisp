@@ -89,6 +89,7 @@
           ",\"completed\":" (if (rlm-get Final) "true" "false")
           ",\"iterations\":" (to-string (rlm-get iteration))
           ",\"result\":\"" (json-safe (rlm-get result)) "\""
+          ",\"answer\":\"" (json-safe (to-string (rlm-get answer))) "\""
           ",\"lesson\":\"" (json-safe (rlm-get __lesson)) "\""
           ",\"nodes\":[" (join-nodes (rlm-get __trace_nodes)) "]}")))))
 
@@ -284,11 +285,35 @@
       (begin (sleep 5) (llm-code ctx))
       r)))
 (define (parse-fix ctx code)
-  ;; free parse pre-check: one re-ask on syntax errors, no iteration burned
-  (let ((bad (try (begin (read code) "") (catch e (to-string e)))))
+  ;; free parse pre-check: one re-ask on syntax errors, no iteration burned.
+  ;; read-all: validates the WHOLE response (multi-form included).
+  (let ((bad (try (begin (read-all code) "") (catch e (to-string e)))))
     (if (= bad "")
       code
       (llm-retry (str-concat ctx "\n\nYOUR LAST SUBMISSION DID NOT PARSE: " bad "\nResubmit ONE valid lisp expression.")))))
+
+;; ---- few-shot exemplars (own-corpus self-distillation) ----
+;; scripts/rlm-tasks/exemplars/<task>.txt holds ONE worked form.
+;; Hand-written bootstrap exemplars use DIFFERENT input data than the
+;; task (teach the pattern, not the answer). Auto-mined exemplars
+;; (scripts/rlm-exemplars.py) refresh only for mastered tasks and never
+;; overwrite hand-written files (they start with "# hand").
+;; pre-seed: build-prompt references GRAMMAR which is (re)defined by
+;; scripts/rlm-tasks/policy.lisp AFTER this file loads. Without the
+;; pre-seed the reference compiles to SYMBOL PASSTHROUGH (cross-file
+;; define landmine) and the grammar silently vanishes from prompts.
+(define GRAMMAR "GRAMMAR-UNSET")
+
+(define (exemplar-file-or f)
+  (try (read-file f) (catch e "")))
+(define (build-prompt ctx)
+  (let ((ex (exemplar-file-or
+              (str-concat "scripts/rlm-tasks/exemplars/" (rlm-get __trace_id) ".txt"))))
+    (str-concat GRAMMAR
+      (if (> (str-length ex) 0)
+        (str-concat "\n\nWORKED EXAMPLE — same pattern, DIFFERENT input data. Adapt the pattern, do NOT copy it verbatim:\n" ex)
+        "")
+      "\n\nTASK CONTEXT:\n" ctx)))
 
 (define (rlm-step)
   (begin
@@ -312,7 +337,17 @@
               (rlm-get __last_out))
             (let ((exec-result
                   (try
-                    (eval (read code))
+                    ;; MULTI-FORM TOLERANCE: models naturally emit sequences
+                    ;; (define helper) (define answer) (final true). (read s)
+                    ;; returns ONLY the first form — the rest silently vanished,
+                    ;; which is what starved t2_reverse/t3_fib of completions.
+                    ;; read-all + begin-wrap executes the whole response as one
+                    ;; snapshot/rollback unit.
+                    (eval
+                      (let ((forms (read-all code)))
+                        (if (= (len forms) 1)
+                          (car forms)
+                          (cons (quote begin) forms))))
                     (catch e
                       (begin
                         (rollback)

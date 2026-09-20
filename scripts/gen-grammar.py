@@ -13,7 +13,7 @@ DOC_RE = re.compile(r'"([a-z0-9!?*=<>+/_-]+)"(?:\s*\|\s*"[a-z0-9!?*=<>+/_-]+")*\
 
 # Grammar content version. Bump whenever the SHEET TEXT changes semantically
 # (not just entry count) so digest policy stats don't lump old/new worlds.
-GRAMMAR_V = 2
+GRAMMAR_V = 3
 
 SPECIAL_FORMS = [
     ("define fn", "(define (f x y) body...)"),

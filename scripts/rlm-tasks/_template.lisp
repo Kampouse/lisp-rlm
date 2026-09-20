@@ -6,7 +6,7 @@
 (rlm-set __policy POLICY_ID)
 (rlm-set __trace_id "PLACEHOLDER")
 (define (llm-code ctx)
-  (llm (str-concat GRAMMAR "\n\nTASK CONTEXT:\n" ctx)))
+  (llm (build-prompt ctx)))
 (run-rlm "TASK_PROMPT_PLACEHOLDER")
 (println (str-concat "RLMDUMP task=PLACEHOLDER"))
 (println (str-concat "RLMDUMP iterations=" (to-string (rlm-get iteration))))

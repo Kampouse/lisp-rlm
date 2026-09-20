@@ -126,7 +126,7 @@
     "(load-file \"scripts/rlm-tasks/custom-actions.lisp\")\n"
     "(rlm-set __policy POLICY_ID)\n"
     "(define (llm-code ctx)\n"
-    "  (llm (str-concat GRAMMAR \"\\n\\nTASK CONTEXT:\\n\" ctx)))\n"
+    "  (llm (build-prompt ctx)))\n"
     BODY "\n"))
 
 (if (and VALID PROBE-OK)

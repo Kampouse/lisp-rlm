@@ -1,0 +1,2 @@
+# hand — bootstrap exemplar (different limit than the task; do not auto-overwrite)
+(begin (set! a 1) (set! b 1) (set! out (list 1 1)) (while (<= (+ a b) 34) (set! out (append out (list (+ a b)))) (set! tmp b) (set! b (+ a b)) (set! a tmp)) (rlm-set answer out) (final true))

@@ -23,6 +23,35 @@ ACTIONS = ["none", "temp08", "temp10", "doc", "hint", "ban",
            "budget2", "stop", "ladder", "decompose"]
 ALPHA, GAMMA = 0.25, 0.85
 STEP_R, SOLVE_R, FAIL_R, NOVEL_R = -0.05, 1.0, -0.2, 0.05
+PARTIAL_R = 0.4  # max credit for a near-miss (right idea, wrong details)
+
+# expected answers per task — used for partial-credit scoring of
+# incomplete worlds. Answers are compared whitespace/quote/bracket-normalized;
+# write-trace banks the literal (to-string answer) in the world's "answer".
+EXPECTED = json.load(open(os.path.join(
+    REPO, "scripts", "rlm-tasks", "expected.json"))) if os.path.exists(
+    os.path.join(REPO, "scripts", "rlm-tasks", "expected.json")) else {}
+
+import re as _re
+def _norm(s):
+    return _re.sub(r'[\s"\[\],]', '', str(s)).lower()
+
+def partial_score(ans, exp):
+    """0..1 closeness of a wrong answer to the expected one.
+    1.0 exact · 0.8 same multiset (right content, wrong order/type shape,
+    e.g. '(d e s s e r t s)' as a list vs 'desserts' the string) ·
+    else sequence similarity."""
+    if ans is None or exp is None:
+        return 0.0
+    a, e = _norm(ans), _norm(exp)
+    if not a or not e:
+        return 0.0
+    if a == e:
+        return 1.0
+    if sorted(a) == sorted(e):
+        return 0.8
+    from difflib import SequenceMatcher
+    return round(SequenceMatcher(None, a, e).ratio(), 3)
 
 
 def load_q(path=QOUT.replace("q-table.lisp", "q-values.json")):
@@ -64,8 +93,12 @@ def learn(q):
         T = len(nodes)
         for t, n in enumerate(nodes):
             # backfill task-id prefix onto pre-v2 bare states (new runtime
-            # mints task-prefixed states itself; old traces stored bare)
-            s, a = f"{w.get('task_id', 'anon')}|{n['s']}", n["a"]
+            # mints task-prefixed states itself; old traces stored bare).
+            # guard: never double-prefix already-prefixed states
+            tid = w.get('task_id', 'anon')
+            s_raw = n["s"]
+            s = s_raw if s_raw.startswith(tid + "|") else f"{tid}|{s_raw}"
+            a = n["a"]
             if a not in ACTIONS:
                 continue
             q.setdefault(s, {x: 0.0 for x in ACTIONS})
@@ -73,12 +106,18 @@ def learn(q):
             novel = n.get("code", "") not in seen_codes
             seen_codes.add(n.get("code", ""))
             if t == T - 1:
-                r = STEP_R + (SOLVE_R if completed else FAIL_R) + \
+                # partial credit: near-miss answers earn up to PARTIAL_R —
+                # silent-wrong states get gradient instead of a flat cliff
+                part = partial_score(w.get("answer"),
+                                     EXPECTED.get(w.get("task_id")))
+                r = STEP_R + (SOLVE_R if completed
+                              else FAIL_R + PARTIAL_R * part) + \
                     (NOVEL_R if novel else 0)
                 target = r
             else:
                 r = STEP_R + (NOVEL_R if novel else 0)
-                s2 = f"{w.get('task_id', 'anon')}|{nodes[t + 1].get('s', '')}"
+                s2_raw = nodes[t + 1].get("s", "")
+                s2 = s2_raw if s2_raw.startswith(tid + "|") else f"{tid}|{s2_raw}"
                 nxt = q.get(s2, {})
                 target = r + GAMMA * max([nxt.get(x, 0.0) for x in ACTIONS])
             q[s][a] += ALPHA * (target - q[s][a])
