@@ -29,6 +29,8 @@
       (str-concat "YOUR RECENT WRONG BELIEFS (machine-verified — you MUST correct these in the new tactics):\n" CORRECTIONS "\n\n")
       "")
     "Rewrite the tactics file. Rules:\n"
+    "- lines in the current tactics that state a signature like '(fn a b c)' are\n"
+    "  MACHINE-VERIFIED TRUE — carry them forward verbatim, never drop or reword\n"
     "- 4-8 bullet lines, each starting with '- '\n"
     "- 100-600 characters total\n"
     "- every signature claim must match the TRUE SIGNATURES above verbatim\n"
