@@ -151,6 +151,106 @@ def main():
     except Exception as e:
         pass  # no q-values yet
 
+    write_scoreboard_and_docs(worlds)
+    evolve_stamp(worlds)
+
+
+# ---- DGM evolution bookkeeping (Dream v4: Darwin Gödel Machine lane) ----
+# The flywheel already had three self-modification channels (grammar
+# variants, A/B-gated custom actions, auto exemplars) plus this new one:
+# tactics.txt — the agent's own self-advice, injected into every prompt.
+# This bookkeeper unifies them into visible GENERATIONS: any channel
+# delta = one generation stamped to archive.jsonl with a fitness
+# snapshot (solve rate, last 10 worlds). Champion tactics are kept;
+# two consecutive bad tactics gens auto-restore the champion.
+ARCHIVE = os.path.join(DREAM, "archive.jsonl")
+EVOLVE_STATE = os.path.join(DREAM, "evolve.json")
+TACTICS = os.path.join(HERE, "rlm-tasks", "tactics.txt")
+TACTICS_BEST = os.path.join(HERE, "rlm-tasks", "tactics.best.txt")
+
+
+def write_scoreboard_and_docs(worlds):
+    """Plain-text scoreboard + TRUE builtin signatures for the tactics mutator."""
+    import re
+    by_task = {}
+    for w in worlds[-80:]:
+        by_task.setdefault(w.get("task_id", "?"), []).append(w)
+    lines = []
+    for t, ws in sorted(by_task.items()):
+        sol = sum(1 for w in ws if w.get("completed"))
+        it = sum(w.get("iterations", 0) for w in ws) / len(ws)
+        lines.append(f"{t}: {sol}/{len(ws)} solved, {it:.1f} avg iters")
+    open(os.path.join(DREAM, "scoreboard.txt"), "w").write("\n".join(lines))
+    docs = []
+    try:
+        for ln in open(os.path.join(REPO, "src", "helpers.rs")):
+            m = re.match(r'\s*"([^"]+)"\s*=>\s*"(\([^"]+\)[^"]*)"', ln)
+            if m:
+                docs.append(m.group(2))
+        open(os.path.join(DREAM, "docs.txt"), "w").write("\n".join(docs))
+    except Exception:
+        pass
+
+
+def _channel_state():
+    cur = {"grammar": ""}
+    if os.path.exists(VARIANT_FILE):
+        cur["grammar"] = open(VARIANT_FILE).read().strip()
+    ab = ""
+    try:
+        ab = json.load(open(os.path.join(DREAM, "ab.json"))).get("phase", "idle")
+    except Exception:
+        pass
+    cur["actions"] = ab + ("|installed"
+                           if os.path.exists(os.path.join(HERE, "rlm-tasks",
+                                                          "custom-actions.lisp"))
+                           else "|held")
+    cur["tactics"] = ""
+    if os.path.exists(TACTICS):
+        cur["tactics"] = str(int(os.path.getmtime(TACTICS)))  # version = mtime
+    return cur
+
+
+def evolve_stamp(worlds):
+    st = json.load(open(EVOLVE_STATE)) if os.path.exists(EVOLVE_STATE) \
+        else {"gen": 0, "channels": {}, "champ_fit": 0.0, "bad_tactics": 0}
+    cur = _channel_state()
+    last = worlds[-10:]
+    fit = round(sum(1 for w in last if w.get("completed")) / max(len(last), 1), 3)
+
+    if st["gen"] == 0 and not os.path.exists(ARCHIVE):
+        st["channels"] = cur  # baseline snapshot, gen 0
+        json.dump(st, open(EVOLVE_STATE, "w"))
+        return
+
+    fired = [ch for ch, v in cur.items() if st["channels"].get(ch) != v]
+    for ch in fired:
+        st["gen"] += 1
+        row = {"gen": st["gen"], "ts": time.time(), "channel": ch,
+               "fitness": fit, "detail": cur[ch][:60]}
+        with open(ARCHIVE, "a") as f:
+            f.write(json.dumps(row) + "\n")
+        log({"event": "evolve", "gen": st["gen"], "channel": ch, "fitness": fit})
+
+    # tactics selection: keep champions, revert drift
+    if "tactics" in fired:
+        if fit >= st.get("champ_fit", 0.0):
+            st["champ_fit"] = fit
+            st["bad_tactics"] = 0
+            if os.path.exists(TACTICS):
+                shutil.copy(TACTICS, TACTICS_BEST)
+        else:
+            st["bad_tactics"] += 1
+            if st["bad_tactics"] >= 2 and os.path.exists(TACTICS_BEST):
+                shutil.copy(TACTICS_BEST, TACTICS)
+                log({"event": "evolve", "gen": st["gen"], "channel": "tactics",
+                     "fitness": fit, "note": "reverted to champion"})
+                st["bad_tactics"] = 0
+                cur["tactics"] = str(int(os.path.getmtime(TACTICS)))
+
+    st["channels"] = cur
+    json.dump(st, open(EVOLVE_STATE, "w"))
+
 
 
 # ---- grammar variant search (Dream v3.1) ----

@@ -309,8 +309,12 @@
   (try (read-file f) (catch e "")))
 (define (build-prompt ctx)
   (let ((ex (exemplar-file-or
-              (str-concat "scripts/rlm-tasks/exemplars/" (rlm-get __trace_id) ".txt"))))
+              (str-concat "scripts/rlm-tasks/exemplars/" (rlm-get __trace_id) ".txt")))
+        (tac (exemplar-file-or "scripts/rlm-tasks/tactics.txt")))
     (str-concat GRAMMAR
+      (if (> (str-length tac) 0)
+        (str-concat "\n\nTACTICS — your own self-written advice, updated by the dream layer:\n" tac)
+        "")
       (if (> (str-length ex) 0)
         (str-concat "\n\nWORKED EXAMPLE — same pattern, DIFFERENT input data. Adapt the pattern, do NOT copy it verbatim:\n" ex)
         "")

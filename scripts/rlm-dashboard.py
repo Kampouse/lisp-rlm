@@ -211,6 +211,19 @@ def main():
     if os.path.exists(wp):
         worst = [l.strip() for l in open(wp) if l.strip()][:5]
 
+    # ---- DGM: generations, champion, fitness curve ----
+    dgm = {"gen": 0, "rows": [], "champ": 0.0}
+    arch_p = os.path.join(REPO, "data", "rlm", "dream", "archive.jsonl")
+    if os.path.exists(arch_p):
+        rows = []
+        for line in open(arch_p):
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                continue
+        dgm = {"gen": rows[-1]["gen"] if rows else 0, "rows": rows[-24:],
+               "champ": max((r.get("fitness", 0) for r in rows), default=0.0)}
+
     data = {
         "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
         "worlds": len(ws),
@@ -225,6 +238,7 @@ def main():
         "cur_variant": cur_variant,
         "prefs": prefs,
         "worst_states": worst,
+        "dgm": dgm,
         "lessons": lessons_dedup(ws),
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)

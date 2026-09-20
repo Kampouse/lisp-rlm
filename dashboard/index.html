@@ -48,6 +48,11 @@
 <div class="panel"><h2>🎯 Worst Q-states — where the dreamer aims next</h2><div id="wq"></div></div>
 </div>
 
+<div class="panel"><h2>🧬 DGM — Darwin Gödel Machine <span class="d">self-modification generations · champion fitness marked ◆</span></h2>
+  <div id="dgmc"></div>
+  <div id="dgmt" style="margin-top:8px"></div>
+</div>
+
 <div class="panel"><h2>RLM solves per cycle <span class="d">(policies color-coded · ⚑ deploys)</span></h2>
   <div id="c1"></div>
   <div class="legend"><span><span class="dot" style="background:#58a6ff"></span>solved</span>
@@ -90,6 +95,7 @@ async function load(){
     ['RLM solved (all)',solved+'/'+tot,'#bc8cff'],
     ['last 3 cycles',Math.round(100*sol3/tot3)+'% ('+sol3+'/'+tot3+')','#d29922'],
     ['grammar variant',esc(d.cur_variant||'full'),'#58a6ff'],
+    ['DGM generation',d.dgm?('#'+d.dgm.gen+' · champ '+Math.round(100*(d.dgm.champ||0))+'%'):'—','#bc8cff'],
     ['current policy',cur,'#e6edf3'],
     ['deploys',d.deploys.filter(x=>x.event==='deploy').length+' ('+d.deploys.filter(x=>x.event==='revert').length+' reverts)','#f85149'],
   ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v" style="color:${c[2]}">${c[1]}</div></div>`).join('');
@@ -130,6 +136,39 @@ async function load(){
       const parts=st.split('|');const task=parts[0],cls=parts[1]||'',fn=(parts[2]||'').replace(/~~QT~~/g,'');
       return `<tr><td><span class="gold">${esc(task)}</span> <span class="d">${esc(cls)}</span> ${esc(fn)}</td><td class="r">${esc(q||'')}</td></tr>`;}).join('')+'</table>'
     :'<span class="d">no states yet</span>';
+
+  // DGM panel: fitness-by-generation curve + recent generations
+  if(d.dgm){
+    const rows=d.dgm.rows||[];
+    $('dgmc').innerHTML=''; const sd=svg($('dgmc'),150);
+    if(d.dgm.factcheck){
+      const fc=d.dgm.factcheck;
+      $('dgmt').insertAdjacentHTML('afterend',
+        `<div style="margin-top:8px;font-size:12px" class="d">🔬 fact-check vs builtin docs:
+         <span class="g">${fc.right} right</span> · <span class="${fc.wrong?'r':'d'}">${fc.wrong} wrong</span>
+         ${fc.wrong_claims&&fc.wrong_claims.length?'<ul style="margin:4px 0 0 18px">'+fc.wrong_claims.map(c=>
+           `<li><span class="r">✗ ${esc(c.fn)}</span>: ${esc(c.claim)} — <span class="g">truth: ${esc(c.truth)}</span></li>`).join('')+'</ul>':''}</div>`);
+    }
+    if(rows.length>1){
+      const iw=W-P.l-P.r, ih=150-P.t-P.b, n=rows.length;
+      const X=i=>P.l+i*iw/(n-1), Y=v=>P.t+ih-v*ih;
+      for(const g of [0,.5,1]){line(sd,[[P.l,Y(g)],[W-P.r,Y(g)]],'#21262d',1);txt(sd,4,Y(g)+3,g*100+'%');}
+      const champ=d.dgm.champ||0;
+      line(sd,[[P.l,Y(champ)],[W-P.r,Y(champ)]],'#3fb950',1,'2 3');
+      txt(sd,W-P.r+4,Y(champ)+3,'◆');
+      line(sd,rows.map((r,i)=>[X(i),Y(Math.min(r.fitness||0,1))]),'#bc8cff',2);
+      rows.forEach((r,i)=>{if(i%Math.ceil(n/12)===0)txt(sd,X(i)-8,150-6,r.gen);});
+    } else txt(sd,W/2-40,80,'gen 0 — baseline');
+    const chcol={grammar:'#58a6ff',actions:'#d29922',tactics:'#bc8cff'};
+    $('dgmt').innerHTML=rows.length?'<table><tr><th>gen</th><th>channel</th><th>fitness</th><th>self-modification</th></tr>'+
+      rows.slice().reverse().map(r=>{
+        const best=(r.fitness>=d.dgm.champ&&r.fitness>0);
+        return `<tr><td class="d">${r.gen}</td>
+        <td style="color:${chcol[r.channel]||'var(--txt)'}">${esc(r.channel)}${r.note?' ↺'+esc(r.note):''}</td>
+        <td class="${best?'g':'d'}">${Math.round(100*(r.fitness||0))}%${best?' ◆':''}</td>
+        <td class="d">${esc(r.detail||'')}</td></tr>`;}).join('')+'</table>'
+      :'<span class="d">gen 0 baseline captured — first mutation lands next cycle</span>';
+  }
 
   // chart 1: RLM per cycle
   const cs=d.rlm_cycles; $('c1').innerHTML=''; const s1=svg($('c1'));

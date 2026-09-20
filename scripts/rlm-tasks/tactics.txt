@@ -1,0 +1,9 @@
+# tactics gen1
+- (str-replace s old new): s FIRST, old SECOND, new THIRD.
+- (str-join sep lst): sep FIRST, lst SECOND.
+- Fix t2_reverse: use (reverse lst) directly, avoid manual cons loops.
+- Fix t5_vowels: use (filter char=? "aeiou" (map char-downcase lst)).
+- Fix ta_prime_sum: use (reduce + 0 lst) instead of manual accumulator.
+- Fix ta_primeprod: use (reduce * 1 lst) instead of manual accumulator.
+- Fix td_revlist: use (reverse lst) instead of (cons (car lst) (cdr lst)) loop.
+- Never store input unchanged before final verification; always transform first.
