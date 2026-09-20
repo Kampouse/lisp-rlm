@@ -1,0 +1,21 @@
+;; DREAMED TASK — agent-authored, probe-verified (ref solves, poison fails)
+;; targets state: argtype| ~~QT~~fold-right|rc2|es3|i2 — best Q: 0.00
+;; dreamed 1789863686.155436039
+(load-file "rlm_runtime.lisp")
+(load-file "scripts/rlm-tasks/policy.lisp")
+(load-file "scripts/rlm-tasks/q-table.lisp")
+(load-file "scripts/rlm-tasks/custom-actions.lisp")
+(rlm-set __policy POLICY_ID)
+(define (llm-code ctx)
+  (llm (str-concat GRAMMAR "\n\nTASK CONTEXT:\n" ctx)))
+(begin
+  (rlm-set __trace_id "td_foldprod")
+  (define (task-verify a) (= a 24))
+  (run-rlm "Compute the product of the list (list 2 3 4) using fold-right; store it via (rlm-set answer ...) then (rlm-set Final true).")
+  (if (task-verify (rlm-get answer)) nil (rlm-set Final nil))
+  (write-trace)
+  (println (str-concat "RLMDUMP task=td_foldprod"))
+  (println (str-concat "RLMDUMP iterations=" (to-string (rlm-get iteration))))
+  (println (str-concat "RLMDUMP answer=" (to-string (rlm-get answer))))
+  (println (str-concat "RLMDUMP Final=" (to-string (rlm-get Final))))
+)
