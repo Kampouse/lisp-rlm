@@ -46,6 +46,7 @@
     (rlm-set __last_out "")
     (rlm-set __repeat_count 0)
     (rlm-set __err_streak 0)
+    (rlm-set __must_decompose nil)
     (rlm-set __stop false)
     ;; Exploration policy knobs (policy.lisp MUST define these; the
     ;; generator guarantees them — see scripts/gen-grammar.py)
@@ -277,15 +278,23 @@
     (if (str-contains r "LLMFAIL")
       (begin (sleep 5) (llm-code ctx))
       r)))
+(define (parse-fix ctx code)
+  ;; free parse pre-check: one re-ask on syntax errors, no iteration burned
+  (let ((bad (try (begin (read code) "") (catch e (to-string e)))))
+    (if (= bad "")
+      code
+      (llm-retry (str-concat ctx "\n\nYOUR LAST SUBMISSION DID NOT PARSE: " bad "\nResubmit ONE valid lisp expression.")))))
+
 (define (rlm-step)
   (begin
     (snapshot)
     (let ((qa (q-choose)))
       (let ((ctx (rlm-build-context qa)))
-        (let ((code (llm-retry ctx)))
-          ;; FORCE GATE: the decompose action is not advice — the next
-          ;; expression MUST contain a sub-rlm delegation or it bounces.
-          (if (and (equal? qa "decompose") (not (str-contains code "sub-rlm")))
+        (let ((code (parse-fix ctx (llm-retry ctx))))
+          ;; FORCE GATE: decompose action OR task-level must-decompose flag —
+          ;; the next expression MUST contain a sub-rlm delegation or it bounces.
+          (if (and (or (equal? qa "decompose") (rlm-get __must_decompose))
+                   (not (str-contains code "sub-rlm")))
             (begin
               (rlm-set iteration (+ (rlm-get iteration) 1))
               (rlm-set __last_code code)
@@ -376,6 +385,9 @@
       (rlm-set max_iterations 5)
       (rlm-set __trace_id (str-concat (rlm-get __trace_id) "-sub"))
       (let ((sub-result (rlm-loop)))
+        ;; the sub's ANSWER is the payload — capture AFTER the loop ran,
+        ;; BEFORE the restore (nested let: parallel let reads stale state)
+        (let ((sub-answer (rlm-get answer)))
         ;; capture the sub-episode BEFORE restore so it banks into the
         ;; parent world — sub iterations feed Q and the journal too
         (let ((sub-nodes (rlm-get __trace_nodes)))
@@ -391,7 +403,7 @@
           (rlm-set __trace_id saved-tid)
           (rlm-set __policy saved-pol)
           (rlm-set __trace_nodes (append saved-trace sub-nodes))
-          sub-result))))))
+          (if sub-answer sub-answer sub-result))))))))
 
 ;; ============================================================
 ;; LESSON (the failure journal): one reflective sentence per run,
