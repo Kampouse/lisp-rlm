@@ -218,7 +218,8 @@ def evolve_stamp(worlds):
     last = worlds[-10:]
     fit = round(sum(1 for w in last if w.get("completed")) / max(len(last), 1), 3)
 
-    if st["gen"] == 0 and not os.path.exists(ARCHIVE):
+    if not st.get("baselined"):
+        st["baselined"] = True
         st["channels"] = cur  # baseline snapshot, gen 0
         json.dump(st, open(EVOLVE_STATE, "w"))
         return

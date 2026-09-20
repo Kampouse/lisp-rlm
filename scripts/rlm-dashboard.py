@@ -235,7 +235,7 @@ def main():
             except Exception:
                 continue
         dgm = {"gen": rows[-1]["gen"] if rows else 0, "rows": rows[-24:],
-               "champ": max((r.get("fitness", 0) for r in rows), default=0.0),
+               "champ": max(((r.get("fitness") or 0) for r in rows), default=0.0),
                "factcheck": factcheck}
 
     data = {
