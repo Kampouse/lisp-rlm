@@ -118,6 +118,8 @@ def main():
         print(f"dream: incumbent holds ({base_solves}/{n} solves, "
               f"{base_iters} iters) — no deploy")
 
+    grammar_search(worlds)
+
     # digest for the dream task / humans
     by_policy = {}
     for w in worlds:
@@ -149,6 +151,68 @@ def main():
     except Exception as e:
         pass  # no q-values yet
 
+
+
+# ---- grammar variant search (Dream v3.1) ----
+# The g1→g2→g3 jumps proved prompt text is the highest-leverage policy
+# dimension. This lane searches it autonomously: variants are encoded in
+# POLICY_ID suffixes (g3=full, g3l=lean, g3s=strings-first); the dream
+# layer rotates/exploits based on banked-world solve rates. Deploy =
+# write grammar-variant.json + regen policy.lisp via gen-grammar.py.
+VARIANT_FILE = os.path.join(HERE, "rlm-tasks", "grammar-variant.json")
+GVAR = {"full": "-g3", "lean": "-g3l", "strings-first": "-g3s"}
+MIN_WORLDS_EXPLORE = 10   # a variant needs this many worlds before it counts as tested
+MIN_CURRENT_MOVE = 15     # don't rotate away until current variant has this many
+
+
+def grammar_variant_of(policy):
+    for name, suf in GVAR.items():
+        if str(policy).endswith(suf):
+            return name
+    return None
+
+
+def grammar_search(worlds):
+    try:
+        current = json.load(open(VARIANT_FILE)).get("variant", "full")
+    except Exception:
+        current = "full"
+    stats = {}
+    for w in worlds:
+        v = grammar_variant_of(w.get("policy", ""))
+        if v:
+            s = stats.setdefault(v, [0, 0, 0.0])
+            s[0] += 1 if w.get("completed") else 0
+            s[1] += 1
+            s[2] += w.get("iterations", 0)
+    if not stats:
+        return  # no variant-stamped worlds yet — g3 family not in pool
+    cur_n = stats.get(current, [0, 0, 0])[1]
+    untested = [v for v in GVAR if v != current and stats.get(v, [0, 0, 0])[1] < MIN_WORLDS_EXPLORE]
+    target = None
+    reason = ""
+    if untested and cur_n >= MIN_CURRENT_MOVE:
+        target = min(untested, key=lambda v: stats.get(v, [0, 0, 0])[1])
+        reason = f"explore: {target} has {stats.get(target, [0,0,0])[1]} worlds, current {current} has {cur_n}"
+    elif not untested:
+        best = max(GVAR, key=lambda v: (stats[v][0] / max(stats[v][1], 1),
+                                        -stats[v][2] / max(stats[v][1], 1)))
+        if best != current:
+            b, c = stats[best], stats.get(current, [0, 0, 0])
+            if b[0] / max(b[1], 1) > c[0] / max(c[1], 1) + 0.049:
+                target = best
+                reason = (f"exploit: {best} {b[0]}/{b[1]} vs current {current} "
+                          f"{c[0]}/{max(c[1],1)}")
+    if target:
+        json.dump({"variant": target}, open(VARIANT_FILE, "w"))
+        subprocess.run([sys.executable, os.path.join(HERE, "gen-grammar.py")],
+                       check=True, capture_output=True)
+        log({"event": "grammar", "variant": target, "reason": reason,
+             "stats": {v: f"{s[0]}/{s[1]}" for v, s in stats.items()}})
+        print(f"dream GRAMMAR DEPLOY: {target} ({reason})")
+    else:
+        print(f"dream grammar: {current} holds "
+              f"({', '.join(f'{v} {s[0]}/{s[1]}' for v, s in sorted(stats.items()))})")
 
 if __name__ == "__main__":
     main()
