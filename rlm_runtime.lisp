@@ -127,7 +127,10 @@
 
 ;; ============================================================
 ;; Q-LAYER (Dream v3): learned per-state escalation policy.
-;; State: (error-class, failing-fn, repeat-bin, err-streak-bin, iter-bin)
+;; State: (task-id, error-class, failing-fn, repeat-bin, err-streak-bin, iter-bin)
+;; The task-id prefix is REQUIRED: the same error shape on different tasks is
+;; a different disease (t2_reverse argtype ≠ td_foldsum argtype). The dream
+;; layer cites full states, so targeting inherits task granularity.
 ;; Actions: none temp08 temp10 doc hint ban budget2 stop ladder
 ;; Chosen ε-greedy from Q-TABLE; missing state → 'ladder (hand-coded
 ;; composite, the bootstrap). All decisions recorded in trace nodes.
@@ -141,9 +144,11 @@
     ((str-contains out "arity") "arity")
     (true "runtime")))
 (define (q-bin v) (if (>= v 3) 3 v))
+(define (q-task-tag)
+  (let ((tid (rlm-get __trace_id))) (if tid tid "anon")))
 (define (q-state)
   (let ((out (rlm-get __last_out)))
-    (str-concat (q-classify out) "|" (error-fn-name out)
+    (str-concat (q-task-tag) "|" (q-classify out) "|" (error-fn-name out)
       "|rc" (to-string (q-bin (rlm-get __repeat_count)))
       "|es" (to-string (q-bin (rlm-get __err_streak)))
       "|i" (to-string (if (>= (rlm-get iteration) 5) 3 (+ 1 (quotient (rlm-get iteration) 2)))))))

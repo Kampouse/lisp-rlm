@@ -63,7 +63,9 @@ def learn(q):
         seen_codes = set()
         T = len(nodes)
         for t, n in enumerate(nodes):
-            s, a = n["s"], n["a"]
+            # backfill task-id prefix onto pre-v2 bare states (new runtime
+            # mints task-prefixed states itself; old traces stored bare)
+            s, a = f"{w.get('task_id', 'anon')}|{n['s']}", n["a"]
             if a not in ACTIONS:
                 continue
             q.setdefault(s, {x: 0.0 for x in ACTIONS})
@@ -76,7 +78,7 @@ def learn(q):
                 target = r
             else:
                 r = STEP_R + (NOVEL_R if novel else 0)
-                s2 = nodes[t + 1].get("s", "")
+                s2 = f"{w.get('task_id', 'anon')}|{nodes[t + 1].get('s', '')}"
                 nxt = q.get(s2, {})
                 target = r + GAMMA * max([nxt.get(x, 0.0) for x in ACTIONS])
             q[s][a] += ALPHA * (target - q[s][a])
@@ -103,6 +105,9 @@ def write_lisp(q, visits):
 
 def main():
     q = load_q()
+    # prune unreachable bare-format states (pre-v2, 5 pipe-fields, no
+    # task prefix) — the runtime can never look them up again
+    q = {s: v for s, v in q.items() if len(s.split("|")) == 6}
     q, visits = learn(q)
     n_states = len(q)
     write_lisp(q, visits)
