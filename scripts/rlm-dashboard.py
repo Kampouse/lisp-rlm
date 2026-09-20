@@ -91,6 +91,28 @@ def rlvr_cycles():
     return out
 
 
+def lessons_dedup(ws):
+    """Collapse near-duplicate lessons per task; keep repeat counts.
+
+    Key = normalized first 45 chars — same fortune cookie repeated by the
+    4B collapses to one row with ×n. New wording = new row.
+    """
+    out, order = {}, []
+    for w in ws:
+        l = w.get("lesson")
+        if not l:
+            continue
+        key = (w["task"], re.sub(r"\W+", "", l.lower())[:45])
+        if key not in out:
+            out[key] = {"task": w["task"], "completed": w["completed"],
+                        "iters": w["iters"], "lesson": l, "n": 1}
+            order.append(key)
+        else:
+            out[key]["n"] += 1
+            out[key].update(completed=w["completed"], iters=w["iters"])
+    return [out[k] for k in order][-10:]
+
+
 def main():
     ws = load_worlds()
     by_policy = defaultdict(lambda: {"n": 0, "completed": 0, "iters": []})
@@ -198,12 +220,12 @@ def main():
         "rlm_cycles": rlm_cycles(ws),
         "rlvr_cycles": rlvr_cycles(),
         "latest": ws[-6:],
-        "lessons": [w for w in ws if w.get("lesson")][-8:],
         "tasks": tasks,
         "variants": variants,
         "cur_variant": cur_variant,
         "prefs": prefs,
         "worst_states": worst,
+        "lessons": lessons_dedup(ws),
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     json.dump(data, open(OUT, "w"))

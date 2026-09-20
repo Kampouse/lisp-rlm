@@ -167,12 +167,13 @@ async function load(){
       if(i%Math.ceil(n/10)===0)txt(s2,X(i)-12,H-6,c.t);});
   } else txt(s2,W/2-30,H/2,'no rlvr yet');
 
-  // failure journal
+  // failure journal (deduped: repeats collapse to ×n)
   $('les').innerHTML = d.lessons && d.lessons.length ?
-    '<table><tr><th>task</th><th>outcome</th><th>lesson (self-authored)</th></tr>'+
+    '<table><tr><th>task</th><th>outcome</th><th>lesson (self-authored)</th><th>seen</th></tr>'+
     d.lessons.slice().reverse().map(x=>`<tr><td class="d">${esc(x.task)}</td>
       <td class="${x.completed?'g':'r'}">${x.completed?'✅ '+x.iters+' iters':'❌ '+x.iters+' iters'}</td>
-      <td style="font-style:italic">"${esc(x.lesson)}"</td></tr>`).join('')+'</table>'
+      <td style="font-style:italic">"${esc(x.lesson)}"</td>
+      <td class="d">${x.n>1?'×'+x.n:''}</td></tr>`).join('')+'</table>'
     :'<span class="d">no lessons yet — first cycle with the journal lands soon</span>';
 
   // policy table

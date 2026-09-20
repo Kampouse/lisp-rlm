@@ -117,7 +117,7 @@
     "  (rlm-set __must_decompose true)\n"
     "  (define (task-verify a) " VERIFY ")\n"
     "  (run-rlm \"" MARKER " " PROMPT " Solve this by delegating one part via (sub-rlm \\\"" SUBTASK "\\\") and combining.\")\n"
-    "  (if (task-verify (rlm-get answer)) nil (rlm-set Final nil))\n"
+    "  (if (task-verify (rlm-get answer)) nil (re-lesson))\n"
     "  (write-trace)\n"
     "  (println (str-concat \"RLMDUMP task=" SLUG "\"))\n"
     "  (println (str-concat \"RLMDUMP iterations=\" (to-string (rlm-get iteration))))\n"

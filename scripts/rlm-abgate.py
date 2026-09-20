@@ -74,8 +74,11 @@ def main():
 
     if arm == "off" and os.path.exists(INSTALLED):
         os.rename(INSTALLED, INSTALLED + ".held")
+        # leave a stub, NOT a gap: every task file hard-loads this path
+        # and a missing file kills the whole cycle at load (lost 10:45-11:30)
+        open(INSTALLED, "w").write(";; stub — held by abgate (off arm)\n")
     elif arm == "on" and os.path.exists(INSTALLED + ".held"):
-        os.rename(INSTALLED + ".held", INSTALLED)
+        os.replace(INSTALLED + ".held", INSTALLED)  # atomically overwrites stub
 
     s, n = weak_solves_since(time.time() - 60 * 11)
     st[f"solved_{arm}"] += s

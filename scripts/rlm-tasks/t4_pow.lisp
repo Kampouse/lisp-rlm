@@ -11,7 +11,7 @@
   (llm (build-prompt ctx)))
 (define (task-verify a) (= a 65536))
 (run-rlm "Compute 2 to the power 16 by writing and evaluating lisp code; store it as answer. When achieved, evaluate (final true).")
-(if (task-verify (rlm-get answer)) nil (rlm-set Final nil))
+(if (task-verify (rlm-get answer)) nil (re-lesson))
 (write-trace)
 (println (str-concat "RLMDUMP task=t4_pow"))
 (println (str-concat "RLMDUMP iterations=" (to-string (rlm-get iteration))))

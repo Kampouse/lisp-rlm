@@ -43,6 +43,7 @@
     (rlm-set result nil)
     (rlm-set __trace_nodes (list))
     (rlm-set __last_code "")
+    (rlm-set __gate_failed false)
     (rlm-set __last_out "")
     (rlm-set __repeat_count 0)
     (rlm-set __err_streak 0)
@@ -452,20 +453,36 @@
 (define (gen-lesson-once)
   (str-substring
     (llm (str-concat
-      "You are a small Lisp program that just finished (or failed) a task.\n"
+      "You are a small Lisp program that just finished (or failed) a task. Reflect honestly.\n"
       "Task: " (str-substring (rlm-get prompt) 0 120) "\n"
       "Iterations used: " (to-string (rlm-get iteration)) "\n"
-      "Solved: " (if (rlm-get Final) "yes" "no") "\n"
-      "Last thing that happened: " (str-substring (rlm-get __last_out) 0 300) "\n\n"
-      "Write ONE short, brutally honest sentence about the most useful lesson "
-      "from this attempt. Start with 'Today I learned'. Max 20 words. "
-      "No code, just the sentence."))
+      "Solved: " (if (rlm-get __gate_failed)
+                  "NO — the verify gate REJECTED your answer. You claimed (final true) but the answer you stored was WRONG."
+                  (if (rlm-get Final) "yes" "no")) "\n"
+      "Final answer stored: " (str-substring (to-string (rlm-get answer)) 0 60) "\n"
+      "Last code you ran:\n" (str-substring (rlm-get __last_code) 0 200) "\n"
+      "Last output/error: " (str-substring (rlm-get __last_out) 0 300) "\n\n"
+      "Write ONE sentence starting 'Today I learned' naming the SPECIFIC technical "
+      "insight or mistake — exact function name, argument order, or data shape. "
+      "Max 20 words.\n"
+      "GOOD: Today I learned str-join takes the separator FIRST: (str-join sep lst).\n"
+      "GOOD: Today I learned returning the input unchanged fails the verify gate.\n"
+      "BAD (forbidden): Today I learned Lisp state management is complex.\n"
+      "BAD (forbidden): Today I learned tiny programs can do complex math."))
     0 220))
 (define (gen-lesson)
   (try
     (let ((L (gen-lesson-once)))
       (if (= (str-length (str-trim L)) 0) (gen-lesson-once) L))
     (catch e "")))
+(define (re-lesson)
+  ;; Called by the task's verify gate on rejection: nil Final, regenerate
+  ;; the lesson with the honest "gate rejected you" context, rewrite trace.
+  (begin
+    (rlm-set Final nil)
+    (rlm-set __gate_failed true)
+    (rlm-set __lesson (gen-lesson))
+    (write-trace)))
 
 ;; ============================================================
 ;; 6. ENTRY POINT

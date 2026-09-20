@@ -11,7 +11,7 @@
   (llm (build-prompt ctx)))
 (define (task-verify a) (= a 338350))
 (run-rlm "Compute the sum of squares 1+4+9+...+100 by writing and evaluating lisp code; store the number in rlm state as answer. When the goal is achieved, evaluate (final true).")
-(if (task-verify (rlm-get answer)) nil (rlm-set Final nil))
+(if (task-verify (rlm-get answer)) nil (re-lesson))
 (write-trace)
 (println (str-concat "RLMDUMP task=t1_sumsq"))
 (println (str-concat "RLMDUMP iterations=" (to-string (rlm-get iteration))))

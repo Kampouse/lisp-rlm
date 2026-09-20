@@ -88,7 +88,7 @@
     "  (rlm-set __trace_id \"" SLUG "\")\n"
     "  (define (task-verify a) " VERIFY ")\n"
     "  (run-rlm \"" PROMPT "\")\n"
-    "  (if (task-verify (rlm-get answer)) nil (rlm-set Final nil))\n"
+    "  (if (task-verify (rlm-get answer)) nil (re-lesson))\n"
     "  (write-trace)\n"
     "  (println (str-concat \"RLMDUMP task=" SLUG "\"))\n"
     "  (println (str-concat \"RLMDUMP iterations=\" (to-string (rlm-get iteration))))\n"

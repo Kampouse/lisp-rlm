@@ -11,7 +11,7 @@
   (llm (build-prompt ctx)))
 (define (task-verify a) (= a 5))
 (run-rlm "Count the vowels in the string 'precaution' by writing and evaluating lisp code; store the count as answer. When achieved, evaluate (final true).")
-(if (task-verify (rlm-get answer)) nil (rlm-set Final nil))
+(if (task-verify (rlm-get answer)) nil (re-lesson))
 (write-trace)
 (println (str-concat "RLMDUMP task=t5_vowels"))
 (println (str-concat "RLMDUMP iterations=" (to-string (rlm-get iteration))))
