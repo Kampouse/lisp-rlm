@@ -129,8 +129,13 @@ impl WasmEmitter {
                 .position(|f| Some(f.name.as_str()) == self.current_func.as_deref())
                 .ok_or_else(|| "self-passing call outside of function".to_string())?;
             let mut v = Vec::new();
-            for x in a {
+            let stage = self.reserve_stage_slots(a.len());
+            for (i, x) in a.iter().enumerate() {
                 v.extend(self.expr(x)?);
+                v.push(Instruction::LocalSet(stage[i]));
+            }
+            for &l in &stage {
+                v.push(Instruction::LocalGet(l));
             }
             v.push(Instruction::Call(USER_BASE | pos as u32));
             return Ok(v);
@@ -148,18 +153,10 @@ impl WasmEmitter {
                     memory_index: 0,
                 };
                 let local_idx = self.locals[op];
-                let temp_closure_ptr = self.next_local;
-                self.next_local += 1;
-                let lambda_id_local = self.next_local;
-                self.next_local += 1;
-                let arg_locals: Vec<u32> = a
-                    .iter()
-                    .map(|_| {
-                        let l = self.next_local;
-                        self.next_local += 1;
-                        l
-                    })
-                    .collect();
+                let temps = self.reserve_stage_slots(2);
+                let temp_closure_ptr = temps[0];
+                let lambda_id_local = temps[1];
+                let arg_locals = self.reserve_stage_slots(a.len());
                 let mut v = Vec::new();
                 // Evaluate args and save to locals
                 for (i, arg) in a.iter().enumerate() {
@@ -199,8 +196,7 @@ impl WasmEmitter {
                 // discarding everything after the call (template siblings,
                 // later statements). Same result-local pattern as
                 // dynamic_call.rs: every arm stores to one local, read once.
-                let result_local = self.next_local;
-                self.next_local += 1;
+                let result_local = self.reserve_stage_slots(1)[0];
                 v.push(Instruction::I64Const(-1)); // fallback: no matching lambda
                 v.push(Instruction::LocalSet(result_local));
                 for (lid, &(func_idx, _cap_count)) in self.lambda_info.iter().enumerate() {
@@ -243,9 +239,14 @@ impl WasmEmitter {
         if a.len() == func_param_count {
             if let Some(&twin) = self.raw_twins.get(op) {
                 let mut v = Vec::new();
-                for x in a {
+                let stage = self.reserve_stage_slots(a.len());
+                for (i, x) in a.iter().enumerate() {
                     v.extend(self.expr(x)?);
                     v.extend(self.emit_untag());
+                    v.push(Instruction::LocalSet(stage[i]));
+                }
+                for &l in &stage {
+                    v.push(Instruction::LocalGet(l));
                 }
                 v.push(Instruction::Call(USER_BASE | twin));
                 v.extend(self.emit_tag_num());
@@ -258,20 +259,11 @@ impl WasmEmitter {
                 align: 3,
                 memory_index: 0,
             };
-            let temp_callee = self.next_local;
-            self.next_local += 1;
-            let temp_closure_ptr = self.next_local;
-            self.next_local += 1;
-            let lambda_id_local = self.next_local;
-            self.next_local += 1;
-            let arg_locals: Vec<u32> = a
-                .iter()
-                .map(|_| {
-                    let l = self.next_local;
-                    self.next_local += 1;
-                    l
-                })
-                .collect();
+            let temps = self.reserve_stage_slots(3);
+            let temp_callee = temps[0];
+            let temp_closure_ptr = temps[1];
+            let lambda_id_local = temps[2];
+            let arg_locals = self.reserve_stage_slots(a.len());
             let mut v = Vec::new();
             v.push(Instruction::Call(USER_BASE | pos as u32));
             v.push(Instruction::LocalSet(temp_callee));
@@ -351,11 +343,41 @@ impl WasmEmitter {
                 ));
             }
             let mut v = Vec::new();
-            for x in a {
+            let stage = self.reserve_stage_slots(a.len());
+            for (i, x) in a.iter().enumerate() {
                 v.extend(self.expr(x)?);
+                v.push(Instruction::LocalSet(stage[i]));
+            }
+            for &l in &stage {
+                v.push(Instruction::LocalGet(l));
             }
             v.push(Instruction::Call(USER_BASE | pos as u32));
             Ok(v)
         }
+    }
+
+    /// Reserve `n` anonymous i64 staging slots for call arguments.
+    ///
+    /// Sequentially pushing evaluated args on the operand stack miscompiles
+    /// whenever a later arg expression allocates: the allocator clobbers
+    /// values still parked on the stack (X3/Y3-wrong-Z3-right signature in
+    /// the BIP-340 random-scalar failures, P1 and P2 both). Staging every
+    /// arg into a slot reserved BEFORE any arg is compiled means nested
+    /// calls can only allocate higher slots — no aliasing, even through
+    /// recursion. Slots are deliberately not name-mapped and not freed:
+    /// a named slot reused across a recursive call would self-clobber.
+    fn reserve_stage_slots(&mut self, n: usize) -> Vec<u32> {
+        (0..n)
+            .map(|_| {
+                let l = self.next_local;
+                self.next_local += 1;
+                // Keep local_type_map dense and index-aligned: the code
+                // section builder indexes it by local idx, and a sparse map
+                // silently shifts every later i32 declaration (validated as
+                // "Not a valid WASI Preview 2 component" — 2026-09-20).
+                self.local_type_map.push(ValType::I64);
+                l
+            })
+            .collect()
     }
 }
