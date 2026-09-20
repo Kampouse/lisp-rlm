@@ -19,10 +19,18 @@
   table{width:100%;border-collapse:collapse;font-size:12.5px}
   th,td{padding:5px 8px;text-align:left;border-bottom:1px solid var(--line)}
   th{color:var(--dim);font-weight:500;font-size:11px;text-transform:uppercase}
-  .g{color:var(--green)} .r{color:var(--red)} .d{color:var(--dim)} .gold{color:var(--gold)}
+  .g{color:var(--green)} .r{color:var(--red)} .d{color:var(--dim)} .gold{color:var(--gold)} .p{color:var(--purple)}
   svg text{fill:var(--dim);font-size:9px}
   .legend{display:flex;gap:14px;font-size:11px;color:var(--dim);margin-top:6px;flex-wrap:wrap}
   .dot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px;vertical-align:middle}
+  .bar{height:7px;border-radius:3px;background:#21262d;overflow:hidden;min-width:70px}
+  .bar i{display:block;height:100%;border-radius:3px}
+  .badge{display:inline-block;font-size:10px;padding:1px 6px;border-radius:9px;border:1px solid var(--line);margin-left:5px}
+  .badge.hand{color:var(--gold);border-color:var(--gold)}
+  .badge.auto{color:var(--green);border-color:#1f4d28}
+  .ans{font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+  .cols{display:grid;gap:14px;grid-template-columns:1fr 1fr}
+  @media(max-width:1100px){.cols{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -30,6 +38,15 @@
 <div class="sub">spec → lisp → execute → verify → bank → dream → deploy — fully local · auto-refresh 30s</div>
 
 <div class="grid" id="cards"></div>
+
+<div class="panel"><h2>📋 Task board — worst first <span class="d">(verify-gated · partial = near-miss credit)</span></h2>
+  <div style="overflow-x:auto"><table id="tb"></table></div>
+</div>
+
+<div class="cols">
+<div class="panel"><h2>🧬 Grammar variants — the searched prompt dimension <span class="d" id="curv"></span></h2><div id="gv"></div></div>
+<div class="panel"><h2>🎯 Worst Q-states — where the dreamer aims next</h2><div id="wq"></div></div>
+</div>
 
 <div class="panel"><h2>RLM solves per cycle <span class="d">(policies color-coded · ⚑ deploys)</span></h2>
   <div id="c1"></div>
@@ -48,13 +65,14 @@
 <script>
 const W=980,H=190,P={l:34,r:40,t:14,b:22};
 const $=id=>document.getElementById(id);
-function svg(el){const s=document.createElementNS('http://www.w3.org/2000/svg','svg');
-  s.setAttribute('width',W);s.setAttribute('height',H);el.appendChild(s);return s;}
+function svg(el,h){const s=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  s.setAttribute('width',W);s.setAttribute('height',h||H);el.appendChild(s);return s;}
 function line(s,pts,cls,w,dash){if(pts.length<2)return;const p=document.createElementNS('http://www.w3.org/2000/svg','polyline');
   p.setAttribute('points',pts.map(q=>q.join(',')).join(' '));p.setAttribute('fill','none');
   p.setAttribute('stroke',cls);p.setAttribute('stroke-width',w||2);if(dash)p.setAttribute('stroke-dasharray',dash);s.appendChild(p);}
 function txt(s,x,y,v){const t=document.createElementNS('http://www.w3.org/2000/svg','text');
   t.setAttribute('x',x);t.setAttribute('y',y);t.appendChild(document.createTextNode(v));s.appendChild(t);}
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 async function load(){
  try{
@@ -68,10 +86,50 @@ async function load(){
   const cur=Object.keys(d.policies).sort().pop();
   $('cards').innerHTML=[
     ['worlds banked',d.worlds,'#58a6ff'],['corpus rows',d.corpus_rows,'#3fb950'],
+    ['DPO pairs',d.prefs||0,'#f778ba'],
     ['RLM solved (all)',solved+'/'+tot,'#bc8cff'],
     ['last 3 cycles',Math.round(100*sol3/tot3)+'% ('+sol3+'/'+tot3+')','#d29922'],
-    ['current policy',cur,'#e6edf3'],['deploys',d.deploys.filter(x=>x.event==='deploy').length+' ('+d.deploys.filter(x=>x.event==='revert').length+' reverts)','#f85149'],
+    ['grammar variant',esc(d.cur_variant||'full'),'#58a6ff'],
+    ['current policy',cur,'#e6edf3'],
+    ['deploys',d.deploys.filter(x=>x.event==='deploy').length+' ('+d.deploys.filter(x=>x.event==='revert').length+' reverts)','#f85149'],
   ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v" style="color:${c[2]}">${c[1]}</div></div>`).join('');
+
+  // task board (worst first)
+  if(d.tasks&&d.tasks.length){
+    $('tb').innerHTML='<tr><th>task</th><th>solve rate</th><th>avg it</th><th>last answer</th><th>expected</th><th>exemplar</th></tr>'+
+      d.tasks.map(t=>{
+        const rate=Math.round(100*t.solved/t.n);
+        const col=rate>=80?'var(--green)':rate>=40?'var(--gold)':'var(--red)';
+        const ans=t.last_ok?`<span class="g">✅</span> <span class="ans">${esc(t.last_answer)||'—'}</span>`
+          : t.partial!=null?`<span class="gold">±${Math.round(100*t.partial)}%</span> <span class="ans">${esc(t.last_answer)||'—'}</span>`
+          : `<span class="r">❌</span> <span class="ans">${esc(t.last_answer)||'—'}</span>`;
+        const ex=t.exemplar==='hand'?'<span class="badge hand">✍ hand</span>':t.exemplar==='auto'?'<span class="badge auto">⟳ auto</span>':'<span class="d">—</span>';
+        return `<tr><td>${esc(t.task)}</td>
+          <td><div style="display:flex;align-items:center;gap:8px"><div class="bar"><i style="width:${rate}%;background:${col}"></i></div><span class="d">${t.solved}/${t.n}</span></div></td>
+          <td class="d">${t.avg_iters}</td><td>${ans}</td><td class="d ans">${esc(t.expected)||'—'}</td><td>${ex}</td></tr>`;
+      }).join('');
+  }
+
+  // grammar variants
+  $('curv').textContent=d.cur_variant?('· live: '+d.cur_variant):'';
+  const vk=Object.keys(d.variants||{});
+  if(vk.length){
+    const vc={full:'#58a6ff',lean:'#bc8cff','strings-first':'#d29922'};
+    $('gv').innerHTML='<table><tr><th>variant</th><th>solve rate</th><th>worlds</th><th>avg it</th><th></th></tr>'+
+      vk.map(v=>{const b=d.variants[v];const r=Math.round(100*b.completed/b.n);
+        const cur=(v===d.cur_variant)?' ◀ live':'';
+        return `<tr><td style="color:${vc[v]||'var(--txt)'}">${esc(v)}${cur}</td>
+        <td><div style="display:flex;align-items:center;gap:8px"><div class="bar" style="min-width:110px"><i style="width:${r}%;background:${vc[v]||'#58a6ff'}"></i></div><span class="d">${b.completed}/${b.n} · ${r}%</span></div></td>
+        <td class="d">${b.n}</td><td class="d">${b.avg_iters}</td><td></td></tr>`;}).join('')+'</table>';
+  } else $('gv').innerHTML='<span class="d">no variant-stamped worlds yet</span>';
+
+  // worst states
+  $('wq').innerHTML=(d.worst_states&&d.worst_states.length)?
+    '<table><tr><th>state (task · class · fn · …)</th><th>Q</th></tr>'+
+    d.worst_states.map(s=>{const [st,q]=s.split(' — ');
+      const parts=st.split('|');const task=parts[0],cls=parts[1]||'',fn=(parts[2]||'').replace(/~~QT~~/g,'');
+      return `<tr><td><span class="gold">${esc(task)}</span> <span class="d">${esc(cls)}</span> ${esc(fn)}</td><td class="r">${esc(q||'')}</td></tr>`;}).join('')+'</table>'
+    :'<span class="d">no states yet</span>';
 
   // chart 1: RLM per cycle
   const cs=d.rlm_cycles; $('c1').innerHTML=''; const s1=svg($('c1'));
@@ -82,7 +140,6 @@ async function load(){
     const Y=v=>P.t+ih-(v/maxY)*ih;
     for(let g=0;g<=maxY;g+=Math.ceil(maxY/4)){line(s1,[[P.l,Y(g)],[W-P.r,Y(g)]],'#21262d',1);txt(s1,4,Y(g)+3,g);}
     cs.forEach((c,i)=>{const bw=Math.min(14,iw/n*.5);
-      const t1=s1.querySelector('.tmp')||(()=>{const r=document.createElementNS('http://www.w3.org/2000/svg','rect');return r})();
       [[c.total,'#30363d'],[c.solved,c.policies[0]&&c.policies[0].startsWith('p5-6')?'#58a6ff':'#3fb950']].forEach(([v,col],k)=>{
         const r=document.createElementNS('http://www.w3.org/2000/svg','rect');
         r.setAttribute('x',X(i)-bw/2+k*bw/2);r.setAttribute('y',Y(v));r.setAttribute('width',bw/1.4);r.setAttribute('height',Math.max(1,Y(0)-Y(v)));
@@ -91,10 +148,10 @@ async function load(){
     const mi=Math.max(...cs.map(c=>c.iters),8);
     line(s1,cs.map((c,i)=>[X(i),P.t+ih-(c.iters/mi)*ih]),'#d29922',1.6,'4 3');
     txt(s1,W-P.r+6,P.t+10,'iters');
-    d.deploys.filter(x=>x.event==='deploy').forEach(dp=>{
+    d.deploys.filter(x=>x.event==='deploy'||x.event==='grammar').forEach(dp=>{
       const i=cs.findIndex(c=>c.ts>=dp.ts*1); if(i<0)return;
-      line(s1,[[X(i),P.t],[X(i),P.t+ih]],'#f85149',1,'2 3');
-      txt(s1,X(i)+3,P.t+9,'⚑');});
+      line(s1,[[X(i),P.t],[X(i),P.t+ih]],dp.event==='grammar'?'#bc8cff':'#f85149',1,'2 3');
+      txt(s1,X(i)+3,P.t+9,dp.event==='grammar'?'🧬':'⚑');});
   } else txt(s1,W/2-30,H/2,'no cycles yet');
 
   // chart 2: RLVR
@@ -113,18 +170,18 @@ async function load(){
   // failure journal
   $('les').innerHTML = d.lessons && d.lessons.length ?
     '<table><tr><th>task</th><th>outcome</th><th>lesson (self-authored)</th></tr>'+
-    d.lessons.slice().reverse().map(x=>`<tr><td class="d">${x.task}</td>
+    d.lessons.slice().reverse().map(x=>`<tr><td class="d">${esc(x.task)}</td>
       <td class="${x.completed?'g':'r'}">${x.completed?'✅ '+x.iters+' iters':'❌ '+x.iters+' iters'}</td>
-      <td style="font-style:italic">"${x.lesson}"</td></tr>`).join('')+'</table>'
+      <td style="font-style:italic">"${esc(x.lesson)}"</td></tr>`).join('')+'</table>'
     :'<span class="d">no lessons yet — first cycle with the journal lands soon</span>';
 
   // policy table
   const pk=Object.keys(d.policies).sort();
   $('tbl').innerHTML='<table><tr><th>policy</th><th>worlds</th><th>solved</th><th>rate</th><th>avg iters</th></tr>'+
-    pk.map(p=>{const b=d.policies[p];return `<tr><td>${p}</td><td>${b.n}</td><td class="g">${b.completed}</td><td>${Math.round(100*b.completed/b.n)}%</td><td>${b.avg_iters}</td></tr>`}).join('')+'</table>';
+    pk.map(p=>{const b=d.policies[p];return `<tr><td>${esc(p)}</td><td>${b.n}</td><td class="g">${b.completed}</td><td>${Math.round(100*b.completed/b.n)}%</td><td>${b.avg_iters}</td></tr>`}).join('')+'</table>';
 
   $('led').innerHTML=d.deploys.length?'<table><tr><th>time</th><th>event</th><th>detail</th></tr>'+
-    d.deploys.map(x=>`<tr><td class="d">${x.t}</td><td class="${x.event==='deploy'?'gold':'r'}">${x.event}</td><td class="d">${x.reason||(''+(x.rate_before??'')+' → '+(x.rate_after??''))}</td></tr>`).join('')+'</table>'
+    d.deploys.slice().reverse().map(x=>`<tr><td class="d">${esc(x.t)}</td><td class="${x.event==='deploy'?'gold':x.event==='grammar'?'p':'r'}">${esc(x.event)}${x.variant?' → '+esc(x.variant):''}</td><td class="d">${esc(x.reason||(''+(x.rate_before??'')+' → '+(x.rate_after??'')))}</td></tr>`).join('')+'</table>'
     :'<span class="d">no decisions yet — accumulating evidence</span>';
  }catch(e){$('live').textContent='· offline? '+e.message}
 }
