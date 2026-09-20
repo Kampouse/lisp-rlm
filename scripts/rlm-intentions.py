@@ -61,7 +61,9 @@ def main():
                 break
         stag_boost = 1.0 + min(stag, 30) / 30.0     # 1.0 … 2.0
         priority = round((1.0 - rate) * stag_boost, 3)
-        mastered = rate >= MASTERY
+        # mastery needs evidence: n ≥ WINDOW, else a 1/1 dreamed task
+        # "achieves" instantly and gets archived on a coin flip
+        mastered = rate >= MASTERY and len(ws) >= WINDOW
         kind = "perpetual" if mastered else "completable"
 
         # done-when fired? (was completable, now ≥ 90%)
