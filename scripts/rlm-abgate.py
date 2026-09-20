@@ -100,9 +100,12 @@ def main():
             log({"event": "ab_reject", "rate_on": round(on, 3),
                  "rate_off": round(off, 3)})
             print(f"abgate: REJECTED (on {on:.0%} vs off {off:.0%})")
-            for p in (INSTALLED, INSTALLED + ".held"):
-                if os.path.exists(p):
-                    os.remove(p)
+            # drop the candidate + held copy, but leave a stub, NOT a gap —
+            # every task file hard-loads this path; a missing file killed
+            # whole cycles at load time (twice now: 10:45, 16:28)
+            if os.path.exists(INSTALLED + ".held"):
+                os.remove(INSTALLED + ".held")
+            open(INSTALLED, "w").write(";; stub — held by abgate (off arm)\n")
             save({"phase": "idle"})
     else:
         print(f"abgate: arm={arm} on {st['solved_on']}/{st['n_on']} "
