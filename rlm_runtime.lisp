@@ -251,6 +251,18 @@
 ;; 2. CONTEXT BUILDER
 ;; Only sends metadata + state, never the full prompt
 ;; ============================================================
+(define (escalation-and-cheatsheet a)
+  ;; fb (one-shot gate feedback) + cheatsheet + escalation, hoisted into a
+  ;; simple helper — nested try/if inside str-concat args made the CPS
+  ;; compiler emit a pathological loop (1M-eval burn before iteration 1)
+  (let ((fb (rlm-get __gate_feedback))
+        (cheat (try (read-file "data/rlm/dream/cheatsheet.txt") (catch e ""))))
+    (begin
+      (if (and fb (not (= fb ""))) (rlm-set __gate_feedback ""))
+      (str-concat
+        (if (and fb (not (= fb ""))) fb "")
+        "\n" cheat "\n" (build-escalation a)))))
+
 (define (rlm-build-context _sa)
   (let ((task (rlm-get prompt))
         (iter (rlm-get iteration))
@@ -266,11 +278,7 @@
       "Current iteration: " (to-string iter) "\n"
       "Current result so far: " (to-string final_val) "\n\n"
       "Recent execution log:\n" (to-string log) "\n"
-      (let ((fb (rlm-get __gate_feedback)))
-        (if (and fb (not (= fb "")))
-          (begin (rlm-set __gate_feedback "") fb)
-          ""))
-      (build-escalation (rlm-get __q_a))
+      (escalation-and-cheatsheet (rlm-get __q_a))
       "\nGenerate ONE Lisp expression to execute. You can:\n"
       "- Use (rlm-set key value) to store results (bare symbol keys, no quoting)\n"
       "- Use (rlm-set Final t) and (rlm-set result <val>) when done\n"
@@ -326,6 +334,7 @@
 
 (define (rlm-step)
   (begin
+    (reset-eval-budget)
     (snapshot)
     (let ((qa (q-choose)))
       (let ((ctx (rlm-build-context qa)))

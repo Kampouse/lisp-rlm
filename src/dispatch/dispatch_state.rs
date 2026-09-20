@@ -305,6 +305,13 @@ pub fn handle(
         }
 
         // --- Clock ---
+        "reset-eval-budget" => {
+            // Budget bounds ONE agent submission: rlm-step resets before each
+            // eval so a runaway loop kills that submission (caught by try →
+            // honest ERROR) instead of starving the whole process forever.
+            state.eval_count = 0;
+            Ok(Some(LispVal::Bool(true)))
+        }
         "now" => {
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

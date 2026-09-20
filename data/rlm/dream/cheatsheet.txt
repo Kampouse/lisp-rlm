@@ -1,0 +1,25 @@
+AVAILABLE BUILTINS (exact names, exact arg order):
+(equal? a b) — Deep structural equality.
+(list a b ...) — Create a list.
+(car lst) — First element of list.
+(cdr lst) — Rest of list.
+(cons head tail) — Prepend to list.
+(append l1 l2) — Concatenate lists.
+(reverse lst) — Reverse a list.
+(sort lst) — Sort numbers (ascending) or strings (lexicographic).
+(zip l1 l2) — Zip two lists into pairs.
+(map f lst) — Apply f to each element, return new list.
+(filter pred lst) — Keep elements matching predicate.
+(reduce f init lst) — Fold left: f(accumulator, element).
+(str-split s delim) — Split string by delimiter.
+(str-trim s) — Trim whitespace.
+(str-join sep lst) — Join list of strings with separator. Separator FIRST.
+(string? x) — Is x a string?
+(map? x) — Is x a dict?
+(empty? x) — Is list/string empty?
+(dict/keys d) — List of keys.
+(dict/vals d) — List of values.
+(read-file path) — Read file contents as string.
+(write-file path content) — Write string to file.
+(apply f arg1 ... arglist) — Apply function to spread args.
+(type-of x) — Return type name as string.

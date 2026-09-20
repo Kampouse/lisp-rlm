@@ -378,6 +378,11 @@ fn eval_and_print_inner(code: &str, verbose: bool) {
     let mut result = LispVal::Nil;
     let start = Instant::now();
     for (i, expr) in exprs.iter().enumerate() {
+        // Budget bounds ONE form's evaluation, not the process: an agent
+        // runaway loop burns its 1M inside rlm-step's try (honest ERROR
+        // result); without the reset every subsequent form — including
+        // retry-with-feedback rounds — starves instantly on a spent budget.
+        state.eval_count = 0;
         if verbose {
             eprintln!("[{}] {:?}", i, truncate_display(expr, 80));
         }

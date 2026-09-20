@@ -219,6 +219,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "inexact->exact",
     // Runtime
     "now",
+    "reset-eval-budget",
     "elapsed",
     "sleep",
     "save-state",
