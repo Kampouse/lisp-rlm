@@ -13,6 +13,7 @@
 (define SCOREBOARD (read-file-or "data/rlm/dream/scoreboard.txt" "no data"))
 (define DOCS (read-file-or "data/rlm/dream/docs.txt" ""))
 (define OLD (read-file-or "scripts/rlm-tasks/tactics.txt" ""))
+(define CORRECTIONS (read-file-or "data/rlm/dream/facts-corrections.txt" ""))
 
 (define PROPOSAL
   (llm (str-concat
@@ -23,6 +24,9 @@
     "TRUE BUILTIN SIGNATURES (the ground truth — never contradict these):\n"
     (str-substring DOCS 0 1500) "\n\n"
     "CURRENT TACTICS:\n" OLD "\n\n"
+    (if (> (str-length CORRECTIONS) 0)
+      (str-concat "YOUR RECENT WRONG BELIEFS (machine-verified — you MUST correct these in the new tactics):\n" CORRECTIONS "\n\n")
+      "")
     "Rewrite the tactics file. Rules:\n"
     "- 4-8 bullet lines, each starting with '- '\n"
     "- 100-600 characters total\n"
