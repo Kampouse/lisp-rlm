@@ -303,15 +303,13 @@ fn run_expr_group(
         None,
     )
     .ok_or_else(|| {
+        let cause = crate::bytecode::LAST_COMPILE_ERROR
+            .with(|c| c.borrow().clone())
+            .unwrap_or_else(|| format!("expression = {:?}", body));
+        crate::bytecode::LAST_COMPILE_ERROR.with(|c| *c.borrow_mut() = None);
         format!(
-            let cause = crate::bytecode::LAST_COMPILE_ERROR
-                .with(|c| c.borrow().clone())
-                .unwrap_or_else(|| format!("expression = {:?}", body));
-            crate::bytecode::LAST_COMPILE_ERROR.with(|c| *c.borrow_mut() = None);
-            format!(
-                "run_program: compilation failed for body expression(s): {}",
-                cause
-            )
+            "run_program: compilation failed for body expression(s): {}",
+            cause
         )
     })?;
 
