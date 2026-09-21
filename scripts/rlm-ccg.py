@@ -64,9 +64,9 @@ def err_fields(s):
     return (parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "")
 
 
-def digest(code):
+def digest(code, limit=MAX_CODE):
     c = (code or "").replace("\n", " ")
-    return c[:MAX_CODE]
+    return c[:limit]
 
 
 def build():
@@ -91,7 +91,10 @@ def build():
             st["nodes"][nid] = {
                 "task": tid, "i": i, "ok": bool(n.get("ok")),
                 "act": n.get("a"), "cls": cls, "fn": fn,
-                "code": digest(n.get("code", "")),
+                "code": digest(n.get("code", ""), 110),
+                # full code kept for SOLVED memory lines (a truncated
+                # solution taught t2 a half-solution on 2026-09-21)
+                "code_full": digest(n.get("code", ""), 260),
                 "out": out[:MAX_OUT],
                 "corr": f"use {dym.group(1)}" if dym else "",
                 "ep_ok": bool(w.get("completed")),
@@ -140,7 +143,7 @@ def build():
 
     st["processed"] = sorted(done)[-4000:]
     json.dump(st, open(os.path.join(CCG, "graph.json"), "w"), indent=0)
-    write_hints(by_task)
+    write_hints(by_task, st["nodes"])
     with open(LEDGER, "a") as f:
         f.write(json.dumps({"event": "ccg", "ts": __import__("time").time(),
                             "nodes": len(st["nodes"]), "edges": len(st["edges"]),
@@ -149,7 +152,7 @@ def build():
           f"(+{new_nodes}/+{new_edges}), hints for {len(by_task)} tasks")
 
 
-def write_hints(by_task):
+def write_hints(by_task, nodes):
     for tid, items in by_task.items():
         items.sort(key=lambda x: x[0])
         fails = [(nid, nd) for nid, nd in items if not nd["ok"]][-3:]
@@ -163,7 +166,10 @@ def write_hints(by_task):
             corr = f" → CORRECTION: {nd['corr']}" if nd["corr"] else ""
             lines.append(f"- FAIL it{nd['i']}: {nd['code']} → {nd['out'][:60]}{corr}")
         for nid, nd in oks:
-            lines.append(f"- SOLVED ONCE WITH: {nd['code']}")
+            # full shape — a truncated solution teaches a half-solution
+            # (t2 learned reverse-without-rejoin from a 70-char digest)
+            full = nodes[nid].get("code_full") or nd["code"]
+            lines.append(f"- SOLVED ONCE WITH (complete): {full}")
         # cross-task same-disease corrections
         seen = set()
         for nid, nd in sorted(items, key=lambda x: x[0])[-6:]:
