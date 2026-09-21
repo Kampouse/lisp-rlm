@@ -252,16 +252,18 @@
 ;; Only sends metadata + state, never the full prompt
 ;; ============================================================
 (define (escalation-and-cheatsheet a)
-  ;; fb (one-shot gate feedback) + cheatsheet + escalation, hoisted into a
-  ;; simple helper — nested try/if inside str-concat args made the CPS
-  ;; compiler emit a pathological loop (1M-eval burn before iteration 1)
+  ;; fb (one-shot gate feedback) + cheatsheet + CCG memory + escalation,
+  ;; hoisted into a simple helper — nested try/if inside str-concat args
+  ;; made the CPS compiler emit a pathological loop (1M-eval burn before
+  ;; iteration 1). mem = per-task cross-episode decision memory (CCG lane).
   (let ((fb (rlm-get __gate_feedback))
-        (cheat (try (read-file "data/rlm/dream/cheatsheet.txt") (catch e ""))))
+        (cheat (try (read-file "data/rlm/dream/cheatsheet.txt") (catch e "")))
+        (mem (try (read-file (str-concat "data/rlm/ccg/" (q-task-tag) ".txt")) (catch e ""))))
     (begin
       (if (and fb (not (= fb ""))) (rlm-set __gate_feedback ""))
       (str-concat
         (if (and fb (not (= fb ""))) fb "")
-        "\n" cheat "\n" (build-escalation a)))))
+        "\n" cheat "\n" mem "\n" (build-escalation a)))))
 
 (define (rlm-build-context _sa)
   (let ((task (rlm-get prompt))
