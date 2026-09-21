@@ -47,6 +47,7 @@
     (rlm-set __last_out "")
     (rlm-set __repeat_count 0)
     (rlm-set __err_streak 0)
+    (rlm-set __phantom_bounces 0)
     (rlm-set __must_decompose nil)
     (rlm-set __stop false)
     ;; Exploration policy knobs (policy.lisp MUST define these; the
@@ -334,6 +335,64 @@
         "")
       "\n\nTASK CONTEXT:\n" ctx)))
 
+
+;; ============================================================
+;; 3a. PRE-FLIGHT PHANTOM LINT (CCG lane, 2026-09-21)
+;; Known-phantom calls (real builtin + "?" suffix, e.g. member?)
+;; bounce BEFORE eval — free resubmit, no iteration burn (≤2/episode).
+;; NOTE: eager compiler — defines below are strictly order-respecting,
+;; no forward refs, no mutual recursion (single walker `lp`).
+;; known-fns.txt generated from kernel sources: scripts/gen-known-fns.py
+;; ============================================================
+(define KNOWN_FNS nil)
+
+(define (known-fns!)
+  (if KNOWN_FNS nil
+    (set! KNOWN_FNS
+      (filter (fn (l) (> (str-length l) 0))
+        (map (fn (l) (str-trim l))
+          (str-split (try (read-file "data/rlm/ccg/known-fns.txt") (catch e "")) "\n"))))))
+
+(define (known-fn? s defs)
+  (or (member s KNOWN_FNS) (member s defs)))
+
+;; phantom check for one form's head; false = clean
+(define (lp-head f defs)
+  (let ((h (to-string (car f))))
+    (if (known-fn? h defs) false
+      (if (and (> (str-length h) 1)
+               (equal? (str-substring h (- (str-length h) 1) (str-length h)) "?")
+               (known-fn? (str-substring h 0 (- (str-length h) 1)) defs))
+        (str-concat h " does not exist — did you mean '" (str-substring h 0 (- (str-length h) 1)) "'? (known phantom from past episodes; resubmit with the real name)")
+        false))))
+
+;; walk a list of forms; skips quoted data; descends into define bodies
+(define (lp forms defs)
+  (if (= (len forms) 0) false
+    (let ((f (car forms)))
+      (if (not (list? f)) (lp (cdr forms) defs)
+        (if (= (len f) 0) (lp (cdr forms) defs)
+          (if (equal? (car f) (quote quote)) (lp (cdr forms) defs)
+            (if (equal? (car f) (quote define))
+              (let ((r (lp (cdr (cdr f)) defs)))
+                (if r r (lp (cdr forms) defs)))
+              (let ((r (lp-head f defs)))
+                (if r r (lp (cdr f) defs))))))))))
+
+(define (collect-defines forms acc)
+  (if (= (len forms) 0) acc
+    (let ((f (car forms)))
+      (if (and (list? f) (>= (len f) 2) (equal? (car f) (quote define)) (list? (car (cdr f))))
+        (collect-defines (cdr forms) (cons (to-string (car (car (cdr f)))) acc))
+        (collect-defines (cdr forms) acc)))))
+
+(define (lint-phantom code)
+  (known-fns!)
+  (let ((forms (try (read-all code) (catch e nil))))
+    (if (= (len forms) 0) false
+      (let ((defs (collect-defines forms (list))))
+        (lp forms defs)))))
+
 (define (rlm-step)
   (begin
     (reset-eval-budget)
@@ -341,6 +400,20 @@
     (let ((qa (q-choose)))
       (let ((ctx (rlm-build-context qa)))
         (let ((code (parse-fix ctx (llm-retry ctx))))
+          ;; PRE-FLIGHT PHANTOM LINT (CCG lane): a known phantom call
+          ;; (real builtin + "?" suffix, e.g. member?) bounces for FREE —
+          ;; no iteration burn, ≤2 bounces/episode, traced for memory.
+          (let ((lint (lint-phantom code)))
+            (if (and lint (< (rlm-get __phantom_bounces) 2))
+              (begin
+                (rlm-set __phantom_bounces (+ (rlm-get __phantom_bounces) 1))
+                (rlm-set __last_code code)
+                (rlm-set __last_out (str-concat "ERROR: " lint))
+                (rlm-set __trace_nodes
+                  (append (rlm-get __trace_nodes)
+                    (list (trace-node-json (rlm-get iteration) code false (rlm-get __last_out) (rlm-get __q_s) qa))))
+                (println (str-concat "[RLM " (to-string (rlm-get iteration)) "] PHANTOM-BOUNCE (free resubmit)"))
+                (rlm-get __last_out))
           ;; FORCE GATE: decompose action OR task-level must-decompose flag —
           ;; the next expression MUST contain a sub-rlm delegation or it bounces.
           (if (and (or (equal? qa "decompose") (rlm-get __must_decompose))
@@ -393,7 +466,7 @@
             (if is-error
               (println (str-concat "[RLM " (to-string (rlm-get iteration)) "] ERR - retrying"))
               (println (str-concat "[RLM " (to-string (rlm-get iteration)) "] OK")))
-            exec-result))))))))
+            exec-result))))))))))
 
 ;; ============================================================
 ;; 4. MAIN LOOP
