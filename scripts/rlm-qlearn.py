@@ -82,12 +82,19 @@ def episodes():
         nodes = w.get("nodes", [])
         if not nodes or not all("s" in n and "a" in n for n in nodes):
             continue  # pre-Q world
+        for n in nodes:  # dream-action installs custom actions at runtime;
+            a = n.get("a")  # the action set must follow what actually ran
+            if a and a not in ACTIONS:
+                ACTIONS.append(a)
         yield w, nodes
 
 
+RECENT_EPISODES = 80  # ~ today's runtime generation; see note above
+
 def learn(q):
     visits = {}
-    for w, nodes in episodes():
+    eps = sorted(episodes(), key=lambda wn: wn[0].get("ts", 0))
+    for w, nodes in eps[-RECENT_EPISODES:]:
         completed = bool(w.get("completed"))
         seen_codes = set()
         T = len(nodes)
@@ -105,22 +112,21 @@ def learn(q):
             visits[s] = visits.get(s, 0) + 1
             novel = n.get("code", "") not in seen_codes
             seen_codes.add(n.get("code", ""))
-            if t == T - 1:
-                # partial credit: near-miss answers earn up to PARTIAL_R —
-                # silent-wrong states get gradient instead of a flat cliff
-                part = partial_score(w.get("answer"),
-                                     EXPECTED.get(w.get("task_id")))
-                r = STEP_R + (SOLVE_R if completed
-                              else FAIL_R + PARTIAL_R * part) + \
-                    (NOVEL_R if novel else 0)
-                target = r
-            else:
-                r = STEP_R + (NOVEL_R if novel else 0)
-                s2_raw = nodes[t + 1].get("s", "")
-                s2 = s2_raw if s2_raw.startswith(tid + "|") else f"{tid}|{s2_raw}"
-                nxt = q.get(s2, {})
-                target = r + GAMMA * max([nxt.get(x, 0.0) for x in ACTIONS])
-            q[s][a] += ALPHA * (target - q[s][a])
+            # Terminal reward once (partial credit: near-miss answers earn
+            # up to PARTIAL_R — silent-wrong states get gradient not cliff)
+            part = partial_score(w.get("answer"),
+                                 EXPECTED.get(w.get("task_id")))
+            term_r = (SOLVE_R if completed
+                      else FAIL_R + PARTIAL_R * part)
+            # MONTE-CARLO target: observed future return. TD bootstrapping
+            # (r + gamma*max Q(s')) reads zeros for unseen successor states —
+            # with n≈1-3 visits per (s,a) the table never moved. MC credits
+            # every visited (s,a) with the outcome actually observed, so one
+            # episode lights up its whole path. Visits average in over time.
+            r = STEP_R + (NOVEL_R if novel else 0)
+            target = r + max(0, T - 1 - t) * STEP_R + term_r
+            cur = q[s].get(a, 0.0)
+            q[s][a] = cur + ALPHA * (target - cur)
     return q, visits
 
 
@@ -151,6 +157,14 @@ def main():
     n_states = len(q)
     write_lisp(q, visits)
     save_q(q)
+    # worst states (low-value, high-signal) — refreshed EVERY qlearn pass
+    # so the dashboard/mutators never see a stale morning table
+    rows = sorted(((max(v.values()) if v else 0.0, s) for s, v in q.items()))
+    try:
+        with open(os.path.join(os.path.dirname(LEDGER), "worst-states.txt"), "w") as f:
+            f.write("\n".join(f"{s} — best Q: {b:.2f}" for b, s in rows[:6]))
+    except Exception:
+        pass
     with open(LEDGER, "a") as f:
         f.write(json.dumps({"event": "qlearn", "ts": __import__("time").time(),
                             "states": n_states,
