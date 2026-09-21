@@ -236,9 +236,13 @@ pub fn run_program(
                     pure_type.as_deref(),
                 )
                 .ok_or_else(|| {
+                    let cause = crate::bytecode::LAST_COMPILE_ERROR
+                        .with(|c| c.borrow().clone())
+                        .unwrap_or_else(|| format!("expression = {:?}", val_expr));
+                    crate::bytecode::LAST_COMPILE_ERROR.with(|c| *c.borrow_mut() = None);
                     format!(
-                        "run_program: compilation failed for define '{}' = {:?}",
-                        name, val_expr
+                        "run_program: compilation failed for define '{}': {}",
+                        name, cause
                     )
                 })?;
 
@@ -300,8 +304,14 @@ fn run_expr_group(
     )
     .ok_or_else(|| {
         format!(
-            "run_program: compilation failed for body expression(s): {:?}",
-            body
+            let cause = crate::bytecode::LAST_COMPILE_ERROR
+                .with(|c| c.borrow().clone())
+                .unwrap_or_else(|| format!("expression = {:?}", body));
+            crate::bytecode::LAST_COMPILE_ERROR.with(|c| *c.borrow_mut() = None);
+            format!(
+                "run_program: compilation failed for body expression(s): {}",
+                cause
+            )
         )
     })?;
 

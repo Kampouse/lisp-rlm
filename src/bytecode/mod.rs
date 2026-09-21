@@ -9,6 +9,50 @@ pub use types::*;
 use crate::helpers::is_truthy;
 use crate::types::{Env, EvalState, LispVal, NearContract};
 
+thread_local! {
+    /// Last compile failure cause (unknown function etc.) — surfaced by
+    /// run_program instead of an opaque AST dump, so the agent can
+    /// self-correct mid-episode ("member?" → member).
+    pub static LAST_COMPILE_ERROR: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn set_compile_error(msg: String) {
+    LAST_COMPILE_ERROR.with(|c| *c.borrow_mut() = Some(msg.clone()));
+    eprintln!("compile error: {}", msg);
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for i in 1..=a.len() {
+        cur[0] = i;
+        for j in 1..=b.len() {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+fn suggest_builtin(name: &str) -> Option<&'static str> {
+    let mut best: Option<(usize, &'static str)> = None;
+    for b in crate::helpers::BUILTIN_NAMES.iter() {
+        let d = levenshtein(name, b);
+        if best.map_or(true, |(bd, _)| d < bd) {
+            best = Some((d, b));
+        }
+    }
+    match best {
+        // close enough to be a likely typo/phantom of a real builtin
+        Some((d, b)) if d <= 2.max(name.len() / 3) => Some(b),
+        _ => None,
+    }
+}
+
 fn replace_sym_call(expr: &LispVal, old_name: &str, new_name: &str) -> LispVal {
     match expr {
         LispVal::List(list) => {
@@ -2114,11 +2158,16 @@ impl LoopCompiler {
                                     self.code.push(Op::BuiltinCall("list".to_string(), list.len()));
                                     return true;
                                 }
-                                // Unknown non-keyword head — hard error.
-                                eprintln!(
-                                    "compile error: unknown function or special form '{}' in ({} ...)",
-                                    op, op
-                                );
+                                // Unknown non-keyword head — hard error, with a
+                                // did-you-mean so agents can self-correct.
+                                let hint = match suggest_builtin(op) {
+                                    Some(b) => format!(" — did you mean '{}'?", b),
+                                    None => String::new(),
+                                };
+                                set_compile_error(format!(
+                                    "unknown function or special form '{}'{}",
+                                    op, hint
+                                ));
                                 return false;
                             }
                             // Check for inline dict ops first
