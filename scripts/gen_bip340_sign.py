@@ -1,325 +1,469 @@
 #!/usr/bin/env python3
-"""gen_bip340_sign.py — emits BIP-340 Schnorr SIGN in raw lisp-rlm.
+# gen_bip340_sign.py — BIP340 signing for shamod.lisp via TWO-PHASE protocol.
+#
+# Runtime finding (2026-09-20): ONE scalar mult per inlayer run works; a SECOND
+# mult in the same run traps (reproduced across sc-mul-gp/sc-mul-g2, limbs/lanes).
+# Protocol therefore splits: run A computes P = d*G (pk hex + y-parity flip bit),
+# run B computes R = k*G and s (k = tagged_hash(pk) is d-independent).
+#
+# Run A: {"case":"D","dbg":"P","sk":...}                 -> "pkhex|flipchar"
+# Run B: {"case":"D","dbg":"*","sk":...,"pk":...,"df":..} -> per-leg or "rhex|shex"
+# Sign:  {"case":"S","sk":...,"msg":...}  -> single-run full sign: EXPECTED TRAP
+#         (kept deliberately as the standing probe for the two-mult limit).
+#
+# Conventions learned the hard way:
+# - fe-words-be returns BE limb list (element 0 = most significant) => parity bit
+#   lives in element 8 (bit 0 of the last limb), NOT 7.
+# - words-hex renders the list in order => to emit the NUMBER kflip, put it in
+#   the LAST of 9 limbs: (list 0 0 0 0 0 0 0 0 kflip).
+# - callees must be defined before callers (compiler rejects forward refs).
+import re, subprocess, json, hashlib, sys, os
 
-Reuses the proven core (gen_bip340.py structure, SHA-256 stripped — runtime
-`sha256-hash` builtin covers all hashing) and adds:
-  - fe-muln: second Montgomery domain mod n (scalar arithmetic)
-  - sc-mul-small / sc-add-partial: double-and-add mod n
-  - Jacobian point double + mixed add (a=0), lift_x via fe-sqrt
-  - bytes32->limbs, words->hex, nonce gen via builtin sha
-Output: /tmp/nostr_probe/sign_lib.lisp (library only; driver appended by tests)
-"""
-import hashlib
+SRC = '/tmp/nostr_probe/shamod.lisp'
+OUT_LISP = '/tmp/nostr_probe/bip340.lisp'
+OUT_WASM = '/tmp/nostr_probe/bip340.wasm'
+NC = '/Users/asil/dev/lisp-rlm/target/release/near-compile'
+B = '/Users/asil/.local/bin/inlayer'
+D = '/tmp/nostr_probe'
 
-LIMB, NL, M = 30, 9, (1 << 30) - 1
+src = open(SRC).read()
+names = re.findall(r'^\(define \(([\w\-?>]+)', src, re.M)
+for dep in ['sc-mul-g2', 'sc-from-hex', 'words->limbs', 'fe-words-be', 'words-hex',
+            'fe-sqrt', 'c-pm2', 'c-r2', 'c-sevenm', 'fa', 'fs', 'bword', 'bat', 'zs',
+            'len8', 'sched16', 'sha-h1', 'sha-h2', 'c-h0', 'sc-negv',
+            'sc-addv', 'sc-redv', 'fmn', 'fm', 'hexc', 'w24v',
+            'pt-dbl', 'my-add']:
+    if dep not in names:
+        print(f"missing dep: {dep}"); sys.exit(1)
+# band/shr/hex-decode are compiler builtins (not Lisp defs) — used without assert.
 
+def parens_balanced(s):
+    d, instr, esc = 0, False, False
+    for ch in s:
+        if esc:
+            esc = False; continue
+        if ch == '\\':
+            esc = True; continue
+        if ch == '"':
+            instr = not instr; continue
+        if instr:
+            continue
+        if ch == '(':
+            d += 1
+        elif ch == ')':
+            d -= 1
+            if d < 0:
+                return False
+    return d == 0
+
+def sha_fixed():
+    return '''(define (padlen s n)
+  (str-cat s (hex-decode "80") (zs (- (- (* 64 (+ 1 (/ (+ n 8) 64))) n) 9)) (len8 (* 8 n))))
+(define (sha-n-blocks sp nb b H)
+  (let* ((j0 (* b 64))
+         (blk (list (bword sp j0 0)
+                    (bword sp (+ j0 4) 0)
+                    (bword sp (+ j0 8) 0)
+                    (bword sp (+ j0 12) 0)
+                    (bword sp (+ j0 16) 0)
+                    (bword sp (+ j0 20) 0)
+                    (bword sp (+ j0 24) 0)
+                    (bword sp (+ j0 28) 0)
+                    (bword sp (+ j0 32) 0)
+                    (bword sp (+ j0 36) 0)
+                    (bword sp (+ j0 40) 0)
+                    (bword sp (+ j0 44) 0)
+                    (bword sp (+ j0 48) 0)
+                    (bword sp (+ j0 52) 0)
+                    (bword sp (+ j0 56) 0)
+                    (bword sp (+ j0 60) 0)))
+         (sch (sched16 blk))
+         (H1 (sha-h2 sch (sha-h1 sch H) H)))
+    (if (= (+ b 1) nb)
+        (words-hex H1)
+        (sha-n-blocks sp nb (+ b 1) H1))))
+(define (sha-fixed s n)
+  (sha-n-blocks (padlen s n) (/ (+ n 72) 64) 0 (c-h0 0)))
+(define (tag-hash-fixed tg s n)
+  (let* ((th (sha-fixed tg (str-len tg)))
+         (tb (hex-decode th)))
+    (sha-fixed (str-cat tb (str-cat tb s)) (+ 64 n))))'''
+
+# mul returning the Jacobian triple (file sc-mul-g ladder shape; triple kept).
+MULGP = '''(define (sc-mul-gp k)
+  (loop ((X (c-zero 0)) (Y (c-zero 0)) (Z (c-zero 0)) (i 255))
+    (let* ((dbl (pt-dbl X Y Z))
+           (bit (band (shr (vec-nth k (/ i 30)) (mod i 30)) 1))
+           (sum (if (= bit 1)
+                    (my-add (vec-nth dbl 0) (vec-nth dbl 1) (vec-nth dbl 2))
+                    dbl)))
+      (if (< i 1)
+          sum
+          (recur (vec-nth sum 0) (vec-nth sum 1) (vec-nth sum 2) (- i 1))))))'''
+
+AFF = '''(define (aff-x X Y Z)
+  (let ((Zi (fe-pow Z (c-pm2 0))))
+    (fm X (fm Zi Zi))))
+(define (aff-y X Y Z)
+  (let ((Zi (fe-pow Z (c-pm2 0))))
+    (fm Y (fm Zi (fm Zi Zi)))))'''
+
+# BUG FIX (2026-09-20, root-caused via limb-exact Python port of sc-addmod):
+# shamod's sc-addmod comparator g walks limbs LSB-FIRST (d0>n0 alone fires
+# "greater"), so a sum already < n gets n subtracted anyway -> s + 2^270 - n,
+# rendered (256-bit fe-words-be) as s + 2^128 - n_lo128. sc-reduce compares
+# MSB-first (correct). Fix: plain 9-limb carry add (no conditional subtract)
+# + sc-redv. Domain note: kuse, ed < n < 2^256 => sum < 2^257 fits 9x30-bit
+# limbs; top limb stays < 2^18, no overflow.
+MYADD = '''(define (sc-add-raw a b)
+  (let ((v 0) (c 0) (r0 0) (r1 0) (r2 0) (r3 0) (r4 0) (r5 0) (r6 0) (r7 0) (r8 0))
+    (begin
+    (set! v (+ (vec-nth a 0) (vec-nth b 0)))
+    (set! r0 (band v 1073741823))
+    (set! c (shr v 30))
+    (set! v (+ (+ (vec-nth a 1) (vec-nth b 1)) c))
+    (set! r1 (band v 1073741823))
+    (set! c (shr v 30))
+    (set! v (+ (+ (vec-nth a 2) (vec-nth b 2)) c))
+    (set! r2 (band v 1073741823))
+    (set! c (shr v 30))
+    (set! v (+ (+ (vec-nth a 3) (vec-nth b 3)) c))
+    (set! r3 (band v 1073741823))
+    (set! c (shr v 30))
+    (set! v (+ (+ (vec-nth a 4) (vec-nth b 4)) c))
+    (set! r4 (band v 1073741823))
+    (set! c (shr v 30))
+    (set! v (+ (+ (vec-nth a 5) (vec-nth b 5)) c))
+    (set! r5 (band v 1073741823))
+    (set! c (shr v 30))
+    (set! v (+ (+ (vec-nth a 6) (vec-nth b 6)) c))
+    (set! r6 (band v 1073741823))
+    (set! c (shr v 30))
+    (set! v (+ (+ (vec-nth a 7) (vec-nth b 7)) c))
+    (set! r7 (band v 1073741823))
+    (set! c (shr v 30))
+    (set! v (+ (+ (vec-nth a 8) (vec-nth b 8)) c))
+    (set! r8 (band v 1073741823))
+    (list r0 r1 r2 r3 r4 r5 r6 r7 r8))))
+'''
+
+# BUG #2 (shamod, 2026-09-20): fe-muln is value-dependently WRONG (low ~128
+# bits corrupt on some operands; high bits exact; throwaway-msg e fine, nostr
+# event-id e corrupt; fmn(e, c-none) itself corrupts). Evidence: runN/runO
+# legs eM/fmn1/ed. Route-around: shift-and-add mod-n multiply using ONLY
+# proven primitives (sc-add-raw, sc-redv, band/shr) — same ladder shape as
+# the proven sc-mul-gp. 256 iterations, i=255..0 covers all 256 bits of e.
+MULMODN = '''(define (sc-mulmod-n a b)
+  (loop ((acc (list 0 0 0 0 0 0 0 0 0)) (i 255))
+    (let* ((acc2 (sc-redv (sc-add-raw acc acc)))
+           (bit (band (shr (vec-nth b (/ i 30)) (mod i 30)) 1))
+           (acc3 (if (= bit 1) (sc-redv (sc-add-raw acc2 a)) acc2)))
+      (if (= i 0) acc3 (recur acc3 (- i 1))))))'''
+
+BIP = '''(define (c-zb _d) (hex-decode "0000000000000000000000000000000000000000000000000000000000000000"))\n(define (byte-hex x) (str-cat (hexc (shr (band x 255) 4)) (hexc (band x 15))))\n(define (xorb-str a b) (hex-decode (str-cat (byte-hex (xor32 (byte-at a 0) (byte-at b 0))) (byte-hex (xor32 (byte-at a 1) (byte-at b 1))) (byte-hex (xor32 (byte-at a 2) (byte-at b 2))) (byte-hex (xor32 (byte-at a 3) (byte-at b 3))) (byte-hex (xor32 (byte-at a 4) (byte-at b 4))) (byte-hex (xor32 (byte-at a 5) (byte-at b 5))) (byte-hex (xor32 (byte-at a 6) (byte-at b 6))) (byte-hex (xor32 (byte-at a 7) (byte-at b 7))) (byte-hex (xor32 (byte-at a 8) (byte-at b 8))) (byte-hex (xor32 (byte-at a 9) (byte-at b 9))) (byte-hex (xor32 (byte-at a 10) (byte-at b 10))) (byte-hex (xor32 (byte-at a 11) (byte-at b 11))) (byte-hex (xor32 (byte-at a 12) (byte-at b 12))) (byte-hex (xor32 (byte-at a 13) (byte-at b 13))) (byte-hex (xor32 (byte-at a 14) (byte-at b 14))) (byte-hex (xor32 (byte-at a 15) (byte-at b 15))) (byte-hex (xor32 (byte-at a 16) (byte-at b 16))) (byte-hex (xor32 (byte-at a 17) (byte-at b 17))) (byte-hex (xor32 (byte-at a 18) (byte-at b 18))) (byte-hex (xor32 (byte-at a 19) (byte-at b 19))) (byte-hex (xor32 (byte-at a 20) (byte-at b 20))) (byte-hex (xor32 (byte-at a 21) (byte-at b 21))) (byte-hex (xor32 (byte-at a 22) (byte-at b 22))) (byte-hex (xor32 (byte-at a 23) (byte-at b 23))) (byte-hex (xor32 (byte-at a 24) (byte-at b 24))) (byte-hex (xor32 (byte-at a 25) (byte-at b 25))) (byte-hex (xor32 (byte-at a 26) (byte-at b 26))) (byte-hex (xor32 (byte-at a 27) (byte-at b 27))) (byte-hex (xor32 (byte-at a 28) (byte-at b 28))) (byte-hex (xor32 (byte-at a 29) (byte-at b 29))) (byte-hex (xor32 (byte-at a 30) (byte-at b 30))) (byte-hex (xor32 (byte-at a 31) (byte-at b 31))))))\n(define (phase-A sk-h)
+  (let* ((d (sc-from-hex sk-h))
+         (P (sc-mul-gp d))
+         (pkhex (words-hex (fe-words-be (fm (aff-x (vec-nth P 0) (vec-nth P 1) (vec-nth P 2)) (c-onep 0)))))
+         (yw (fe-words-be (fm (aff-y (vec-nth P 0) (vec-nth P 1) (vec-nth P 2)) (c-onep 0))))
+         (flip (band (vec-nth yw 7) 1)))
+    (str-cat pkhex (hexc flip))))
+(define (phase-B sk-h mhex pkhex pflip do-sign aux-hex)
+  (let* ((d (sc-from-hex sk-h))
+         (duse (if (= pflip 1) (sc-negv d) d))
+         (pkb (hex-decode pkhex))
+         (mm (hex-decode mhex))
+         (auxb (if (= (str-len aux-hex) 64) (hex-decode aux-hex) (c-zb 0)))
+         (hab (hex-decode (tag-hash-fixed "BIP0340/aux" auxb 32)))
+         (db (hex-decode (words-hex (fe-words-be duse))))
+         (tb (xorb-str db hab))
+         (tn (tag-hash-fixed "BIP0340/nonce" (str-cat tb (str-cat pkb mm)) 96))
+         (kraw (sc-from-hex tn))
+         (knum (sc-reduce (vec-nth kraw 0) (vec-nth kraw 1) (vec-nth kraw 2) (vec-nth kraw 3) (vec-nth kraw 4) (vec-nth kraw 5) (vec-nth kraw 6) (vec-nth kraw 7) (vec-nth kraw 8)))
+         (KP (sc-mul-gp knum))
+         (rhex (words-hex (fe-words-be (fm (aff-x (vec-nth KP 0) (vec-nth KP 1) (vec-nth KP 2)) (c-onep 0)))))
+         (ryw (fe-words-be (fm (aff-y (vec-nth KP 0) (vec-nth KP 1) (vec-nth KP 2)) (c-onep 0))))
+         (kflip (band (vec-nth ryw 7) 1))
+         (kuse (if (= kflip 1) (sc-negv knum) knum))
+         (rXb (hex-decode rhex))
+         (ch (tag-hash-fixed "BIP0340/challenge" (str-cat rXb (str-cat pkb mm)) 96))
+         (eM (sc-from-hex ch))
+         (ed (sc-mulmod-n duse eM))
+         (ssum (sc-add-raw ed kuse))
+         (shex (words-hex (fe-words-be (sc-redv ssum)))))
+    (if (= do-sign 1)
+        (str-cat rhex shex)
+        shex)))'''
+
+def make_dbg():
+    # Nested-if dispatchers assembled programmatically: parens by construction.
+    a_binds = (
+        '  (let* ((d (sc-from-hex (json-get-str "sk" input)))\n'
+        '         (P (sc-mul-gp d))\n'
+        '         (pkhex (words-hex (fe-words-be (fm (aff-x (vec-nth P 0) (vec-nth P 1) (vec-nth P 2)) (c-onep 0)))))\n'
+        '         (yw (fe-words-be (fm (aff-y (vec-nth P 0) (vec-nth P 1) (vec-nth P 2)) (c-onep 0))))\n'
+        '         (flip (band (vec-nth yw 7) 1))\n'
+        '         (duse (if (= flip 1) (sc-negv d) d)))'
+    )
+    e = '(str-cat pkhex (hexc flip))'
+    for code, body in reversed([(89, '(words-hex (fe-words-be duse))'),
+                                (84, '(cat8l (fe-words-pure (fm (aff-y (vec-nth P 0) (vec-nth P 1) (vec-nth P 2)) (c-onep 0))))')]):
+        e = f'(if (= case {code}) {body} {e})'
+    A = f'(define (phase-A-legs case input)\n{a_binds}\n    {e}))\n'
+
+    b_binds = (
+        '  (let* ((pflip (- dfb 48))\n'
+        '         (mm (hex-decode (json-get-str "msg" input)))\n'
+        '         (d (sc-from-hex (json-get-str "sk" input)))\n'
+        '         (duse (if (= pflip 1) (sc-negv d) d))\n'
+        '         (auxb (let ((ah (json-get-str "aux" input))) (if (= (str-len ah) 64) (hex-decode ah) (c-zb 0))))\n'
+        '         (hab (hex-decode (tag-hash-fixed "BIP0340/aux" auxb 32)))\n'
+        '         (db (hex-decode (words-hex (fe-words-be duse))))\n'
+        '         (tb (xorb-str db hab))\n'
+        '         (tn (tag-hash-fixed "BIP0340/nonce" (str-cat tb (str-cat (hex-decode pkhex) mm)) 96))\n'
+        '         (kraw (sc-from-hex tn))\n'
+        '         (knum (sc-reduce (vec-nth kraw 0) (vec-nth kraw 1) (vec-nth kraw 2) (vec-nth kraw 3) (vec-nth kraw 4) (vec-nth kraw 5) (vec-nth kraw 6) (vec-nth kraw 7) (vec-nth kraw 8)))\n'
+        '         (KP (sc-mul-gp knum))\n'
+        '         (rhex (words-hex (fe-words-be (fm (aff-x (vec-nth KP 0) (vec-nth KP 1) (vec-nth KP 2)) (c-onep 0)))))\n'
+        '         (ryw (fe-words-be (fm (aff-y (vec-nth KP 0) (vec-nth KP 1) (vec-nth KP 2)) (c-onep 0))))\n'
+        '         (kflip (band (vec-nth ryw 7) 1))\n'
+        '         (kuse (if (= kflip 1) (sc-negv knum) knum))\n'
+        '         (rXb (hex-decode rhex))\n'
+        '         (ch (tag-hash-fixed "BIP0340/challenge" (str-cat rXb (str-cat (hex-decode pkhex) mm)) 96))\n'
+        '         (eM (sc-from-hex ch))\n'
+        '         (ed (sc-mulmod-n duse eM))\n'
+        '         (ssum (sc-add-raw ed kuse))\n'
+        '         (shex (words-hex (fe-words-be (sc-redv ssum)))))'
+    )
+    b_cases = [(82, 'rhex'),
+               (87, '(words-hex (list 0 0 0 0 0 0 0 0 kflip))'),
+               (81, '(cat8l (fe-words-pure (fm (aff-y (vec-nth KP 0) (vec-nth KP 1) (vec-nth KP 2)) (c-onep 0))))'),
+               (73, '(words-hex (fe-words-be ed))'),
+               (71, '(words-hex (fe-words-be ssum))'),
+               (78, 'tn'),
+               (75, '(words-hex (fe-words-be knum))'),
+               (72, 'ch'),
+               (67, '(words-hex (fe-words-be kuse))')]
+    e = '(str-cat rhex shex)'
+    for code, body in reversed(b_cases):
+        e = f'(if (= case {code}) {body} {e})'
+    Bdef = f'(define (phase-B-legs case input pkhex dfb)\n{b_binds}\n    {e}))\n'
+
+    G = ('(define (dbg case input)\n'
+         '  (let* ((pkx-in (json-get-str "pk" input)))\n'
+         '    (if (= (str-len pkx-in) 0)\n'
+         '        (phase-A-legs case input)\n'
+         '        (phase-B-legs case input pkx-in (byte-at (json-get-str "df" input) 0)))))\n')
+    return A + Bdef + G
+
+RUN = '''(define (run input)
+  (let* ((cs (json-get-str "case" input))
+         (csw (byte-at cs 0))
+         (sk-h (json-get-str "sk" input))
+         (msh (json-get-str "msg" input))
+         (pkx-in (json-get-str "pk" input)))
+    (if (= csw 83)
+        (let* ((d (sc-from-hex sk-h))
+               (P (sc-mul-gp d))
+               (pkhex (words-hex (fe-words-be (fm (aff-x (vec-nth P 0) (vec-nth P 1) (vec-nth P 2)) (c-onep 0)))))
+               (yw (fe-words-be (fm (aff-y (vec-nth P 0) (vec-nth P 1) (vec-nth P 2)) (c-onep 0))))
+               (flip (band (vec-nth yw 7) 1)))
+          (str-cat pkhex "|" (phase-B sk-h msh pkhex flip 1 (json-get-str "aux" input))))
+        (if (= csw 68)
+            (dbg (byte-at (json-get-str "dbg" input) 0) input)
+            (let* ((skh (hex-decode sk-h))
+                   (m (hex-decode msh))
+                   (W24 (w24v skh m (hex-decode pkx-in))))
+              (if (= csw 100)
+                  (let* ((PD (pt-dbl (c-gxm 0) (c-gym 0) (c-onem 0))))
+                    (ptaa-dbg (vec-nth PD 0) (vec-nth PD 1) (vec-nth PD 2)))
+                  (if (= csw 115)
+                      (sha-96 W24)
+                      (if (= csw 103)
+                          (let* ((PD (pt-dbl (c-gxm 0) (c-gym 0) (c-onem 0)))
+                                 (PA (pt-add-aff (vec-nth PD 0) (vec-nth PD 1) (vec-nth PD 2))))
+                            (cat8l (fe-words-pure (fm (vec-nth PA 0) (c-onep 0)))))
+                          (if (= csw 120)
+                              (let* ((PD (pt-dbl (c-gxm 0) (c-gym 0) (c-onem 0))))
+                                (str-cat (str-cat (cat8l (fe-words-pure (fm (vec-nth PD 0) (c-onep 0))))
+                                                  (cat8l (fe-words-pure (fm (vec-nth PD 1) (c-onep 0)))))
+                                         (cat8l (fe-words-pure (fm (vec-nth PD 2) (c-onep 0))))))
+                              (if (= csw 107)
+                                  (sc-mul-g2 (sc-from-hex sk-h))
+                                  (cat8l W24)))))))))))'''
+
+_chunks = [('sha_fixed', sha_fixed()), ('MULGP', MULGP), ('AFF', AFF),
+           ('BIP', BIP), ('dbg', make_dbg()), ('RUN', RUN)]
+for nm, ch in _chunks:
+    if not parens_balanced(ch):
+        print(f"chunk {nm} unbalanced"); sys.exit(1)
+
+NEW = (sha_fixed() + '\n' + MULGP + '\n' + AFF + '\n' + MYADD + '\n' + MULMODN + '\n' + BIP + '\n'
+       + make_dbg() + '\n' + RUN + '\n')
+full = src + NEW
+assert parens_balanced(NEW), "NEW unbalanced"
+assert full.count('(') - full.count(')') == 0, "unbalanced parens"
+open(OUT_LISP, 'w').write(full)
+print(f"bip340.lisp: {len(full)} bytes")
+
+r = subprocess.run(f"{NC} {OUT_LISP} --target=outlayer-p2 -o {OUT_WASM} 2>&1", shell=True,
+                   capture_output=True, text=True, timeout=560)
+log = r.stdout + r.stderr
+if '❌' in log or 'error' in log.lower():
+    print("compile rc:", r.returncode)
+    for line in log.splitlines():
+        if '❌' in line or 'error' in line.lower():
+            print(line[:300])
+    sys.exit(1)
+print("compile rc: 0 | wasm:", os.path.getsize(OUT_WASM))
+
+# ---------- python judge ----------
 p = 2**256 - 2**32 - 977
-n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+nn = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 Gx = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798
 Gy = 0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8
-R = 1 << 270
 
-def limbs(x, nl=NL):
-    return [(x >> (LIMB * i)) & M for i in range(nl)]
+sk_hex = hashlib.sha256(b"throwaway sk").hexdigest()
+msg_hex = hashlib.sha256(b"throwaway msg").hexdigest()
+d = int(sk_hex, 16)
+mm = bytes.fromhex(msg_hex)
 
-def lisp_list(vals):
-    return "(list " + " ".join(str(v) for v in vals) + ")"
-
-L = []
-def w(s=""):
-    L.append(s)
-
-def fe2(fn, a, b):
-    return "(%s %s %s)" % (fn, " ".join("(vec-nth %s %d)" % (a, i) for i in range(NL)), b)
-
-def fe2limbs(fn, a_lims, b):
-    return "(%s %s %s)" % (fn, " ".join(a_lims),
-        " ".join("(vec-nth %s %d)" % (b, i) for i in range(NL)))
-
-def geq_chain(aget, bget, top):
-    expr = "0"
-    for k in range(top, -1, -1):
-        expr = "(if (> %s %s) 1 (if (< %s %s) 0 %s))" % (aget(k), bget(k), aget(k), bget(k), expr)
-    return expr
-
-def geq_chain_msb(aget, bget, top):
-    expr = "1"
-    for k in range(0, top + 1):
-        expr = "(if (> %s %s) 1 (if (< %s %s) 0 %s))" % (aget(k), bget(k), aget(k), bget(k), expr)
-    return expr
-
-def cond_sub_p_stmts(aget, dst, const_fn):
-    stmts = ["(set! g %s)" % geq_chain_msb(aget, lambda k: "(vec-nth (%s 0) %d)" % (const_fn, k), 8)]
-    stmts.append("(if (= g 1)")
-    stmts.append("  (begin")
-    for k in range(9):
-        stmts.append("    (set! %sv (+ (- (- %s (vec-nth (%s 0) %d)) %sbr) 1073741824))" % (dst, aget(k), const_fn, k, dst))
-        stmts.append("    (set! %shi (shr %sv 30))" % (dst, dst))
-        stmts.append("    (set! %sbr (if (= %shi 0) 1 0))" % (dst, dst))
-        stmts.append("    (set! %s%d (if (= %sbr 1) %sv (- %sv 1073741824)))" % (dst, k, dst, dst, dst))
-    stmts.append("    0)")
-    stmts.append("  0)")
-    for k in range(10):
-        stmts.append("(set! %s%d (if (= g 1) %s%d %s))" % (dst, k, dst, k, aget(k)))
-    return stmts
-
-# ═══ constants ═══
-w(";; bip340-sign.lisp — generated by gen_bip340_sign.py")
-w("(define (c-p _d) %s)" % lisp_list(limbs(p)))
-w("(define (c-n _d) %s)" % lisp_list(limbs(n)))
-w("(define (c-r2 _d) %s)" % lisp_list(limbs((R * R) % p)))
-w("(define (c-onem _d) %s)" % lisp_list(limbs(R % p)))
-w("(define (c-pp _d) %s)" % lisp_list(limbs((-pow(p, -1, 1 << 270)) % (1 << 270))))
-w("(define (c-npp _d) %s)" % lisp_list(limbs((-pow(n, -1, 1 << 270)) % (1 << 270))))
-w("(define (c-nr2 _d) %s)" % lisp_list(limbs((R * R) % n)))
-w("(define (c-none _d) %s)" % lisp_list(limbs(R % n)))
-w("(define (c-sevenm _d) %s)" % lisp_list(limbs((7 * R) % p)))
-w("(define (c-gxm _d) %s)" % lisp_list(limbs((Gx * R) % p)))
-w("(define (c-gym _d) %s)" % lisp_list(limbs((Gy * R) % p)))
-w("(define (c-d1 _d) %s)" % lisp_list(limbs((p + 1) // 4)))
-w("(define (c-pm1 _d) %s)" % lisp_list(limbs(((p - 1) * R) % p)))
-w("(define (c-n2 _d) %s)" % lisp_list(limbs(n - 2)))
-w("(define (c-zero _d) %s)" % lisp_list([0] * NL))
-w()
-
-
-def guard_cascade(t, maxt=18):
-    """2-cell carry ripple (fix_shamod.py, Sep 20): the row-end guard must not
-    drop the carry when t+c overflows 30 bits (tN+c overflow was silently lost)."""
-    s = f"(if (!= c 0) (begin (set! v (+ t{t} c)) (set! t{t} (band v {M})) (set! c (shr v {LIMB}))"
-    t1 = t + 1
-    if t1 <= maxt:
-        s += f" (if (!= c 0) (begin (set! v (+ t{t1} c)) (set! t{t1} (band v {M})) (set! c (shr v {LIMB}))"
-        t2 = t + 2
-        if t2 <= maxt:
-            s += f" (if (!= c 0) (begin (set! v (+ t{t2} c)) (set! t{t2} (band v {M}))) 0)"
-        s += ") 0)"
-    s += ") 0)"
-    return s
-
-# ═══ fe-mul (REDC mod m) — emitted twice: mod p and mod n ═══
-def emit_mulmod(name, const_p, const_pp):
-    lines = ["(define (%s x0 x1 x2 x3 x4 x5 x6 x7 x8 y)" % name]
-    params = ["(t%d 0)" % i for i in range(19)] + ["(m%d 0)" % i for i in range(NL)]
-    params += ["(v 0)", "(c 0)", "(g 0)", "(dbr 0)", "(dhi 0)", "(dv 0)"] + \
-              ["(d%d 0)" % k for k in range(10)]
-    lines.append("  (let (" + " ".join(params) + ")")
-    lines.append("    (begin")
-    body = []
-    for i in range(NL):
-        body.append("(set! c 0)")
-        for j in range(NL):
-            body.append("(set! v (+ (+ t%d (wrap-mul x%d (vec-nth y %d))) c))" % (i + j, i, j))
-            body.append("(set! t%d (band v %d))" % (i + j, M))
-            body.append("(set! c (shr v %d))" % LIMB)
-        body.append(guard_cascade(i + NL))
-    for i in range(NL):
-        body.append("(set! c 0)")
-        for j in range(NL - i):
-            body.append("(set! v (+ (+ m%d (wrap-mul t%d (vec-nth (%s 0) %d))) c))" % (i + j, i, const_pp, j))
-            body.append("(set! m%d (band v %d))" % (i + j, M))
-            body.append("(set! c (shr v %d))" % LIMB)
-    for i in range(NL):
-        body.append("(set! c 0)")
-        for j in range(NL):
-            body.append("(set! v (+ (+ t%d (wrap-mul m%d (vec-nth (%s 0) %d))) c))" % (i + j, i, const_p, j))
-            body.append("(set! t%d (band v %d))" % (i + j, M))
-            body.append("(set! c (shr v %d))" % LIMB)
-        body.append(guard_cascade(i + NL))
-    for rnd in range(2):
-        aget = (lambda k: ("t%d" % (9 + k))) if rnd == 0 else (lambda k: "d%d" % k)
-        body.extend(cond_sub_p_stmts(aget, "d", const_p))
-    body.append("(list d0 d1 d2 d3 d4 d5 d6 d7 d8)")
-    lines.extend("    " + b for b in body)
-    lines.append(")))")
-    w("\n".join(lines))
-    w()
-
-emit_mulmod("fe-mul", "c-p", "c-pp")     # field mod p
-emit_mulmod("fe-muln", "c-n", "c-npp")   # scalars mod n
-
-# ═══ fe-add / fe-sub (mod p) ═══
-def emit_addsub(name, is_add, const_p="c-p"):
-    lines = ["(define (%s a0 a1 a2 a3 a4 a5 a6 a7 a8 b)" % name]
-    params = ["(v 0)", "(c 0)", "(br 0)", "(hi 0)", "(g 0)", "(dbr 0)", "(dhi 0)", "(dv 0)"]
-    if not is_add:
-        params += ["(t%d 0)" % i for i in range(10)]
-    params += ["(d%d 0)" % k for k in range(10)]
-    lines.append("  (let (" + " ".join(params) + ")")
-    lines.append("    (begin")
-    lines.append("    (set! c 0)")
-    for i in range(NL):
-        src_b = "(vec-nth b %d)" % i if is_add else "(vec-nth (%s 0) %d)" % (const_p, i)
-        lines.append("    (set! v (+ (+ a%d %s) c))" % (i, src_b))
-        lines.append("    (set! d%d (band v %d))" % (i, M))
-        lines.append("    (set! c (shr v %d))" % LIMB)
-    if is_add:
-        lines.append("    (set! d9 c)")
+def pt_add(Pv, Qv):
+    if Pv is None: return Qv
+    if Qv is None: return Pv
+    if Pv[0] == Qv[0] and (Pv[1] + Qv[1]) % p == 0: return None
+    if Pv == Qv:
+        l = (3 * Pv[0] * Pv[0]) * pow(2 * Pv[1], -1, p) % p
     else:
-        lines.append("    (set! t9 c)")
-        lines.append("    (set! br 0)")
-        for i in range(NL):
-            lines.append("    (set! v (+ (- (- t%d (vec-nth b %d)) br) 1073741824))" % (i, i))
-            lines.append("    (set! hi (shr v 30))")
-            lines.append("    (set! br (if (= hi 0) 1 0))")
-            lines.append("    (set! d%d (if (= br 1) v (- v 1073741824)))" % i)
-        lines.append("    (set! d9 (- t9 br))")
-    lines.extend("    " + s for s in cond_sub_p_stmts(lambda k: "d%d" % k, "d", const_p))
-    lines.append("    (list d0 d1 d2 d3 d4 d5 d6 d7 d8)")
-    lines.append(")))")
-    w("\n".join(lines))
-    w()
+        l = (Qv[1] - Pv[1]) * pow(Qv[0] - Pv[0], -1, p) % p
+    x = (l * l - Pv[0] - Qv[0]) % p
+    return (x, (l * (Pv[0] - x) - Pv[1]) % p)
 
-emit_addsub("fe-add", True)
-# fe-sub: a − b = a + b·(p−1) (mod p) — composed ONLY from fe-add/fe-mul,
-# the two primitives bit-verified against the python oracle under compiled
-# wasm. The direct borrow-chain emitter (below, unused) produces scrambled
-# limbs in the inlayer build; kept for reference, not emitted.
-w("(define (fe-sub a0 a1 a2 a3 a4 a5 a6 a7 a8 b)")
-w("  (fe-add a0 a1 a2 a3 a4 a5 a6 a7 a8")
-w("          (fe-mul (vec-nth b 0) (vec-nth b 1) (vec-nth b 2) (vec-nth b 3)")
-w("                  (vec-nth b 4) (vec-nth b 5) (vec-nth b 6) (vec-nth b 7)")
-w("                  (vec-nth b 8) (c-pm1 0))))")
-w()
+def mul(kk, base=None):
+    Rv = None
+    A = base if base is not None else (Gx, Gy)
+    while kk:
+        if kk & 1: Rv = pt_add(Rv, A)
+        A = pt_add(A, A)
+        kk >>= 1
+    return Rv
 
-# ═══ fe-eq / fe-zero? ═══
-expr = "(= a8 b8)"
-for i in range(NL - 2, -1, -1):
-    expr = "(and (= a%d b%d) %s)" % (i, i, expr)
-bexpr = expr
-for i in range(NL):
-    bexpr = bexpr.replace("(= a%d b%d)" % (i, i), "(= a%d (vec-nth b %d))" % (i, i))
-w("(define (fe-eq a0 a1 a2 a3 a4 a5 a6 a7 a8 b)")
-w("  (if %s 1 0))" % bexpr)
-zexpr = "(= a8 0)"
-for i in range(NL - 2, -1, -1):
-    zexpr = "(and (= a%d 0) %s)" % (i, zexpr)
-w("(define (fe-zero? a0 a1 a2 a3 a4 a5 a6 a7 a8)")
-w("  (if %s 1 0))" % zexpr)
-w()
+def tagged_hash(tag, msg):
+    t = hashlib.sha256(tag.encode()).digest()
+    return hashlib.sha256(t + t + msg).digest()
 
-# ═══ scalar geq / ops mod n ═══
-w("(define (sc-geq-n a0 a1 a2 a3 a4 a5 a6 a7 a8)")
-w("  %s)" % geq_chain_msb(lambda k: "a%d" % k, lambda k: "(vec-nth (c-n 0) %d)" % k, 8))
-w()
+P = mul(d)
+pk_b = P[0].to_bytes(32, 'big')
+du = d if P[1] % 2 == 0 else nn - d
+aux_hex = bytes(32)  # harness passes no "aux" key => zeros on both sides
+tn = tagged_hash("BIP0340/aux", aux_hex)
+t = bytes(a ^ b for a, b in zip(du.to_bytes(32, 'big'), tn))
+kfull = tagged_hash("BIP0340/nonce", t + pk_b + mm).hex()
+kn = int(kfull, 16) % nn
+RP = mul(kn)
+rX = RP[0].to_bytes(32, 'big')
+kuse = kn if RP[1] % 2 == 0 else nn - kn
+e = int.from_bytes(tagged_hash("BIP0340/challenge", rX + pk_b + mm), 'big') % nn
+s = (kuse + e * du) % nn
+sig = rX + s.to_bytes(32, 'big')
+pk_flip = P[1] % 2  # 1 => odd y => flip
 
-def emit_sc_reduce():
-    lines = ["(define (sc-reduce a0 a1 a2 a3 a4 a5 a6 a7 a8)"]
-    params = ["(v 0)", "(hi 0)", "(br 0)", "(g 0)"] + ["(d%d 0)" % i for i in range(NL)]
-    lines.append("  (let (" + " ".join(params) + ")")
-    lines.append("    (begin")
-    lines.append("    (set! g %s)" % geq_chain_msb(lambda k: "a%d" % k, lambda k: "(vec-nth (c-n 0) %d)" % k, 8))
-    lines.append("    (if (= g 1)")
-    lines.append("      (begin")
-    lines.append("      (set! br 0)")
-    for i in range(NL):
-        lines.append("      (set! v (+ (- (- a%d (vec-nth (c-n 0) %d)) br) 1073741824))" % (i, i))
-        lines.append("      (set! hi (shr v 30))")
-        lines.append("      (set! br (if (= hi 0) 1 0))")
-        lines.append("      (set! d%d (if (= br 1) v (- v 1073741824)))" % i)
-    lines.append("      0)")
-    lines.append("      0)")
-    for i in range(NL):
-        lines.append("    (set! d%d (if (= g 1) d%d a%d))" % (i, i, i))
-    lines.append("    (list d0 d1 d2 d3 d4 d5 d6 d7 d8)")
-    lines.append(")))")
-    w("\n".join(lines))
-    w()
+def run_case(payload):
+    r2 = subprocess.run(f"{B} run {D}/bip340.wasm run '{payload}'", shell=True,
+                        capture_output=True, text=True, timeout=1700)
+    outp = None
+    for l in (r2.stdout or '').splitlines():
+        if l.startswith('📤 Output:'):
+            outp = l.split('📤 Output:', 1)[1].strip()
+    return outp, r2
 
-emit_sc_reduce()
+def leg(code, want, label, with_pk=False):
+    pl = {"case": "D", "dbg": chr(code), "sk": sk_hex, "msg": msg_hex}
+    if with_pk:
+        pl["pk"] = pk_b.hex(); pl["df"] = str(pk_flip)
+    payload = json.dumps(pl, separators=(',', ':'))
+    assert all(32 < ord(c) < 127 for c in payload)
+    outp, r2 = run_case(payload)
+    if outp is None:
+        print(f"leg {label:12}: TRAP"); return None
+    ok = outp == want
+    print(f"leg {label:12}: {'OK' if ok else 'WRONG'}")
+    if not ok:
+        print(f"   got : {outp[:100]}")
+        print(f"   want: {str(want)[:100]}")
+    return outp
 
-def emit_sc_n_minus():
-    lines = ["(define (sc-n-minus a0 a1 a2 a3 a4 a5 a6 a7 a8)"]
-    params = ["(v 0)", "(hi 0)", "(br 0)"] + ["(d%d 0)" % i for i in range(NL)]
-    lines.append("  (let (" + " ".join(params) + ")")
-    lines.append("    (begin")
-    lines.append("    (set! br 0)")
-    for i in range(NL):
-        lines.append("    (set! v (+ (- (- (vec-nth (c-n 0) %d) a%d) br) 1073741824))" % (i, i))
-        lines.append("    (set! hi (shr v 30))")
-        lines.append("    (set! br (if (= hi 0) 1 0))")
-        lines.append("    (set! d%d (if (= br 1) v (- v 1073741824)))" % i)
-    lines.append("    (list d0 d1 d2 d3 d4 d5 d6 d7 d8)")
-    lines.append(")))")
-    w("\n".join(lines))
-    w()
+# Phase A (one mult per run)
+a_out = leg(80, pk_b.hex() + str(pk_flip), "A:pk|flip")
+leg(89, f"{du:064x}", "A:duse")
+# Phase B (one mult per run; pk+df passed in from A/driver)
+leg(78, kfull, "B:nonce_kfull", with_pk=True)
+leg(82, rX.hex(), "B:r", with_pk=True)
+leg(87, f"{RP[1] % 2:064x}", "B:kflip", with_pk=True)
+leg(81, f"{RP[1]:d}", "B:KP.y", with_pk=True)
+leg(84, f"{P[1]:d}", "A:P.y")
+leg(73, f"{du * e % nn:064x}", "B:ed", with_pk=True)
+leg(71, f"{(kuse + du * e) % nn:064x}", "B:ssum", with_pk=True)
+leg(72, f"{e:064x}", "B:chal", with_pk=True)
+leg(67, f"{kuse:064x}", "B:kuse", with_pk=True)
 
-emit_sc_n_minus()
+# Case S: full sign in ONE run = two mults = the standing trap probe.
+pl = {"case": "S", "sk": sk_hex, "msg": msg_hex}
+payload = json.dumps(pl, separators=(',', ':'))
+outp, r2 = run_case(payload)
+print("case S (single-run full sign):", "TRAP (two-mult runtime limit, as expected)" if outp is None else outp[:64])
 
-# k + s mod n (both < n, so sum < 2n: add then single conditional reduce)
-def emit_sc_addmod():
-    lines = ["(define (sc-addmod a0 a1 a2 a3 a4 a5 a6 a7 a8 b)"]
-    params = ["(v 0)", "(c 0)", "(g 0)", "(dbr 0)", "(dhi 0)", "(dv 0)"] + ["(d%d 0)" % i for i in range(10)] + ["(r%d 0)" % i for i in range(NL)]
-    lines.append("  (let (" + " ".join(params) + ")")
-    lines.append("    (begin")
-    lines.append("    (set! c 0)")
-    for i in range(NL):
-        lines.append("    (set! v (+ (+ a%d (vec-nth b %d)) c))" % (i, i))
-        lines.append("    (set! d%d (band v %d))" % (i, M))
-        lines.append("    (set! c (shr v %d))" % LIMB)
-    lines.append("    (set! d9 c)")
-    lines.extend("    " + s for s in cond_sub_p_stmts(lambda k: "d%d" % k, "d", "c-n"))
-    lines.append("    (list d0 d1 d2 d3 d4 d5 d6 d7 d8)")
-    lines.append(")))")
-    w("\n".join(lines))
-    w()
+# Two-phase sign. sc-addmod comparator bug FIXED in-generated (sc-add-raw +
+# sc-redv) — Lisp now produces the FULL signature. Case '*' (phase-B do-sign=1)
+# returns "rhex|shex".
+pl = {"case": "D", "dbg": "*", "sk": sk_hex, "msg": msg_hex, "pk": pk_b.hex(), "df": str(pk_flip)}
+payload = json.dumps(pl, separators=(',', ':'))
+wasm_sig, r2 = run_case(payload)
+assert wasm_sig is not None, f"TRAP on sign run: {r2.stdout[-200:] if r2.stdout else r2.stderr[-200:]}"
+print("python sig:", sig.hex())
+print("wasm   sig:", wasm_sig, "(FULL sig from Lisp: r, s both wasm-computed)")
+print("MATCH" if wasm_sig == sig.hex() else "MISMATCH")
 
-emit_sc_addmod()
+# independent BIP340 verification of the wasm signature
+def lift_x(bx_):
+    x = int.from_bytes(bx_, 'big')
+    if x >= p: return None
+    y_sq = (pow(x, 3, p) + 7) % p
+    y = pow(y_sq, (p + 1) // 4, p)
+    if pow(y, 2, p) != y_sq: return None
+    return (x, y if y % 2 == 0 else p - y)  # BIP340: even-y lift (x-only verify)
+sigb = bytes.fromhex(wasm_sig)
+Rv = lift_x(sigb[:32])
+Pk = lift_x(pk_b)
+ev = int.from_bytes(tagged_hash("BIP0340/challenge", sigb[:32] + pk_b + mm), 'big') % nn
+lhs = mul(int.from_bytes(sigb[32:], 'big'))
+rhs = pt_add(Rv, mul(ev, Pk))
+print("VERIFICATION s*G == R + e*PK:", lhs is not None and rhs is not None and (lhs[0] - rhs[0]) % p == 0)
 
-# ═══ fe-sqrt (x^d1, montgomery in/out) ═══
-w("(define (fe-sqrt x0 x1 x2 x3 x4 x5 x6 x7 x8)")
-w("  (let ((x (list x0 x1 x2 x3 x4 x5 x6 x7 x8)))")
-w("    (loop ((acc (c-onem 0)) (i 254))")
-w("      (let ((a2 %s))" % fe2("fe-mul", "acc", "acc"))
-w("        (let ((a3 (if (= (band (shr (vec-nth (c-d1 0) (/ i 30)) (mod i 30)) 1) 1)")
-w("                      %s a2)))" % fe2("fe-mul", "a2", "x"))
-w("          (if (= i 0) a3 (recur a3 (- i 1))))))))")
-w()
-
-# ═══ conversions: fe <-> big-endian words ═══
-def word_expr(k, prefix):
-    parts = []
-    for i in range(NL):
-        shift = 32 * k - 30 * i
-        if shift == 0:
-            parts.append("(band %s%d 4294967295)" % (prefix, i))
-        elif 0 < shift < 30:
-            parts.append("(shr %s%d %d)" % (prefix, i, shift))
-        elif -32 < shift < 0:
-            # compiled wasm: negative shift counts mask mod 64; positive-count
-            # shl of the pre-masked low bits is safe (count < 30, value < 2^30)
-            off = -shift
-            parts.append("(shl (band %s%d 4294967295) %d)" % (prefix, i, off))
-    return parts[0] if len(parts) == 1 else "(band (+ %s) 4294967295)" % " ".join(parts)
-
-w("(define (fe-words-be a)")
-w("  (let (%s)" % " ".join("(a%d (vec-nth a %d))" % (i, i) for i in range(NL)))
-w("    (list %s)))" % " ".join(word_expr(k, "a") for k in range(7, -1, -1)))
-w()
-
-def limb_from_words(k):
-    parts = []
-    lk = 30 * k
-    for wi in range(8):
-        lo = 32 * (7 - wi)
-        if lo < lk + LIMB and lo + 32 > lk:
-            shift = lk - lo
-            if shift == 0:
-                parts.append("(band w%d %d)" % (wi, M))
-            elif shift > 0:
-                # right-shift; mask keeps each summed piece strictly 30-bit
-                # (boundary case shift==30: w7's top 2 bits into limb 1)
-                parts.append("(band (shr w%d %d) %d)" % (wi, shift, M))
-            else:
-                # compiled wasm: negative shift counts mask mod 64 (wrong
-                # direction); pre-mask kept bits, positive-count shl, sum.
-                off = -shift
-                parts.append("(shl (band w%d %d) %d)" % (wi, (1 << (LIMB - off)) - 1, off))
-    return parts[0] if len(parts) == 1 else "(+ %s)" % " ".join(parts)
-
-w("(define (words-limbs w0 w1 w2 w3 w4 w5 w6 w7)")
-w("  (list %s))" % " ".join(limb_from_words(k) for k in range(NL)))
-w()
-
-open("/tmp/nostr_probe/sign_lib.lisp", "w").write("\n".join(L) + "\n")
-print("LIB emitted:", len(L), "lines")
+# ---------- real Nostr event, throwaway key ----------
+print("\n--- Nostr event (NIP-01) ---")
+content = "gm from pure-Lisp BIP340 (shamod.lisp on inlayer)"
+evd = {
+    "pubkey": pk_b.hex(), "created_at": 1758380000,
+    "kind": 1, "tags": [], "content": content,
+}
+ser0 = json.dumps([0, evd["pubkey"], evd["created_at"], evd["kind"], evd["tags"], evd["content"]],
+                  separators=(',', ':'), ensure_ascii=False).encode()
+eid = hashlib.sha256(ser0).hexdigest()
+print("event id:", eid)
+em = bytes.fromhex(eid)
+# FULL signature from Lisp for the real event id (run B hashes pk|r|msg; msg = eid).
+pl = {"case": "D", "dbg": "*", "sk": sk_hex, "msg": eid, "pk": pk_b.hex(), "df": str(pk_flip)}
+sig_n, r2 = run_case(json.dumps(pl, separators=(',', ':')))
+assert sig_n is not None and len(sig_n) == 128, f"TRAP/bad on nostr sign: {sig_n}"
+r_n = sig_n[:64]
+# independent verify with the REAL event id
+Rn = lift_x(bytes.fromhex(r_n))
+evn = int.from_bytes(tagged_hash("BIP0340/challenge", bytes.fromhex(r_n) + pk_b + em), 'big') % nn
+lhsn = mul(int.from_bytes(bytes.fromhex(sig_n)[32:], 'big'))
+rhsn = pt_add(Rn, mul(evn, Pk))
+okn = lhsn is not None and rhsn is not None and (lhsn[0] - rhsn[0]) % p == 0
+print("nostr sig:", sig_n)
+print("VERIFICATION (real event id):", okn)
+evd["id"] = eid; evd["sig"] = sig_n
+open(f"{D}/nostr_event.json", "w").write(json.dumps(evd, separators=(',', ':'), ensure_ascii=False))
+print(f"event written: {D}/nostr_event.json")
