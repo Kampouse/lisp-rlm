@@ -53,6 +53,11 @@
   <div id="dgmt" style="margin-top:8px"></div>
 </div>
 
+<div class="panel"><h2>🧠 CCM — Compact Context Model <span class="d">cross-episode decision memory (trace nodes → graph → per-task hints)</span></h2>
+  <div id="ccgs" style="margin-bottom:8px"></div>
+  <div id="ccgt"></div>
+</div>
+
 <div class="panel"><h2>RLM solves per cycle <span class="d">(policies color-coded · ⚑ deploys)</span></h2>
   <div id="c1"></div>
   <div class="legend"><span><span class="dot" style="background:#58a6ff"></span>solved</span>
@@ -136,6 +141,16 @@ async function load(){
       const parts=st.split('|');const task=parts[0],cls=parts[1]||'',fn=(parts[2]||'').replace(/~~QT~~/g,'');
       return `<tr><td><span class="gold">${esc(task)}</span> <span class="d">${esc(cls)}</span> ${esc(fn)}</td><td class="r">${esc(q||'')}</td></tr>`;}).join('')+'</table>'
     :'<span class="d">no states yet</span>';
+
+  // CCM/CCG panel: graph stats + per-task memory state
+  if(d.ccg){
+    const e=d.ccg.edges||{};
+    $('ccgs').innerHTML=`<span class="d">graph</span> <b>${d.ccg.nodes||0}</b> nodes · <b>${e.supersedes||0}</b> supersedes · <b>${e['solved-by']||0}</b> solved-by · <b>${e.similar||0}</b> similar`;
+    $('ccgt').innerHTML=(d.ccg.tasks&&d.ccg.tasks.length)?
+      '<table><tr><th>task</th><th>attempts</th><th>fails</th><th>solution shape</th><th>known traps</th></tr>'+
+      d.ccg.tasks.map(t=>`<tr><td><span class="gold">${esc(t.task)}</span></td><td class="r">${t.attempts}</td><td class="r">${t.fails}</td><td>${t.solved_shape?'<span style="color:#3fb950">✓ remembered</span>':'<span style="color:#f85149">✗ none</span>'}</td><td>${t.traps.map(esc).join(', ')||'<span class="d">—</span>'}</td></tr>`).join('')+'</table>'
+      :'<span class="d">graph empty</span>';
+  }
 
   // DGM panel: fitness-by-generation curve + recent generations
   if(d.dgm){

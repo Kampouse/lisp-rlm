@@ -238,6 +238,32 @@ def main():
                "champ": max(((r.get("fitness") or 0) for r in rows), default=0.0),
                "factcheck": factcheck}
 
+    # CCM/CCG lane: graph size + per-task memory state
+    ccg = {"nodes": 0, "edges": {}, "tasks": []}
+    gpath = os.path.join(REPO, "data", "rlm", "ccg", "graph.json")
+    if os.path.exists(gpath):
+        g = json.load(open(gpath))
+        ccg["nodes"] = len(g.get("nodes", {}))
+        byt = {}
+        for _, _, t in g.get("edges", []):
+            byt[t] = byt.get(t, 0) + 1
+        ccg["edges"] = byt
+        bytask = {}
+        for nid, nd in g.get("nodes", {}).items():
+            bytask.setdefault(nd["task"], []).append(nd)
+        rows = []
+        for tid, items in bytask.items():
+            if len(items) < 3:
+                continue  # noise
+            corr = {i.get("corr") for i in items if i.get("corr")}
+            rows.append({
+                "task": tid, "attempts": len(items),
+                "fails": sum(1 for i in items if not i["ok"]),
+                "solved_shape": any(i.get("ep_ok") for i in items),
+                "traps": sorted(corr)[:2],
+            })
+        rows.sort(key=lambda r: (not r["solved_shape"], -r["fails"]))
+        ccg["tasks"] = rows[:8]
     data = {
         "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
         "worlds": len(ws),
@@ -254,6 +280,7 @@ def main():
         "worst_states": worst,
         "dgm": dgm,
         "lessons": lessons_dedup(ws),
+        "ccg": ccg,
     }
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     json.dump(data, open(OUT, "w"))
