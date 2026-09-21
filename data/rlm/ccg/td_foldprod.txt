@@ -1,0 +1,4 @@
+### PAST ATTEMPTS ON td_foldprod (agent memory — do NOT repeat these failures)
+- FAIL it2: (let ((l (list 2 3 4))) (set! answer (fold-right (* 1 l)) (final t))) → ERROR: ~~QT~~run_program: compilation failed for body expres
+- FAIL it0: (let ((lst (list 2 3 4)))~~NL~~  (set! answer (fold-right (* 1 lst)))~~NL~~  (final t)) → ERROR: ~~QT~~type error: mul expects numbers, got 1 (2 3 4)~
+- SOLVED ONCE WITH (complete): (begin (define (prod lst) (fold-right (lambda (x acc) (* x acc)) 1 lst)) (rlm-set answer (prod (list 2 3 4))) (rlm-set Final t))

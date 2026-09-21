@@ -1,0 +1,4 @@
+t5_vowels: 0/7 solved, 2.7 avg iters
+ta_prime_sum: 0/37 solved, 4.5 avg iters
+ta_primeprod: 1/23 solved, 4.7 avg iters
+td_revlist: 13/13 solved, 1.0 avg iters

@@ -1,0 +1,101 @@
+{
+ "updated": "2026-09-21 18:59:30",
+ "archived": [
+  "t1_sumsq",
+  "t4_pow",
+  "td_foldsum",
+  "t2_reverse",
+  "td_revlist",
+  "t3_fib"
+ ],
+ "intentions": [
+  {
+   "task": "ta_prime_sum",
+   "kind": "completable",
+   "rate": 0.0,
+   "n": 51,
+   "stagnation": 51,
+   "priority": 2.0
+  },
+  {
+   "task": "t5_vowels",
+   "kind": "completable",
+   "rate": 0.0,
+   "n": 60,
+   "stagnation": 14,
+   "priority": 1.467
+  },
+  {
+   "task": "smoke_plumb",
+   "kind": "completable",
+   "rate": 0.0,
+   "n": 1,
+   "stagnation": 1,
+   "priority": 1.033
+  },
+  {
+   "task": "ta_primeprod",
+   "kind": "completable",
+   "rate": 0.1,
+   "n": 36,
+   "stagnation": 1,
+   "priority": 0.93
+  },
+  {
+   "task": "td_foldprod",
+   "kind": "completable",
+   "rate": 0.3,
+   "n": 19,
+   "stagnation": 0,
+   "priority": 0.7
+  },
+  {
+   "task": "t2_reverse",
+   "kind": "perpetual",
+   "rate": 0.9,
+   "n": 42,
+   "stagnation": 0,
+   "priority": 0.1
+  },
+  {
+   "task": "t1_sumsq",
+   "kind": "perpetual",
+   "rate": 1.0,
+   "n": 43,
+   "stagnation": 0,
+   "priority": 0.0
+  },
+  {
+   "task": "t3_fib",
+   "kind": "perpetual",
+   "rate": 1.0,
+   "n": 74,
+   "stagnation": 0,
+   "priority": 0.0
+  },
+  {
+   "task": "t4_pow",
+   "kind": "perpetual",
+   "rate": 1.0,
+   "n": 40,
+   "stagnation": 0,
+   "priority": 0.0
+  },
+  {
+   "task": "td_foldsum",
+   "kind": "perpetual",
+   "rate": 1.0,
+   "n": 23,
+   "stagnation": 0,
+   "priority": 0.0
+  },
+  {
+   "task": "td_revlist",
+   "kind": "perpetual",
+   "rate": 1.0,
+   "n": 18,
+   "stagnation": 0,
+   "priority": 0.0
+  }
+ ]
+}

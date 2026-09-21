@@ -1,0 +1,11 @@
+{
+ "phase": "on",
+ "cycles_on": 4,
+ "cycles_off": 3,
+ "solved_on": 21,
+ "n_on": 177,
+ "solved_off": 17,
+ "n_off": 134,
+ "started": 1790025161.113219,
+ "last_arm": "on"
+}

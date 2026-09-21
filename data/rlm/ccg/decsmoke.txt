@@ -1,0 +1,2 @@
+### PAST ATTEMPTS ON decsmoke (agent memory — do NOT repeat these failures)
+- SOLVED ONCE WITH (complete): (rlm-set Final true)

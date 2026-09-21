@@ -1,0 +1,18 @@
+{"gen": 1, "ts": 1789920420, "channel": "tactics", "fitness": 0.0, "detail": "gen1: self-targeted weak tasks (reverse lst, reduce)", "note": "fitness unknown (bookkeeper deadlocked); baseline 0"}
+{"gen": 2, "ts": 1789922400, "channel": "tactics", "fitness": 0.5, "detail": "gen2: kept corrections, added per-task tactics", "note": "backfilled"}
+{"gen": 3, "ts": 1789927530.760257, "channel": "tactics", "fitness": 0.8, "detail": "1789925319"}
+{"gen": 4, "ts": 1789938364.2720692, "channel": "actions", "fitness": 0.8, "detail": "idle|installed"}
+{"gen": 5, "ts": 1789941472.7602491, "channel": "actions", "fitness": 0.8, "detail": "on|installed"}
+{"gen": 6, "ts": 1789947400.2134888, "channel": "grammar", "fitness": 0.8, "detail": "{\"variant\": \"full\"}"}
+{"gen": 7, "ts": 1789953819.809668, "channel": "grammar", "fitness": 0.8, "detail": "{\"variant\": \"lean\"}"}
+{"gen": 8, "ts": 1789956030.920196, "channel": "grammar", "fitness": 0.8, "detail": "{\"variant\": \"strings-first\"}"}
+{"gen": 9, "ts": 1789976752.550677, "channel": "actions", "fitness": 0.2, "detail": "idle|installed"}
+{"gen": 10, "ts": 1789979783.394458, "channel": "actions", "fitness": 0.3, "detail": "on|installed"}
+{"gen": 11, "ts": 1789988003.211529, "channel": "grammar", "fitness": 0.5, "detail": "{\"variant\": \"lean\"}"}
+{"gen": 12, "ts": 1789992643.031351, "channel": "grammar", "fitness": 0.6, "detail": "{\"variant\": \"full\"}"}
+{"gen": 13, "ts": 1789998293.666838, "channel": "grammar", "fitness": 0.8, "detail": "{\"variant\": \"strings-first\"}"}
+{"gen": 14, "ts": 1790005940.418904, "channel": "actions", "fitness": 0.8, "detail": "idle|installed"}
+{"gen": 15, "ts": 1790007746.1200058, "channel": "actions", "fitness": 0.8, "detail": "on|installed"}
+{"gen": 16, "ts": 1790025119.673158, "channel": "actions", "fitness": 1.0, "detail": "idle|installed"}
+{"gen": 17, "ts": 1790026017.1429088, "channel": "actions", "fitness": 1.0, "detail": "on|installed"}
+{"gen": 18, "ts": 1790032024.708765, "channel": "tactics", "fitness": 1.0, "detail": "1790030996"}

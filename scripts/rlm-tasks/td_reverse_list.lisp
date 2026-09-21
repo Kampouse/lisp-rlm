@@ -1,6 +1,6 @@
 ;; DREAMED TASK — agent-authored, probe-verified (ref solves, poison fails)
-;; targets state: argtype| ~~QT~~fold-right|rc2|es3|i2 — best Q: 0.00
-;; dreamed 1789903403.3014900684
+;; targets state: t2_reverse|ok||rc0|es0|i2
+;; dreamed 1790021790.6960780621
 (load-file "rlm_runtime.lisp")
 (load-file "scripts/rlm-tasks/policy.lisp")
 (load-file "scripts/rlm-tasks/q-table.lisp")
@@ -9,12 +9,12 @@
 (define (llm-code ctx)
   (llm (build-prompt ctx)))
 (begin
-  (rlm-set __trace_id "td_foldsum")
-  (define (task-verify a) (= a 17))
-  (run-rlm "Compute the sum of the list (list 2 3 5 7) using fold-right; store it via (rlm-set answer ...) then (rlm-set Final true).")
+  (rlm-set __trace_id "td_reverse_list")
+  (define (task-verify a) (= a (list 5 4 3 2 1)))
+  (run-rlm "Reverse the list (list 1 2 3 4 5) using the reverse function; store the result via (rlm-set answer ...) then (rlm-set Final true).")
   (if (task-verify (rlm-get answer)) nil (re-lesson))
   (write-trace)
-  (println (str-concat "RLMDUMP task=td_foldsum"))
+  (println (str-concat "RLMDUMP task=td_reverse_list"))
   (println (str-concat "RLMDUMP iterations=" (to-string (rlm-get iteration))))
   (println (str-concat "RLMDUMP answer=" (to-string (rlm-get answer))))
   (println (str-concat "RLMDUMP Final=" (to-string (rlm-get Final))))

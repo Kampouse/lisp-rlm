@@ -1,0 +1,49 @@
+{
+ "worlds": 410,
+ "policies": {
+  "p3-grammar-shapes": {
+   "n": 2,
+   "completed": 1,
+   "avg_iters": 8.5
+  },
+  "p5-6x0-91b": {
+   "n": 14,
+   "completed": 5,
+   "avg_iters": 5.57
+  },
+  "p5-8x0-91b": {
+   "n": 106,
+   "completed": 52,
+   "avg_iters": 6.32
+  },
+  "p4-full-syntax": {
+   "n": 3,
+   "completed": 1,
+   "avg_iters": 12.33
+  },
+  "p5-8x0-91b-g2": {
+   "n": 15,
+   "completed": 10,
+   "avg_iters": 4.33
+  },
+  "p5-8x0-91b-g3": {
+   "n": 41,
+   "completed": 13,
+   "avg_iters": 3.17
+  },
+  "p5-8x0-91b-g3l": {
+   "n": 31,
+   "completed": 11,
+   "avg_iters": 3.13
+  },
+  "p5-8x0-91b-g3s": {
+   "n": 198,
+   "completed": 69,
+   "avg_iters": 3.39
+  }
+ },
+ "incumbent": {
+  "max_iter": 8,
+  "stop_errs": 0
+ }
+}

@@ -1,0 +1,2 @@
+### PAST ATTEMPTS ON ta_prime_sum-sub (agent memory — do NOT repeat these failures)
+- SOLVED ONCE WITH (complete): (define (prime? n) (and (<= n 2) (or (= n 2) (even? n))))~~NL~~(define (primes-under-10) (filter (lambda (x) (prime? x)) (list 1 2 3 4 5 6 7 8 9)))~~NL~~(define (sum-primes) (reduce + 0 (primes-under-10)))~~NL~~(rlm-set answer (sum-primes))~~NL~~(final true)

@@ -1,0 +1,2 @@
+### PAST ATTEMPTS ON isoprobe (agent memory — do NOT repeat these failures)
+- SOLVED ONCE WITH (complete): (begin (rlm-set p (sub-rlm ~~QT~~sum of evens~~QT~~)) (rlm-set answer (+ (rlm-get p) 25)) (rlm-set Final true))

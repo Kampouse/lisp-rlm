@@ -6926,17 +6926,37 @@ pub fn eval_builtin(
         },
         "str-split" => match (args.get(0), args.get(1)) {
             (Some(LispVal::Str(s)), Some(LispVal::Str(sep))) => {
-                let parts: Vec<LispVal> =
-                    s.split(sep).map(|p| LispVal::Str(p.to_string())).collect();
+                // interp semantics (dispatch_strings): empty sep = per-char
+                // split WITHOUT Rust's edge-empty artifacts; non-empty sep
+                // drops empty parts.
+                let parts: Vec<LispVal> = if sep.is_empty() {
+                    s.chars().map(|c| LispVal::Str(c.to_string())).collect()
+                } else {
+                    s.split(sep.as_str())
+                        .filter(|p| !p.is_empty())
+                        .map(|p| LispVal::Str(p.to_string()))
+                        .collect()
+                };
                 Ok(LispVal::List(parts))
             }
-            _ => Ok(LispVal::List(vec![])),
+            // Silent () on non-string args was the t5 wall: symbol input
+            // produced an empty list the agent counted as 0 and BELIEVED.
+            // Hard error + remedy, so the conversion path can fire.
+            (Some(other), _) => Err(format!(
+                "str-split: need string, got {:?} — wrap it first: (str-split (to-string s) sep)",
+                other
+            )),
+            _ => Err("str-split: need 2 args (s, delimiter)".into()),
         },
         "str-contains" => match (args.get(0), args.get(1)) {
             (Some(LispVal::Str(s)), Some(LispVal::Str(needle))) => {
                 Ok(LispVal::Bool(s.contains(needle.as_str())))
             }
-            _ => Ok(LispVal::Bool(false)),
+            (Some(other), _) => Err(format!(
+                "str-contains: need string, got {:?} — wrap it first: (str-contains (to-string s) part)",
+                other
+            )),
+            _ => Err("str-contains: need 2 args (s, part)".into()),
         },
         "to-int" => match args.get(0) {
             Some(LispVal::Num(n)) => Ok(LispVal::Num(*n)),

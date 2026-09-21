@@ -1,0 +1,21 @@
+{
+ "updated": "2026-09-21 19:07:07",
+ "claims": [
+  {
+   "source": "lesson",
+   "fn": "append",
+   "verdict": "right",
+   "claim": "'the accumulator list' refers to arg 1 of (append l1 l2), not 'l1'",
+   "truth": "(append l1 l2)",
+   "text": "Today I learned `append` requires the accumulator list as the first argument: `(append out new-item)`."
+  },
+  {
+   "source": "lesson",
+   "fn": "str-join",
+   "verdict": "right",
+   "claim": "'requires the separator' refers to arg 1 of (str-join sep lst), not 'sep'",
+   "truth": "(str-join sep lst)",
+   "text": "Today I learned str-join requires the separator as the first argument, not the list."
+  }
+ ]
+}

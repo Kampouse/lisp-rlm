@@ -18,3 +18,4 @@ deploy/safe-sandbox/
 __pycache__/
 .wrangler/
 '{}'
+data/rlm/traces/

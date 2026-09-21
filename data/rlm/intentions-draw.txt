@@ -1,0 +1,3 @@
+scripts/rlm-tasks/ta_prime_sum.lisp
+scripts/rlm-tasks/t5_vowels.lisp
+scripts/rlm-tasks/td_revlist.lisp
