@@ -52,20 +52,18 @@ sub1(
 (define (json-id-sig idh sig)
   (str-cat "{" (str-cat (qch) (str-cat "id" (str-cat (qch) (str-cat ":" (str-cat (qch) (str-cat idh (str-cat (qch) (str-cat "," (str-cat (qch) (str-cat "sig" (str-cat (qch) (str-cat ":" (str-cat (qch) (str-cat sig (str-cat (qch) "}")))))))))))))))))
 
-(define (nostr-sign-v2 root caller ts kind content)
-  (let* ((rec (nostr-derive-rec root caller))
-         (pkh (substr-from rec 0 64 ""))
-         (skh (hex-decode (substr-from rec 66 64 "")))
-         (pflip (- (byte-at rec 65) 48))
+(define (nostr-sign-v2 root caller pkh df-in ts kind content)
+  (let* ((cat (str-cat root (str-cat (hex-decode "1f") caller)))
+         (skh (words-hex (fe-words-be (sc-redv (sc-from-hex (sha-fixed cat (str-len cat)))))))
+         (pflip (- df-in 48))
          (q (qch))
          (s1 (str-cat "[0," q))
          (s2 (str-cat s1 pkh))
          (s3 (str-cat s2 q))
          (s4 (str-cat s3 ","))
-         (s5 (str-cat s4 ts))
-         (s6 (str-cat s5 ","))
-         (s7 (str-cat s6 kind))
-         (s8 (str-cat s7 ",[],"))
+         (s5 (str-cat s4 (str-cat q (str-cat ts (str-cat q ",")))))
+         (s7 (str-cat s5 (str-cat q (str-cat kind (str-cat q ",")))))
+         (s8 (str-cat s7 "[],"))
          (s9 (str-cat s8 q))
          (s10 (str-cat s9 content))
          (s11 (str-cat s10 q))
@@ -86,7 +84,11 @@ sub1(
 (define (nostr-derive2 input)
   (let* ((root (outlayer/storage-get "nostr-root")))
     (if root
-        (nostr-derive-rec root (json-get-str "caller" input))
+        (let* ((q (qch))
+               (rec (nostr-derive-rec root (json-get-str "caller" input)))
+               (pkh (substr-from rec 0 64 ""))
+               (dfh (substr-from rec 65 1 "")))
+          (str-cat "{" (str-cat q (str-cat "pk" (str-cat q (str-cat ":" (str-cat q (str-cat pkh (str-cat q (str-cat "," (str-cat q (str-cat "df" (str-cat q (str-cat ":" (str-cat q (str-cat dfh (str-cat q "}")))))))))))))))))
         "no root: run init")))
 
 (define (nostr-sign2 input)
@@ -94,6 +96,8 @@ sub1(
     (if root
         (nostr-sign-v2 root
                        (json-get-str "caller" input)
+                       (json-get-str "pk" input)
+                       (byte-at (json-get-str "df" input) 0)
                        (json-get-str "ts" input)
                        (json-get-str "kind" input)
                        (json-get-str "content" input))
@@ -103,18 +107,23 @@ sub1(
 'helpers + derive-rec + json-id-sig + wrappers')
 
 
-# ---------- 3. dispatcher ----------
+# ---------- 3. dispatcher: op pre-chain + tail paren debt ----------
 sub1(
-'''(define (run input)
-  (let* ((cs (json-get-str "case" input))
-         (csw (byte-at cs 0))''',
-'''(define (run input)
-  (let* ((cs (json-get-str "case" input))
-         (csw (byte-at cs 0))
-         (ri (if (= csw 105) (nostr-init input) 0))
-         (rd (if (= csw 100) (nostr-derive2 input) 0))
-         (rs (if (= csw 115) (nostr-sign2 input) 0))''',
-'dispatcher: i/d/s ops added')
+'''    (if (= csw 78)
+        (nostr-derive (json-get-str "root" input) (json-get-str "caller" input))''',
+'''    (if (= csw 105) (nostr-init input)
+        (if (= csw 100) (nostr-derive2 input)
+            (if (= csw 115) (nostr-sign2 input)
+                (if (= csw 78)
+                    (nostr-derive (json-get-str "root" input) (json-get-str "caller" input))''',
+'dispatcher: op pre-chain')
+
+sub1(
+'''(sc-mul-g2 (sc-from-hex sk-h))
+                                  (cat8l W24)))))))))))))''',
+'''(sc-mul-g2 (sc-from-hex sk-h))
+                                  (cat8l W24))))))))))))))))''',
+'dispatcher: tail +3 closers')
 
 open(SRC, 'w').write(src)
 print("written:", len(src), "chars")
