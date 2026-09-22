@@ -25,6 +25,7 @@ fn main() {
 
     let out = match op {
         "init" => op_init(),
+        "claim" => op_claim(),
         "derive" => op_derive(v.get("caller").and_then(|x| x.as_str()).unwrap_or("")),
         "sign" => op_sign(
             v.get("caller").and_then(|x| x.as_str()).unwrap_or(""),
@@ -108,6 +109,31 @@ fn op_sign(caller: &str, ts: &str, kind: &str, content: &str) -> String {
         "sig": hex(&sig_bytes),
     })
     .to_string()
+}
+
+/// claim: read NOSTR_ROOT from injected env (secrets channel), seed storage.
+/// One-time bootstrap; afterwards storage-first keeps the root stable.
+fn op_claim() -> String {
+    match std::env::var("NOSTR_ROOT") {
+        Ok(s) if s.len() == 64 => {
+            let root = match (0..32)
+                .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16))
+                .collect::<Result<Vec<u8>, _>>()
+            {
+                Ok(b) => b,
+                Err(_) => return err("NOSTR_ROOT is not valid hex"),
+            };
+            match storage::set_worker(ROOT_KEY, &root) {
+                Ok(()) => {
+                    let com = hex(&Sha256::digest(&root));
+                    serde_json::json!({ "claimed": true, "root_commitment": com }).to_string()
+                }
+                Err(e) => err(&e.0),
+            }
+        }
+        Ok(_) => err("NOSTR_ROOT must be 64 hex chars"),
+        Err(_) => err("NOSTR_ROOT not found in env (set project secret first)"),
+    }
 }
 
 // ---------- internals ----------

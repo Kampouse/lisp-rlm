@@ -5,7 +5,7 @@ Ops (input JSON "case"):
   i (105): init   {seed:<64hex>}  -> {"root_commitment":...}   root stored AS HEX TEXT
   d (100): derive {caller}        -> "pkhex|df|skhex"
   s (115): sign   {caller,ts,kind,content} -> {"id","sig"}   pk/df/sk ALL from derive-rec (non-spoofable)
-Legacy 78/69 kept. Root hex text stored (storage round-trips strings; derive-rec expects hex).
+c (99): claim  (secret NOSTR_ROOT -> storage; storage-first=stable).\nLegacy 78/69 kept. Root hex text stored (storage round-trips strings; derive-rec expects hex).
 Invariant: root and sk NEVER appear in outputs.
 """
 import sys
@@ -91,6 +91,17 @@ sub1(
           (str-cat "{" (str-cat q (str-cat "pk" (str-cat q (str-cat ":" (str-cat q (str-cat pkh (str-cat q (str-cat "," (str-cat q (str-cat "df" (str-cat q (str-cat ":" (str-cat q (str-cat dfh (str-cat q "}")))))))))))))))))
         "no root: run init")))
 
+(define (nostr-init2 input)
+  (let* ((q (qch))
+         (cur (outlayer/storage-get "nostr-root")))
+    (if cur
+        (str-cat "{" (str-cat q (str-cat "root_commitment" (str-cat q (str-cat ":" (str-cat q (str-cat (sha-fixed cur (str-len cur)) (str-cat q "}"))))))))
+        (let* ((env (env/get "NOSTR_ROOT")))
+          (if env
+              (let* ((sto (outlayer/storage-set "nostr-root" env)))
+                (str-cat "{" (str-cat q (str-cat "root_commitment" (str-cat q (str-cat ":" (str-cat q (str-cat (sha-fixed env (str-len env)) (str-cat q "}")))))))))
+              "no root: set NOSTR_ROOT project secret")))))
+
 (define (nostr-sign2 input)
   (let* ((root (outlayer/storage-get "nostr-root")))
     (if root
@@ -111,7 +122,8 @@ sub1(
 sub1(
 '''    (if (= csw 78)
         (nostr-derive (json-get-str "root" input) (json-get-str "caller" input))''',
-'''    (if (= csw 105) (nostr-init input)
+'''    (if (= csw 99) (nostr-init2 input)
+        (if (= csw 105) (nostr-init input)
         (if (= csw 100) (nostr-derive2 input)
             (if (= csw 115) (nostr-sign2 input)
                 (if (= csw 78)
@@ -122,7 +134,7 @@ sub1(
 '''(sc-mul-g2 (sc-from-hex sk-h))
                                   (cat8l W24)))))))))))))''',
 '''(sc-mul-g2 (sc-from-hex sk-h))
-                                  (cat8l W24))))))))))))))))''',
+                                  (cat8l W24)))))))))))))))))''',
 'dispatcher: tail +3 closers')
 
 open(SRC, 'w').write(src)
