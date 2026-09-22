@@ -27,8 +27,9 @@ HELPERS = r'''
          (skred (words-hex (fe-words-be duse))))
     (str-cat pkhex (str-cat "|" (str-cat (hexc flip) (str-cat "|" skred))))))
 ;; ---- Nostr NIP-01 event id + BIP-340 signature ----
-(define (nostr-sign pkh skh ts kind content)
-  (let* ((q (qch))
+(define (nostr-sign pkh skh ts kind content df-in)
+  (let* ((pflip (- df-in 48))
+         (q (qch))
          (s1 (str-cat "[0," q))
          (s2 (str-cat s1 pkh))
          (s3 (str-cat s2 q))
@@ -42,8 +43,8 @@ HELPERS = r'''
          (s11 (str-cat s10 q))
          (ser (str-cat s11 "]"))
          (idh (sha-fixed ser (str-len ser)))
-         (sig (phase-B skh idh pkh 0 1 "")))
-    (str-cat idh (str-cat "|" sig))))
+         (sig (phase-B skh idh pkh pflip 1 "")))
+    (str-cat "{" (str-cat (qch) (str-cat "id" (str-cat (qch) (str-cat ":" (str-cat (qch) (str-cat idh (str-cat (qch) (str-cat "," (str-cat (qch) (str-cat "sig" (str-cat (qch) (str-cat ":" (str-cat (qch) (str-cat sig (str-cat (qch) "}"))))))))))))))))))
 '''
 
 # 1) helpers before the LAST (real) dispatcher definition
@@ -61,7 +62,7 @@ new_if = ('(pkx-in (json-get-str "pk" input)))\n'
           '        (if (= csw 69)\n'
           '            (nostr-sign (json-get-str "pk" input) (json-get-str "sk" input)\n'
           '                        (json-get-str "ts" input) (json-get-str "kind" input)\n'
-          '                        (json-get-str "content" input))\n'
+          '                        (json-get-str "content" input) (byte-at (json-get-str "df" input) 0))\n'
           '    (if (= csw 83)')
 s = s.replace(old_if, new_if)
 
