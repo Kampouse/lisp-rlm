@@ -70,21 +70,54 @@ fn op_init() -> String {
     serde_json::json!({ "root_commitment": com }).to_string()
 }
 
+// ---------- identity: bound to the on-chain tx sender ----------
+/// The host injects NEAR_SENDER_ID from the request_execution tx (not from
+/// args), so it cannot be forged by input. Input `caller` must match it.
+fn true_caller(input_caller: &str) -> Result<String, String> {
+    match std::env::var("NEAR_SENDER_ID") {
+        Ok(sender) if !sender.is_empty() => {
+            if !input_caller.is_empty() && input_caller != sender {
+                Err(format!(
+                    "spoof rejected: input caller '{}' != tx sender '{}'",
+                    input_caller, sender
+                ))
+            } else {
+                Ok(sender)
+            }
+        }
+        _ => {
+            if input_caller.is_empty() {
+                Err("no NEAR_SENDER_ID in env and no caller in input".into())
+            } else {
+                Ok(input_caller.to_string()) // local/dev fallback
+            }
+        }
+    }
+}
+
 /// derive: per-user binding — output ONLY public material.
-fn op_derive(caller: &str) -> String {
+fn op_derive(input_caller: &str) -> String {
     let Some(root) = read_root() else {
         return err("no root: run init first");
     };
-    let (pk_hex, _sk) = derive_user(&root, caller);
+    let caller = match true_caller(input_caller) {
+        Ok(c) => c,
+        Err(m) => return err(&m),
+    };
+    let (pk_hex, _sk) = derive_user(&root, &caller);
     serde_json::json!({ "caller": caller, "pk": pk_hex }).to_string()
 }
 
 /// sign: re-derive sk in-enclave from sealed root; output id+pk+sig only.
-fn op_sign(caller: &str, ts: &str, kind: &str, content: &str) -> String {
+fn op_sign(input_caller: &str, ts: &str, kind: &str, content: &str) -> String {
     let Some(root) = read_root() else {
         return err("no root: run init first");
     };
-    let (pk_hex, sk) = derive_user(&root, caller);
+    let caller = match true_caller(input_caller) {
+        Ok(c) => c,
+        Err(m) => return err(&m),
+    };
+    let (pk_hex, sk) = derive_user(&root, &caller);
 
     // NIP-01 event id serialization: [0,pubkey,created_at,kind,tags,content]
     let ser = serde_json::json!([0u8, pk_hex, ts, kind, [], content]).to_string();
