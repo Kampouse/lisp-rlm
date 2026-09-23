@@ -21,7 +21,6 @@ fn is_builtin_wildcard(name: &str) -> bool {
     name.starts_with("json")
         || name.starts_with("u128/")
         || name.starts_with("borsh-")
-        || name.starts_with("wasm/")
         || matches!(
             name,
             "print"
@@ -32,12 +31,12 @@ fn is_builtin_wildcard(name: &str) -> bool {
                 | "memory"
                 | "module"
                 | "borsh-schema"
-                | "extend-runtime"
                 | "vec-nth"
                 | "list"
                 // P1/OutLayer HTTP functions (emitter guards with wasi_mode)
                 | "http-get"
                 | "http-post"
+                | "env/get"
                 // P1/OutLayer storage aliases (kebab-case)
                 | "storage-set"
                 | "storage-get"

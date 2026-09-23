@@ -8,6 +8,8 @@ world outlayer-http {
     export wasi:cli/run@0.2.2;
 
     import near:rpc/api@0.1.0;
+    import near:storage/api@0.1.0;
+    import wasi:cli/environment@0.2.2;
     import outlayer:api/host@0.1.0;
     import near:payment/api@0.1.0;
     import near:vrf/api@0.1.0;

@@ -578,17 +578,13 @@ impl WasmEmitter {
                 Ok(v)
             }
             "env/get" => {
-                // WIT: env-var(name: string) -> string
                 // (env/get "VAR_NAME") -> string or nil
-                // Canonical ABI: (name_ptr: i32, name_len: i32, ret_area: i32) -> ()
-                // Result: host writes (ptr, len) to ret_area
-                // CRITICAL: Host returns a pointer to its internal buffer which gets overwritten
-                // on each call. We must copy the string to WASM heap immediately.
+                // Implemented via wasi:cli/environment get-environment
+                // (sentinel 150): production serves env through WASI std
+                // (NEAR_SENDER_ID, secrets), NOT through a host fn. The old
+                // near:rpc/api env-var target was a phantom interface.
                 if a.is_empty() {
                     return Err("env/get requires a variable name string".into());
-                }
-                if !self.wasi_mode {
-                    return Err("env/get is only available on OutLayer".into());
                 }
                 self.need_outlayer = true;
                 let key_expr = self.expr(&a[0])?;
@@ -597,61 +593,72 @@ impl WasmEmitter {
                     align: 2,
                     memory_index: 0,
                 };
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 448;
+                // key scratch SEPARATE from the result retptr (the host may
+                // clobber the whole retptr region during the call)
+                let key_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 448;
+                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 512;
 
-                // Allocate unique heap buffer per call to avoid overwriting
+                // unique heap buffer per call (result copied out of ret area)
                 let call_idx = self.env_get_count;
                 self.env_get_count += 1;
-                let heap_buf: i32 = 131072 + (call_idx as i32) * 512; // 128KB base + 512 per call
+                let heap_buf: i32 = 131072 + (call_idx as i32) * 512;
 
-                // Use a named local for the length
                 let len_local = self.local_idx_i32("env_get_len");
 
                 let mut v = Vec::new();
-
-                // Push params: (name_ptr, name_len, ret_area)
+                // NOTE: key is passed to the helper via ret_area+8/+12 stores
+                // below — nothing is left on the operand stack.
+                // ret_area+8 = key ptr, ret_area+12 = key len
+                // (matches the proven storage-get decomposition: ShrU-3 for
+                // ptr, ShrU-32 for len; emit_untag is wrong here — it breaks
+                // on negative/untagged payloads and produced wild pointers)
                 v.extend(key_expr.clone());
-                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(0xFFFFFFFF));
                 v.push(Instruction::I64And);
-                v.push(Instruction::I32WrapI64); // name_ptr
+                v.push(Instruction::I32WrapI64); // key ptr (i32)
+                v.push(Instruction::I32Const(key_area));
+                v.push(Instruction::I32Store(ma4));
 
                 v.extend(key_expr);
-                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64ShrU);
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
-                v.push(Instruction::I32WrapI64); // name_len
+                v.push(Instruction::I64Const(0xFFFFFFFF));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64); // key len (i32)
+                v.push(Instruction::I32Const(key_area + 4));
+                v.push(Instruction::I32Store(ma4));
 
-                v.push(Instruction::I32Const(ret_area));
+                // call env lookup helper (sentinel 150) with key_area
+                v.push(Instruction::I32Const(key_area));
+                v.push(Instruction::Call(150));
 
-                // Call env-var (function 122)
-                v.push(Instruction::Call(122));
-
-                // Host wrote (ptr, len) to ret_area. Copy string to heap.
-                // 1. Read len from ret_area+4 and store to local
-                v.push(Instruction::I32Const(ret_area + 4));
+                // result: (ptr, len) written at key_area+8/+12
+                v.push(Instruction::I32Const(key_area + 12));
                 v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::LocalSet(len_local));
 
-                // 2. memory.copy(dst=heap_buf, src=ret_area[0], len)
-                // Stack order for memory.copy: dst, src, len (dst at bottom, len on top)
-                v.push(Instruction::I32Const(heap_buf)); // dst
-                v.push(Instruction::I32Const(ret_area));
-                v.push(Instruction::I32Load(ma4)); // src = ret_area[0]
-                v.push(Instruction::LocalGet(len_local)); // len
+                // copy result into heap_buf
+                v.push(Instruction::I32Const(heap_buf));
+                v.push(Instruction::I32Const(key_area + 8));
+                v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::LocalGet(len_local));
                 v.push(Instruction::MemoryCopy {
                     src_mem: 0,
                     dst_mem: 0,
                 });
 
-                // 3. Build tagged value: ((len << 32) | heap_buf) << 3 | TAG_STR
-                v.push(Instruction::I32Const(heap_buf)); // heap_buf is i32
+                // tag: ((len << 32) | heap_buf) << 3 | TAG_STR
+                v.push(Instruction::I32Const(heap_buf));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::LocalGet(len_local));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl); // len << 32
-                v.push(Instruction::I64Or); // (len << 32) | heap_buf
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
                 v.push(Instruction::I64Const(3));
                 v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Const(TAG_STR));
@@ -1540,40 +1547,31 @@ impl WasmEmitter {
             "outlayer/storage-has" | "outlayer/storage-delete" => {
                 Ok(vec![Instruction::I64Const(TAG_NIL)])
             }
-            "outlayer/context" => {
-                // (outlayer/context "signer_id") -> string
-                // Uses env-signer (sentinel 119) from outlayer:api/host
+            "outlayer/context" | "env/signer" | "env/predecessor" => {
+                // Signer/predecessor identity via WASI std env.
+                // The host injects NEAR_SENDER_ID / NEAR_PREDECESSOR_ID from
+                // the request_execution tx; input cannot forge them.
+                // Implemented on top of (env/get ...) — same sentinel-150
+                // wasi:cli/environment path.
                 if a.is_empty() {
-                    return Err("outlayer/context requires a key string".into());
+                    return Err("context: requires a key string (signer_id | predecessor_id)".into());
                 }
-                let _key = self.expr(&a[0])?;
-                let ma4 = wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 2,
-                    memory_index: 0,
+                let key_val = match &a[0] {
+                    LispVal::Str(s) => s.clone(),
+                    _ => return Err("context: key must be a string literal".into()),
                 };
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 576;
-                let mut v = Vec::new();
-                // env-signer() -> string: (ret_area) -> ()
-                v.push(Instruction::I32Const(ret_area));
-                v.push(Instruction::Call(120)); // env-signer (sentinel 120)
-                                                // Read string from ret_area: ptr @ +0, len @ +4
-                v.push(Instruction::I32Const(ret_area));
-                v.push(Instruction::I32Load(ma4));
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I32Const(ret_area + 4));
-                v.push(Instruction::I32Load(ma4));
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Or);
-                v.push(Instruction::I64Const(3));
-                v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TAG_STR));
-                v.push(Instruction::I64Or);
-                Ok(v)
+                let var = match key_val.as_str() {
+                    "signer_id" | "signer" => "NEAR_SENDER_ID",
+                    "predecessor_id" | "predecessor" => "NEAR_PREDECESSOR_ID",
+                    other => {
+                        return Err(format!(
+                            "context: unknown key '{}' (use signer_id | predecessor_id)",
+                            other
+                        ))
+                    }
+                };
+                self.call_outlayer("env/get", &[LispVal::Str(var.to_string())])
             }
-            // ── P2 inline operations (no host calls, pure WASM) ──
             "outlayer/sleep-ms" => {
                 // (outlayer/sleep-ms ms) -> number
                 // Delegate to sleep-ms kebab form

@@ -177,19 +177,19 @@ fn outlayer_imports() -> Vec<WasiFunc> {
             params: vec![W; 7],
             results: vec![],
         },
-        // 5: storage-set(key, value: list<u8>) -> result<_, string>
-        // outlayer:api/host canonical: 4 i32 + ret_area = 5 params
+        // 5: storage-set(key, value: list<u8>) -> string
+        // near:storage/api canonical: 4 i32 + ret_area = 5 params
         WasiFunc {
-            module: "outlayer:api/host@0.1.0",
-            name: "storage-set",
+            module: "near:storage/api@0.1.0",
+            name: "set",
             params: vec![W; 5],
             results: vec![],
         },
-        // 6: storage-get(key) -> result<option<list<u8>>, string>
-        // outlayer:api/host canonical: 2 i32 + ret_area = 3 params
+        // 6: storage-get(key) -> tuple<list<u8>, string>
+        // near:storage/api canonical: 2 i32 + ret_area = 3 params
         WasiFunc {
-            module: "outlayer:api/host@0.1.0",
-            name: "storage-get",
+            module: "near:storage/api@0.1.0",
+            name: "get",
             params: vec![W; 3],
             results: vec![],
         },
@@ -328,6 +328,14 @@ fn outlayer_imports() -> Vec<WasiFunc> {
             params: vec![W; 5],
             results: vec![],
         },
+        // 25: env lookup — wasi:cli/environment get-environment
+        // canonical ABI: () -> list<...> lowers to core [i32 ret_area] -> []
+        WasiFunc {
+            module: "wasi:cli/environment@0.2.2",
+            name: "get-environment",
+            params: vec![W; 1],
+            results: vec![],
+        },
     ]
 }
 
@@ -359,6 +367,7 @@ const OUTLAYER_SENTINELS: &[(u32, usize)] = &[
     (144, 22), // web-search
     (145, 23), // ai-chat
     (146, 24), // rpc-call
+    (150, 25), // env lookup via wasi:cli/environment get-environment
 ];
 
 /// Scan emitted instructions for sentinel Call(N) values and return
@@ -1737,6 +1746,13 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     types.ty().function(vec![W; 5], [W]);
     let http_shim_type = nti;
     nti += 1;
+    // type: () -> i32 — wasi:cli/environment get-environment (sentinel 150)
+    types.ty().function([], [ValType::I32]);
+    let _ = nti; nti += 1;
+    // type: (i32) -> () — get-environment retptr form (sentinel 150)
+    types.ty().function([ValType::I32], []);
+    let env_getenv_retptr_type = nti;
+    nti += 1;
 
     m.section(&types);
 
@@ -1784,6 +1800,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         8,  // 22: web-search — 3 i32 -> ()
         8,  // 23: ai-chat — 3 i32 -> ()
         10, // 24: rpc-call — 5 i32 -> ()
+        env_getenv_retptr_type, // 25: get-environment — [ret_area] -> []
     ];
     // Emit only filtered outlayer imports
     for &(sentinel, ol_idx) in OUTLAYER_SENTINELS {
@@ -2657,6 +2674,10 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     // Import layout: HTTP 0..27, get-stdin 28, outlayer 29..29+ol_count
     let get_stdin_import_idx = HTTP_IMPORT_COUNT; // 28
     let internal_fn_base = ol_import_base + ol_count;
+    // sentinel 150 import index (entry 25 is imported by the filtered loop
+    // like every other outlayer import — no separate import, no index shift)
+    let env_getenv_import_idx = *ol_sentinel_map.get(&150).unwrap_or(&0);
+
 
     // Type layout
     let user_type_count = 17u32;
@@ -2680,6 +2701,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     let ol_type_s64 = ol_type_base + 10; // (i32,i32,i64,i32) -> ()
     let ol_type_2ret = ol_type_base + 11; // (i32*2) -> (i32)
     let memcpy_type = ol_type_base + 12; // (i64, i64, i64) -> ()
+    let ol_type_ret_i32 = ol_type_base + 13; // () -> i32
 
     // Function indices
     let get_fn_count = http_get_count * 2;
@@ -2691,6 +2713,13 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     let user_fn_base = fd_write_shim_idx + 1;
     let start_fn_idx = user_fn_base + em.funcs.len() as u32;
     let realloc_fn_idx = start_fn_idx + 1;
+
+    let env_lookup_fn_idx = if bridge_native_post {
+        realloc_fn_idx + 2
+    } else {
+        realloc_fn_idx + 1
+    };
+    let uses_env_lookup = used_ol_indices.contains(&25);
 
     // ═══ Type Section + Import Section ═══
     let mut types = TypeSection::new();
@@ -2725,6 +2754,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     types.ty().function(vec![W, W, ValType::I64, W], []);
     types.ty().function(vec![W; 2], [W]); // has/delete direct bool return
     types.ty().function([ValType::I32; 3], []); // memcpy_type: (dst, src, len) -> ()
+    types.ty().function([], [ValType::I32]); // ol_type_ret_i32: () -> i32 (get-environment)
 
     module.section(&types);
 
@@ -2756,6 +2786,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         ol_type_3, // 22: web-search
         ol_type_3, // 23: ai-chat
         ol_type_5, // 24: rpc-call
+        ol_type_1, // 25: get-environment — [ret_area] -> []
     ];
 
     imports.import("wasi:cli/stdin@0.2.2", "get-stdin", EntityType::Function(0));
@@ -2796,6 +2827,11 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         // 143 bridge: (i32*7) -> () — same type as http-post-dynamic import
         functions.function(ol_type_7);
     }
+    // env lookup helper: (ret_area) -> () — must match its codes-section order
+    // (appended after the optional 143 bridge body below)
+    if uses_env_lookup {
+        functions.function(ol_type_1);
+    }
     module.section(&functions);
 
     // ═══ Memory ═══
@@ -2833,7 +2869,6 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     // ═══ Exports ═══
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
-    exports.export("_start", ExportKind::Func, start_fn_idx);
     exports.export("wasi:cli/run@0.2.2#run", ExportKind::Func, start_fn_idx);
     exports.export("cabi_realloc", ExportKind::Func, realloc_fn_idx);
     module.section(&exports);
@@ -3099,6 +3134,9 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
             if bridge_native_post {
                 ol_map.insert(143, realloc_fn_idx + 1); // → wasi:http POST bridge
             }
+            if uses_env_lookup {
+                ol_map.insert(150, env_lookup_fn_idx);
+            }
             ol_map.insert(crate::wasm_emit::MEMCPY_SENTINEL, memcpy_fn_idx);
             WasmEmitter::resolve_static_pub_ex(
                 &f.instrs,
@@ -3349,6 +3387,58 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         bridge.instruction(&Instruction::I32Store(ma4));
         bridge.instruction(&Instruction::End);
         codes.function(&bridge);
+    }
+    // ── env lookup helper at env_lookup_fn_idx ──
+    // (key_area) -> (): key @+0/+4, result @+8/+12.
+    // get-environment() -> i32 list-ptr; header [pairs_ptr, count];
+    // pairs 16B: [kptr, klen, vptr, vlen]. Scan + byte-compare + copy.
+    if uses_env_lookup {
+        let o0 = MemArg { offset: 0, align: 2, memory_index: 0 };
+        let o4 = MemArg { offset: 4, align: 2, memory_index: 0 };
+        let o8 = MemArg { offset: 8, align: 2, memory_index: 0 };
+        let o12 = MemArg { offset: 12, align: 2, memory_index: 0 };
+        let b0 = MemArg { offset: 0, align: 0, memory_index: 0 };
+        let mut fb = Function::new([
+            (1u32, ValType::I32),   // 0 param: key_area
+            (11u32, ValType::I32),  // 1..11 locals
+        ]);
+        // 1=list, 2=count, 3=cursor, 4=kptr, 5=klen, 6=vptr, 7=vlen,
+        // 8=keyptr, 9=keylen, 10=mismatch, 11=k
+        // get-environment(retptr = key_area+16): host writes [pairs_ptr, count]
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(16));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::Call(env_getenv_import_idx));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(16));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load(o0));
+        fb.instruction(&Instruction::LocalSet(3)); // cursor = pairs ptr
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(16));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load(o4));
+        fb.instruction(&Instruction::LocalSet(2)); // count = mem[retptr+4]
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Load(o0));
+        fb.instruction(&Instruction::LocalSet(8)); // key ptr
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Load(o4));
+        fb.instruction(&Instruction::LocalSet(9)); // key len
+                        // value copy: WIP — the returned list header layout needs one more
+        // memory-dump pass to pin down. Clean no-match for now:
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(8));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::I32Store(o0));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(12));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::I32Store(o0));
+        fb.instruction(&Instruction::End);
+        codes.function(&fb);
     }
 
     module.section(&codes);

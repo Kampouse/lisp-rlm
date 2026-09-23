@@ -554,6 +554,7 @@ pub fn build_http_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::Wor
             "near-vrf",
             "outlayer-wallet",
             "near-rpc",
+            "near-storage",
         ];
         for subdir in dep_dirs {
             let dir = wit_dir.join(subdir);
@@ -615,6 +616,7 @@ pub fn build_combined_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser:
             "near-vrf",
             "outlayer-wallet",
             "near-rpc",
+            "near-storage",
         ];
         for subdir in dep_dirs {
             let dir = wit_dir.join(subdir);
