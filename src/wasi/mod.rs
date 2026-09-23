@@ -1753,6 +1753,10 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     types.ty().function([ValType::I32], []);
     let env_getenv_retptr_type = nti;
     nti += 1;
+    // type: () -> i32 — get-environment pointer-return form
+    types.ty().function([], [ValType::I32]);
+    let env_getenv_ret_i32_type = nti;
+    nti += 1;
 
     m.section(&types);
 
@@ -1800,7 +1804,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         8,  // 22: web-search — 3 i32 -> ()
         8,  // 23: ai-chat — 3 i32 -> ()
         10, // 24: rpc-call — 5 i32 -> ()
-        env_getenv_retptr_type, // 25: get-environment — [ret_area] -> []
+        env_getenv_ret_i32_type, // 25: get-environment — () -> i32
     ];
     // Emit only filtered outlayer imports
     for &(sentinel, ol_idx) in OUTLAYER_SENTINELS {
