@@ -331,7 +331,7 @@ fn outlayer_imports() -> Vec<WasiFunc> {
         // 25: env lookup — wasi:cli/environment get-environment
         // canonical ABI: () -> list<...> lowers to core [i32 ret_area] -> []
         WasiFunc {
-            module: "wasi:cli/environment@0.2.2",
+            module: "wasi:cli/environment@0.2.12",
             name: "get-environment",
             params: vec![W; 1],
             results: vec![],
@@ -2869,7 +2869,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     // ═══ Exports ═══
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
-    exports.export("wasi:cli/run@0.2.2#run", ExportKind::Func, start_fn_idx);
+    exports.export("wasi:cli/run@0.2.12#run", ExportKind::Func, start_fn_idx);
     exports.export("cabi_realloc", ExportKind::Func, realloc_fn_idx);
     module.section(&exports);
 
@@ -3388,54 +3388,76 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         bridge.instruction(&Instruction::End);
         codes.function(&bridge);
     }
-    // ── env lookup helper at env_lookup_fn_idx ──
-    // (key_area) -> (): key @+0/+4, result @+8/+12.
-    // get-environment() -> i32 list-ptr; header [pairs_ptr, count];
-    // pairs 16B: [kptr, klen, vptr, vlen]. Scan + byte-compare + copy.
+        // ── env lookup helper at env_lookup_fn_idx ──
+    // (key_area) -> (): key ptr @+0, len @+4; result @+8/+12.
+    // MINIMAL pair[0] dump: get-environment(retptr=key_area+16), then copy
+    // pair[0]'s KEY (kptr,klen = words at pairs+0/+4) to +8/+12.
+    // Key comparison intentionally omitted in this probe build.
     if uses_env_lookup {
         let o0 = MemArg { offset: 0, align: 2, memory_index: 0 };
         let o4 = MemArg { offset: 4, align: 2, memory_index: 0 };
         let o8 = MemArg { offset: 8, align: 2, memory_index: 0 };
         let o12 = MemArg { offset: 12, align: 2, memory_index: 0 };
-        let b0 = MemArg { offset: 0, align: 0, memory_index: 0 };
+        let o16 = MemArg { offset: 16, align: 2, memory_index: 0 };
+        let o20 = MemArg { offset: 20, align: 2, memory_index: 0 };
         let mut fb = Function::new([
-            (1u32, ValType::I32),   // 0 param: key_area
-            (11u32, ValType::I32),  // 1..11 locals
+            (1u32, ValType::I32), // 0: key_area
+            (10u32, ValType::I32), // 1..10 scratch locals
         ]);
-        // 1=list, 2=count, 3=cursor, 4=kptr, 5=klen, 6=vptr, 7=vlen,
-        // 8=keyptr, 9=keylen, 10=mismatch, 11=k
-        // get-environment(retptr = key_area+16): host writes [pairs_ptr, count]
+                // get-environment(retptr = key_area+16): host writes [pairs_ptr, count]
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(16));
         fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::Call(env_getenv_import_idx));
+        // pairs base = mem[key_area+16]
         fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(16));
-        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load(o16));
+        fb.instruction(&Instruction::LocalSet(1));
+        // count = mem[key_area+20]
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Load(o20));
+        fb.instruction(&Instruction::LocalSet(2));
+        // pair[0]: kptr=mem[pairs], klen=mem[pairs+4], vptr=mem[pairs+8], vlen=mem[pairs+12]
+        fb.instruction(&Instruction::LocalGet(1));
         fb.instruction(&Instruction::I32Load(o0));
-        fb.instruction(&Instruction::LocalSet(3)); // cursor = pairs ptr
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(16));
-        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalSet(4)); // 4: kptr
+        fb.instruction(&Instruction::LocalGet(1));
         fb.instruction(&Instruction::I32Load(o4));
-        fb.instruction(&Instruction::LocalSet(2)); // count = mem[retptr+4]
+        fb.instruction(&Instruction::LocalSet(5)); // 5: klen
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Load(o8));
+        fb.instruction(&Instruction::LocalSet(6)); // 6: vptr
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Load(o12));
+        fb.instruction(&Instruction::LocalSet(7)); // 7: vlen
+        // key from key_area
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Load(o0));
         fb.instruction(&Instruction::LocalSet(8)); // key ptr
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Load(o4));
         fb.instruction(&Instruction::LocalSet(9)); // key len
-                        // value copy: WIP — the returned list header layout needs one more
-        // memory-dump pass to pin down. Clean no-match for now:
+        // DIAG: write (vptr, vlen) AND (kptr, klen) — return pair0 key as "value":
+        // value ptr = kptr, len = klen → Lisp prints first env KEY (proves layout)
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(8));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::LocalGet(4));
         fb.instruction(&Instruction::I32Store(o0));
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(12));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::LocalGet(5));
+        fb.instruction(&Instruction::I32Store(o0));
+// result = (param+8, 64): the raw 64-byte dump
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(8));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalSet(2)); // 2 = value ptr
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(12));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Const(64));
         fb.instruction(&Instruction::I32Store(o0));
         fb.instruction(&Instruction::End);
         codes.function(&fb);
