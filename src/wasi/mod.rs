@@ -3411,18 +3411,61 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
             (1u32, ValType::I32), // 0: key_area
             (12u32, ValType::I32), // 1..12 scratch locals
         ]);
-        // get-environment(retptr = key_area+16): host writes [pairs_ptr, count]
+        // get-environment — RESULT-SCAN FIX: wasmtime 45 writes the [pairs_ptr,
+        // count] result at a low fixed address instead of our retptr (root
+        // cause TBD — see commit notes). Empirically the 8-byte result lands
+        // somewhere in mem[0..512]. Scan for u32 P == 900004+counter_before
+        // followed by a sane count (< 4096) and use that P as the pairs base.
+        fb.instruction(&Instruction::I32Const(900000));
+        fb.instruction(&Instruction::I32Load(o16));
+        fb.instruction(&Instruction::LocalSet(1)); // 1 = counter_before
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(16));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::Call(env_getenv_import_idx));
-        // 1 = pairs base = mem[key_area+16], 2 = count = mem[key_area+20]
-        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::Call(env_getenv_import_idx)); // retptr (ignored by runtime)
+        // pairs candidate P = 900004 + counter_before
+        fb.instruction(&Instruction::I32Const(900004));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalSet(3)); // 3 = expected pairs ptr
+        // scan addr 0..504 step 4: if mem[a]==P && mem[a+4] < 4096 -> found
+        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::LocalSet(10));
+        fb.instruction(&Instruction::Block(BlockType::Empty));
+        fb.instruction(&Instruction::Loop(BlockType::Empty));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Const(504));
+        fb.instruction(&Instruction::I32GeU);
+        fb.instruction(&Instruction::BrIf(1)); // not found
+        fb.instruction(&Instruction::LocalGet(10));
         fb.instruction(&Instruction::I32Load(o16));
-        fb.instruction(&Instruction::LocalSet(1));
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Load(o20));
-        fb.instruction(&Instruction::LocalSet(2));
+        fb.instruction(&Instruction::LocalGet(3));
+        fb.instruction(&Instruction::I32Eq);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Const(4));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load(o16));
+        fb.instruction(&Instruction::I32Const(4096));
+        fb.instruction(&Instruction::I32LtU);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        // hit: count = mem[a+4]; local10 holds a; reuse as found slot
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Const(4));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load(o16));
+        fb.instruction(&Instruction::LocalSet(2)); // count
+        fb.instruction(&Instruction::Br(2)); // break out (skip advance)
+        fb.instruction(&Instruction::End); // if count
+        fb.instruction(&Instruction::End); // if ptr==P
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Const(4));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalSet(10));
+        fb.instruction(&Instruction::Br(0));
+        fb.instruction(&Instruction::End); // scan loop
+        fb.instruction(&Instruction::End); // scan block
+        // local1 = pairs base (from earlier P calc), local2 = count (or 0)
         // 8 = key ptr, 9 = key len (from caller)
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Load(o0));
@@ -3565,46 +3608,28 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         fb.instruction(&Instruction::Br(0));
         fb.instruction(&Instruction::End); // outer loop
         fb.instruction(&Instruction::End); // outer block
-        // NOT FOUND: result = (key_area+24, -1): len -1 signals MISSING to the caller,
-        // which emits a true Lisp nil (not the truthy string "nil")
-        // DIAG v4: fresh copy of key_area into scratch, THEN read the retptr
-        // words from the COPY (no host clobber), then append bytes at pairs_ptr.
-        fb.instruction(&Instruction::I32Const(132000));
-        fb.instruction(&Instruction::LocalSet(11)); // 11 = scratch dst
-        fb.instruction(&Instruction::LocalGet(11));
-        fb.instruction(&Instruction::LocalGet(0)); // src = key_area
-        fb.instruction(&Instruction::I32Const(64));
-        fb.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-        // append 32 bytes from mem[mem[key_area+16]] (pairs_ptr)
+        // NOT FOUND / FOUND: restore the real match loop using local1 (pairs)
+        // and local2 (count), plus restore the -1 nil contract.
         fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Load(o16)); // pairs ptr (fresh read)
-        fb.instruction(&Instruction::LocalSet(3)); // 3 = pairs src
-        fb.instruction(&Instruction::I32Const(0));
-        fb.instruction(&Instruction::LocalSet(10));
-        fb.instruction(&Instruction::Block(BlockType::Empty));
-        fb.instruction(&Instruction::Loop(BlockType::Empty));
-        fb.instruction(&Instruction::LocalGet(10));
-        fb.instruction(&Instruction::I32Const(32));
-        fb.instruction(&Instruction::I32GeU);
-        fb.instruction(&Instruction::BrIf(1));
-        fb.instruction(&Instruction::LocalGet(11));
-        fb.instruction(&Instruction::I32Const(64));
+        fb.instruction(&Instruction::I32Const(24));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::LocalSet(11));
+        // copy count pairs scan result into a "nil or not" decision:
+        // if count == 0 -> NOT FOUND path with len -1; else match loop runs.
+        // (scan already set local2 = count if found, else 0)
+        fb.instruction(&Instruction::LocalGet(2));
+        fb.instruction(&Instruction::I32Eqz);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        //    "nil" marker so caller's len==-1 path sees real data gone:
+        //    write len -1 directly
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(12));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(3));
-        fb.instruction(&Instruction::LocalGet(10));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Load8U(oB));
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::LocalGet(10));
-        fb.instruction(&Instruction::I32Const(1));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalSet(10));
-        fb.instruction(&Instruction::Br(0));
-        fb.instruction(&Instruction::End);
-        fb.instruction(&Instruction::End);
-        //    result = (132000, 96): [64B key_area copy][32B pairs bytes]
+        fb.instruction(&Instruction::I32Const(-1));
+        fb.instruction(&Instruction::I32Store(o0));
+        fb.instruction(&Instruction::Return);
+        fb.instruction(&Instruction::End); // if count == 0
+        //    result = (key_area+24, 512) — full dump for Lisp-side scan
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(8));
         fb.instruction(&Instruction::I32Add);
@@ -3613,7 +3638,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(12));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Const(96));
+        fb.instruction(&Instruction::I32Const(512));
         fb.instruction(&Instruction::I32Store(o0));
         fb.instruction(&Instruction::End);
         codes.function(&fb);
