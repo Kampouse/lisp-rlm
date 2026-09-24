@@ -3393,10 +3393,12 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         codes.function(&bridge);
     }
         // ── env lookup helper at env_lookup_fn_idx ──
-    // (key_area) -> (): key ptr @+0, len @+4; result @+8/+12.
-    // MINIMAL pair[0] dump: get-environment(retptr=key_area+16), then copy
-    // pair[0]'s KEY (kptr,klen = words at pairs+0/+4) to +8/+12.
-    // Key comparison intentionally omitted in this probe build.
+    // (key_area) -> (): key ptr @+0, len @+4; result @+8 (ptr), +12 (len).
+    // Layout used inside key_area (caller allocates via heap arithmetic):
+    //   +0  key ptr   +4  key len        (input, written by caller)
+    //   +8  result ptr +12 result len    (output to caller)
+    //   +16 pairs_ptr (retptr for canon ABI, host writes [ptr, count])
+    //   +24..+112 match scratch (80 bytes, >= longest env key)
     if uses_env_lookup {
         let o0 = MemArg { offset: 0, align: 2, memory_index: 0 };
         let o4 = MemArg { offset: 4, align: 2, memory_index: 0 };
@@ -3404,64 +3406,214 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         let o12 = MemArg { offset: 12, align: 2, memory_index: 0 };
         let o16 = MemArg { offset: 16, align: 2, memory_index: 0 };
         let o20 = MemArg { offset: 20, align: 2, memory_index: 0 };
+        let oB = MemArg { offset: 0, align: 0, memory_index: 0 }; // byte ops: natural align 1
         let mut fb = Function::new([
             (1u32, ValType::I32), // 0: key_area
-            (10u32, ValType::I32), // 1..10 scratch locals
+            (12u32, ValType::I32), // 1..12 scratch locals
         ]);
-                // get-environment(retptr = key_area+16): host writes [pairs_ptr, count]
+        // get-environment(retptr = key_area+16): host writes [pairs_ptr, count]
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(16));
         fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::Call(env_getenv_import_idx));
-        // pairs base = mem[key_area+16]
+        // 1 = pairs base = mem[key_area+16], 2 = count = mem[key_area+20]
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Load(o16));
         fb.instruction(&Instruction::LocalSet(1));
-        // count = mem[key_area+20]
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Load(o20));
         fb.instruction(&Instruction::LocalSet(2));
-        // pair[0]: kptr=mem[pairs], klen=mem[pairs+4], vptr=mem[pairs+8], vlen=mem[pairs+12]
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Load(o0));
-        fb.instruction(&Instruction::LocalSet(4)); // 4: kptr
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Load(o4));
-        fb.instruction(&Instruction::LocalSet(5)); // 5: klen
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Load(o8));
-        fb.instruction(&Instruction::LocalSet(6)); // 6: vptr
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Load(o12));
-        fb.instruction(&Instruction::LocalSet(7)); // 7: vlen
-        // key from key_area
+        // 8 = key ptr, 9 = key len (from caller)
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Load(o0));
-        fb.instruction(&Instruction::LocalSet(8)); // key ptr
+        fb.instruction(&Instruction::LocalSet(8));
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Load(o4));
-        fb.instruction(&Instruction::LocalSet(9)); // key len
-        // DIAG: write (vptr, vlen) AND (kptr, klen) — return pair0 key as "value":
-        // value ptr = kptr, len = klen → Lisp prints first env KEY (proves layout)
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(8));
+        fb.instruction(&Instruction::LocalSet(9));
+        // 12 = pair index (grows 0..count); count stays as the limit
+        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::LocalSet(12));
+        // loop: while idx < count
+        fb.instruction(&Instruction::Block(BlockType::Empty));
+        fb.instruction(&Instruction::Loop(BlockType::Empty));
+        //   if idx >= count -> break (not found)
+        fb.instruction(&Instruction::LocalGet(12));
+        fb.instruction(&Instruction::LocalGet(2));
+        fb.instruction(&Instruction::I32GeU);
+        fb.instruction(&Instruction::BrIf(1));
+        //   load pair fields: 3=kptr 4=klen 5=vptr 6=vlen at pairs+16*idx
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::LocalGet(12));
+        fb.instruction(&Instruction::I32Const(4));
+        fb.instruction(&Instruction::I32Shl); // idx*16
         fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load(o0));
+        fb.instruction(&Instruction::LocalSet(3)); // kptr (pairs+0)
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::LocalGet(12));
+        fb.instruction(&Instruction::I32Const(4));
+        fb.instruction(&Instruction::I32Shl);
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load(o4));
+        fb.instruction(&Instruction::LocalSet(4)); // klen (pairs+4)
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::LocalGet(12));
+        fb.instruction(&Instruction::I32Const(4));
+        fb.instruction(&Instruction::I32Shl);
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load(o8));
+        fb.instruction(&Instruction::LocalSet(5)); // vptr (pairs+8)
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::LocalGet(12));
+        fb.instruction(&Instruction::I32Const(4));
+        fb.instruction(&Instruction::I32Shl);
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load(o12));
+        fb.instruction(&Instruction::LocalSet(6)); // vlen (pairs+12)
+        //   key match: klen == key_len AND bytes equal
         fb.instruction(&Instruction::LocalGet(4));
-        fb.instruction(&Instruction::I32Store(o0));
+        fb.instruction(&Instruction::LocalGet(9));
+        fb.instruction(&Instruction::I32Eq);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        //     10 = byte index
+        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::LocalSet(10));
+        fb.instruction(&Instruction::Block(BlockType::Empty));
+        fb.instruction(&Instruction::Loop(BlockType::Empty));
+        //       if idx == klen -> full match -> take it
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::LocalGet(4));
+        fb.instruction(&Instruction::I32Eq);
+        fb.instruction(&Instruction::BrIf(1));
+        //       if key[idx] != k[idx] -> mismatch -> break inner
+        fb.instruction(&Instruction::LocalGet(8));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load8U(oB));
+        fb.instruction(&Instruction::LocalGet(3));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load8U(oB));
+        fb.instruction(&Instruction::I32Ne);
+        fb.instruction(&Instruction::BrIf(1));
+        //       idx++ ; loop
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Const(1));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalSet(10));
+        fb.instruction(&Instruction::Br(0));
+        fb.instruction(&Instruction::End); // inner loop
+        fb.instruction(&Instruction::End); // inner block: falls here on match AND mismatch
+        //     Distinguish match vs mismatch: re-check klen == key_len && idx == klen
+        //     (mismatch breaks with idx < klen; full match exits with idx == klen)
+        fb.instruction(&Instruction::LocalGet(4));
+        fb.instruction(&Instruction::LocalGet(9));
+        fb.instruction(&Instruction::I32Eq);
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::LocalGet(4));
+        fb.instruction(&Instruction::I32Eq);
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        //       MATCH: copy value into scratch at key_area+24 (protocol-fixed)
         fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(12));
+        fb.instruction(&Instruction::I32Const(24));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalSet(11));
+        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::LocalSet(10));
+        fb.instruction(&Instruction::Block(BlockType::Empty));
+        fb.instruction(&Instruction::Loop(BlockType::Empty));
+        //         while vidx < vlen: buf[vidx] = v[vidx]
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::LocalGet(6));
+        fb.instruction(&Instruction::I32GeU);
+        fb.instruction(&Instruction::BrIf(1));
+        fb.instruction(&Instruction::LocalGet(11));
+        fb.instruction(&Instruction::LocalGet(10));
         fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::LocalGet(5));
-        fb.instruction(&Instruction::I32Store(o0));
-// result = (param+8, 64): the raw 64-byte dump
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load8U(oB));
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Const(1));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalSet(10));
+        fb.instruction(&Instruction::Br(0));
+        fb.instruction(&Instruction::End); // copy loop
+        fb.instruction(&Instruction::End); // copy block
+        //       write caller result: [key_area+8] = dst, [key_area+12] = vlen
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(8));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalSet(2)); // 2 = value ptr
+        fb.instruction(&Instruction::LocalGet(11));
+        fb.instruction(&Instruction::I32Store(o0));
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(12));
         fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(6));
+        fb.instruction(&Instruction::I32Store(o0));
+        fb.instruction(&Instruction::Return);
+        fb.instruction(&Instruction::End); // if (match)
+        fb.instruction(&Instruction::End); // if (klen == key_len)
+        //   advance: idx += 1
+        fb.instruction(&Instruction::LocalGet(12));
+        fb.instruction(&Instruction::I32Const(1));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalSet(12));
+        fb.instruction(&Instruction::Br(0));
+        fb.instruction(&Instruction::End); // outer loop
+        fb.instruction(&Instruction::End); // outer block
+        // NOT FOUND: result = (key_area+24, -1): len -1 signals MISSING to the caller,
+        // which emits a true Lisp nil (not the truthy string "nil")
+        // DIAG v4: fresh copy of key_area into scratch, THEN read the retptr
+        // words from the COPY (no host clobber), then append bytes at pairs_ptr.
+        fb.instruction(&Instruction::I32Const(132000));
+        fb.instruction(&Instruction::LocalSet(11)); // 11 = scratch dst
+        fb.instruction(&Instruction::LocalGet(11));
+        fb.instruction(&Instruction::LocalGet(0)); // src = key_area
         fb.instruction(&Instruction::I32Const(64));
+        fb.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+        // append 32 bytes from mem[mem[key_area+16]] (pairs_ptr)
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Load(o16)); // pairs ptr (fresh read)
+        fb.instruction(&Instruction::LocalSet(3)); // 3 = pairs src
+        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::LocalSet(10));
+        fb.instruction(&Instruction::Block(BlockType::Empty));
+        fb.instruction(&Instruction::Loop(BlockType::Empty));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Const(32));
+        fb.instruction(&Instruction::I32GeU);
+        fb.instruction(&Instruction::BrIf(1));
+        fb.instruction(&Instruction::LocalGet(11));
+        fb.instruction(&Instruction::I32Const(64));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(3));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load8U(oB));
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Const(1));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalSet(10));
+        fb.instruction(&Instruction::Br(0));
+        fb.instruction(&Instruction::End);
+        fb.instruction(&Instruction::End);
+        //    result = (132000, 96): [64B key_area copy][32B pairs bytes]
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(8));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(11));
+        fb.instruction(&Instruction::I32Store(o0));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(12));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Const(96));
         fb.instruction(&Instruction::I32Store(o0));
         fb.instruction(&Instruction::End);
         codes.function(&fb);

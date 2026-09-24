@@ -641,6 +641,20 @@ impl WasmEmitter {
                 v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::LocalSet(len_local));
 
+                // len == -1 (0xFFFFFFFF as u32) => key not found => Lisp nil
+                let nil_local = self.local_idx_i32("env_get_nil");
+                v.push(Instruction::LocalGet(len_local));
+                v.push(Instruction::I32Const(-1));
+                v.push(Instruction::I32Eq);
+                v.push(Instruction::LocalSet(nil_local));
+                // nil is always safe (the memory.copy below is skipped via
+                // a zero length trick: when nil, copy len = 0)
+                v.push(Instruction::LocalGet(nil_local));
+                v.push(Instruction::If(wasm_encoder::BlockType::Empty));
+                v.push(Instruction::I32Const(0));
+                v.push(Instruction::LocalSet(len_local));
+                v.push(Instruction::End);
+
                 // copy result into heap_buf
                 v.push(Instruction::I32Const(heap_buf));
                 v.push(Instruction::I32Const(key_area + 8));
@@ -651,6 +665,9 @@ impl WasmEmitter {
                     dst_mem: 0,
                 });
 
+                // select stack (bottom→top): [v1=TAG_NIL (missing), v2=string (found), cond]
+                // cond=1 (missing) → v1; cond=0 (found) → v2
+                v.push(Instruction::I64Const(TAG_NIL));
                 // tag: ((len << 32) | heap_buf) << 3 | TAG_STR
                 v.push(Instruction::I32Const(heap_buf));
                 v.push(Instruction::I64ExtendI32U);
@@ -663,6 +680,9 @@ impl WasmEmitter {
                 v.push(Instruction::I64Shl);
                 v.push(Instruction::I64Const(TAG_STR));
                 v.push(Instruction::I64Or);
+                // stack: [TAG_NIL, string]; push i32 cond (1 = missing → picks TAG_NIL)
+                v.push(Instruction::LocalGet(nil_local));
+                v.push(Instruction::Select);
 
                 Ok(v)
             }

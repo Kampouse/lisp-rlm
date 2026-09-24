@@ -375,3 +375,13 @@ cd ../near-mock && git add -A && git commit -m "..." && git push && cargo publis
 /tmp/circom2             — circom compiler 2.2.3 binary
 (historic, j-p box): /Users/j-p/dev/stuff/{lisp-rlm,near-mock}
 ```
+
+## TS frontend lowering constraints (probed 2026-09-17, session 6)
+- NEVER nest `if { return }` inside a block that continues after it → "if: branch types disagree: str ≠ int". Flat early-return ifs are fine; if/else assignment is fine.
+- `near.callAwait` callback name must be a STRING LITERAL — no variables, no concatenation.
+- Tagged ints: range [-2^60, 2^60); literals near the cap hit an off-by-one in the check (reports value+1). Cap products manually ≤ 1e18. Runtime overflow = silent panic — guard every big product (r0·r1 before /SC).
+- Cross-contract promise results: return STRINGS (raw i64 = LE bytes → strToNum reads 0).
+
+## Stale-binary trap (2026-09-17)
+- ~/dev/lisp-rlm/target/release/near-mock is a STALE v0.1.17 build (old tree). The canonical binary is ~/dev/near-mock/target/release/near-mock (v0.7.2). 0.1.17 parses args differently: literal \" sequences in args JSON silently degrade to empty keys (state shows s:=/r::base). Always pin NM=/Users/asil/dev/near-mock/target/release/near-mock.
+- Rust format! escaping: use \" (emits clean JSON quote). \\\\\" emits literal backslash-quote bytes → malformed args on near-mock. Bash heredocs strip one level, so shell scripts mask this asymmetry.
