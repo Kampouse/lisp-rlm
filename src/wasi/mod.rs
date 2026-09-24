@@ -3411,60 +3411,37 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
             (1u32, ValType::I32), // 0: key_area
             (12u32, ValType::I32), // 1..12 scratch locals
         ]);
-        // get-environment — RESULT-SCAN FIX: wasmtime 45 writes the [pairs_ptr,
-        // count] result at a low fixed address instead of our retptr (root
-        // cause TBD — see commit notes). Empirically the 8-byte result lands
-        // somewhere in mem[0..512]. Scan for u32 P == 900004+counter_before
-        // followed by a sane count (< 4096) and use that P as the pairs base.
-        fb.instruction(&Instruction::I32Const(900000));
-        fb.instruction(&Instruction::I32Load(o16));
-        fb.instruction(&Instruction::LocalSet(1)); // 1 = counter_before
+        // SYNC-RUNTIME TEST: read result directly from retptr (+16/+20).
+        // DIAG v8: instead of matching, dump 96 bytes AT the pairs base so
+        // we can decode the true record layout under the sync linker.
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(16));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::Call(env_getenv_import_idx)); // retptr (ignored by runtime)
-        // pairs candidate P = 900004 + counter_before
-        fb.instruction(&Instruction::I32Const(900004));
+        fb.instruction(&Instruction::Call(env_getenv_import_idx));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Load(o16));
+        fb.instruction(&Instruction::LocalSet(1)); // pairs ptr (as written by host)
+        // copy 96 bytes from mem[pairs_ptr] to key_area+24
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(24));
+        fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Const(96));
+        fb.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+        // result = (key_area+24, 96)
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(8));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalSet(3)); // 3 = expected pairs ptr
-        // scan addr 0..504 step 4: if mem[a]==P && mem[a+4] < 4096 -> found
-        fb.instruction(&Instruction::I32Const(0));
-        fb.instruction(&Instruction::LocalSet(10));
-        fb.instruction(&Instruction::Block(BlockType::Empty));
-        fb.instruction(&Instruction::Loop(BlockType::Empty));
-        fb.instruction(&Instruction::LocalGet(10));
-        fb.instruction(&Instruction::I32Const(504));
-        fb.instruction(&Instruction::I32GeU);
-        fb.instruction(&Instruction::BrIf(1)); // not found
-        fb.instruction(&Instruction::LocalGet(10));
-        fb.instruction(&Instruction::I32Load(o16));
-        fb.instruction(&Instruction::LocalGet(3));
-        fb.instruction(&Instruction::I32Eq);
-        fb.instruction(&Instruction::If(BlockType::Empty));
-        fb.instruction(&Instruction::LocalGet(10));
-        fb.instruction(&Instruction::I32Const(4));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(24));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Load(o16));
-        fb.instruction(&Instruction::I32Const(4096));
-        fb.instruction(&Instruction::I32LtU);
-        fb.instruction(&Instruction::If(BlockType::Empty));
-        // hit: count = mem[a+4]; local10 holds a; reuse as found slot
-        fb.instruction(&Instruction::LocalGet(10));
-        fb.instruction(&Instruction::I32Const(4));
+        fb.instruction(&Instruction::I32Store(o0));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(12));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Load(o16));
-        fb.instruction(&Instruction::LocalSet(2)); // count
-        fb.instruction(&Instruction::Br(2)); // break out (skip advance)
-        fb.instruction(&Instruction::End); // if count
-        fb.instruction(&Instruction::End); // if ptr==P
-        fb.instruction(&Instruction::LocalGet(10));
-        fb.instruction(&Instruction::I32Const(4));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalSet(10));
-        fb.instruction(&Instruction::Br(0));
-        fb.instruction(&Instruction::End); // scan loop
-        fb.instruction(&Instruction::End); // scan block
+        fb.instruction(&Instruction::I32Const(96));
+        fb.instruction(&Instruction::I32Store(o0));
+        fb.instruction(&Instruction::Return);
         // local1 = pairs base (from earlier P calc), local2 = count (or 0)
         // 8 = key ptr, 9 = key len (from caller)
         fb.instruction(&Instruction::LocalGet(0));

@@ -42,8 +42,8 @@ oxc_parser = "0.147.0"
 oxc_syntax = "0.147.0"
 oxc_span = "0.147.0"
 oxc_ast = "0.147.0"
-wit-component = "0.248.0"
-wit-parser = "0.248.0"
+wit-component = "0.252.0"
+wit-parser = "0.252.0"
 base64 = "0.22"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
@@ -68,9 +68,9 @@ bn = { package = "zeropool-bn", version = "0.5.11", default-features = false }
 k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 wat = "1.0"
-wasm-encoder = "0.248.0"
+wasm-encoder = "0.252.0"
 wasmparser = { version = "0.248", features = ["simd"] }
-wasmprinter = "0.248.0"
+wasmprinter = "0.252.0"
 finite-wasm = "0.6"
 bincode = "1"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
