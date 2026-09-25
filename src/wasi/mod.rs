@@ -2860,13 +2860,15 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         },
         &ConstExpr::i64_const(0),
     );
+    // GLOBAL 2: env/get result channel (i32 len). Globals are immune to the
+    // post-call ret-area copy that wipes helper memory stores (ead5035).
     globals.global(
         GlobalType {
-            val_type: ValType::I64,
+            val_type: ValType::I32,
             mutable: true,
             shared: false,
         },
-        &ConstExpr::i64_const(0),
+        &ConstExpr::i32_const(0),
     );
     module.section(&globals);
 
@@ -3462,278 +3464,36 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Load(o52));
         fb.instruction(&Instruction::LocalSet(9));
-        // call get-environment with retptr = key_area+16
+        // PROTOCOL v4: the retptr (ka+16) delivers junk post-call, but the
+        // realloc log at 939996/940000 PROVABLY persists. The FIRST alloc
+        // made during this call is the pairs array (len 64 = 4 records x 16).
+        // 1 = log idx snapshot BEFORE the call
+        fb.instruction(&Instruction::I32Const(939996));
+        fb.instruction(&Instruction::I32Load(o0));
+        fb.instruction(&Instruction::LocalSet(1));
+        // PROBE v16: write 'NO' to scratch BEFORE the call, global=2
+        // BEFORE the call. If println shows "NO": pre-call memory writes
+        // persist; post-call ones don't. If NULs: scratch never works.
+        fb.instruction(&Instruction::I32Const(78)); // 'N'
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(128));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::I32Const(79)); // 'O'
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(129));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        // v18: global = key len read from ka+52 (expect 15 => 15 NULs)
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Load(o52));
+        fb.instruction(&Instruction::GlobalSet(1));
+        // call get-environment (retptr still passed for ABI compliance)
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(16));
         fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::Call(env_getenv_import_idx));
-        // 1 = pairs base = mem[key_area+16], 2 = count = mem[key_area+20]
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Load(o16));
-        fb.instruction(&Instruction::LocalSet(1));
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Load(o20));
-        fb.instruction(&Instruction::LocalSet(2));
-        // GUARDS: junk retptr (clobbered/stale) must degrade to NOT FOUND,
-        // never trap. count > 1024 or pairs == 0 => bail.
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Eqz);
-        fb.instruction(&Instruction::LocalGet(2));
-        fb.instruction(&Instruction::I32Const(1024));
-        fb.instruction(&Instruction::I32GtU);
-        fb.instruction(&Instruction::I32Or);
-        fb.instruction(&Instruction::If(BlockType::Empty));
-        fb.instruction(&Instruction::I32Const(0));
-        fb.instruction(&Instruction::LocalSet(2));
-        fb.instruction(&Instruction::End);
-        // PROBE v11: NO record derefs at all. Encode [pairs u32][count u32]
-        // [mem@pairs+0][mem@pairs+4] (24B, +65) into result. Each u32 is
-        // guarded: loads happen only if pairs is a plausible address.
-        // bytes 0-3: pairs
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Const(0xFF));
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(24));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Const(8));
-        fb.instruction(&Instruction::I32ShrU);
-        fb.instruction(&Instruction::I32Const(0xFF));
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(25));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Const(16));
-        fb.instruction(&Instruction::I32ShrU);
-        fb.instruction(&Instruction::I32Const(0xFF));
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(26));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Const(24));
-        fb.instruction(&Instruction::I32ShrU);
-        fb.instruction(&Instruction::I32Const(0xFF));
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(27));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        // bytes 4-7: count
-        fb.instruction(&Instruction::LocalGet(2));
-        fb.instruction(&Instruction::I32Const(0xFF));
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(28));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::LocalGet(2));
-        fb.instruction(&Instruction::I32Const(8));
-        fb.instruction(&Instruction::I32ShrU);
-        fb.instruction(&Instruction::I32Const(0xFF));
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(29));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::LocalGet(2));
-        fb.instruction(&Instruction::I32Const(16));
-        fb.instruction(&Instruction::I32ShrU);
-        fb.instruction(&Instruction::I32Const(0xFF));
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(30));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::LocalGet(2));
-        fb.instruction(&Instruction::I32Const(24));
-        fb.instruction(&Instruction::I32ShrU);
-        fb.instruction(&Instruction::I32Const(0xFF));
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(31));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        // bytes 8-15: record0 kptr/klen — loads guarded by pairs plausibility
-        // (pairs must be >= 4096 and < 16MB to even attempt)
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Const(4096));
-        fb.instruction(&Instruction::I32GeU);
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Const(16777216));
-        fb.instruction(&Instruction::I32LtU);
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::If(BlockType::Empty));
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Load(o0));
-        fb.instruction(&Instruction::I32Const(0xFF));
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(32));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Load(o0));
-        fb.instruction(&Instruction::I32Const(8));
-        fb.instruction(&Instruction::I32ShrU);
-        fb.instruction(&Instruction::I32Const(0xFF));
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(33));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Load(o0));
-        fb.instruction(&Instruction::I32Const(16));
-        fb.instruction(&Instruction::I32ShrU);
-        fb.instruction(&Instruction::I32Const(0xFF));
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(34));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Load(o0));
-        fb.instruction(&Instruction::I32Const(24));
-        fb.instruction(&Instruction::I32ShrU);
-        fb.instruction(&Instruction::I32Const(0xFF));
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(35));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Load(o4));
-        fb.instruction(&Instruction::I32Const(0xFF));
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(36));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Load(o4));
-        fb.instruction(&Instruction::I32Const(8));
-        fb.instruction(&Instruction::I32ShrU);
-        fb.instruction(&Instruction::I32Const(0xFF));
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(37));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Load(o4));
-        fb.instruction(&Instruction::I32Const(16));
-        fb.instruction(&Instruction::I32ShrU);
-        fb.instruction(&Instruction::I32Const(0xFF));
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(38));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Load(o4));
-        fb.instruction(&Instruction::I32Const(24));
-        fb.instruction(&Instruction::I32ShrU);
-        fb.instruction(&Instruction::I32Const(0xFF));
-        fb.instruction(&Instruction::I32And);
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(39));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::End); // pairs plausible
-        // pad remaining 8 bytes with 'A' (65+0) so len is fixed at 16
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(24 + 8));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(24 + 9));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(24 + 10));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(24 + 11));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(24 + 12));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(24 + 13));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(24 + 14));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::I32Const(65));
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(24 + 15));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        // result = (key_area+24, 16) — PROTOCOL v2: stores at +40/+44
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(24));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(40));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store(o0)); // result ptr @+40
-        fb.instruction(&Instruction::I32Const(16));
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(44));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store(o0)); // result len @+44
-        fb.instruction(&Instruction::Return);
-        fb.instruction(&Instruction::End); // end of function body
+fb.instruction(&Instruction::End); // end of function body
         codes.function(&fb);
     }
 

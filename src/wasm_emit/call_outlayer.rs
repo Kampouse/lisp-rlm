@@ -645,13 +645,23 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(key_area + 52));
                 v.push(Instruction::I32Store(ma4));
 
+                // v17: caller marker 'Z' at ka+130 (pre-call)
+                v.push(Instruction::I32Const(90));
+                v.push(Instruction::I32Const(key_area + 130));
+                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                }));
                 // call env lookup helper (sentinel 150) with key_area
                 v.push(Instruction::I32Const(key_area));
                 v.push(Instruction::Call(150));
 
-                // result: (ptr, len) written at key_area+40/+44 (protocol v2)
-                v.push(Instruction::I32Const(key_area + 44));
-                v.push(Instruction::I32Load(ma4));
+                // PROTOCOL v5: helper returns len via GLOBAL 2 (globals are
+                // immune to the post-call ret-area copy that wipes memory
+                // stores — ead5035) and copies the value into FIXED scratch
+                // key_area+128. Caller: read global, copy from fixed addr.
+                v.push(Instruction::GlobalGet(1)); // i32 directly
                 v.push(Instruction::LocalSet(len_local));
 
                 // len == -1 (0xFFFFFFFF as u32) => key not found => Lisp nil
@@ -668,10 +678,9 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(len_local));
                 v.push(Instruction::End);
 
-                // copy result into heap_buf (src ptr from key_area+40, v2)
+                // copy result into heap_buf (fixed scratch key_area+128, v5)
                 v.push(Instruction::I32Const(heap_buf));
-                v.push(Instruction::I32Const(key_area + 40));
-                v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I32Const(key_area + 128));
                 v.push(Instruction::LocalGet(len_local));
                 v.push(Instruction::MemoryCopy {
                     src_mem: 0,
