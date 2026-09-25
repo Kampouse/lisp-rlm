@@ -594,8 +594,21 @@ impl WasmEmitter {
                     memory_index: 0,
                 };
                 // key scratch SEPARATE from the result retptr (the host may
-                // clobber the whole retptr region during the call)
-                let key_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 448;
+                // clobber the whole retptr region during the call).
+                // PROTOCOL v2 (three-session bug closed 2026-09-25): the 8
+                // bytes at key_area+8..16 (just below the retptr at +16) are
+                // clobbered by the canon lowering — stores there never persist
+                // (proven: src loaded as 0 while len at +12 survived; canary
+                // len -2 trapped with fault at exactly src0+len). Layout now:
+                //   +16/+20 retptr (host writes pairs/count)   [proven OK]
+                //   +48/+52 key ptr/len (caller -> helper)
+                //   +40/+44 result ptr/len (helper -> caller)
+                //   +128.. value copy scratch (2048B)
+                // PROTOCOL v2.1: key_area moved OUT of OL_RET_AREA_BASE —
+                // the whole 4KB ret block proved untrustworthy even at +16.
+                // 8000 is below HEAP_START (200000) and clear of all data
+                // segments (strings end < 16600), so nothing writes there.
+                let key_area: i32 = 8000;
                 let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 512;
 
                 // unique heap buffer per call (result copied out of ret area)
@@ -618,7 +631,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0xFFFFFFFF));
                 v.push(Instruction::I64And);
                 v.push(Instruction::I32WrapI64); // key ptr (i32)
-                v.push(Instruction::I32Const(key_area));
+                v.push(Instruction::I32Const(key_area + 48));
                 v.push(Instruction::I32Store(ma4));
 
                 v.extend(key_expr);
@@ -629,15 +642,15 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0xFFFFFFFF));
                 v.push(Instruction::I64And);
                 v.push(Instruction::I32WrapI64); // key len (i32)
-                v.push(Instruction::I32Const(key_area + 4));
+                v.push(Instruction::I32Const(key_area + 52));
                 v.push(Instruction::I32Store(ma4));
 
                 // call env lookup helper (sentinel 150) with key_area
                 v.push(Instruction::I32Const(key_area));
                 v.push(Instruction::Call(150));
 
-                // result: (ptr, len) written at key_area+8/+12
-                v.push(Instruction::I32Const(key_area + 12));
+                // result: (ptr, len) written at key_area+40/+44 (protocol v2)
+                v.push(Instruction::I32Const(key_area + 44));
                 v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::LocalSet(len_local));
 
@@ -655,9 +668,9 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(len_local));
                 v.push(Instruction::End);
 
-                // copy result into heap_buf
+                // copy result into heap_buf (src ptr from key_area+40, v2)
                 v.push(Instruction::I32Const(heap_buf));
-                v.push(Instruction::I32Const(key_area + 8));
+                v.push(Instruction::I32Const(key_area + 40));
                 v.push(Instruction::I32Load(ma4));
                 v.push(Instruction::LocalGet(len_local));
                 v.push(Instruction::MemoryCopy {

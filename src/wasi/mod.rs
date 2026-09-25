@@ -3298,37 +3298,67 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     // Canonical ABI: always fresh allocate (bump allocator can't realloc in place)
     {
         let mut realloc = Function::new([
-            (1u32, ValType::I32), // extra local 4: bump offset
+            (2u32, ValType::I32), // extra locals 4: returned ptr, 5: diag idx
         ]);
         let ma4 = MemArg {
             offset: 0,
             align: 2,
             memory_index: 0,
         };
+        let ma8 = MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
         // cabi_realloc(old_ptr, old_size, align, new_size) -> ptr
         // If new_size == 0 → return 0 (null)
-        // Bump allocator: counter at memory[900000], base 900004
+        // Bump allocator: counter at memory[950000] (A/B EXPERIMENT: this
+        // variant is PROVEN to be invoked by host lowering — out7 log showed
+        // allocs len 64/14/13/15/7/22 = pairs array + env strings. The
+        // heap@56 variant produced no log at all.)
         realloc.instruction(&Instruction::LocalGet(3)); // new_len
         realloc.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
-        // Fresh allocation from bump counter at address 900000, base 900004
-        realloc.instruction(&Instruction::I32Const(900000));
+        realloc.instruction(&Instruction::I32Const(950000));
         realloc.instruction(&Instruction::I32Load(ma4)); // load offset
         realloc.instruction(&Instruction::LocalTee(4));
-        realloc.instruction(&Instruction::I32Const(900004));
-        realloc.instruction(&Instruction::I32Add); // abs addr = 900004 + offset
-        realloc.instruction(&Instruction::LocalSet(4)); // local 4 = abs addr
-                                                        // Advance offset by new_len aligned up to 4
-        realloc.instruction(&Instruction::I32Const(900000));
-        realloc.instruction(&Instruction::I32Load(ma4)); // load old offset
+        realloc.instruction(&Instruction::I32Const(950004));
+        realloc.instruction(&Instruction::I32Add); // abs addr = 950004 + offset
+        realloc.instruction(&Instruction::LocalSet(4)); // 4 = returned addr
+                                                        // Advance counter by new_len aligned up to 4
+        realloc.instruction(&Instruction::I32Const(950000));
+        realloc.instruction(&Instruction::I32Load(ma4));
         realloc.instruction(&Instruction::LocalGet(3)); // new_len
         realloc.instruction(&Instruction::I32Add);
         realloc.instruction(&Instruction::I32Const(3));
         realloc.instruction(&Instruction::I32Add);
         realloc.instruction(&Instruction::I32Const(-4));
         realloc.instruction(&Instruction::I32And);
-        realloc.instruction(&Instruction::I32Const(900000));
+        realloc.instruction(&Instruction::I32Const(950000));
         realloc.instruction(&Instruction::I32Store(ma4)); // store new offset
-                                                          // Return the allocated address
+        // DIAG: log [new_len][returned ptr] at 940000+idx*8, idx at 939996
+        realloc.instruction(&Instruction::I32Const(939996));
+        realloc.instruction(&Instruction::I32Load(ma4));
+        realloc.instruction(&Instruction::LocalSet(5)); // 5 = idx
+        realloc.instruction(&Instruction::LocalGet(5));
+        realloc.instruction(&Instruction::I32Const(8));
+        realloc.instruction(&Instruction::I32Mul);
+        realloc.instruction(&Instruction::I32Const(940000));
+        realloc.instruction(&Instruction::I32Add); // 940000+idx*8
+        realloc.instruction(&Instruction::LocalGet(3)); // new_len
+        realloc.instruction(&Instruction::I32Store(ma4)); // [+0] = len
+        realloc.instruction(&Instruction::LocalGet(5));
+        realloc.instruction(&Instruction::I32Const(8));
+        realloc.instruction(&Instruction::I32Mul);
+        realloc.instruction(&Instruction::I32Const(940004));
+        realloc.instruction(&Instruction::I32Add); // 940004+idx*8
+        realloc.instruction(&Instruction::LocalGet(4)); // returned ptr
+        realloc.instruction(&Instruction::I32Store(ma4)); // [+4] = ptr
+        realloc.instruction(&Instruction::I32Const(939996));
+        realloc.instruction(&Instruction::LocalGet(5));
+        realloc.instruction(&Instruction::I32Const(1));
+        realloc.instruction(&Instruction::I32Add);
+        realloc.instruction(&Instruction::I32Store(ma4)); // idx++
+        // Return the allocated address
         realloc.instruction(&Instruction::LocalGet(4));
         realloc.instruction(&Instruction::Else);
         // new_size == 0 → return 0 (null)
@@ -3406,82 +3436,303 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         let o12 = MemArg { offset: 12, align: 2, memory_index: 0 };
         let o16 = MemArg { offset: 16, align: 2, memory_index: 0 };
         let o20 = MemArg { offset: 20, align: 2, memory_index: 0 };
+        let o40 = MemArg { offset: 40, align: 2, memory_index: 0 };
+        let o44 = MemArg { offset: 44, align: 2, memory_index: 0 };
+        let o48 = MemArg { offset: 48, align: 2, memory_index: 0 };
+        let o52 = MemArg { offset: 52, align: 2, memory_index: 0 };
         let oB = MemArg { offset: 0, align: 0, memory_index: 0 }; // byte ops: natural align 1
         let mut fb = Function::new([
             (1u32, ValType::I32), // 0: key_area
             (12u32, ValType::I32), // 1..12 scratch locals
         ]);
-        // COUNTER-MIRROR EXPERIMENT: snapshot mem[900000] before AND after
-        // the call, return both words + retptr words in the result so we can
-        // tell 'counter not persisting' from 'host collapsed allocs'.
-        // result layout (key_area+24..): [pre_counter u32][post_counter u32]
-        //                                [retptr_ptr u32][retptr_count u32]
-        fb.instruction(&Instruction::I32Const(900000));
-        fb.instruction(&Instruction::I32Load(o0)); // offset 0! (o16 would read 900016)
-        fb.instruction(&Instruction::LocalSet(1)); // 1 = pre-call counter
+        // get-environment(retptr = key_area+16): the host lowers the full env
+        // as list<tuple<string,string>> — per-string cabi_realloc into the
+        // unified heap (see realloc emit; bump from RUNTIME_HEAP_PTR @56) —
+        // then writes [pairs_ptr, count] at the retptr. Pair layout:
+        //   pairs+16*i: [kptr][klen][vptr][vlen]
+        // 1 = pairs base, 2 = count, 12 = pair index
+        // (probe history: the old 900000 counter sat in interpreter-heap
+        // growth territory; every "collapsed buffer" reading was heap
+        // traffic over an unreserved address. Realloc now shares the
+        // interpreter heap, which is why per-string allocs persist.)
+        // 8 = key ptr, 9 = key len (from caller, protocol v2: +48/+52)
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Load(o48));
+        fb.instruction(&Instruction::LocalSet(8));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Load(o52));
+        fb.instruction(&Instruction::LocalSet(9));
+        // call get-environment with retptr = key_area+16
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(16));
         fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::Call(env_getenv_import_idx));
-        // post-call counter
-        fb.instruction(&Instruction::I32Const(900000));
-        fb.instruction(&Instruction::I32Load(o0));
-        fb.instruction(&Instruction::LocalSet(2)); // 2 = post-call counter
-        // retptr words
+        // 1 = pairs base = mem[key_area+16], 2 = count = mem[key_area+20]
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Load(o16));
-        fb.instruction(&Instruction::LocalSet(3)); // 3 = host-written ptr
+        fb.instruction(&Instruction::LocalSet(1));
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Load(o20));
-        fb.instruction(&Instruction::LocalSet(4)); // 4 = host-written count
-        // store all four into key_area+24..40
+        fb.instruction(&Instruction::LocalSet(2));
+        // GUARDS: junk retptr (clobbered/stale) must degrade to NOT FOUND,
+        // never trap. count > 1024 or pairs == 0 => bail.
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Eqz);
+        fb.instruction(&Instruction::LocalGet(2));
+        fb.instruction(&Instruction::I32Const(1024));
+        fb.instruction(&Instruction::I32GtU);
+        fb.instruction(&Instruction::I32Or);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::LocalSet(2));
+        fb.instruction(&Instruction::End);
+        // PROBE v11: NO record derefs at all. Encode [pairs u32][count u32]
+        // [mem@pairs+0][mem@pairs+4] (24B, +65) into result. Each u32 is
+        // guarded: loads happen only if pairs is a plausible address.
+        // bytes 0-3: pairs
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Const(0xFF));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(24));
         fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
         fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Store(o0));
+        fb.instruction(&Instruction::I32Const(8));
+        fb.instruction(&Instruction::I32ShrU);
+        fb.instruction(&Instruction::I32Const(0xFF));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(25));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Const(16));
+        fb.instruction(&Instruction::I32ShrU);
+        fb.instruction(&Instruction::I32Const(0xFF));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(26));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Const(24));
+        fb.instruction(&Instruction::I32ShrU);
+        fb.instruction(&Instruction::I32Const(0xFF));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(27));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        // bytes 4-7: count
+        fb.instruction(&Instruction::LocalGet(2));
+        fb.instruction(&Instruction::I32Const(0xFF));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(28));
         fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
         fb.instruction(&Instruction::LocalGet(2));
-        fb.instruction(&Instruction::I32Store(o0));
+        fb.instruction(&Instruction::I32Const(8));
+        fb.instruction(&Instruction::I32ShrU);
+        fb.instruction(&Instruction::I32Const(0xFF));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(29));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::LocalGet(2));
+        fb.instruction(&Instruction::I32Const(16));
+        fb.instruction(&Instruction::I32ShrU);
+        fb.instruction(&Instruction::I32Const(0xFF));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(30));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::LocalGet(2));
+        fb.instruction(&Instruction::I32Const(24));
+        fb.instruction(&Instruction::I32ShrU);
+        fb.instruction(&Instruction::I32Const(0xFF));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(31));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        // bytes 8-15: record0 kptr/klen — loads guarded by pairs plausibility
+        // (pairs must be >= 4096 and < 16MB to even attempt)
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Const(4096));
+        fb.instruction(&Instruction::I32GeU);
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Const(16777216));
+        fb.instruction(&Instruction::I32LtU);
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Load(o0));
+        fb.instruction(&Instruction::I32Const(0xFF));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(32));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(3));
-        fb.instruction(&Instruction::I32Store(o0));
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Load(o0));
+        fb.instruction(&Instruction::I32Const(8));
+        fb.instruction(&Instruction::I32ShrU);
+        fb.instruction(&Instruction::I32Const(0xFF));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(33));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Load(o0));
+        fb.instruction(&Instruction::I32Const(16));
+        fb.instruction(&Instruction::I32ShrU);
+        fb.instruction(&Instruction::I32Const(0xFF));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(34));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Load(o0));
+        fb.instruction(&Instruction::I32Const(24));
+        fb.instruction(&Instruction::I32ShrU);
+        fb.instruction(&Instruction::I32Const(0xFF));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(35));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Load(o4));
+        fb.instruction(&Instruction::I32Const(0xFF));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(36));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalGet(4));
-        fb.instruction(&Instruction::I32Store(o0));
-        // result = (1900004, 512) — dump the host's buffer head directly
-        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Load(o4));
         fb.instruction(&Instruction::I32Const(8));
+        fb.instruction(&Instruction::I32ShrU);
+        fb.instruction(&Instruction::I32Const(0xFF));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(65));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Const(1900004));
-        fb.instruction(&Instruction::I32Store(o0));
         fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(12));
+        fb.instruction(&Instruction::I32Const(37));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Const(512));
-        fb.instruction(&Instruction::I32Store(o0));
-        fb.instruction(&Instruction::Return);
-        // [experiment end — match loop restored after diagnosis]
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Load(o4));
+        fb.instruction(&Instruction::I32Const(16));
+        fb.instruction(&Instruction::I32ShrU);
+        fb.instruction(&Instruction::I32Const(0xFF));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(8));
+        fb.instruction(&Instruction::I32Const(38));
         fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Load(o4));
+        fb.instruction(&Instruction::I32Const(24));
+        fb.instruction(&Instruction::I32ShrU);
+        fb.instruction(&Instruction::I32Const(0xFF));
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(39));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::End); // pairs plausible
+        // pad remaining 8 bytes with 'A' (65+0) so len is fixed at 16
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(24 + 8));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(24 + 9));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(24 + 10));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(24 + 11));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(24 + 12));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(24 + 13));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(24 + 14));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::I32Const(65));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(24 + 15));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store8(oB));
+        // result = (key_area+24, 16) — PROTOCOL v2: stores at +40/+44
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(24));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store(o0));
         fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(12));
+        fb.instruction(&Instruction::I32Const(40));
         fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Const(96));
-        fb.instruction(&Instruction::I32Store(o0));
+        fb.instruction(&Instruction::I32Store(o0)); // result ptr @+40
+        fb.instruction(&Instruction::I32Const(16));
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(44));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Store(o0)); // result len @+44
         fb.instruction(&Instruction::Return);
-        // [COUNTER-MIRROR experiment returns here; match loop restored after diagnosis]
         fb.instruction(&Instruction::End); // end of function body
         codes.function(&fb);
     }
