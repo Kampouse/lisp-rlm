@@ -3412,8 +3412,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
             (12u32, ValType::I32), // 1..12 scratch locals
         ]);
         // SYNC-RUNTIME TEST: read result directly from retptr (+16/+20).
-        // DIAG v8: instead of matching, dump 96 bytes AT the pairs base so
-        // we can decode the true record layout under the sync linker.
+        // DIAG v8 (sync): call, then dump 96 bytes AT pairs base.
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(16));
         fb.instruction(&Instruction::I32Add);
@@ -3442,8 +3441,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         fb.instruction(&Instruction::I32Const(96));
         fb.instruction(&Instruction::I32Store(o0));
         fb.instruction(&Instruction::Return);
-        // local1 = pairs base (from earlier P calc), local2 = count (or 0)
-        // 8 = key ptr, 9 = key len (from caller)
+        // [match loop restored later — see 0d2a0ab]
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Load(o0));
         fb.instruction(&Instruction::LocalSet(8));
