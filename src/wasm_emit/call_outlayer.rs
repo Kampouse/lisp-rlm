@@ -631,9 +631,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0xFFFFFFFF));
                 v.push(Instruction::I64And);
                 v.push(Instruction::I32WrapI64); // key ptr (i32)
-                v.push(Instruction::I32Const(key_area + 48));
-                v.push(Instruction::I32Store(ma4));
-
+                v.push(Instruction::GlobalSet(10));
                 v.extend(key_expr);
                 v.push(Instruction::I64Const(3));
                 v.push(Instruction::I64ShrU);
@@ -642,8 +640,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0xFFFFFFFF));
                 v.push(Instruction::I64And);
                 v.push(Instruction::I32WrapI64); // key len (i32)
-                v.push(Instruction::I32Const(key_area + 52));
-                v.push(Instruction::I32Store(ma4));
+                v.push(Instruction::GlobalSet(11));
 
                 // v17: caller marker 'Z' at ka+130 (pre-call)
                 v.push(Instruction::I32Const(90));
@@ -657,35 +654,45 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(key_area));
                 v.push(Instruction::Call(150));
 
-                // PROTOCOL v5: helper returns len via GLOBAL 2 (globals are
-                // immune to the post-call ret-area copy that wipes memory
-                // stores — ead5035) and copies the value into FIXED scratch
-                // key_area+128. Caller: read global, copy from fixed addr.
-                v.push(Instruction::GlobalGet(1)); // i32 directly
+                // PROTOCOL v6 (97de3eb follow-up): the helper packs the
+                // matched value into GLOBALS 2..9 (8 x u32 LE = 32 bytes,
+                // values beyond 32 bytes truncated) and the length into
+                // GLOBAL 1 (-1 = not found). Globals are the only channel
+                // that survives the canon call (v9-v18 probes).
+                v.push(Instruction::GlobalGet(1)); // i32 len directly
                 v.push(Instruction::LocalSet(len_local));
 
-                // len == -1 (0xFFFFFFFF as u32) => key not found => Lisp nil
+                // len == -1 => key not found => Lisp nil
                 let nil_local = self.local_idx_i32("env_get_nil");
                 v.push(Instruction::LocalGet(len_local));
                 v.push(Instruction::I32Const(-1));
                 v.push(Instruction::I32Eq);
                 v.push(Instruction::LocalSet(nil_local));
-                // nil is always safe (the memory.copy below is skipped via
-                // a zero length trick: when nil, copy len = 0)
+                // clamp negative/oversized lens to 0/32 before the copies
                 v.push(Instruction::LocalGet(nil_local));
                 v.push(Instruction::If(wasm_encoder::BlockType::Empty));
                 v.push(Instruction::I32Const(0));
                 v.push(Instruction::LocalSet(len_local));
                 v.push(Instruction::End);
-
-                // copy result into heap_buf (fixed scratch key_area+128, v5)
-                v.push(Instruction::I32Const(heap_buf));
-                v.push(Instruction::I32Const(key_area + 128));
                 v.push(Instruction::LocalGet(len_local));
-                v.push(Instruction::MemoryCopy {
-                    src_mem: 0,
-                    dst_mem: 0,
-                });
+                v.push(Instruction::I32Const(32));
+                v.push(Instruction::I32GtU);
+                v.push(Instruction::If(wasm_encoder::BlockType::Empty));
+                v.push(Instruction::I32Const(32));
+                v.push(Instruction::LocalSet(len_local));
+                v.push(Instruction::End);
+
+                // unpack globals 2..9 into heap_buf (min(len,32) bytes:
+                // unconditional 8 stores then copy len bytes)
+                for gi in 2..10u32 {
+                    v.push(Instruction::I32Const(heap_buf + ((gi - 2) as i32) * 4));
+                    v.push(Instruction::GlobalGet(gi));
+                    v.push(Instruction::I32Store(wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 2,
+                        memory_index: 0,
+                    }));
+                }
 
                 // select stack (bottom→top): [v1=TAG_NIL (missing), v2=string (found), cond]
                 // cond=1 (missing) → v1; cond=0 (found) → v2

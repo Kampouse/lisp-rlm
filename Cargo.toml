@@ -42,8 +42,12 @@ oxc_parser = "0.147.0"
 oxc_syntax = "0.147.0"
 oxc_span = "0.147.0"
 oxc_ast = "0.147.0"
-wit-component = "0.252.0"
-wit-parser = "0.252.0"
+# VERSION-LOCKED to the runtime: wasmtime 45 pairs with wit-component 0.244
+# (see inlayer Cargo.lock). Encoding with 0.252 produced adapter shims whose
+# canon ABI mediation differs — the env/get helper/caller memory isolation
+# bug (97de3eb). Keep these in lockstep with inlayer's wasmtime.
+wit-component = "0.244.0"
+wit-parser = "0.244.0"
 base64 = "0.22"
 regex = "1"
 serde = { version = "1", features = ["derive"] }

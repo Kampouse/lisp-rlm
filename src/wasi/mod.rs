@@ -2860,8 +2860,6 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         },
         &ConstExpr::i64_const(0),
     );
-    // GLOBAL 2: env/get result channel (i32 len). Globals are immune to the
-    // post-call ret-area copy that wipes helper memory stores (ead5035).
     globals.global(
         GlobalType {
             val_type: ValType::I32,
@@ -2870,6 +2868,34 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         },
         &ConstExpr::i32_const(0),
     );
+    // GLOBAL 1: env/get result len (i32).
+    // GLOBALS 2..9: env/get value payload, 8 x u32 little-endian = 32 bytes.
+    // Memory stores around the canon call don't cross (v9-v18 probes);
+    // globals are the only proven channel.: env/get value payload, 8 x u32 little-endian = 32 bytes.
+    // Memory stores around the canon call don't cross (v9-v18 probes);
+    // globals are the only proven channel.
+    for _ in 0..8 {
+        globals.global(
+            GlobalType {
+                val_type: ValType::I32,
+                mutable: true,
+                shared: false,
+            },
+            &ConstExpr::i32_const(0),
+        );
+    }
+    // GLOBALS 10, 11: key ptr / key len (caller -> helper; the ka page is
+    // not visible across the canon call — v17/v18/v20 probes)
+    for _ in 0..2 {
+        globals.global(
+            GlobalType {
+                val_type: ValType::I32,
+                mutable: true,
+                shared: false,
+            },
+            &ConstExpr::i32_const(0),
+        );
+    }
     module.section(&globals);
 
     // ═══ Exports ═══
@@ -3441,6 +3467,8 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         let o40 = MemArg { offset: 40, align: 2, memory_index: 0 };
         let o44 = MemArg { offset: 44, align: 2, memory_index: 0 };
         let o48 = MemArg { offset: 48, align: 2, memory_index: 0 };
+        let o24 = MemArg { offset: 24, align: 2, memory_index: 0 };
+        let o28 = MemArg { offset: 28, align: 2, memory_index: 0 };
         let o52 = MemArg { offset: 52, align: 2, memory_index: 0 };
         let oB = MemArg { offset: 0, align: 0, memory_index: 0 }; // byte ops: natural align 1
         let mut fb = Function::new([
@@ -3457,42 +3485,223 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         // growth territory; every "collapsed buffer" reading was heap
         // traffic over an unreserved address. Realloc now shares the
         // interpreter heap, which is why per-string allocs persist.)
-        // 8 = key ptr, 9 = key len (from caller, protocol v2: +48/+52)
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Load(o48));
+        // 8 = key ptr, 9 = key len — via GLOBALS 10/11 (the ka pointer is
+        // not trustworthy across the canon call; globals are)
+        fb.instruction(&Instruction::GlobalGet(10));
         fb.instruction(&Instruction::LocalSet(8));
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Load(o52));
+        fb.instruction(&Instruction::GlobalGet(11));
         fb.instruction(&Instruction::LocalSet(9));
-        // PROTOCOL v4: the retptr (ka+16) delivers junk post-call, but the
-        // realloc log at 939996/940000 PROVABLY persists. The FIRST alloc
-        // made during this call is the pairs array (len 64 = 4 records x 16).
-        // 1 = log idx snapshot BEFORE the call
+        // PROBE v24: global1 = (key byte 0) - 64 ('N'=78 => 14 NULs)
+        fb.instruction(&Instruction::LocalGet(8));
+        fb.instruction(&Instruction::I32Load8U(oB));
+        fb.instruction(&Instruction::I32Const(64));
+        fb.instruction(&Instruction::I32Sub);
+        fb.instruction(&Instruction::GlobalSet(1));
+        fb.instruction(&Instruction::Return);
+        // PROTOCOL v6: everything through globals — the only channel that
+        // crosses (v9-v18). Global 1 = matched value length (or -1 not
+        // found); globals 2..9 = value bytes packed as 8 x u32 LE
+        // (32-byte cap; env var values are small).
+        // 1 = log idx snapshot BEFORE the call (realloc log proven stable):
+        // entry[idx0] = pairs array alloc (first alloc of the call).
         fb.instruction(&Instruction::I32Const(939996));
         fb.instruction(&Instruction::I32Load(o0));
         fb.instruction(&Instruction::LocalSet(1));
-        // PROBE v16: write 'NO' to scratch BEFORE the call, global=2
-        // BEFORE the call. If println shows "NO": pre-call memory writes
-        // persist; post-call ones don't. If NULs: scratch never works.
-        fb.instruction(&Instruction::I32Const(78)); // 'N'
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(128));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        fb.instruction(&Instruction::I32Const(79)); // 'O'
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Const(129));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Store8(oB));
-        // v18: global = key len read from ka+52 (expect 15 => 15 NULs)
-        fb.instruction(&Instruction::LocalGet(0));
-        fb.instruction(&Instruction::I32Load(o52));
-        fb.instruction(&Instruction::GlobalSet(1));
-        // call get-environment (retptr still passed for ABI compliance)
+        // call get-environment (retptr ka+16 for ABI compliance; content
+        // unread — we source pairs/count from the realloc log)
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(16));
         fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::Call(env_getenv_import_idx));
+        // pairs ptr = log entry[idx0].ptr (at 940004+idx0*8)
+        // entry len  = log entry[idx0].len (at 940000+idx0*8)
+        fb.instruction(&Instruction::I32Const(940000));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Const(8));
+        fb.instruction(&Instruction::I32Mul);
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load(o0));
+        fb.instruction(&Instruction::LocalSet(2)); // 2 = array byte len
+        fb.instruction(&Instruction::I32Const(940004));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Const(8));
+        fb.instruction(&Instruction::I32Mul);
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load(o0));
+        fb.instruction(&Instruction::LocalSet(1)); // 1 = pairs ptr
+        // 2 = record count = array len / 16 (DivU!)
+        fb.instruction(&Instruction::LocalGet(2));
+        fb.instruction(&Instruction::I32Const(4));
+        fb.instruction(&Instruction::I32DivU);
+        fb.instruction(&Instruction::LocalSet(2));
+        // GUARDS: nothing logged / junk => NOT FOUND via global
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Eqz);
+        fb.instruction(&Instruction::LocalGet(2));
+        fb.instruction(&Instruction::I32Eqz);
+        fb.instruction(&Instruction::LocalGet(2));
+        fb.instruction(&Instruction::I32Const(1024));
+        fb.instruction(&Instruction::I32GtU);
+        fb.instruction(&Instruction::I32Or);
+        fb.instruction(&Instruction::I32Or);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        fb.instruction(&Instruction::I32Const(-1));
+        fb.instruction(&Instruction::GlobalSet(1));
+        fb.instruction(&Instruction::Return);
+        fb.instruction(&Instruction::End);
+        // 12 = pair index; match loop over records
+        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::LocalSet(12));
+        fb.instruction(&Instruction::Block(BlockType::Empty));
+        fb.instruction(&Instruction::Loop(BlockType::Empty));
+        //   if idx >= count -> break (not found)
+        fb.instruction(&Instruction::LocalGet(12));
+        fb.instruction(&Instruction::LocalGet(2));
+        fb.instruction(&Instruction::I32GeU);
+        fb.instruction(&Instruction::BrIf(1));
+        //   record base (7); 3=kptr 4=klen 5=vptr 6=vlen
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::LocalGet(12));
+        fb.instruction(&Instruction::I32Const(4));
+        fb.instruction(&Instruction::I32Shl);
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalSet(7));
+        fb.instruction(&Instruction::LocalGet(7));
+        fb.instruction(&Instruction::I32Load(o0));
+        fb.instruction(&Instruction::LocalSet(3));
+        fb.instruction(&Instruction::LocalGet(7));
+        fb.instruction(&Instruction::I32Load(o4));
+        fb.instruction(&Instruction::LocalSet(4));
+        fb.instruction(&Instruction::LocalGet(7));
+        fb.instruction(&Instruction::I32Load(o8));
+        fb.instruction(&Instruction::LocalSet(5));
+        fb.instruction(&Instruction::LocalGet(7));
+        fb.instruction(&Instruction::I32Load(o12));
+        fb.instruction(&Instruction::LocalSet(6));
+        //   reject klen != key_len
+        fb.instruction(&Instruction::LocalGet(4));
+        fb.instruction(&Instruction::LocalGet(9));
+        fb.instruction(&Instruction::I32Eq);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::LocalSet(10));
+        fb.instruction(&Instruction::Block(BlockType::Empty));
+        fb.instruction(&Instruction::Loop(BlockType::Empty));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::LocalGet(4));
+        fb.instruction(&Instruction::I32Eq);
+        fb.instruction(&Instruction::BrIf(1));
+        fb.instruction(&Instruction::LocalGet(8));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load8U(oB));
+        fb.instruction(&Instruction::LocalGet(3));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load8U(oB));
+        fb.instruction(&Instruction::I32Ne);
+        fb.instruction(&Instruction::BrIf(1));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Const(1));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalSet(10));
+        fb.instruction(&Instruction::Br(0));
+        fb.instruction(&Instruction::End); // inner loop
+        fb.instruction(&Instruction::End); // inner block
+        //   match iff klen == key_len && idx == klen
+        fb.instruction(&Instruction::LocalGet(4));
+        fb.instruction(&Instruction::LocalGet(9));
+        fb.instruction(&Instruction::I32Eq);
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::LocalGet(4));
+        fb.instruction(&Instruction::I32Eq);
+        fb.instruction(&Instruction::I32And);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        //       MATCH: copy min(vlen,32) value bytes into v16 scratch
+        //       (locally visible), then pack into globals 2..9.
+        //       11 = scratch = ka+128
+        fb.instruction(&Instruction::LocalGet(0));
+        fb.instruction(&Instruction::I32Const(128));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalSet(11));
+        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::LocalSet(10));
+        fb.instruction(&Instruction::Block(BlockType::Empty));
+        fb.instruction(&Instruction::Loop(BlockType::Empty));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::LocalGet(6));
+        fb.instruction(&Instruction::I32GeU);
+        fb.instruction(&Instruction::BrIf(1));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Const(32));
+        fb.instruction(&Instruction::I32GeU);
+        fb.instruction(&Instruction::BrIf(1));
+        fb.instruction(&Instruction::LocalGet(11));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(5));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load8U(oB));
+        fb.instruction(&Instruction::I32Store8(oB));
+        fb.instruction(&Instruction::LocalGet(10));
+        fb.instruction(&Instruction::I32Const(1));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalSet(10));
+        fb.instruction(&Instruction::Br(0));
+        fb.instruction(&Instruction::End); // copy loop
+        fb.instruction(&Instruction::End); // copy block
+        //       pack: for w in 0..8: global(2+w) = u32 at scratch+4w
+        //       (scratch+24..48 kept zeroed? just read; zeros are fine)
+        //       w=0
+        fb.instruction(&Instruction::LocalGet(11));
+        fb.instruction(&Instruction::I32Load(o0));
+        fb.instruction(&Instruction::GlobalSet(2));
+        //       w=1
+        fb.instruction(&Instruction::LocalGet(11));
+        fb.instruction(&Instruction::I32Load(o4));
+        fb.instruction(&Instruction::GlobalSet(3));
+        //       w=2
+        fb.instruction(&Instruction::LocalGet(11));
+        fb.instruction(&Instruction::I32Load(o8));
+        fb.instruction(&Instruction::GlobalSet(4));
+        //       w=3
+        fb.instruction(&Instruction::LocalGet(11));
+        fb.instruction(&Instruction::I32Load(o12));
+        fb.instruction(&Instruction::GlobalSet(5));
+        //       w=4
+        fb.instruction(&Instruction::LocalGet(11));
+        fb.instruction(&Instruction::I32Load(o16));
+        fb.instruction(&Instruction::GlobalSet(6));
+        //       w=5
+        fb.instruction(&Instruction::LocalGet(11));
+        fb.instruction(&Instruction::I32Load(o20));
+        fb.instruction(&Instruction::GlobalSet(7));
+        //       w=6
+        fb.instruction(&Instruction::LocalGet(11));
+        fb.instruction(&Instruction::I32Load(o24));
+        fb.instruction(&Instruction::GlobalSet(8));
+        //       w=7
+        fb.instruction(&Instruction::LocalGet(11));
+        fb.instruction(&Instruction::I32Load(o28));
+        fb.instruction(&Instruction::GlobalSet(9));
+        //       len via global 1
+        fb.instruction(&Instruction::LocalGet(6));
+        fb.instruction(&Instruction::GlobalSet(1));
+        fb.instruction(&Instruction::Return);
+        fb.instruction(&Instruction::End); // if (match)
+        fb.instruction(&Instruction::End); // if (klen == key_len)
+        //   advance: idx += 1
+        fb.instruction(&Instruction::LocalGet(12));
+        fb.instruction(&Instruction::I32Const(1));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalSet(12));
+        fb.instruction(&Instruction::Br(0));
+        fb.instruction(&Instruction::End); // outer loop
+        fb.instruction(&Instruction::End); // outer block
+        // NOT FOUND: global 1 = -1
+        fb.instruction(&Instruction::I32Const(-1));
+        fb.instruction(&Instruction::GlobalSet(1));
 fb.instruction(&Instruction::End); // end of function body
         codes.function(&fb);
     }
@@ -5414,7 +5623,8 @@ mod p2_debug_test {
             .expect("failed to run wasm-tools validate");
         if !out.status.success() {
             panic!(
-                "wasm-tools validate FAILED:\n{}",
+                "wasm-tools validate FAILED:
+{}",
                 String::from_utf8_lossy(&out.stderr)
             );
         }
