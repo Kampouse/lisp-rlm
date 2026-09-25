@@ -27,7 +27,9 @@
 (define (cnt-k acct)  (str_cat "v:count:" acct))
 (define (adm-k a)     (str_cat "v:admin:" a))
 
-(define (is-member a) (near/has_key (st-k a)))
+;; membership = status EXACTLY 2. has_key alone would let pending applicants
+;; (status 1) self-vouch — caught by the intent suite, do not regress.
+(define (is-member a) (= (near/load (st-k a)) 2))
 (define (is-admin a)  (near/has_key (adm-k a)))
 
 ;; ── init: threshold + genesis admin (backstop only) ──
