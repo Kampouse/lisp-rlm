@@ -1,6 +1,6 @@
 ;; DREAMED TASK — agent-authored, probe-verified (ref solves, poison fails)
-;; targets state: t2_reverse|ok||rc0|es0|i2
-;; dreamed 1790021790.6960780621
+;; targets state: ta_prime_sum|ok||rc0|es0|i2
+;; dreamed 1790311057.961411953
 (load-file "rlm_runtime.lisp")
 (load-file "scripts/rlm-tasks/policy.lisp")
 (load-file "scripts/rlm-tasks/q-table.lisp")
@@ -9,12 +9,12 @@
 (define (llm-code ctx)
   (llm (build-prompt ctx)))
 (begin
-  (rlm-set __trace_id "td_reverse_list")
-  (define (task-verify a) (= a (list 5 4 3 2 1)))
-  (run-rlm "Reverse the list (list 1 2 3 4 5) using the reverse function; store the result via (rlm-set answer ...) then (rlm-set Final true).")
+  (rlm-set __trace_id "td_primesum")
+  (define (task-verify a) (= a 60))
+  (run-rlm "Find the sum of prime numbers between 10 and 20; store it via (rlm-set answer ...) then (rlm-set Final true).")
   (if (task-verify (rlm-get answer)) nil (re-lesson))
   (write-trace)
-  (println (str-concat "RLMDUMP task=td_reverse_list"))
+  (println (str-concat "RLMDUMP task=td_primesum"))
   (println (str-concat "RLMDUMP iterations=" (to-string (rlm-get iteration))))
   (println (str-concat "RLMDUMP answer=" (to-string (rlm-get answer))))
   (println (str-concat "RLMDUMP Final=" (to-string (rlm-get Final))))

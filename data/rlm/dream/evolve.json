@@ -1,1 +1,1 @@
-{"gen": 18, "channels": {"grammar": "{\"variant\": \"strings-first\"}", "actions": "on|installed", "tactics": "1790030996"}, "champ_fit": 1.0, "bad_tactics": 0, "baselined": true}
+{"gen": 111, "channels": {"grammar": "{\"variant\": \"full\"}", "actions": "on|installed", "tactics": "1790389100"}, "champ_fit": 1.0, "bad_tactics": 1, "baselined": true}

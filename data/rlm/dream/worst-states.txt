@@ -1,6 +1,6 @@
-t5_vowels|ok||rc0|es0|i1 — best Q: -0.25
-t5_vowels|ok||rc0|es0|i2 — best Q: -0.24
-ta_prime_sum|ok||rc0|es0|i2 — best Q: -0.22
-ta_prime_sum|ok||rc0|es0|i3 — best Q: -0.22
-t5_vowels|ok||rc1|es0|i2 — best Q: -0.20
+t5_vowels|ok||rc0|es0|i2 — best Q: -0.25
+ta_prime_sum|ok||rc0|es0|i3 — best Q: -0.25
+t5_vowels|ok||rc1|es0|i2 — best Q: -0.25
+ta_prime_sum|ok||rc0|es0|i2 — best Q: -0.21
+t5_vowels|ok||rc0|es0|i3 — best Q: -0.20
 ta_primeprod|ok||rc0|es0|i3 — best Q: -0.18

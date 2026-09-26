@@ -1,0 +1,4 @@
+;; dream-proposed 1790458806.1295681
+(rlm-register-action "specific_hint" (lambda (rc)
+  (str-concat "\nFor t5_vowels: Count each vowel separately using (count-if). Example: (count-if (lambda (c) (member c '(a e i o u))) text)\n"
+              "For ta_prime*: Implement is-prime with trial division, then use (reduce) with appropriate operation.\n")))

@@ -1,5 +1,5 @@
-# tactics gen · brain brain:glm-4.5-flash ·6
+# tactics gen · brain brain:glm-4.5-flash ·7
 - Fix t5_vowels: filter (lambda (c) (find (lambda (x) (equal? c x)) "aeiou")) (map char-downcase lst)
-- Fix ta_prime_sum: reduce + 0 lst
-- Fix ta_primeprod: reduce * 1 lst
+- Fix ta_prime_sum: reduce + 0 (filter number? lst)
+- Fix ta_primeprod: reduce * 1 (filter number? lst)
 - Fix td_revlist: reverse lst
