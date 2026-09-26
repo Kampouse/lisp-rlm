@@ -71,7 +71,6 @@ char-ci<?
 char-ci=?
 char-ci>=?
 char-ci>?
-char-downcase
 char-foldcase
 char-lower-case?
 char-numeric?
