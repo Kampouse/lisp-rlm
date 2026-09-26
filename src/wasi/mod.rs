@@ -3541,49 +3541,56 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         fb.instruction(&Instruction::GlobalGet(11));
         fb.instruction(&Instruction::LocalSet(9));
         // PROTOCOL v7 (stdin-env): scan the env JSON at ENV_JSON_BUF.
-        // No canon call, no ka page traffic — pure guest memory.
-        // 1 = scan position, 2 = key match index, 3 = value len
+        // Flat control flow, verified br depths. No canon call anywhere.
+        //
+        // JSON shape: {"K1":"V1","K2":"V2"}. At a candidate opening quote
+        // `pos`: key = pos+1..pos+1+key_len, closing quote pos+1+key_len,
+        // colon pos+2+key_len, value opening quote pos+3+key_len, value
+        // starts pos+4+key_len.
+        // 1 = pos, 2 = k, 3 = vlen, 4 = char, 5 = match flag, 6 = vstart
         fb.instruction(&Instruction::I32Const(0));
         fb.instruction(&Instruction::LocalSet(1));
-
-        // outer scan loop
+        // ═══ outer scan: Block A / Loop B ═══
         fb.instruction(&Instruction::Block(BlockType::Empty));
         fb.instruction(&Instruction::Loop(BlockType::Empty));
-        //   c = env[1]; if c == 0 -> not found -> break
+        //   c = env[pos]; c == 0 -> break A (not found)
         fb.instruction(&Instruction::I32Const(crate::wasi_http::ENV_JSON_BUF));
         fb.instruction(&Instruction::LocalGet(1));
         fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::I32Load8U(oB));
-        fb.instruction(&Instruction::LocalSet(4)); // 4 = c
+        fb.instruction(&Instruction::LocalSet(4));
         fb.instruction(&Instruction::LocalGet(4));
         fb.instruction(&Instruction::I32Eqz);
-        fb.instruction(&Instruction::BrIf(1));
-        //   if c != '"' -> pos++ ; continue
+        fb.instruction(&Instruction::BrIf(1)); // break A
+        //   c != '"' -> pos++ ; continue B
         fb.instruction(&Instruction::LocalGet(4));
-        fb.instruction(&Instruction::I32Const(34)); // '"'
+        fb.instruction(&Instruction::I32Const(34));
         fb.instruction(&Instruction::I32Ne);
         fb.instruction(&Instruction::If(BlockType::Empty));
         fb.instruction(&Instruction::LocalGet(1));
         fb.instruction(&Instruction::I32Const(1));
         fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::LocalSet(1));
-        fb.instruction(&Instruction::Br(1)); // continue outer loop
+        fb.instruction(&Instruction::Br(1)); // continue B
         fb.instruction(&Instruction::End);
-        //   c == '"': candidate key at pos+1. Compare key_len bytes.
+        //   candidate: pos+1 is key start. Compare key_len bytes.
         fb.instruction(&Instruction::LocalGet(1));
         fb.instruction(&Instruction::I32Const(1));
         fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::LocalSet(1));
         fb.instruction(&Instruction::I32Const(0));
-        fb.instruction(&Instruction::LocalSet(2)); // 2 = k index
+        fb.instruction(&Instruction::LocalSet(2)); // k = 0
+        fb.instruction(&Instruction::I32Const(1));
+        fb.instruction(&Instruction::LocalSet(5)); // match = 1
+        //   ═══ compare: Block C / Loop D ═══
         fb.instruction(&Instruction::Block(BlockType::Empty));
         fb.instruction(&Instruction::Loop(BlockType::Empty));
-        //     if k == key_len -> full candidate match -> exit compare
+        //     k == key_len -> full prefix match -> break C
         fb.instruction(&Instruction::LocalGet(2));
         fb.instruction(&Instruction::LocalGet(9));
         fb.instruction(&Instruction::I32Eq);
-        fb.instruction(&Instruction::BrIf(1));
-        //     if env[pos+k] != key[k] -> mismatch
+        fb.instruction(&Instruction::BrIf(1)); // break C
+        //     env[pos+k] != key[k] -> match = 0 ; break C
         fb.instruction(&Instruction::I32Const(crate::wasi_http::ENV_JSON_BUF));
         fb.instruction(&Instruction::LocalGet(1));
         fb.instruction(&Instruction::I32Add);
@@ -3596,24 +3603,29 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         fb.instruction(&Instruction::I32Load8U(oB));
         fb.instruction(&Instruction::I32Ne);
         fb.instruction(&Instruction::If(BlockType::Empty));
-        //       mismatch: pos += k + 1 (past the quote + compared bytes) so
-        //       progress is guaranteed even when k == 0, then continue loop
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::LocalGet(2));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Const(1));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalSet(1));
-        fb.instruction(&Instruction::Br(1)); // continue outer scan loop
+        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::LocalSet(5));
+        fb.instruction(&Instruction::Br(2)); // break C
         fb.instruction(&Instruction::End);
+        //     k++ ; continue D
         fb.instruction(&Instruction::LocalGet(2));
         fb.instruction(&Instruction::I32Const(1));
         fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::LocalSet(2));
         fb.instruction(&Instruction::Br(0));
-        fb.instruction(&Instruction::End); // compare loop
-        fb.instruction(&Instruction::End); // compare block
-        //   key matched; env[pos + key_len] must be the closing '"'
+        fb.instruction(&Instruction::End); // Loop D
+        fb.instruction(&Instruction::End); // Block C
+        //   match == 0 -> pos++ ; continue B
+        fb.instruction(&Instruction::LocalGet(5));
+        fb.instruction(&Instruction::I32Eqz);
+        fb.instruction(&Instruction::If(BlockType::Empty));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Const(1));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalSet(1));
+        fb.instruction(&Instruction::Br(1)); // continue B
+        fb.instruction(&Instruction::End);
+        //   closing quote: env[pos + key_len] must be '"'
         fb.instruction(&Instruction::I32Const(crate::wasi_http::ENV_JSON_BUF));
         fb.instruction(&Instruction::LocalGet(1));
         fb.instruction(&Instruction::I32Add);
@@ -3623,105 +3635,106 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         fb.instruction(&Instruction::I32Const(34));
         fb.instruction(&Instruction::I32Ne);
         fb.instruction(&Instruction::If(BlockType::Empty));
-        //       closing quote missing -> false candidate: advance and continue
         fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::LocalGet(9));
-        fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::I32Const(1));
         fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::LocalSet(1));
-        fb.instruction(&Instruction::Br(1)); // continue outer loop
+        fb.instruction(&Instruction::Br(1)); // continue B
         fb.instruction(&Instruction::End);
-        //   pos = key end + 1 (the ':')
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::LocalGet(9));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Const(1));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalSet(1));
-        //   env[pos] must be ':' (shape check)
+        //   colon: env[pos + key_len + 1] must be ':'
         fb.instruction(&Instruction::I32Const(crate::wasi_http::ENV_JSON_BUF));
         fb.instruction(&Instruction::LocalGet(1));
         fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(9));
+        fb.instruction(&Instruction::I32Const(1));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::I32Load8U(oB));
-        fb.instruction(&Instruction::I32Const(58)); // ':'
+        fb.instruction(&Instruction::I32Const(58));
         fb.instruction(&Instruction::I32Ne);
         fb.instruction(&Instruction::If(BlockType::Empty));
-        //     malformed: advance + continue outer loop
         fb.instruction(&Instruction::LocalGet(1));
         fb.instruction(&Instruction::I32Const(1));
         fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::LocalSet(1));
-        fb.instruction(&Instruction::Br(1));
+        fb.instruction(&Instruction::Br(1)); // continue B
         fb.instruction(&Instruction::End);
-        //   value starts at pos+1. Find closing quote (no escape handling:
-        //   env values from host are control-char-free JSON strings; quotes
-        //   inside values are emitted as \" by serde_json so raw '"' can't
-        //   appear inside).
+        //   value opening quote: env[pos + key_len + 2] must be '"'
+        fb.instruction(&Instruction::I32Const(crate::wasi_http::ENV_JSON_BUF));
+        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(9));
+        fb.instruction(&Instruction::I32Const(2));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Load8U(oB));
+        fb.instruction(&Instruction::I32Const(34));
+        fb.instruction(&Instruction::I32Ne);
+        fb.instruction(&Instruction::If(BlockType::Empty));
         fb.instruction(&Instruction::LocalGet(1));
         fb.instruction(&Instruction::I32Const(1));
         fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::LocalSet(1));
+        fb.instruction(&Instruction::Br(1)); // continue B
+        fb.instruction(&Instruction::End);
+        //   FOUND: vstart = pos + key_len + 3 ; vlen = 0
         fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::LocalSet(5)); // 5 = value start
-        //   find end: while env[pos] != '"' AND env[pos] != 0: pos++
+        fb.instruction(&Instruction::LocalGet(9));
+        fb.instruction(&Instruction::I32Const(3));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalSet(6)); // 6 = vstart
+        fb.instruction(&Instruction::I32Const(0));
+        fb.instruction(&Instruction::LocalSet(3)); // vlen = 0
+        //   ═══ value end: Block E / Loop F ═══
         fb.instruction(&Instruction::Block(BlockType::Empty));
         fb.instruction(&Instruction::Loop(BlockType::Empty));
+        //     c = env[vstart + vlen]
         fb.instruction(&Instruction::I32Const(crate::wasi_http::ENV_JSON_BUF));
-        fb.instruction(&Instruction::LocalGet(1));
+        fb.instruction(&Instruction::LocalGet(6));
+        fb.instruction(&Instruction::I32Add);
+        fb.instruction(&Instruction::LocalGet(3));
         fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::I32Load8U(oB));
-        fb.instruction(&Instruction::LocalSet(4)); // 4 = c
-        //     NUL -> malformed, bail as not found
+        fb.instruction(&Instruction::LocalSet(4));
+        //     c == 0 -> malformed: g1 = -1 ; return
         fb.instruction(&Instruction::LocalGet(4));
-        fb.instruction(&Instruction::I32Eqz);
-        fb.instruction(&Instruction::BrIf(2));
-        //     '"' -> value end found
-        fb.instruction(&Instruction::LocalGet(4));
-        fb.instruction(&Instruction::I32Const(34));
-        fb.instruction(&Instruction::I32Eq);
-        fb.instruction(&Instruction::BrIf(1));
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Const(1));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::LocalSet(1));
-        fb.instruction(&Instruction::Br(0));
-        fb.instruction(&Instruction::End);
-        fb.instruction(&Instruction::End);
-        //   if we bailed on NUL: global 1 = -1, return
-        fb.instruction(&Instruction::I32Const(crate::wasi_http::ENV_JSON_BUF));
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::I32Add);
-        fb.instruction(&Instruction::I32Load8U(oB));
         fb.instruction(&Instruction::I32Eqz);
         fb.instruction(&Instruction::If(BlockType::Empty));
         fb.instruction(&Instruction::I32Const(-1));
         fb.instruction(&Instruction::GlobalSet(1));
         fb.instruction(&Instruction::Return);
         fb.instruction(&Instruction::End);
-        //   3 = value len = pos - value_start
-        fb.instruction(&Instruction::LocalGet(1));
-        fb.instruction(&Instruction::LocalGet(5));
-        fb.instruction(&Instruction::I32Sub);
+        //     c == '"' -> break E (value end)
+        fb.instruction(&Instruction::LocalGet(4));
+        fb.instruction(&Instruction::I32Const(34));
+        fb.instruction(&Instruction::I32Eq);
+        fb.instruction(&Instruction::BrIf(1)); // break E
+        //     vlen++ ; continue F
+        fb.instruction(&Instruction::LocalGet(3));
+        fb.instruction(&Instruction::I32Const(1));
+        fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::LocalSet(3));
-        //   copy value: scratch(ka+128) <- env buf + value_start, len 3
-        //   (ka+128 read by the caller in the SAME guest frame — no canon
-        //   crossed in the v7 path, memory is reliable here)
+        fb.instruction(&Instruction::Br(0));
+        fb.instruction(&Instruction::End); // Loop F
+        fb.instruction(&Instruction::End); // Block E
+        //   copy value -> scratch at ka+128 (plain guest memory: no canon
+        //   call in the v7 path, so the caller sees it)
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Const(128));
         fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::I32Const(crate::wasi_http::ENV_JSON_BUF));
-        fb.instruction(&Instruction::LocalGet(5));
+        fb.instruction(&Instruction::LocalGet(6));
         fb.instruction(&Instruction::I32Add);
         fb.instruction(&Instruction::LocalGet(3));
         fb.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-        //   global 1 = len
+        //   g1 = vlen ; return
         fb.instruction(&Instruction::LocalGet(3));
         fb.instruction(&Instruction::GlobalSet(1));
         fb.instruction(&Instruction::Return);
-        fb.instruction(&Instruction::End); // outer scan loop
-        fb.instruction(&Instruction::End); // outer block
-        // NOT FOUND: global 1 = -1
+        fb.instruction(&Instruction::End); // Loop B
+        fb.instruction(&Instruction::End); // Block A
+        // NOT FOUND: g1 = -1
         fb.instruction(&Instruction::I32Const(-1));
         fb.instruction(&Instruction::GlobalSet(1));
 fb.instruction(&Instruction::End); // end of function body

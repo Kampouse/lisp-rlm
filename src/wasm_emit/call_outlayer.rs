@@ -648,11 +648,12 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(key_area));
                 v.push(Instruction::Call(150));
 
-                // PROTOCOL v6 (97de3eb follow-up): the helper packs the
-                // matched value into GLOBALS 2..9 (8 x u32 LE = 32 bytes,
-                // values beyond 32 bytes truncated) and the length into
-                // GLOBAL 1 (-1 = not found). Globals are the only channel
-                // that survives the canon call (v9-v18 probes).
+                // PROTOCOL v7 (52a4d28): helper is a pure-memory JSON
+                // scanner over the stdin-env table at ENV_JSON_BUF. It
+                // copies the matched value to FIXED scratch key_area+128
+                // and returns ONLY the length via GLOBAL 1 (-1 = not
+                // found). No pointer crosses any boundary; no canon call
+                // is involved in the v7 path at all.
                 v.push(Instruction::GlobalGet(1)); // i32 len directly
                 v.push(Instruction::LocalSet(len_local));
 
@@ -662,31 +663,21 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(-1));
                 v.push(Instruction::I32Eq);
                 v.push(Instruction::LocalSet(nil_local));
-                // clamp negative/oversized lens to 0/32 before the copies
+                // nil-safe: zero the length so the copy is skipped
                 v.push(Instruction::LocalGet(nil_local));
                 v.push(Instruction::If(wasm_encoder::BlockType::Empty));
                 v.push(Instruction::I32Const(0));
                 v.push(Instruction::LocalSet(len_local));
                 v.push(Instruction::End);
-                v.push(Instruction::LocalGet(len_local));
-                v.push(Instruction::I32Const(32));
-                v.push(Instruction::I32GtU);
-                v.push(Instruction::If(wasm_encoder::BlockType::Empty));
-                v.push(Instruction::I32Const(32));
-                v.push(Instruction::LocalSet(len_local));
-                v.push(Instruction::End);
 
-                // unpack globals 2..9 into heap_buf (min(len,32) bytes:
-                // unconditional 8 stores then copy len bytes)
-                for gi in 2..10u32 {
-                    v.push(Instruction::I32Const(heap_buf + ((gi - 2) as i32) * 4));
-                    v.push(Instruction::GlobalGet(gi));
-                    v.push(Instruction::I32Store(wasm_encoder::MemArg {
-                        offset: 0,
-                        align: 2,
-                        memory_index: 0,
-                    }));
-                }
+                // copy result into heap_buf (fixed scratch key_area+128)
+                v.push(Instruction::I32Const(heap_buf));
+                v.push(Instruction::I32Const(key_area + 128));
+                v.push(Instruction::LocalGet(len_local));
+                v.push(Instruction::MemoryCopy {
+                    src_mem: 0,
+                    dst_mem: 0,
+                });
 
                 // select stack (bottom→top): [v1=TAG_NIL (missing), v2=string (found), cond]
                 // cond=1 (missing) → v1; cond=0 (found) → v2
