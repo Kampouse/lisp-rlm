@@ -165,8 +165,13 @@ fn parse(tokens: &[(String, usize)], pos: &mut usize, source: &str) -> Result<Li
         return Err("unexpected end of input".into());
     }
     let (tok, offset) = &tokens[*pos];
-    let (line, col) = offset_to_line_col(source, *offset);
-    let loc = || format!(" at line {}, col {}", line, col);
+    // Lazy: line/col is only needed on error paths — computing it eagerly for
+    // every token made parse O(tokens × filesize) (quadratic; ~25s on a
+    // 6000-token synthetic). The walk only happens when an error is reported.
+    let loc = || {
+        let (line, col) = offset_to_line_col(source, *offset);
+        format!(" at line {}, col {}", line, col)
+    };
 
     *pos += 1;
     match tok.as_str() {
