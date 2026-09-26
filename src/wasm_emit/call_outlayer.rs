@@ -642,15 +642,9 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64); // key len (i32)
                 v.push(Instruction::GlobalSet(11));
 
-                // v17: caller marker 'Z' at ka+130 (pre-call)
-                v.push(Instruction::I32Const(90));
-                v.push(Instruction::I32Const(key_area + 130));
-                v.push(Instruction::I32Store8(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 0,
-                    memory_index: 0,
-                }));
                 // call env lookup helper (sentinel 150) with key_area
+                v.push(Instruction::I32Const(key_area));
+                v.push(Instruction::Call(150));
                 v.push(Instruction::I32Const(key_area));
                 v.push(Instruction::Call(150));
 

@@ -73,6 +73,7 @@ pub const SENTINEL_BUF: i32 = MAX_MEMORY_P2 - OL_RET_AREA_SIZE - HTTP_MAX_RESPON
 pub const SENTINEL_BUF_SIZE: i32 = HTTP_MAX_RESPONSE;
 
 /// OutLayer return area - at very END of memory
+pub const ENV_JSON_BUF: i32 = 8192; // env JSON table (env/get v7)
 pub const OL_RET_AREA_BASE: i32 = MAX_MEMORY_P2 - OL_RET_AREA_SIZE;
 
 /// HTTP scratch area for poll results, future handles, etc.
