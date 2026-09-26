@@ -14,6 +14,12 @@ inherits = "release"
 opt-level = "z"
 lto = true
 
+# Fast release edit-loop: incremental codegen for workspace crates only
+# (cargo keeps dependencies non-incremental, so sccache still caches them;
+# wasm-release overrides with LTO, which disables incremental as before).
+[profile.release]
+incremental = true
+
 [package]
 name = "lisp-rlm-wasm"
 version = "0.1.17"
