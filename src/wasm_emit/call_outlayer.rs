@@ -645,15 +645,19 @@ impl WasmEmitter {
                 // call env lookup helper (sentinel 150) with key_area
                 v.push(Instruction::I32Const(key_area));
                 v.push(Instruction::Call(150));
-                v.push(Instruction::I32Const(key_area));
-                v.push(Instruction::Call(150));
 
-                // PROTOCOL v7 (52a4d28): helper is a pure-memory JSON
-                // scanner over the stdin-env table at ENV_JSON_BUF. It
-                // copies the matched value to FIXED scratch key_area+128
-                // and returns ONLY the length via GLOBAL 1 (-1 = not
-                // found). No pointer crosses any boundary; no canon call
-                // is involved in the v7 path at all.
+                // PROTOCOL v8.1 (direct retptr decode): sentinel-150 canon
+                // call to wasi:cli/environment get-environment. The host
+                // lowers the full env as list<tuple<string,string>> THROUGH
+                // the guest's own cabi_realloc (bump counter = GLOBAL 24 —
+                // linear-memory stores inside the canon-call window are
+                // wiped on this host, global.set survives). The helper
+                // reads the lowered list straight from the retptr at
+                // ka+16 (16-byte entries [kptr][klen][vptr][vlen]),
+                // records the matched value via GLOBALS 14/15 and the
+                // length via GLOBAL 1 (-1 = not found). The caller copies
+                // the value out in interpreter context. Zero host-side
+                // changes; works on any compliant P2 host.
                 v.push(Instruction::GlobalGet(1)); // i32 len directly
                 v.push(Instruction::LocalSet(len_local));
 
@@ -670,9 +674,11 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(len_local));
                 v.push(Instruction::End);
 
-                // copy result into heap_buf (fixed scratch key_area+128)
+                // copy result into heap_buf — source is g14 (value ptr in
+                // the host-lowered arena, recorded by the helper); the copy
+                // runs in interpreter context, which survives canon calls
                 v.push(Instruction::I32Const(heap_buf));
-                v.push(Instruction::I32Const(key_area + 128));
+                v.push(Instruction::GlobalGet(14));
                 v.push(Instruction::LocalGet(len_local));
                 v.push(Instruction::MemoryCopy {
                     src_mem: 0,
