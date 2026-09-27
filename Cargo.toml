@@ -78,8 +78,8 @@ bn = { package = "zeropool-bn", version = "0.5.11", default-features = false }
 k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 wat = "1.0"
-wasm-encoder = "0.252.0"
-wasmparser = { version = "0.248", features = ["simd"] }
+wasm-encoder = { version = "0.252.0", features = ["wasmparser"] }
+wasmparser = { version = "0.252", features = ["simd"] }
 wasmprinter = "0.252.0"
 finite-wasm = "0.6"
 bincode = "1"
