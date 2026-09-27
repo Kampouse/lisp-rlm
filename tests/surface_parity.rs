@@ -125,6 +125,18 @@ const WASM_ONLY_DOCUMENTED: &[(&str, &str)] = &[
     ("u128/load_storage", "raw-limb storage read (wasm memory)"),
     ("u128/store_storage", "raw-limb storage write (wasm memory)"),
     ("u128/is_zero", "raw-limb zero test (wasm memory)"),
+    // ── scanner over-capture (not real ops): match-arm KEY LITERALS inside
+    // the (context <key>) op in call_outlayer.rs — the arm regex sees
+    // `"signer_id" | "signer" =>` as a dispatch arm, but they are the
+    // outlayer tx-builder's context-key names, not builtins ──
+    (
+        "signer_id",
+        "outlayer context-key literal (regex over-capture, not an op)",
+    ),
+    (
+        "predecessor_id",
+        "outlayer context-key literal (regex over-capture, not an op)",
+    ),
     // ── Q64.64 fixed-point family: raw u64 bit patterns, no interp twin ──
     ("fp/div", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
     (

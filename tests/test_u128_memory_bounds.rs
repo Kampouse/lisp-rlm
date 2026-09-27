@@ -23,8 +23,17 @@ fn run_near_mock(lisp: &str) -> (i32, String, String) {
 
     // Compile
     let compile_out = Command::new("cargo")
-        .args(["run", "--bin", "near-compile", "--", &tmp_path, &wasm_path])
-        .current_dir("/Users/asil/.openclaw/workspace/lisp-rlm")
+        .args([
+            "run",
+            "-p",
+            "near-compile",
+            "--bin",
+            "near-compile",
+            "--",
+            &tmp_path,
+            &wasm_path,
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("near-compile failed");
 
@@ -39,7 +48,7 @@ fn run_near_mock(lisp: &str) -> (i32, String, String) {
     // Run via near-mock
     let run_out = Command::new("cargo")
         .args(["run", "--bin", "near-mock", "--", &wasm_path, "check"])
-        .current_dir("/Users/asil/.openclaw/workspace/lisp-rlm")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("near-mock failed");
 
