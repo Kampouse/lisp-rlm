@@ -345,6 +345,19 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "near/promise_batch_action_add_key_with_function_call",
     "near/promise_batch_action_delete_key",
     "near/promise_batch_action_delete_account",
+    // global-contract + state-init + gas-key batch family (2026-09-27: the
+    // compile allowlist never got these — any define using them failed
+    // "compilation failed for define"; found by the promise differential
+    // harness when adding use_global_contract coverage)
+    "near/promise_batch_action_state_init",
+    "near/promise_batch_action_state_init_by_account_id",
+    "near/promise_batch_action_deploy_global_contract",
+    "near/promise_batch_action_deploy_global_contract_by_account_id",
+    "near/promise_batch_action_use_global_contract",
+    "near/promise_batch_action_use_global_contract_by_account_id",
+    "near/promise_batch_action_transfer_to_gas_key",
+    "near/promise_batch_action_add_gas_key_with_full_access",
+    "near/promise_batch_action_add_gas_key_with_function_call",
     "near/call",
     "near/call-await",
     "near/transfer",

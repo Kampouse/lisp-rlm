@@ -1,5 +1,34 @@
 use super::*;
 
+/// Append wasm computing the hex-nibble value of the ASCII char in `c`
+/// (accepts '0'-'9', 'a'-'f', 'A'-'F') into local `val`.
+/// val = c - 48; if val > 9 { val = c - (c < 97 ? 55 : 87) }
+fn emit_hex_nibble(v: &mut Vec<Instruction<'static>>, c: u32, val: u32) {
+    v.push(Instruction::LocalGet(c));
+    v.push(Instruction::I32Const(48));
+    v.push(Instruction::I32Sub);
+    v.push(Instruction::LocalSet(val));
+    v.push(Instruction::LocalGet(val));
+    v.push(Instruction::I32Const(9));
+    v.push(Instruction::I32GtU);
+    v.push(Instruction::If(BlockType::Empty));
+    v.push(Instruction::LocalGet(c));
+    v.push(Instruction::I32Const(97));
+    v.push(Instruction::I32LtU);
+    v.push(Instruction::If(BlockType::Empty));
+    v.push(Instruction::LocalGet(c));
+    v.push(Instruction::I32Const(55)); // 'A'..'F'
+    v.push(Instruction::I32Sub);
+    v.push(Instruction::LocalSet(val));
+    v.push(Instruction::Else);
+    v.push(Instruction::LocalGet(c));
+    v.push(Instruction::I32Const(87)); // 'a'..'f'
+    v.push(Instruction::I32Sub);
+    v.push(Instruction::LocalSet(val));
+    v.push(Instruction::End);
+    v.push(Instruction::End);
+}
+
 impl WasmEmitter {
     pub(crate) fn call_near_promise(
         &mut self,
@@ -1202,17 +1231,104 @@ impl WasmEmitter {
                             .into(),
                     );
                 }
+                // nearcore's host fn (near-vm-runner logic/host.rs read_contract_id)
+                // expects EXACTLY 32 RAW BYTES (CryptoHash) — not a hex/base58
+                // string. Contract-side hashes are 64-char lowercase hex (what
+                // `deploy --global` prints), so decode them inline into a
+                // static 32-byte scratch buffer before host call 77. Non-64-char
+                // args trap loudly instead of silently adopting a wrong hash.
                 let idx = self.expr(&a[0])?;
                 let hash = self.expr(&a[1])?;
+                let scratch = self.heap_bump(32);
+
+                let raw = self.local_idx("__ugc_raw");
+                let src = self.local_idx("__ugc_src");
+                let i = self.local_idx("__ugc_i");
+                let c = self.local_idx_i32("__ugc_c");
+                let hi = self.local_idx_i32("__ugc_hi");
+                let val = self.local_idx_i32("__ugc_val");
+
+                let ma8 = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                };
+
                 let mut v = Vec::new();
                 v.extend(idx);
-                v.extend(hash.clone());
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
                 v.extend(hash);
                 v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(raw));
+                v.push(Instruction::LocalGet(raw));
+                v.push(Instruction::I64Const(0xFFFFFFFF));
+                v.push(Instruction::I64And);
+                v.push(Instruction::LocalSet(src));
+                // loud failure: hash arg must be exactly 64 hex chars
+                v.push(Instruction::LocalGet(raw));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(64));
+                v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                // for i in 0..32: scratch[i] = hexval(src[2i])<<4 | hexval(src[2i+1])
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(i));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Empty));
+                // hi nibble → hi
+                v.push(Instruction::LocalGet(src));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I64Const(2));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Load8U(ma8.clone()));
+                v.push(Instruction::LocalSet(c));
+                emit_hex_nibble(&mut v, c, val);
+                v.push(Instruction::LocalGet(val));
+                v.push(Instruction::I32Const(4));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::LocalSet(hi));
+                // lo nibble → val
+                v.push(Instruction::LocalGet(src));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I64Const(2));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Load8U(ma8.clone()));
+                v.push(Instruction::LocalSet(c));
+                emit_hex_nibble(&mut v, c, val);
+                // scratch[i] = hi | lo  (store pops addr first, then value)
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(scratch as i32));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(hi));
+                v.push(Instruction::LocalGet(val));
+                v.push(Instruction::I32Or);
+                v.push(Instruction::I32Store8(ma8.clone()));
+                // i += 1
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(i));
+                // Br(1) targets the Loop — continue iterating
+                v.push(Instruction::Br(1));
+                v.push(Instruction::End); // if
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                                          // host call: (idx, len=32, scratch)
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I32Const(scratch as i32));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(77));
                 v.push(Instruction::I64Const(0));

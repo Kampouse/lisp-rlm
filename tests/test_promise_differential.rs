@@ -701,6 +701,143 @@ fn batch_function_call_parity() {
     .unwrap();
 }
 
+// ── 2026-09-27: use_global_contract takes a RAW 32-BYTE hash ──
+
+#[test]
+fn batch_use_global_contract_parity() {
+    // Schedule parity: the interp leg skips unmapped batch actions and the
+    // wasm leg stubs the host benignly — but this still compiles + EXECUTES
+    // the emitter's inline hex-decode and host call, so a stack-shape bug
+    // (e.g. the missing length arg of the first fix attempt) fails loudly here.
+    run_diff(
+        r#"(define (run)
+          (let ((b (near/promise_batch_create "kamp.gc26fund.testnet")))
+            (near/promise_batch_action_use_global_contract b "08d3a25de13ae742cd868651d72ebb704da237523811d4e1982073b12dffb744")))"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn use_global_contract_passes_raw_32_bytes() {
+    // The actual chain bug (found live 2026-09-27): nearcore's read_contract_id
+    // does `try_into::<[u8; CryptoHash::LENGTH]>` on the host buffer — the
+    // batch action must receive the 32 DECODED bytes, NOT the 64-char hex
+    // string that `deploy --global` prints (hex starting with 0/1/8/9 is not
+    // even valid base58). Old emitter passed the raw string → every launch
+    // died with ContractCodeHashMalformed ("contract code hash is malformed")
+    // — invisible in near-mock, whose host stub is a lenient no-op.
+    // Live proof: gc26fund.testnet launchToken → kamp.gc26fund.testnet adopted
+    // 08d3a25d…dffb744 (global_contract_hash bTS4BihPaWRBRt1UKgXFo7FJpbrv8ejexf81FwyUrZh).
+    const HASH: &str = "08d3a25de13ae742cd868651d72ebb704da237523811d4e1982073b12dffb744";
+    let source = format!(
+        r#"(define (run)
+          (let ((b (near/promise_batch_create "kamp.gc26fund.testnet")))
+            (near/promise_batch_action_use_global_contract b "{}")))"#,
+        HASH
+    );
+    let wasm = compile_near(&source).unwrap();
+
+    let engine = Engine::default();
+    let module = Module::new(&engine, &wasm).unwrap();
+    let mut store = Store::new(&engine, ());
+    let mut linker = Linker::new(&engine);
+    if module
+        .imports()
+        .any(|i| i.module() == "env" && i.name() == "memory")
+    {
+        let memory = Memory::new(&mut store, MemoryType::new(4, None)).unwrap();
+        linker.define(&store, "env", "memory", memory).unwrap();
+    }
+    let recorded: Arc<Mutex<Vec<(i64, Vec<u8>)>>> = Arc::new(Mutex::new(Vec::new()));
+    for import in module.imports() {
+        if import.module() != "env" || import.name() == "memory" {
+            continue;
+        }
+        let wasmtime::ExternType::Func(func_ty) = import.ty() else {
+            continue;
+        };
+        let params: Vec<ValType> = func_ty.params().collect();
+        let results: Vec<ValType> = func_ty.results().collect();
+        let ft = FuncType::new(&engine, params.clone(), results.clone());
+        let name = import.name().to_string();
+        let name_for_link = name.clone();
+        let rec = Arc::clone(&recorded);
+        let func = Func::new(&mut store, ft, move |mut caller, args, ret| {
+            let a = |i: usize| args.get(i).and_then(|v| v.i64()).unwrap_or(0);
+            match name.as_str() {
+                "promise_batch_action_use_global_contract" => {
+                    // host ABI: (promise_idx, code_hash_len, code_hash_ptr)
+                    let mem = caller.get_export("memory").and_then(|e| e.into_memory());
+                    let bytes = mem
+                        .as_ref()
+                        .map(|m| {
+                            let data = m.data(&caller);
+                            let (l, p) = (a(1) as usize, a(2) as usize);
+                            if p + l <= data.len() {
+                                data[p..p + l].to_vec()
+                            } else {
+                                Vec::new()
+                            }
+                        })
+                        .unwrap_or_default();
+                    rec.lock().unwrap().push((a(1), bytes));
+                }
+                _ => {
+                    // everything else: benign zero
+                    for (i, r) in ret.iter_mut().enumerate() {
+                        *r = match results.get(i) {
+                            Some(ValType::I32) => Val::I32(0),
+                            _ => Val::I64(0),
+                        };
+                    }
+                }
+            }
+            Ok(())
+        });
+        linker.define(&store, "env", &name_for_link, func).unwrap();
+    }
+    let instance = linker.instantiate(&mut store, &module).unwrap();
+    let run_fn = instance
+        .get_export(&mut store, "_run")
+        .and_then(|e| e.into_func())
+        .or_else(|| {
+            instance
+                .get_export(&mut store, "run")
+                .and_then(|e| e.into_func())
+        })
+        .ok_or("no _run/run export")
+        .unwrap();
+    run_fn.call(&mut store, &[], &mut []).unwrap();
+
+    let rec = recorded.lock().unwrap();
+    assert_eq!(rec.len(), 1, "use_global_contract host call must fire once");
+    let (len, bytes) = &rec[0];
+    assert_eq!(*len, 32, "host len arg must be 32 raw bytes");
+    let expected: Vec<u8> = (0..HASH.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&HASH[i..i + 2], 16).unwrap())
+        .collect();
+    assert_eq!(bytes, &expected, "buffer must hold the decoded hash bytes");
+}
+
+#[test]
+fn use_global_contract_traps_on_wrong_hash_length() {
+    // Loud failure instead of silently adopting a wrong-but-wellformed hash.
+    let source = r#"(define (run)
+          (let ((b (near/promise_batch_create "x.near")))
+            (near/promise_batch_action_use_global_contract b "08d3")))"#;
+    let wasm = compile_near(source).unwrap();
+    let err = match run_wasm_near(&wasm) {
+        Err(e) => e,
+        Ok(_) => panic!("expected trap for non-64-char hash"),
+    };
+    assert!(
+        err.contains("trap"),
+        "non-64-char hash must trap, got: {}",
+        err
+    );
+}
+
 #[test]
 fn call_await_expansion_parity() {
     run_diff(
