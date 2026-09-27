@@ -1633,12 +1633,44 @@ async fn run_create_async(args: &[String]) {
     } else {
         positional.remove(0)
     };
-    let funder_overrides = NearCliOverrides {
-        account: if funder.is_empty() {
-            None
+    // Faucet-only path: no funder given, but --fund requested → the testnet
+    // helper (helper.testnet.near.org) creates + funds a top-level *.testnet
+    // account itself. No parent signature needed, so no funder is required.
+    if funder.is_empty() {
+        if !fund {
+            eprintln!("❌ No funder specified. Provide a funder account id, or use --fund to create a top-level <name>.testnet via the testnet faucet.");
+            std::process::exit(1);
+        }
+        let new_account_id = if new_account.ends_with(".testnet") {
+            new_account.clone()
         } else {
-            Some(funder)
-        },
+            format!("{}.testnet", new_account)
+        };
+        println!(
+            "👤 Creating account {} via testnet faucet (no funder)...",
+            new_account_id
+        );
+
+        let mut rng = rand::rngs::OsRng;
+        let new_key = ed25519_dalek::SigningKey::generate(&mut rng);
+        let new_pk_bytes = new_key.verifying_key().to_bytes();
+        let new_pk_b58 = bs58::encode(&new_pk_bytes).into_string();
+
+        match fund_from_faucet(&new_account_id, &new_pk_b58).await {
+            Ok(_) => {
+                println!("✅ Account created + funded: {}", new_account_id);
+                save_new_account_credentials(&new_account_id, &new_key, &new_pk_bytes);
+            }
+            Err(e) => {
+                eprintln!("❌ Faucet: {}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    let funder_overrides = NearCliOverrides {
+        account: Some(funder),
         network: Some(network.clone()),
         key_path: overrides.key_path.clone(),
         seed_phrase: overrides.seed_phrase,
@@ -1707,29 +1739,7 @@ async fn run_create_async(args: &[String]) {
             );
 
             // Save credentials for the new account
-            let home = std::env::var("HOME").unwrap_or_default();
-            let cred_dir = format!("{}/.near-credentials/testnet", home);
-            let _ = fs::create_dir_all(&cred_dir);
-            let cred_path = format!("{}/{}.json", cred_dir, new_account_id);
-
-            // Write credential file with the new expanded key
-            let mut expanded = new_key.to_bytes().to_vec();
-            expanded.extend_from_slice(&new_pk_bytes);
-            let sk_b58 = bs58::encode(&expanded).into_string();
-
-            let cred_json = serde_json::json!({
-                "account_id": new_account_id,
-                "public_key": format!("ed25519:{}", new_pk_b58),
-                "secret_key": format!("ed25519:{}", sk_b58)
-            });
-            fs::write(
-                &cred_path,
-                serde_json::to_string_pretty(&cred_json).unwrap(),
-            )
-            .unwrap_or_else(|e| eprintln!("⚠️  Save credentials: {}", e));
-
-            println!("🔑 Credentials saved to {}", cred_path);
-            println!("   Account: {}", new_account_id);
+            save_new_account_credentials(&new_account_id, &new_key, &new_pk_bytes);
 
             // Fund from testnet faucet if requested
             if fund {
@@ -1745,6 +1755,38 @@ async fn run_create_async(args: &[String]) {
             std::process::exit(1);
         }
     }
+}
+
+/// Save credential file for a freshly generated account keypair.
+/// secret_key format: ed25519:<base58 of seed(32) || public(32)>.
+fn save_new_account_credentials(
+    new_account_id: &str,
+    new_key: &ed25519_dalek::SigningKey,
+    new_pk_bytes: &[u8; 32],
+) {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let cred_dir = format!("{}/.near-credentials/testnet", home);
+    let _ = fs::create_dir_all(&cred_dir);
+    let cred_path = format!("{}/{}.json", cred_dir, new_account_id);
+
+    let new_pk_b58 = bs58::encode(new_pk_bytes).into_string();
+    let mut expanded = new_key.to_bytes().to_vec();
+    expanded.extend_from_slice(new_pk_bytes);
+    let sk_b58 = bs58::encode(&expanded).into_string();
+
+    let cred_json = serde_json::json!({
+        "account_id": new_account_id,
+        "public_key": format!("ed25519:{}", new_pk_b58),
+        "secret_key": format!("ed25519:{}", sk_b58)
+    });
+    fs::write(
+        &cred_path,
+        serde_json::to_string_pretty(&cred_json).unwrap(),
+    )
+    .unwrap_or_else(|e| eprintln!("⚠️  Save credentials: {}", e));
+
+    println!("🔑 Credentials saved to {}", cred_path);
+    println!("   Account: {}", new_account_id);
 }
 
 /// Fund account from NEAR testnet faucet helper.
