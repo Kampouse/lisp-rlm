@@ -734,7 +734,18 @@ fn scan_one_bigint_let(s: &Statement<'_>) {
     if let Statement::VariableDeclaration(v) = s {
         for d in &v.declarations {
             let Some(init) = &d.init else { continue };
-            if expr_is_bigint(init) {
+            // purely-numeric string literals mean ARITHMETIC too (same rule as
+            // the + dispatch's literal half, 2026-09-27): `let acc = "0";
+            // acc = acc + u128Add(acc, x)` is a u128 accumulator, not a
+            // concat — dual membership with STRING_LOCALS is expected; the
+            // identifier arm of stringy_nonnumeric excludes BIGINT members.
+            let numeric_str_init = matches!(init, Expression::StringLiteral(sl)
+                if !sl.value.is_empty()
+                    && std::str::from_utf8(sl.value.as_bytes())
+                        .ok()
+                        .and_then(|s| s.parse::<u128>().ok())
+                        .is_some());
+            if expr_is_bigint(init) || numeric_str_init {
                 if let Ok(name) = binding_name(&d.id) {
                     BIGINT_LOCALS.with(|m| m.borrow_mut().push(name));
                 }
@@ -3786,6 +3797,23 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 sl.value.is_empty() || sl.value.bytes().any(|b| !b.is_ascii_digit())
                             }
                             Expression::TemplateLiteral(_) => true,
+                            // STRING LOCALS concat too (pool.ts bigDiv, found
+                            // 2026-09-27): `out = out + u128Div(...)` with
+                            // `let out = ""` — out is a string local, but the
+                            // identifier shape fell through every arm →
+                            // u128/add(out, …) → parse("") trap. Excluded:
+                            // bigint locals — a `let acc = "0"` u128
+                            // accumulator is BOTH a string local and a
+                            // bigint local, and there the + means arithmetic.
+                            Expression::Identifier(id) => {
+                                is_string_local(id.name.as_str())
+                                    && !BIGINT_LOCALS
+                                        .with(|m| m.borrow().iter().any(|x| *x == id.name.as_str()))
+                                    && !BIGINT_NAMES
+                                        .with(|m| m.borrow().iter().any(|x| *x == id.name.as_str()))
+                                    && !BIGINT_CONSTS
+                                        .with(|m| m.borrow().iter().any(|x| *x == id.name.as_str()))
+                            }
                             Expression::BinaryExpression(be) => {
                                 be.operator == BinaryOperator::Addition
                                     && (stringy_nonnumeric(&be.left)
@@ -4572,6 +4600,7 @@ fn statically_bool(e: &Expression<'_>) -> bool {
                                     | "u128/gte"
                                     | "u128/lte"
                                     | "u128/eq"
+                                    | "u128/is-zero"
                                     | "near/deposit-gte"
                             )
                         })
@@ -4589,6 +4618,7 @@ fn statically_bool(e: &Expression<'_>) -> bool {
                                 | "u128/gte"
                                 | "u128/lte"
                                 | "u128/eq"
+                                | "u128/is-zero"
                                 | "near/deposit-gte"
                         )
                     })

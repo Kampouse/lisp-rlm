@@ -29,6 +29,59 @@ export function ftTransfer(): number {
   return 0;
 }
 
+// ── NEP-141 ft_transfer_call — escrow → ft_on_transfer → resolve ──
+//
+// Standard flow: deduct the FULL amount from the sender (escrow), promise
+// receiver.ft_on_transfer({sender_id, amount, msg}), then resolve on self:
+// credit the receiver only the amount it did NOT return, refund the rest.
+// The resolve callback reads the callee's return value via promiseResult(0)
+// ("" on failure → full refund; the emitter returns "" fail-closed).
+export function ft_transfer_call(): number {
+  const receiver = near.jsonGetStr("receiver_id") ?? "";
+  const amount = near.jsonGetStr("amount") ?? "0";
+  const msg = near.jsonGetStr("msg") ?? "";
+  const sender = near.predecessorAccountId();
+  if (strLength(receiver) == 0) { near.abort("ERR_receiver"); return 0; }
+  if (receiver == near.currentAccountId()) { near.abort("ERR_SELF"); return 0; }
+  if (u128IsZero(amount)) { near.abort("ERR_ZERO"); return 0; }
+  const fromBal = near.storageGet(balKey(sender)) ?? "0";
+  if (u128Lt(fromBal, amount)) { near.abort("ERR_INSUFFICIENT"); return 0; }
+  near.storageSet(balKey(sender), u128Sub(fromBal, amount));
+  near.callAwait(receiver, "ft_on_transfer",
+    `{"sender_id":${jsonQuote(sender)},"amount":${jsonQuote(amount)},"msg":${jsonQuote(msg)}}`,
+    40000000000000, "ft_resolve_transfer", 40000000000000,
+    `{"sender_id":${jsonQuote(sender)},"receiver_id":${jsonQuote(receiver)},"amount":${jsonQuote(amount)}}`);
+  return 0;
+}
+
+// resolve: callee returned the UNUSED amount as a U128 string ("0" = used
+// fully, empty string = the call failed → refund everything).
+export function ft_resolve_transfer(): number {
+  const sender = near.jsonGetStr("sender_id") ?? "";
+  const receiver = near.jsonGetStr("receiver_id") ?? "";
+  const amount = near.jsonGetStr("amount") ?? "0";
+  let refund = amount;
+  if (near.promiseSucceeded(0) == 1) {
+    const ret = near.promiseResult(0);
+    if (strLength(ret) > 0) {
+      if (u128Gt(ret, amount)) {
+        refund = amount; // callee returned nonsense → fail safe, refund all
+      } else {
+        refund = ret;
+      }
+    }
+  }
+  const used = u128Sub(amount, refund);
+  if (!u128IsZero(used)) {
+    near.storageSet(balKey(receiver), u128Add(near.storageGet(balKey(receiver)) ?? "0", used));
+  }
+  if (!u128IsZero(refund)) {
+    near.storageSet(balKey(sender), u128Add(near.storageGet(balKey(sender)) ?? "0", refund));
+  }
+  near.log(`resolve:${receiver}:${used}:${refund}`);
+  return 0;
+}
+
 export function storageDeposit(): number {
   const who = near.jsonGetStr("account_id") ?? near.predecessorAccountId();
   if ((near.storageGet(balKey(who)) ?? "") == "") { near.storageSet(balKey(who), "0"); }

@@ -1913,10 +1913,17 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
             }
             continue;
         };
-        let args_json = step
-            .get("args")
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| "{}".into());
+        // BUG (found by the pool-e2e scenario 2026-09-27): Value::String args
+        // were re-serialized with to_string() — adding outer quotes + escaping
+        // the inner ones — so the contract received `{\"k\":\"v\"}` (invalid
+        // JSON at top level) and every jsonGetStr returned nil. Objects were
+        // fine, which is why older scenarios never caught it. String args pass
+        // through verbatim now; objects keep compact serialization.
+        let args_json = match step.get("args") {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(other) => other.to_string(),
+            None => "{}".into(),
+        };
         let contract = step
             .get("contract")
             .and_then(|c| c.as_str())

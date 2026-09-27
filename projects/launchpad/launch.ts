@@ -41,14 +41,17 @@ export function launchToken(): number {
   const totalSupply = near.jsonGetStr("total_supply") ?? "0";
   const symbol = validateLaunch(name, symbolRaw);
 
-  // fixed launch cost: 0.0325 NEAR (INTEAR's ID_COST shape)
-  const cost: string = "32500000000000000000000";
+  // cost: 0.0325 launch fee + 1.25 token funding + 1.0 pool NEAR seed
+  const cost: string = "2282500000000000000000000";
+  const seed: string = "1000000000000000000000000";
   const attached = near.attachedDepositU128();
   if (u128Lt(attached, cost)) {
     near.abort("ERR_DEPOSIT");
     return 0;
   }
   const refund = u128Sub(attached, cost);
+  const poolAcct = near.storageGet("pool:acct") ?? "";
+  if (strLength(poolAcct) == 0) { near.abort("ERR_NO_POOL_ACCT"); return 0; }
 
   // per-symbol launch counter → token account id
   const counterKey = "lc:" + symbol;
@@ -72,22 +75,42 @@ export function launchToken(): number {
       "launched_at", jsonQuote(near.blockTimestamp())),
     "token_account", jsonQuote(tokenAcct)));
 
-  // ── the promise chain (detached; mirrors INTEAR launch_token) ──
+  // ── the promise chain (detached; INTEAR-launch shape) ──
+  //   leg 1: create token account + adopt global FT + fund + init
+  //   leg 2: pool.seed_pool({token}) — attached 1.0 NEAR = starting reserve
+  //   leg 3: token.ft_transfer_call(pool, full supply, msg="seed")
   const ftHash = near.storageGet("ft:global") ?? "";
   if (strLength(ftHash) == 0) {
     near.abort("ERR_NO_FT_GLOBAL");
     return 0;
   }
 
-  const p = near.promiseBatchCreate(tokenAcct);
-  near.promiseBatchActionCreateAccount(p);
-  near.promiseBatchActionUseGlobalContract(p, ftHash);
-  near.promiseBatchActionTransfer(p, "1250000000000000000000000");
+  const p1 = near.promiseBatchCreate(tokenAcct);
+  near.promiseBatchActionCreateAccount(p1);
+  near.promiseBatchActionUseGlobalContract(p1, ftHash);
+  near.promiseBatchActionTransfer(p1, "1250000000000000000000000");
   near.promiseBatchActionFunctionCall(
-    p, "new",
+    p1, "new",
     `{"owner_id":"${near.currentAccountId()}","total_supply":"${totalSupply}","metadata":{"spec":"ft-1.0.0","name":"${name}","symbol":"${symbol}","decimals":18}}`,
     "0", 35000000000000);
-  near.promiseReturn(p);
+
+  const p2 = near.promiseBatchThen(p1, poolAcct);
+  near.promiseBatchActionFunctionCall(
+    p2, "seed_pool",
+    `{"token":"${tokenAcct}"}`,
+    seed, 40000000000000);
+
+  const p3 = near.promiseBatchThen(p2, tokenAcct);
+  near.promiseBatchActionFunctionCall(
+    p3, "ft_transfer_call",
+    `{"receiver_id":"${poolAcct}","amount":"${totalSupply}","memo":null,"msg":"seed"}`,
+    // 100T: the entry pays for its own exec (~2T) PLUS the gas it attaches
+    // to callAwait's sub-promises (40T ft_on_transfer + 40T resolve) — the
+    // 2026-09-27 meme launch OOG'd at 40T exactly on the second attach
+    // (69BZLn5L "Exceeded the prepaid gas", 1T burnt before the 40T+40T
+    // deduction overflowed the envelope)
+    "1", 100000000000000);
+  near.promiseReturn(p3);
 
   near.log(`launched:${tokenAcct}:${symbol}:${refund}`);
   return 0;
@@ -103,6 +126,19 @@ export function setFtGlobal(): number {
   if (strLength(hash) != 64) { near.abort("ERR_HASH"); return 0; }
   near.storageSet("ft:global", hash);
   near.log(`ft_global_set:${hash}`);
+  return 0;
+}
+
+// owner: register the pool contract account (once)
+export function setPoolAccount(): number {
+  if (near.predecessorAccountId() != near.currentAccountId()) {
+    near.abort("ERR_OWNER_ONLY");
+    return 0;
+  }
+  const acct = near.jsonGetStr("account") ?? "";
+  if (strLength(acct) == 0) { near.abort("ERR_ACCT"); return 0; }
+  near.storageSet("pool:acct", acct);
+  near.log(`pool_acct_set:${acct}`);
   return 0;
 }
 

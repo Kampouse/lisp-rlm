@@ -1494,6 +1494,14 @@ impl TcEnv {
             "near/promise_succeeded".into(),
             TcType::Arrow(vec![int_ty.clone()], Box::new(int_ty.clone())),
         );
+        // near/promise_result : int → str — the PAYLOAD string on success,
+        // "" on failure (fail-closed, matches emitter + interp 2026-08-28).
+        // Was missing from the checker env: any TS ft_resolve_transfer-style
+        // handler failed typecheck with 'undefined variable near/promise_result'.
+        env.insert_mono(
+            "near/promise_result".into(),
+            TcType::Arrow(vec![int_ty.clone()], Box::new(str_ty.clone())),
+        );
         env.insert_mono(
             "near/promise_results_count".into(),
             TcType::Arrow(vec![], Box::new(int_ty.clone())),

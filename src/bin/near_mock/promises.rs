@@ -330,17 +330,21 @@ pub(crate) fn sub_execute(
     // epoch ticker never ticks — but wasmtime's DEFAULT epoch deadline is 0,
     // so under epoch_interruption the first epoch check (current >= deadline)
     // fires as soon as the main thread's ticker has advanced once → instant
-    // Interrupt. Give receipt stores an unbounded epoch deadline; the
-    // instrumented gas global bounds runaway child compute.
-    sub_store.set_epoch_deadline(u64::MAX);
+    // Interrupt. Give receipt stores an effectively-unbounded epoch deadline;
+    // the instrumented gas global bounds runaway child compute.
+    // BUG (pool-e2e scenario 2026-09-27): u64::MAX OVERFLOWED — wasmtime
+    // computes deadline = current_epoch + delta, and once the scenario ticker
+    // advanced the epoch at all, k + u64::MAX wraps to k-1 → every receipt
+    // interrupted instantly (cross mode never ticked the epoch, so it was
+    // latent there). u64::MAX/2 is overflow-proof at 1 tick/ms for ~292My.
+    sub_store.set_epoch_deadline(u64::MAX / 2);
     let linker = build_env_linker(&mut sub_store, &*engine, state.clone(), Vec::new())?;
     let instance = linker.instantiate(&mut sub_store, &module)?;
     // Receipt gas budget into the instrumented global (entry-budget for the
     // sub-receipt; mainnet gives each promise receipt its own prepaid gas).
     {
         let prepaid = PREPAID_FUEL.with(|r| *r.borrow());
-        if let Some(g) = instance.get_global(&mut sub_store, crate::REMAINING_GAS_EXPORT)
-        {
+        if let Some(g) = instance.get_global(&mut sub_store, crate::REMAINING_GAS_EXPORT) {
             g.set(&mut sub_store, wasmtime::Val::I64(prepaid as i64))
                 .ok();
         }
@@ -351,8 +355,7 @@ pub(crate) fn sub_execute(
         crate::burn_gas_global(
             &mut sub_store,
             &instance,
-            crate::FUNCTION_CALL_BASE_GAS
-                + crate::FUNCTION_CALL_BYTE_GAS * args.len() as u64,
+            crate::FUNCTION_CALL_BASE_GAS + crate::FUNCTION_CALL_BYTE_GAS * args.len() as u64,
         );
     }
     let ok = instance
