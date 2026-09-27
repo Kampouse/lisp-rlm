@@ -85,7 +85,20 @@ near-compile deploy --account <acct>          # builds + deploys from near.json
 near-compile call <contract> <method> '<json>' --account <acct> --deposit 0.02
 near-compile view <contract> <method> '<json>'
 near-compile create <name> <funder>           # sub-account creation (non-interactive)
+
+# GLOBAL CONTRACTS (shared code — deploy once, many accounts use it,
+# no per-account storage cost):
+near-compile deploy --global --account <owner>        # immutable, ref by sha256 hash
+near-compile deploy --global --update-by-account --account <owner>  # owner-updatable
+near-compile deploy --use-global <sha256hex> --account <user>  # adopt it
 ```
+
+Global deploy notes: receiver = the deploying account itself (nearcore
+requires actor_id == account_id for these actions — a `near`-receiver tx
+fails with ActorNoPermission). The code hash is sha256(wasm), printed by
+the deploy. `--use-global` accepts 64-hex (code hash) or an account id;
+adopting REPLACES the account's existing code. Gas ~0.6 Tgas for a tiny
+contract (live-tested testnet, Sep 2026).
 
 `--deposit` is NEAR-decimal (`0.02`), NOT yocto. Credentials come from
 `~/.near-credentials/<network>/<account>.json` (`private_key` or

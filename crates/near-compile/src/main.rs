@@ -150,6 +150,9 @@ fn print_usage() {
     eprintln!("  near-compile build --target=outlayer   Build for OutLayer WASI");
     eprintln!("  near-compile build --target=outlayer-p2 Build for WASI P2 Component");
     eprintln!("  near-compile deploy [dir]             Build and deploy to NEAR");
+    eprintln!("    --global              Deploy as GLOBAL contract (immutable, by code hash)");
+    eprintln!("    --update-by-account   Global contract updateable by the deploying account");
+    eprintln!("    --use-global <sha256hex|acct>  Adopt an existing global (64-hex = hash)");
     eprintln!("    --account <id>     Override account from near.json");
     eprintln!("    --network <net>   Override network (testnet|mainnet)");
     eprintln!("    --key-path <path> Override key file path");
@@ -1119,10 +1122,48 @@ fn run_deploy(args: &[String]) {
 }
 
 async fn run_deploy_async(args: &[String]) {
-    let (overrides, positional) = parse_overrides(args);
+    // Global-contract modes (2026-09-15):
+    //   --global                → DeployGlobalContract (immutable, ref by code hash)
+    //   --global --update-by-account → DeployGlobalContract (owner-updatable, ref by account)
+    //   --use-global <code_hash | account_id> → adopt an existing global on this account
+    // Both target the system account `near` for deploy (per nearcore's
+    // action/mod.rs: DeployGlobalContractAction = action variant 9 with
+    // { code, deploy_mode }, UseGlobalContractAction = 10 with identifier
+    // CodeHash=0 / AccountId=1).
+    let mut global_mode: Option<bool> = None; // Some(true) = AccountId (updatable), Some(false) = CodeHash
+    let mut use_global: Option<String> = None;
+    let mut positional: Vec<String> = Vec::new();
+    for a in args {
+        match a.as_str() {
+            "--global" => global_mode = Some(false),
+            "--update-by-account" => global_mode = Some(true),
+            s if s.starts_with("--use-global=") => {
+                use_global = Some(s.trim_start_matches("--use-global=").to_string())
+            }
+            "--use-global" => {
+                positional.push(a.clone()); // space-separated form: --use-global <hash>
+            }
+            _ => positional.push(a.clone()),
+        }
+    }
+    // --use-global <id> (space-separated form)
+    if use_global.is_none() {
+        if let Some(pos) = positional.iter().position(|p| p == "--use-global") {
+            if let Some(id) = positional.get(pos + 1) {
+                use_global = Some(id.clone());
+            }
+            positional.remove(pos);
+        }
+    }
+
+    if use_global.is_some() {
+        return run_use_global_async(&positional, use_global.unwrap(), args).await;
+    }
+
+    let (overrides, positional) = parse_overrides(&positional);
     let project_dir = positional.first().map(|s| s.as_str()).unwrap_or(".");
 
-    let (config, _wasm) = match do_build(project_dir) {
+    let (config, _wasm) = match do_build(&project_dir) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("❌ Build failed: {}", e);
@@ -1136,7 +1177,7 @@ async fn run_deploy_async(args: &[String]) {
         std::process::exit(1);
     });
 
-    let ctx = match resolve_near_ctx(project_dir, &overrides) {
+    let ctx = match resolve_near_ctx(&project_dir, &overrides) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("❌ {}", e);
@@ -1151,6 +1192,60 @@ async fn run_deploy_async(args: &[String]) {
         ctx.network
     );
 
+    if let Some(update_by_account) = global_mode {
+        // ── GLOBAL CONTRACT DEPLOY ──
+        // Receiver = the deploying account ITSELF (nearcore runtime: actor_id
+        // must equal account_id for DeployGlobalContract/UseGlobalContract —
+        // the "near"-receiver guess produced ActorNoPermission). Action
+        // variant 9 (borsh): DeployGlobalContractAction { code
+        // (len-prefixed), deploy_mode (u8) } — 0 = CodeHash (immutable),
+        // 1 = AccountId (owner-updatable)
+        let (mut tx_body, client) = match prepare_tx(&ctx, &ctx.account).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("❌ {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        tx_body.extend_from_slice(&1u32.to_le_bytes()); // action count
+        tx_body.push(0x09); // DeployGlobalContract
+        tx_body.extend_from_slice(&(wasm.len() as u32).to_le_bytes());
+        tx_body.extend_from_slice(&wasm);
+        tx_body.push(if update_by_account { 0x01 } else { 0x00 });
+
+        // The code hash is sha256(wasm) — the global registry keys by it.
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&wasm);
+        let code_hash_hex = hex(&hasher.finalize());
+
+        match sign_and_broadcast(tx_body, &ctx, &client).await {
+            Ok(tx_hash) => {
+                println!(
+                    "✅ global contract deployed ({} mode)",
+                    if update_by_account {
+                        "update-by-account"
+                    } else {
+                        "code-hash (immutable)"
+                    }
+                );
+                println!("   code_hash: {}", code_hash_hex);
+                println!(
+                    "   use it:   near-compile deploy {} --use-global {}",
+                    ctx.account, code_hash_hex
+                );
+                println!("   tx: {}", explorer_url(&ctx.network, &tx_hash));
+            }
+            Err(e) => {
+                eprintln!("❌ {}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // ── regular on-account deploy ──
     let (mut tx_body, client) = match prepare_tx(&ctx, &ctx.account).await {
         Ok(r) => r,
         Err(e) => {
@@ -1172,6 +1267,98 @@ async fn run_deploy_async(args: &[String]) {
             std::process::exit(1);
         }
     }
+}
+
+/// Adopt an existing global contract on the target account:
+/// UseGlobalContract (action variant 10) with a CodeHash or AccountId
+/// identifier (borsh: variant 0 = 32-byte hash, variant 1 = len-prefixed
+/// account id). Target/signer = the adopting account.
+async fn run_use_global_async(positional: &[String], identifier: String, _raw_args: &[String]) {
+    let (overrides, mut positional) = parse_overrides(positional);
+    let project_dir = positional
+        .first()
+        .cloned()
+        .unwrap_or_else(|| ".".to_string());
+    // the adopting account may come positionally (before/after the id)
+    let account = overrides
+        .account
+        .clone()
+        .or_else(|| positional.first().cloned())
+        .unwrap_or_else(|| {
+            eprintln!(
+                "Usage: near-compile deploy --use-global <code_hash|account_id> [account] [dir] [--network <net>] [--key-path <path>]"
+            );
+            std::process::exit(1);
+        });
+    // drop the account from positionals for the id-check below
+    if positional.first().map(|s| s.as_str()) == Some(account.as_str()) {
+        positional.remove(0);
+    }
+    let _ = positional.remove(0); // the identifier (already extracted)
+
+    let (config, _wasm) = match do_build(&project_dir) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("❌ Build failed: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let _ = config; // build validates the project before the adopt
+
+    let ctx = match resolve_near_ctx(&project_dir, &overrides) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    println!(
+        "🚀 Making {} use global contract {} ({})...",
+        ctx.account, identifier, ctx.network
+    );
+
+    let (mut tx_body, client) = match prepare_tx(&ctx, &ctx.account).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    tx_body.extend_from_slice(&1u32.to_le_bytes()); // action count
+    tx_body.push(0x0A); // UseGlobalContract
+                        // identifier: CodeHash = 0 (32 bytes, given as sha256 hex — what
+                        // --global prints), AccountId = 1 (len-prefixed)
+    let is_hex64 = identifier.len() == 64 && identifier.chars().all(|c| c.is_ascii_hexdigit());
+    if is_hex64 {
+        // sha256 hex → 32 raw bytes
+        let bytes: Vec<u8> = identifier
+            .as_bytes()
+            .chunks(2)
+            .map(|c| u8::from_str_radix(&String::from_utf8(c.to_vec()).unwrap(), 16).unwrap())
+            .collect();
+        tx_body.push(0x00); // CodeHash identifier
+        tx_body.extend_from_slice(&bytes);
+    } else {
+        tx_body.push(0x01); // AccountId identifier
+        borsh_write_string(&mut tx_body, &identifier);
+    }
+
+    match sign_and_broadcast(tx_body, &ctx, &client).await {
+        Ok(tx_hash) => {
+            println!("✅ {} now uses global contract {}", ctx.account, identifier);
+            println!("   tx: {}", explorer_url(&ctx.network, &tx_hash));
+        }
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 // ── CALL ──
