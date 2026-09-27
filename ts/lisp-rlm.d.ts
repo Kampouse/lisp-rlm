@@ -310,10 +310,28 @@ declare const near: {
   /** Note arg order: deposit (string) BEFORE gas. */
   promiseBatchActionFunctionCall(p: number, method: string, argsJson: string, yoctoDeposit: string, gas: number): void;
   promiseBatchActionCreateAccount(p: number): void;
+  /** Global contracts (protocol 66): deploy code immutably under its sha256 code hash. */
+  promiseBatchActionDeployGlobalContract(p: number, code: string): void;
+  /** Global contracts: deploy code updatable by the owner account id. */
+  promiseBatchActionDeployGlobalContractByAccountId(p: number, code: string): void;
+  /** Global contracts: adopt an existing global under this account. */
+  promiseBatchActionUseGlobalContract(p: number, sha256Hex: string): void;
+  /** Function call with gas weight (batched chains). */
+  promiseBatchActionFunctionCallWeight(p: number, method: string, argsJson: string, yoctoDeposit: string, gas: number, weight: number): void;
+  /** Staking: stake yocto on the validator key. */
+  promiseBatchActionStake(p: number, yoctoAmount: string, publicKey: string): void;
+  /** Add an access key with full access. */
+  promiseBatchActionAddKeyWithFullAccess(p: number, publicKey: string): void;
+  /** Add a function-call access key with allowance. */
+  promiseBatchActionAddKeyWithFunctionCall(p: number, publicKey: string, allowance: string, receiverId: string, methodNames: string[]): void;
+  /** Delete an access key. */
+  promiseBatchActionDeleteKey(p: number, publicKey: string): void;
+  /** Delete this account, sending remaining balance to beneficiary. */
+  promiseBatchActionDeleteAccount(p: number, beneficiaryId: string): void;
   /** Return a promise as this call's outcome (async return pattern). */
   promiseReturn(p: number): void;
   /** Number of promise results readable in this callback. */
-  promiseResultsCount(): number;
+  promiseResultCount(): number;
   /** Whether promise result idx succeeded (1/0) — callbacks only. */
   promiseSucceeded(idx: number): number;
   // Raw-ABI forms (ptr/len pairs, not strings) also exist for stake,

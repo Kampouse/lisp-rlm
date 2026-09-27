@@ -125,6 +125,19 @@ const KNOWN_NEAR_FUNCS: &[&str] = &[
     "promise_batch_action_add_key_with_function_call",
     "promise_batch_action_delete_key",
     "promise_batch_action_delete_account",
+    // Global contracts (protocol 66) + gas-key/state-init actions — emitter
+    // has all of these; the checker list was 9 of 21 (found via the
+    // launchpad build, 2026-09-15: "undefined variable" on forward deps)
+    "promise_batch_action_function_call_weight",
+    "promise_batch_action_add_gas_key_with_full_access",
+    "promise_batch_action_add_gas_key_with_function_call",
+    "promise_batch_action_deploy_global_contract",
+    "promise_batch_action_deploy_global_contract_by_account_id",
+    "promise_batch_action_use_global_contract",
+    "promise_batch_action_use_global_contract_by_account_id",
+    "promise_batch_action_state_init",
+    "promise_batch_action_state_init_by_account_id",
+    "promise_batch_action_transfer_to_gas_key",
     "call",
     "log_utf8",
     "log_utf16",
