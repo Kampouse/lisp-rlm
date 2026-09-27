@@ -6,16 +6,35 @@
 
 function balKey(a: string): string { return "b:" + a; }
 
-// init: mints total_supply to owner
+// init: mints total_supply to owner; stores NEP-148 metadata fields
+// (name/symbol/icon/decimals arrive flat from the launchpad's new call)
 export function new_(): number {
   if ((near.storageGet("ok") ?? "") != "") { near.abort("ERR_INIT"); return 0; }
   const ownerId = near.jsonGetStr("owner_id") ?? "";
   const totalSupply = near.jsonGetStr("total_supply") ?? "0";
+  const name = near.jsonGetStr("name") ?? "";
+  const symbol = near.jsonGetStr("symbol") ?? "";
+  const icon = near.jsonGetStr("icon") ?? "";
+  const dec = near.jsonGetStr("decimals") ?? "18";
   if (strLength(ownerId) == 0 || u128IsZero(totalSupply)) { near.abort("ERR_ARGS"); return 0; }
+  if (strLength(name) == 0 || strLength(symbol) == 0) { near.abort("ERR_META"); return 0; }
   near.storageSet("supply", totalSupply);
   near.storageSet(balKey(ownerId), totalSupply);
+  near.storageSet("name", name);
+  near.storageSet("sym", symbol);
+  near.storageSet("icon", icon);
+  near.storageSet("dec", dec);
   near.storageSet("ok", "1");
   return 0;
+}
+
+// NEP-148 metadata view — wallets/DEX UIs call this. icon emitted as null
+// when absent (the standard's Option<String> shape).
+export function ft_metadata(): string {
+  const icon = near.storageGet("icon") ?? "";
+  let iconJson = "null";
+  if (strLength(icon) > 0) { iconJson = jsonQuote(icon); }
+  return `{"spec":"ft-1.0.0","name":${jsonQuote(near.storageGet("name") ?? "")},"symbol":${jsonQuote(near.storageGet("sym") ?? "")},"decimals":${near.storageGet("dec") ?? "18"},"icon":${iconJson},"reference":null,"reference_hash":null}`;
 }
 
 export function ftTransfer(): number {
