@@ -12,6 +12,11 @@
     { "view": true, "method": "getLaunchData", "args": "{\"token\":\"meta.factory.test.near\"}" },
     { "method": "editToken", "args": "{\"token\":\"meta.factory.test.near\",\"telegram\":\"https://t.me/metacoin2\",\"twitch\":\"https://twitch.tv/metacoin\"}", "as": "creator.test.near", "gas": 30 },
     { "view": true, "method": "getLaunchData", "args": "{\"token\":\"meta.factory.test.near\"}" },
-    { "method": "editToken", "args": "{\"token\":\"meta.factory.test.near\",\"telegram\":\"https://evil.me/x\"}", "as": "creator.test.near", "expect": "trap", "gas": 30 }
+    { "method": "editToken", "args": "{\"token\":\"meta.factory.test.near\",\"telegram\":\"https://evil.me/x\"}", "as": "creator.test.near", "expect": "trap", "gas": 30 },
+    { "method": "launchToken", "args": "{\"name\":\"Upper\",\"symbol\":\"CLAWT\",\"total_supply\":\"1000000\"}", "as": "creator.test.near", "attach": "2500000000000000000000000", "expect": "trap", "gas": 50 },
+    { "method": "launchToken", "args": "{\"name\":\"At Sign\",\"symbol\":\"cl@w\",\"total_supply\":\"1000000\"}", "as": "creator.test.near", "attach": "2500000000000000000000000", "expect": "trap", "gas": 50 },
+    { "method": "editToken", "args": "{\"token\":\"meta.factory.test.near\",\"telegram\":\"https://t.me/hijack\"}", "as": "evil.test.near", "expect": "trap", "gas": 30 },
+    { "method": "editToken", "args": "{\"token\":\"meta.factory.test.near\",\"website\":\"\"}", "as": "creator.test.near", "gas": 30 },
+    { "view": true, "method": "getLaunchData", "args": "{\"token\":\"meta.factory.test.near\"}" }
   ]
 }

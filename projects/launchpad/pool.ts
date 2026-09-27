@@ -194,7 +194,10 @@ export function quote_buy(): string {
   const token = near.jsonGetStr("token") ?? "";
   const nearIn = near.jsonGetStr("near_in") ?? "0";
   const pn = near.storageGet(pnKey(token)) ?? "";
-  if (pn == "") { return "0"; }
+  // Mirror buy(): a missing pool is an error, not a silent 0 quote
+  // (frontend footgun found in live QA 2026-09-27).
+  if (pn == "") { near.abort("ERR_NO_POOL"); return "0"; }
+  if (u128IsZero(nearIn)) { near.abort("ERR_ZERO"); return "0"; }
   const ptv = near.storageGet(ptKey(token)) ?? "0";
   const num = bigMul(ptv, nearIn);
   const den = u128Add(pn, nearIn);

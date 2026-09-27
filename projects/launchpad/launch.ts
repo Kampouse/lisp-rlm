@@ -215,11 +215,24 @@ export function editToken(): number {
   const by = near.storageGet("lb:" + token) ?? "";
   if (strLength(by) == 0) { near.abort("ERR_NO_TOKEN"); return 0; }
   if (by != near.predecessorAccountId()) { near.abort("ERR_NOT_CREATOR"); return 0; }
-  const telegram = validateSocial(near.jsonGetStr("telegram") ?? "", "https://t.me/", 0);
-  const xUrl = validateSocial(near.jsonGetStr("x") ?? "", "https://x.com/", 0);
-  const twitch = validateSocial(near.jsonGetStr("twitch") ?? "", "https://twitch.tv/", 1);
-  const website = validateSocial(near.jsonGetStr("website") ?? "", "https://", 0);
-  const description = near.jsonGetStr("description") ?? "";
+  // Partial-edit safe (2026-09-27): omitted args keep their stored value
+  // (explicit "" still clears). Previously omitting a field WIPED it —
+  // editing just telegram nuked website/description (found in e2e replay).
+  // Fallback chain: ls: (edit record) → li: (launch record) → "{}".
+  // NOTE: ?? fallback must be a definite str — default the nullable
+  // middles to "" first, then `in ?? prevResolved`.
+  const li = near.storageGet("li:" + token) ?? "{}";
+  const prev = near.storageGet("ls:" + token) ?? li;
+  const tPrev = near.jsonGetStr("telegram", prev) ?? "";
+  const telegram = validateSocial(near.jsonGetStr("telegram") ?? tPrev, "https://t.me/", 0);
+  const xPrev = near.jsonGetStr("x", prev) ?? "";
+  const xUrl = validateSocial(near.jsonGetStr("x") ?? xPrev, "https://x.com/", 0);
+  const twPrev = near.jsonGetStr("twitch", prev) ?? "";
+  const twitch = validateSocial(near.jsonGetStr("twitch") ?? twPrev, "https://twitch.tv/", 1);
+  const wPrev = near.jsonGetStr("website", prev) ?? "";
+  const website = validateSocial(near.jsonGetStr("website") ?? wPrev, "https://", 0);
+  const dPrev = near.jsonGetStr("description", prev) ?? "";
+  const description = near.jsonGetStr("description") ?? dPrev;
   if (strLength(description) > 200) { near.abort("ERR_DESCRIPTION"); return 0; }
 
   near.storageSet("ls:" + token, jsonSet(
