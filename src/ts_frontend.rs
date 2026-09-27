@@ -4103,17 +4103,19 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
         }
         Expression::UnaryExpression(u) => match u.operator {
             UnaryOperator::LogicalNot => {
-                if statically_bool(&u.argument) {
-                    // bool negation: (= x 0) would be bool≠int — flip instead
-                    Ok(list(vec![
-                        Sym("if"),
-                        lower_expr(&u.argument)?,
-                        list(vec![Sym("="), Num(1), Num(0)]),
-                        list(vec![Sym("="), Num(1), Num(1)]),
-                    ]))
-                } else {
-                    Ok(list(vec![Sym("="), lower_expr(&u.argument)?, Num(0)]))
-                }
+                // ALWAYS flip via tag-aware `if` (falsy = {Bool false, Nil,
+                // Num 0}). The old non-bool path emitted `(= x 0)` — a NUMERIC
+                // compare that is always false when x holds a tagged bool,
+                // so `const isLetter = c == "a"; if (!isLetter)` silently
+                // never fired (launchpad charset check let CLAWT/cl@w pass,
+                // 2026-09-27). Same for user-defined bool-returning calls.
+                // Semantics for numerics are unchanged (Num 0 falsy).
+                Ok(list(vec![
+                    Sym("if"),
+                    lower_expr(&u.argument)?,
+                    list(vec![Sym("="), Num(1), Num(0)]),
+                    list(vec![Sym("="), Num(1), Num(1)]),
+                ]))
             }
             UnaryOperator::UnaryNegation => {
                 Ok(list(vec![Sym("-"), Num(0), lower_expr(&u.argument)?]))

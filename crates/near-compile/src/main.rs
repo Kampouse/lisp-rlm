@@ -121,6 +121,7 @@ fn main() {
         "test" => run_project_test(args.get(2).map(|s| s.as_str())),
         "--repl" | "-r" => run_repl(),
         "help" | "--help" | "-h" => print_usage(),
+        "--version" | "-V" => println!("near-compile {}", env!("CARGO_PKG_VERSION")),
         "bench" => {
             let file = args.get(2).map(|s| s.as_str()).unwrap_or_else(|| {
                 eprintln!("Usage: near-compile bench <file.lisp>");
@@ -1541,12 +1542,14 @@ async fn run_call_async(args: &[String]) {
     };
 
     println!(
-        "📞 Calling {}.{}({} bytes) on {} ({})...",
+        "📞 Calling {}.{}({} bytes) on {} ({}) — deposit {} yoctoNEAR, gas {}...",
         contract,
         method,
         args_json.len(),
         ctx.account,
         ctx.network,
+        deposit,
+        gas,
     );
 
     let (mut tx_body, client) = match prepare_tx(&ctx, &contract).await {
@@ -1577,26 +1580,55 @@ async fn run_call_async(args: &[String]) {
     }
 }
 
-/// Parse deposit string (e.g. "0.1" NEAR) to yoctoNEAR u128.
+/// Parse deposit string to yoctoNEAR u128.
+/// Forms: "0.5" (NEAR decimal), "2" (whole NEAR), "500yocto" (raw yoctoNEAR).
+/// Errors on sub-yocto precision or malformed input — a mistyped 25-digit
+/// decimal used to truncate silently to 0 yocto (on-chain: ERR_ZERO).
 fn parse_deposit(deposit: &Option<String>) -> u128 {
-    match deposit {
-        Some(d) => {
-            let parts: Vec<&str> = d.split('.').collect();
-            let whole = parts
-                .first()
-                .and_then(|s| s.parse::<u128>().ok())
-                .unwrap_or(0);
-            let frac = if parts.len() > 1 {
-                let f = parts[1];
-                let f_padded = format!("{:0<24}", &f[..f.len().min(24)]);
-                f_padded.parse::<u128>().unwrap_or(0)
-            } else {
-                0
-            };
-            whole * 1_000_000_000_000_000_000_000_000 + frac
-        }
-        None => 0,
+    let Some(d) = deposit else { return 0 };
+    let d = d.trim().to_lowercase();
+
+    if let Some(raw) = d.strip_suffix("yocto") {
+        return match raw.trim().parse::<u128>() {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("❌ --deposit: '{}' is not a valid yoctoNEAR integer", d);
+                std::process::exit(1);
+            }
+        };
     }
+
+    let parts: Vec<&str> = d.split('.').collect();
+    let bad = || {
+        eprintln!(
+            "❌ --deposit: '{}' is not a valid NEAR amount (use '0.5', '2', or '500yocto')",
+            d
+        );
+        std::process::exit(1);
+    };
+    if parts.len() > 2 || parts.iter().any(|p| !p.chars().all(|c| c.is_ascii_digit())) {
+        bad();
+    }
+    let whole: u128 = match parts.first().unwrap().parse() {
+        Ok(v) => v,
+        Err(_) => bad(),
+    };
+    let frac = if parts.len() == 2 && !parts[1].is_empty() {
+        let f = parts[1];
+        if f.len() > 24 && f[24..].chars().any(|c| c != '0') {
+            eprintln!(
+                "❌ --deposit: '{}' is sub-yocto (max 24 decimals); use 'Nyocto' for exact yoctoNEAR",
+                d
+            );
+            std::process::exit(1);
+        }
+        format!("{:0<24}", &f[..f.len().min(24)])
+            .parse::<u128>()
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    whole * 1_000_000_000_000_000_000_000_000 + frac
 }
 
 // ── CREATE ──
