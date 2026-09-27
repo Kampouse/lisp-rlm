@@ -539,6 +539,19 @@ fn interp_schedule(state: &EvalState) -> Vec<Op> {
                 });
                 out.push(Op::Return { idx: cb });
             }
+            "transfer" => {
+                // near/transfer & near/transfer_u128: the emitter expands to
+                // batch_create(target) + action_transfer (hosts 39+44). The
+                // wasm leg records the batch_create; action_transfer has no
+                // Op variant (like the other non-fn batch actions), so the
+                // canonical form is a lone BatchCreate. Without this arm the
+                // interp leg silently dropped the promise — while STILL
+                // consuming its index, so every later batch idx shifted by
+                // one relative to the recorded ops.
+                out.push(Op::BatchCreate {
+                    target: map_get(m, "target"),
+                });
+            }
             "batch_create" => {
                 out.push(Op::BatchCreate {
                     target: map_get(m, "target"),
@@ -697,6 +710,31 @@ fn batch_function_call_parity() {
             (near/promise_batch_action_function_call b "deposit" "{\"amt\":5}" "0" 40000000000000)
             (near/promise_batch_action_function_call b "log" "{}" "0" 10000000000000)
             (near/promise_return b)))"#,
+    )
+    .unwrap();
+}
+
+// ── 2026-09-27: batch actions must pass RAW (untagged) promise indices ──
+//
+// 17 batch-action arms passed the TAGGED idx (batch_create emits tag_num;
+// tagged n = n<<3). It only ever worked while the batch was promise #0
+// (tagged 0 == raw 0). A transferU128 BEFORE the chain (the launchpad's
+// excess-deposit refund) made the token batch #1 → the host received 8 →
+// on-chain "8 does not correspond to existing promises" (live tx, factory
+// gcfactory26) and the mock DAG panicked InvalidPromiseIndex. This test
+// pins the refund-before-chain shape — if any arm regresses to tagged
+// indices, the wasm leg records a promise op on a bogus index and the
+// schedule comparison (or the runner) goes loud.
+#[test]
+fn batch_idx_after_transfer_u128_parity() {
+    run_diff(
+        r#"(define (run)
+          (begin
+            (near/transfer_u128 "refund.test.near" "217500000000000000000000")
+            (let ((b (near/promise_batch_create "tok.factory.test.near")))
+              (near/promise_batch_action_create_account b)
+              (near/promise_batch_action_function_call b "new" "{}" "0" 30000000000000)
+              (near/promise_return b))))"#,
     )
     .unwrap();
 }
