@@ -29,9 +29,9 @@ We have a working zero-knowledge application layer on NEAR: three zk apps live o
 
 | crate | version | what |
 |---|---|---|
-| lisp-rlm-wasm | 0.1.15 | TS→NEAR wasm compiler — + deep-stack compile (256 MiB), forward references. ⚠️ 0.1.15 CARRIES the peephole checked-retag regression (see graveyard 09-17) — publish 0.1.17 from fuzz-campaign-0917 |
+| lisp-rlm-wasm | 0.1.19 | TS→NEAR wasm compiler — peephole regression FIXED (fuzz-campaign-0917), + deep-stack compile, forward references, parse-cache |
 | | 0.1.14 | — parse-cache, compile-CLI data-loss fix |
-| near-compile | 0.1.16 | CLI: build/deploy/call/create. ⚠️ same regression via lisp-rlm-wasm dep — bump with the patch release |
+| near-compile | 0.1.19 | CLI: build/deploy/call/create — + GLOBAL CONTRACTS (`--global`, `--update-by-account`, `--use-global <sha256hex|account>`; live-tested testnet 2026-09-15) |
 | near-mock | 0.7.2 | local runner, calibrated gas, real crypto hosts (crates.io has 0.7.2 since 09-15; plan previously said 0.7.1 — stale) |
 
 ### Test infrastructure
