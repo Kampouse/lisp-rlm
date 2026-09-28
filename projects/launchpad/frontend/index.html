@@ -394,15 +394,6 @@ async function loadFastnear(){
 }
 async function gasSend(actions, receiverId){
   if (receiverId && receiverId !== CFG.pool) throw new Error("gas key is pool-only — use your wallet for this one");
-  // live float check (gas key prepays the full gas limit — 50Tgas ≈ 0.05N hold)
-  try {
-    const f0 = fastGet(); if (f0){
-      const st = await view(CFG.pool, "get_gas_status", {pk:f0.pk});
-      window.__gkEst = st.est;
-      if (BigInt(st.est||0) < 70_000_000_000_000_000_000n)
-        return toast("gas key float low — hit REFUEL (takes from your pad)","warn");
-    }
-  } catch(e) {}   // guard is best-effort; chain still enforces hard
   const f = await loadFastnear();
   const { signerFromPrivateKey } = await import("https://esm.run/@fastnear/utils@2.5.0");
   const g = fastGet(); if(!g) throw new Error("no fast key");
@@ -460,6 +451,14 @@ window.heroBuy = async function(){
   const slippage = hQt ? (BigInt(hQt.net) * 97n / 100n).toString() : undefined;  // invisible 3% guard
   const buyArgs = {token:t, near_in:amt, to_pad:"1", ...(slippage?{min_tokens_out:slippage}:{})};
   if (fast){
+    // auto-fuel: pad must cover the buy + a buffer; contract auto-refuels the key from pad
+    const st = await heroPaint(true);
+    const pad = BigInt(st?.pad || 0);
+    const need = BigInt(amt) + 120_000_000_000_000_000_000n;   // buy + 0.12N pad margin
+    if (pad < need){
+      toast("adding NEAR to your pool — confirm once","warn");
+      await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"deposit",args:{pk:fastGet().pk,owner:signer.accountId},gas:"30000000000000",deposit:need.toString()}}]);
+    }
     await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"buy",args:buyArgs,gas:"50000000000000",deposit:"0"}}]);
   } else {
     // one-time setup: register gas key + fuel pad + first buy — ONE wallet popup
@@ -502,7 +501,7 @@ window.addNear = async function(){
 window.heroPaint = async function(returnOnly){
   try{
     const g = fastGet();
-    if (!signer || !g) { if(!returnOnly){ document.getElementById("h-setup").textContent="first BUY sets everything up (one popup)"; } return; }
+    if (!signer || !g) { if(!returnOnly){ document.getElementById("h-setup").textContent = signer ? "first BUY sets everything up (one popup)" : ""; } return; }
     const [led, st] = await Promise.all([
       view(CFG.pool,"get_balance",{account:"pk:"+g.pk, token:token()}),
       view(CFG.pool,"get_gas_status",{pk:g.pk}).catch(()=>null),
@@ -799,7 +798,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b19";
+const BUILD = "b20";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
