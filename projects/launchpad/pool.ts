@@ -38,6 +38,14 @@
 //   key via the token contract; the gas key only ever touches buy /
 //   sell_internal — Hyperliquid-style session-key trading.)
 //
+// v3.1 (2026-09-28, review fixes):
+//   - grad_th: validated + normalized at seed_pool ingress ("000"→"0",
+//     non-digits → ERR_GRAD_TH); checkGrad compares the string, never
+//     str->num (wrapping i64 overflows on realistic yoctoNEAR thresholds)
+//   - fees: per-token NEAR fee ledger (fees_near:<token>) for exact
+//     claim_fees; global "fees_near" kept as a maintained running total
+//     (storage iteration is unavailable on-chain, so views stay O(1))
+//
 // xyk needs (reserve_a * amount) / (reserve_b + amount) — the numerator is
 // ~170 bits and overflows u128, so bigMul/bigDiv do exact base-10 schoolbook
 // on decimal strings (digit ops in i64, running remainder in u128).
@@ -55,6 +63,38 @@ function migKey(t: string): string { return "migrated:" + t; }
 // curve) + per-token internal token ledger (gas-key trading)
 function nbKey(trader: string): string { return "nb:" + trader; }
 function tbKey(t: string, trader: string): string { return "tb:" + t + ":" + trader; }
+
+// v3.1: per-token NEAR fee ledger — exact per-pool claims. The global
+// "fees_near" stays as a MAINTAINED RUNNING TOTAL (view-only; claims
+// decrement it), since on-chain storage iteration is unavailable.
+function feeNearKey(t: string): string { return "fees_near:" + t; }
+
+// single-char digit test via proven builtins only (strIndexOf) — strict,
+// no i64 parse anywhere near u128-scale input
+function isDigit(c: string): number {
+  if (strLength(c) != 1) { return 0; }
+  if (strIndexOf("0123456789", c) >= 0) { return 1; }
+  return 0;
+}
+
+function allDigits(s: string): number {
+  const n = strLength(s);
+  if (n == 0) { return 0; }
+  let i = 0;
+  while (i < n) {
+    if (isDigit(strSlice(s, i, i + 1)) == 0) { return 0; }
+    i = i + 1;
+  }
+  return 1;
+}
+
+// v3.1: accrue a NEAR fee to the token's ledger + the global running total
+function accrueNearFee(token: string, fee: string): number {
+  const fk = feeNearKey(token);
+  near.storageSet(fk, u128Add(near.storageGet(fk) ?? "0", fee));
+  near.storageSet("fees_near", u128Add(near.storageGet("fees_near") ?? "0", fee));
+  return 0;
+}
 
 function isOwner(): number {
   if (near.predecessorAccountId() == (near.storageGet("owner") ?? "")) { return 1; }
@@ -205,7 +245,14 @@ export function seed_pool(): number {
   // the token CONTRACT id — the predecessor here is the launchpad (the
   // caller), not the token; buy() needs the contract to call ftTransfer on
   near.storageSet(tokKey(token), token);
-  near.storageSet(gradThKey(token), near.jsonGetStr("grad_th") ?? "0");
+  // v3.1: validate + normalize grad_th ONCE at ingress. String compares
+  // thereafter — never routed through str->num (wrapping i64; realistic
+  // yoctoNEAR thresholds overflow it). "000" → "0", non-digits rejected.
+  let th = near.jsonGetStr("grad_th") ?? "0";
+  if (strLength(th) == 0) { th = "0"; }
+  th = trimZeros(th);
+  if (allDigits(th) == 0) { near.abort("ERR_GRAD_TH"); return 0; }
+  near.storageSet(gradThKey(token), th);
   near.log(`seeded:${token}:${attached}`);
   return 0;
 }
@@ -276,9 +323,13 @@ export function claim_fees(): number {
   const token = near.jsonGetStr("token") ?? "";
   const to = near.storageGet("fee_to") ?? (near.storageGet("owner") ?? "");
   const feesTok = near.storageGet(feeTokKey(token)) ?? "0";
-  const feesNear = near.storageGet("fees_near") ?? "0";
+  // v3.1: claim THIS token's NEAR fee ledger; the global running total is
+  // decremented (not zeroed), so get_fee stays truthful across pools
+  const fk = feeNearKey(token);
+  const feesNear = near.storageGet(fk) ?? "0";
   if (!u128IsZero(feesNear)) {
-    near.storageSet("fees_near", "0");
+    near.storageSet(fk, "0");
+    near.storageSet("fees_near", u128Sub(near.storageGet("fees_near") ?? "0", feesNear));
     near.transferU128(to, feesNear);
   }
   if (!u128IsZero(feesTok)) {
@@ -369,8 +420,7 @@ export function sell_internal(): string {
   near.storageSet(ptKey(token), u128Add(pt, amount));
   near.storageSet(pnKey(token), u128Sub(pn, gross));
   if (!u128IsZero(fee)) {
-    const feesNow = near.storageGet("fees_near") ?? "0";
-    near.storageSet("fees_near", u128Add(feesNow, fee));
+    accrueNearFee(token, fee);
   }
   const nk = nbKey(trader);
   const padNow = near.storageGet(nk) ?? "0";
@@ -404,7 +454,7 @@ function tradingHalt(token: string): number {
 function checkGrad(token: string, pn: string): number {
   if ((near.storageGet(gradKey(token)) ?? "") == "1") { return 0; }
   const th = near.storageGet(gradThKey(token)) ?? "0";
-  if (strToNum(th) == 0) { return 0; }
+  if (th == "0") { return 0; }   // v3.1: exact string compare (ingress-normalized)
   if (u128Lt(pn, th)) { return 0; }
   near.storageSet(gradKey(token), "1");
   const ev = jsonSet(
@@ -501,7 +551,7 @@ export function ft_on_transfer(): string {
     near.storageSet(ptKey(token), u128Add(pt, amount));
     near.storageSet(pnKey(token), u128Sub(pn, gross));
     if (!u128IsZero(fee)) {
-      near.storageSet("fees_near", u128Add(near.storageGet("fees_near") ?? "0", fee));
+      accrueNearFee(token, fee);
     }
     near.transferU128(sender, net);
     tradeEvent(token, "sell", sender, net, amount, fee);
