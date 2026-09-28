@@ -449,9 +449,19 @@ window.heroBuy = async function(){
   if (!signer) return toast("connect a signer up top (or dev signer in 🔧)","warn");
   const amt = parseNear(v).toString();
   const t = token();
-  const fast = fastGet() && signer.accountId===fastGet().accountId;
+  let fast = fastGet() && signer.accountId===fastGet().accountId;
   const slippage = hQt ? (BigInt(hQt.net) * 97n / 100n).toString() : undefined;  // invisible 3% guard
   const buyArgs = {token:t, near_in:amt, to_pad:"1", ...(slippage?{min_tokens_out:slippage}:{})};
+  if (fast){
+    // self-heal: dead key (float < 0.06N) → wipe and re-setup with a fresh one
+    const health = await heroPaint(true);
+    const est = BigInt(health?.est || 0);
+    if (est < 60_000_000_000_000_000_000n){
+      localStorage.removeItem("gk-fast");
+      fast = false;
+      toast("expired key — setting up a fresh one (confirm once)","warn");
+    }
+  }
   if (fast){
     // auto-fuel: pad must cover the buy + a buffer; contract auto-refuels the key from pad
     const st = await heroPaint(true);
@@ -800,7 +810,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b21";
+const BUILD = "b22";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
