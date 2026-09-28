@@ -349,7 +349,9 @@ async function devSend(receiverId, actions){
 function fastGet(){ try{ return JSON.parse(localStorage.getItem("gk-fast")||"null"); }catch{ return null; } }
 window.fastGet = fastGet;   // inline onclick handlers run in global scope — export it
 window.fastEnable = async function(){
-  if (!signer || signer.kind!=="connect") return toast("connect your wallet first","bad");
+  if (!signer || (signer.kind!=="connect" && signer.kind!=="dev"))
+    return toast("connect a wallet OR set the dev signer first","bad");
+  if (signer.kind === "dev") return fastEnableDev();
   const na = await loadNaj();
   const kp = na.KeyPair.fromRandom("ed25519");
   const acct = signer.accountId;
@@ -360,6 +362,17 @@ window.fastEnable = async function(){
   toast("⚡ fast mode ON — trades sign instantly from your pad","ok");
   loadAccount(true); paintFast();
 };
+async function fastEnableDev(){
+  // operator path: dev key signs the AddKey raw — no wallet involved
+  const na = await loadNaj();
+  const kp = na.KeyPair.fromRandom("ed25519");
+  const acct = signer.accountId;
+  await sendTx(acct, [{type:"AddKey",params:{publicKey:kp.getPublicKey().toString(),
+    accessKey:{nonce:0, permission:{FunctionCall:{receiverId:CFG.pool, methodNames:["buy","sell","withdraw_tokens"], allowance:"1000000000000000000000000"}}}}}]);
+  localStorage.setItem("gk-fast", JSON.stringify({secret:kp.toString(), accountId:acct}));
+  toast("⚡ fast mode ON (dev-authorized) — instant pad trading","ok");
+  loadAccount(true); paintFast();
+}
 window.fastOff = function(){ localStorage.removeItem("gk-fast"); toast("fast mode off","warn"); paintFast(); };
 function paintFast(){
   const f = fastGet();
@@ -637,7 +650,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b15";
+const BUILD = "b16";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
