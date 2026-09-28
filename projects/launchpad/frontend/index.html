@@ -51,6 +51,7 @@
   <div id="acct-bar" style="display:none;position:sticky;top:8px;z-index:50;margin:14px 0;padding:10px 14px;border:1px solid #2e7d32;background:#0d1f10;border-radius:10px;backdrop-filter:blur(8px)">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center">
       <b id="ab-acct" style="font-size:14px"></b>
+      <input id="fast-fund" placeholder="NEAR" style="width:64px;font-size:12px" value="0.3" title="gas-key float funding">
       <button id="fast-btn" class="ghost" style="font-size:12px;padding:4px 10px" onclick="fastGet()&&confirm('disable fast mode?')?fastOff():fastEnable()">⚡ enable fast mode</button>
       <span id="ab-wallet" class="dim" style="font-size:11px"></span>
     </div>
@@ -290,10 +291,11 @@ ensureConnector().catch(e=>{
 async function sendTx(receiverId, actions){
   const f = fastGet();
   if (f && signer && signer.accountId === f.accountId){
-    // ⚡ restricted key signs raw — no wallet popup (0-deposit calls only)
-    const save = signer; signer = {kind:"dev", secret:f.secret, accountId:f.accountId};
-    try { return await devSend(receiverId, actions); }
-    finally { signer = save; }
+    // ⚡ gas key signs a V1 tx as the POOL — no wallet popup, gas on the key float
+    const fActs = actions.map(a=>a.type==="FunctionCall"
+      ? {type:"FunctionCall", methodName:a.params.methodName, args:a.params.args, gas:a.params.gas, deposit:a.params.deposit}
+      : a);
+    return await gasSend(fActs, receiverId);
   }
   if (!signer){ toast("connect a wallet first (top right)","bad"); throw new Error("no signer"); }
   if (signer.kind === "connect"){
@@ -346,33 +348,48 @@ async function devSend(receiverId, actions){
 }
 
 /* ── ⚡ fast mode: one-time restricted trading key, popup-free pad trading ── */
+let fnMod=null, fnSigner=null, fnLane=0, fnSignerKey=null;
+async function loadFastnear(){
+  if (fnMod) return fnMod;
+  fnMod = await import("https://esm.run/@fastnear/api@2.5.0");
+  return fnMod;
+}
+async function gasSend(actions, receiverId){
+  const f = await loadFastnear();
+  const { signerFromPrivateKey } = await import("https://esm.run/@fastnear/utils@2.5.0");
+  const g = fastGet(); if(!g) throw new Error("no fast key");
+  if (!fnSigner || fnSignerKey!==g.secret){ fnSigner = signerFromPrivateKey(g.secret); fnSignerKey=g.secret; }
+  fnLane = (fnLane+1) % 8;   // rotate nonce lanes
+  const res = await f.sendTx({ signer:fnSigner, signerId:CFG.pool, receiverId:receiverId??CFG.pool,
+    nonceIndex:fnLane, network:CFG.network, waitUntil:"FINAL", actions });
+  const body = JSON.stringify(res);
+  if (body.includes('"Failure"')) throw new Error(body.match(/"(?:ExecutionError|error)":"?[^"]{0,140}/)?.[0] ?? "tx failed");
+  return res;
+}
 function fastGet(){ try{ return JSON.parse(localStorage.getItem("gk-fast")||"null"); }catch{ return null; } }
 window.fastGet = fastGet;   // inline onclick handlers run in global scope — export it
 window.fastEnable = async function(){
   if (!signer || (signer.kind!=="connect" && signer.kind!=="dev"))
     return toast("connect a wallet OR set the dev signer first","bad");
-  if (signer.kind === "dev") return fastEnableDev();
+  // v3.6 self-service gas key: contract registers the key on the pool and
+  // funds its gas float — one signed tx, no full key in the browser
   const na = await loadNaj();
   const kp = na.KeyPair.fromRandom("ed25519");
+  const pub = kp.getPublicKey().toString();
+  const AL="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  let n=0n; for(const c of pub.split(":")[1]) n=n*58n+BigInt(AL.indexOf(c));
+  const pkHex="00"+n.toString(16).padStart(64,"0");
   const acct = signer.accountId;
-  toast("confirm the trading key in your wallet — one time only","warn");
-  await sendTx(acct, [{type:"AddKey",params:{publicKey:kp.getPublicKey().toString(),
-    accessKey:{nonce:0, permission:{FunctionCall:{receiverId:CFG.pool, methodNames:["buy","sell","withdraw_tokens"], allowance:"1000000000000000000000000"}}}}}]);
-  localStorage.setItem("gk-fast", JSON.stringify({secret:kp.toString(), accountId:acct}));
-  toast("⚡ fast mode ON — trades sign instantly from your pad","ok");
-  loadAccount(true); paintFast();
+  const fund = parseNear(document.getElementById("fast-fund")?.value || "0.3").toString();
+  const pad  = parseNear("0.01").toString();
+  await sendTx(CFG.pool, [
+    {type:"FunctionCall",params:{methodName:"register_gas_key",args:{pk:pkHex,owner:acct},gas:"100000000000000",deposit:fund}},
+    {type:"FunctionCall",params:{methodName:"deposit",args:{pk:pkHex,owner:acct},gas:"30000000000000",deposit:pad}},
+  ]);
+  localStorage.setItem("gk-fast", JSON.stringify({secret:kp.toString(), accountId:acct, pk:pkHex}));
+  toast("⚡ gas key live — instant pad trading, gas floats on the key","ok");
+  loadAccount(true); paintFast(); loadKeyUI?.();
 };
-async function fastEnableDev(){
-  // operator path: dev key signs the AddKey raw — no wallet involved
-  const na = await loadNaj();
-  const kp = na.KeyPair.fromRandom("ed25519");
-  const acct = signer.accountId;
-  await sendTx(acct, [{type:"AddKey",params:{publicKey:kp.getPublicKey().toString(),
-    accessKey:{nonce:0, permission:{FunctionCall:{receiverId:CFG.pool, methodNames:["buy","sell","withdraw_tokens"], allowance:"1000000000000000000000000"}}}}}]);
-  localStorage.setItem("gk-fast", JSON.stringify({secret:kp.toString(), accountId:acct}));
-  toast("⚡ fast mode ON (dev-authorized) — instant pad trading","ok");
-  loadAccount(true); paintFast();
-}
 window.fastOff = function(){ localStorage.removeItem("gk-fast"); toast("fast mode off","warn"); paintFast(); };
 function paintFast(){
   const f = fastGet();
@@ -650,7 +667,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b16";
+const BUILD = "b17";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));

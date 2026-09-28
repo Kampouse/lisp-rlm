@@ -487,6 +487,26 @@ export function fund_gas(): number {
   return 0;
 }
 
+// v3.6 SELF-SERVICE gas keys: user pays attached NEAR, contract registers
+// the key on itself (8 nonce lanes, trade-only ACL) and funds its gas float.
+// Identity/payout wallet = owner arg (default predecessor). The browser keeps
+// only the restricted key — no full-access secret ever leaves the wallet.
+export function register_gas_key(): number {
+  const attached = near.attachedDepositU128();
+  if (u128IsZero(attached)) { near.abort("ERR_ZERO"); return 0; }
+  const pk = near.jsonGetStr("pk") ?? "";
+  if (pk == "") { near.abort("ERR_PK"); return 0; }
+  const own = near.jsonGetStr("owner") ?? near.predecessorAccountId();
+  near.storageSet(ownKey(pk), own);
+  const k = gfKey(pk);
+  near.storageSet(k, u128Add(near.storageGet(k) ?? "0", attached));
+  const idx = near.promiseBatchCreate(near.currentAccountId());
+  near.promiseBatchActionAddGasKeyWithFunctionCall(idx, near.hexDecode(pk), 8, "0", near.currentAccountId(), "buy,sell,withdraw_tokens");   // methods = comma-joined string (nearcore splits on ",")
+  near.promiseBatchActionTransferToGasKey(idx, near.hexDecode(pk), attached);
+  near.log(`register_gas_key:${pk}:${attached}:${own}`);
+  return 0;
+}
+
 // view: gas-key status for dashboards/bots — {funded, burn_gas, est}
 export function get_gas_status(): string {
   const pk = near.jsonGetStr("pk") ?? "";
