@@ -48,6 +48,19 @@
     <button class="ghost" style="margin-top:8px" onclick="uiConnect()">connect signer</button>
   </header>
 
+  <div id="acct-bar" style="display:none;position:sticky;top:8px;z-index:50;margin:14px 0;padding:10px 14px;border:1px solid #2e7d32;background:#0d1f10;border-radius:10px;backdrop-filter:blur(8px)">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center">
+      <b id="ab-acct" style="font-size:14px"></b>
+      <span id="ab-wallet" class="dim" style="font-size:11px"></span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px;margin-top:6px">
+      <div><div class="dim" style="font-size:11px">NEAR · wallet</div><b id="ab-near" style="font-size:15px">—</b></div>
+      <div><div class="dim" style="font-size:11px">NEAR · pad (pool)</div><b id="ab-pad" style="font-size:15px">—</b></div>
+      <div><div class="dim" style="font-size:11px" id="ab-sym">tokens · wallet</div><b id="ab-tok" style="font-size:15px">—</b></div>
+      <div><div class="dim" style="font-size:11px" id="ab-sym2">tokens · parked</div><b id="ab-park" style="font-size:15px">—</b></div>
+    </div>
+  </div>
+
   <div class="grid">
     <!-- POOL -->
     <div class="card">
@@ -199,6 +212,13 @@ async function viewRaw(accountId, methodName, args) {
 async function view(accountId, methodName, args) {
   return JSON.parse(await viewRaw(accountId, methodName, args));
 }
+async function nearBal(accountId){
+  const r = await fetch(CFG.rpc,{method:"POST",body:JSON.stringify({jsonrpc:"2.0",id:"ui",
+    method:"query",params:{request_type:"view_account",finality:"optimistic",account_id:accountId}})});
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message||"account not found");
+  return BigInt(j.result.amount);
+}
 window.view = view;
 
 /* ── fmt ────────────────────────────────────────────────── */
@@ -234,7 +254,7 @@ async function ensureConnector(){
     signer = { kind:"connect", accountId: t.accounts[0].accountId };
     document.getElementById("in-acct").value = t.accounts[0].accountId;
     toast(`wallet connected · ${t.accounts[0].accountId}`,"ok");
-    loadAccount();
+    loadAccount(true);
   });
   connector.on("wallet:signOut", ()=>{ signer=null; connectorWallet=null; toast("wallet disconnected","warn"); });
   return connector;
@@ -299,7 +319,7 @@ window.setDevSigner = function(){
   signer = {kind:"dev", secret:k, accountId:acct};
   document.getElementById("in-acct").value = acct;
   toast("dev signer set (testnet): "+acct,"warn");
-  loadAccount();
+  loadAccount(true);
 };
 
 /* ── data loading ───────────────────────────────────────── */
@@ -331,20 +351,33 @@ async function loadPool(){
     document.getElementById("p-fees").textContent = fmtNear(fee.fees_near);
   } catch(e){ toast("pool load: "+e.message,"bad"); }
 }
-window.loadAccount = async function(){
-  const a = document.getElementById("in-acct").value.trim(); if(!a) return toast("enter account id","bad");
+window.loadAccount = async function(silent){
+  const a = document.getElementById("in-acct").value.trim(); if(!a){ if(!silent) toast("enter account id","bad"); return; }
   const t = token();
   try{
-    const [tokBal, led] = await Promise.all([
+    const [tokBal, led, nb] = await Promise.all([
       viewRaw(t,"ft_balance_of",{account_id:a}),
       view(CFG.pool,"get_balance",{account:a, token:t}),
+      nearBal(a).catch(()=>null),
     ]);
     document.getElementById("m-tok").textContent = fmtTok(tokBal,DEC)+" "+SYM+" ✓ in wallet";
     document.getElementById("m-pad").textContent = fmtNear(led.near);
     document.getElementById("m-inv").textContent = fmtTok(led.parked,DEC)+" "+SYM;
-    toast("balances loaded","ok");
-  }catch(e){ toast("account load: "+e.message,"bad"); }
+    // sticky account bar — everything in one glance
+    const bar = document.getElementById("acct-bar");
+    bar.style.display = "";
+    document.getElementById("ab-acct").textContent = a;
+    document.getElementById("ab-near").textContent = nb===null ? "n/a" : fmtNear(nb);
+    document.getElementById("ab-pad").textContent = fmtNear(led.near);
+    document.getElementById("ab-tok").textContent = fmtTok(tokBal,DEC);
+    document.getElementById("ab-park").textContent = fmtTok(led.parked,DEC);
+    document.getElementById("ab-sym").textContent = SYM+" · wallet";
+    document.getElementById("ab-sym2").textContent = SYM+" · parked";
+    document.getElementById("ab-wallet").textContent = signer ? (signer.kind==="connect" ? "💳 wallet connected" : "🔧 dev signer") : "view-only (connect to trade)";
+    if(!silent) toast("balances loaded","ok");
+  }catch(e){ if(!silent) toast("account load: "+e.message,"bad"); }
 };
+setInterval(()=>{ if(document.getElementById("acct-bar").style.display==="") loadAccount(true); }, 15000);
 
 /* ── trade ──────────────────────────────────────────────── */
 window.setTab = function(t){
@@ -529,7 +562,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b6";
+const BUILD = "b7";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
