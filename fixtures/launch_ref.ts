@@ -21,8 +21,19 @@ export function create_pool(token_a: string, token_b: string, fee: number): stri
   return pid;
 }
 
-export function register_tokens(tokens: string): string {
-  near.storageSet("last_registered", tokens);
+export function register_tokens(tokens: string[]): string {
+  // Real Ref receives a bare JSON array. The dialect's input model is
+  // object-rooted (named params), so cross-contract callers pass
+  // {"tokens":[...]} and the array is decoded by name.
+  let out = "[";
+  for (let i = 0; i < tokens.length; i++) {
+    if (i > 0) {
+      out = strCat(out, ",");
+    }
+    out = strCat(out, jsonQuote(tokens[i]));
+  }
+  let stored = strCat(out, "]");
+  near.storageSet("last_registered", stored);
   return "ok";
 }
 
@@ -35,4 +46,9 @@ export function deposit(token: string, amount: string): string {
 
 export function get_pool(id: string): string {
   return near.storageGet(strCat("pool:", id)) ?? "";
+}
+
+export function get_deposit(account_id: string, token_id: string): string {
+  let k = strCat("res:", account_id, ":", token_id);
+  return near.storageGet(k) ?? "0";
 }

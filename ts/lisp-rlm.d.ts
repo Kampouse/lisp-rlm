@@ -219,8 +219,10 @@ declare const near: {
   attachedDepositHigh(): number;
   accountBalance(): string;
   // compile-time u128 constant as (lo64, hi64) split — see wasm_emit
-  // deposit check: writes attached_deposit to TEMP_MEM, compares u128
-  depositGte(lo64: number, hi64: number): number;
+  // deposit check: writes attached_deposit to TEMP_MEM, compares u128.
+  // Returns a REAL bool (TAG_BOOL) — use `!depositGte(...)` for gates;
+  // `== 0` never fires (tag mismatch → false).
+  depositGte(lo64: number, hi64: number): boolean;
   transfer(toAccountId: string, yoctoAmount: string): void;
   transferU128(toAccountId: string, amount: string): void;
   storeU128(key: string, value: string): void;
@@ -308,7 +310,7 @@ declare const near: {
   promiseBatchThen(p: number, target: string): number;
   promiseBatchActionTransfer(p: number, yoctoAmount: string): void;
   /** Note arg order: deposit (string) BEFORE gas. */
-  promiseBatchActionFunctionCall(p: number, method: string, argsJson: string, yoctoDeposit: string, gas: number): void;
+  promiseBatchActionFunctionCall(p: number, method: string, argsJson: string, yoctoDeposit: string | bigint, gas: number): void;
   promiseBatchActionCreateAccount(p: number): void;
   /** Global contracts (protocol 66): deploy code immutably under its sha256 code hash. */
   promiseBatchActionDeployGlobalContract(p: number, code: string): void;
@@ -317,7 +319,7 @@ declare const near: {
   /** Global contracts: adopt an existing global under this account. */
   promiseBatchActionUseGlobalContract(p: number, sha256Hex: string): void;
   /** Function call with gas weight (batched chains). */
-  promiseBatchActionFunctionCallWeight(p: number, method: string, argsJson: string, yoctoDeposit: string, gas: number, weight: number): void;
+  promiseBatchActionFunctionCallWeight(p: number, method: string, argsJson: string, yoctoDeposit: string | bigint, gas: number, weight: number): void;
   /** Staking: stake yocto on the validator key. */
   promiseBatchActionStake(p: number, yoctoAmount: string, publicKey: string): void;
   /** Add an access key with full access. */

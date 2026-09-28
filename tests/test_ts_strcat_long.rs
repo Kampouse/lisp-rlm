@@ -115,7 +115,7 @@ fn ret_line(out: &str) -> String {
 /// a=192, b=384, c=192, d=384 chars → 1152 total.
 fn piece(seed: u8, n: usize) -> String {
     (0..n)
-        .map(|i| char::from(b'a' + ((seed + i as u8) % 26)))
+        .map(|i| char::from(b'a' + ((seed as u16 + i as u16) % 26) as u8))
         .collect()
 }
 

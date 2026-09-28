@@ -24,7 +24,9 @@ function tokenAccount(symbol: string): string {
 }
 
 export function launch_token(creator: string, symbol: string): void {
-  if (near.depositGte(2204140625727586304, 59631) == 0) {
+  // depositGte returns a real bool — `!` is the gate form; `== 0` would
+  // be a tag mismatch (= STR/NUM vs BOOL) and never fire.
+  if (!near.depositGte(2204140625727586304, 59631)) {
     near.abort("insufficient deposit: need 1.1 NEAR");
   }
   let tok = tokenAccount(symbol);
@@ -77,7 +79,7 @@ export function launch_token(creator: string, symbol: string): void {
   near.promiseBatchActionFunctionCall(
     p2,
     "register_tokens",
-    strCat("[", jsonQuote(tok), "]"),
+    strCat("{\"tokens\":[", jsonQuote(tok), "]}"),
     ZERO,
     10000000000000,
   );
