@@ -64,6 +64,72 @@ function migKey(t: string): string { return "migrated:" + t; }
 function nbKey(trader: string): string { return "nb:" + trader; }
 function tbKey(t: string, trader: string): string { return "tb:" + t + ":" + trader; }
 
+// ── gas-key identity + auto-refuel (v3.2) ─────────────────────────────
+// A tx signed by a gas key ON this contract has predecessor == self for
+// every caller, so account identity collapses. Those traders are
+// identified by their signing pubkey instead: "pk:" + signer_account_pk.
+// The pk bytes are opaque and round-trip unchanged into
+// promise_batch_action_transfer_to_gas_key.
+const GK_BURN_EST = "1000000000000000000";      // est. 1 mNEAR gas/trade (measured 0.37 → 2.7x margin)
+const GK_REFUEL_AT = "900000000000000000000";   // gauge: est. 0.9 NEAR burnt since last refuel
+const GK_REFUEL_AMT = "2000000000000000000000"; // refuel shot: 2 NEAR ≈ 5,400 trades
+
+// gas-key identity is HEX(signer pk) — the raw 33-byte borsh pk can't ride
+// JSON args (codepoint re-encoding mangles bytes >= 0x80), so both the
+// deposit{pk} arg and this derivation use the same 66-char hex form.
+function gasCallerPk(): string {
+  if (near.predecessorAccountId() == near.currentAccountId()) {
+    return near.hexEncode(near.signerAccountPk());
+  }
+  return "";
+}
+
+function traderId(pk: string): string {
+  return pk != "" ? "pk:" + pk : near.predecessorAccountId();
+}
+
+function gkGaugeKey(pk: string): string { return "gk:" + pk; }
+function gkCfg(k: string, def: string): string { return near.storageGet("gkcfg:" + k) ?? def; }
+
+// owner-only tuning of the refuel gauge (defaults in autoRefuel)
+export function set_gk_config(): number {
+  if (near.predecessorAccountId() != (near.storageGet("owner") ?? "")) { near.abort("ERR_OWNER"); return 0; }
+  const be = near.jsonGetStr("burn_est") ?? "";
+  const at = near.jsonGetStr("refuel_at") ?? "";
+  const amt = near.jsonGetStr("refuel_amt") ?? "";
+  if (be != "") { near.storageSet("gkcfg:burn_est", be); }
+  if (at != "") { near.storageSet("gkcfg:refuel_at", at); }
+  if (amt != "") { near.storageSet("gkcfg:refuel_amt", amt); }
+  near.log(`gkcfg:${be}:${at}:${amt}`);
+  return 0;
+}
+
+// Called at the end of the internal hot paths. Keeps a per-key gas gauge;
+// when the estimate crosses the threshold and the pad covers it, skim the
+// pad and fire a self-directed TransferToGasKey promise. The promise is
+// fire-and-forget: it executes after the trade, and the method's return
+// value (the trade receipt JSON) is unaffected.
+function autoRefuel(tid: string, pk: string): void {
+  if (pk == "") { return; }
+  const burnEst = gkCfg("burn_est", GK_BURN_EST);
+  const refuelAt = gkCfg("refuel_at", GK_REFUEL_AT);
+  const refuelAmt = gkCfg("refuel_amt", GK_REFUEL_AMT);
+  const gk = gkGaugeKey(pk);
+  const spent = u128Add(near.storageGet(gk) ?? "0", burnEst);
+  near.storageSet(gk, spent);
+  if (u128Lt(spent, refuelAt)) { return; }
+  const nk = nbKey(tid);
+  const pad = near.storageGet(nk) ?? "0";
+  if (u128Lt(pad, refuelAmt)) { return; }
+  near.storageSet(nk, u128Sub(pad, refuelAmt));
+  near.storageSet(gk, "0");
+  const idx = near.promiseBatchCreate(near.currentAccountId());
+  // host fn wants the RAW 33-byte borsh key at public_key_ptr — pk is our
+  // hex identity form, decode back to bytes at the boundary
+  near.promiseBatchActionTransferToGasKey(idx, near.hexDecode(pk), refuelAmt);
+  near.log(`refuel:${pk}:${refuelAmt}`);
+}
+
 // v3.1: per-token NEAR fee ledger — exact per-pool claims. The global
 // "fees_near" stays as a MAINTAINED RUNNING TOTAL (view-only; claims
 // decrement it), since on-chain storage iteration is unavailable.
@@ -372,10 +438,11 @@ export function migrate(): number {
 export function deposit(): number {
   const attached = near.attachedDepositU128();
   if (u128IsZero(attached)) { near.abort("ERR_ZERO"); return 0; }
-  const k = nbKey(near.predecessorAccountId());
+  const pkArg = near.jsonGetStr("pk") ?? "";
+  const k = pkArg != "" ? nbKey("pk:" + pkArg) : nbKey(near.predecessorAccountId());
   const cur = near.storageGet(k) ?? "0";
   near.storageSet(k, u128Add(cur, attached));
-  near.log(`deposit:${near.predecessorAccountId()}:${attached}`);
+  near.log(`deposit:${near.predecessorAccountId()}:${attached}${pkArg != "" ? ":pk:" + pkArg : ""}`);
   return 0;
 }
 
@@ -399,7 +466,8 @@ export function withdraw(): number {
 // the gas-key hot path is exactly buy() + sell_internal().
 export function sell_internal(): string {
   const token = near.jsonGetStr("token") ?? "";
-  const trader = near.predecessorAccountId();
+  const gkPk = gasCallerPk();
+  const trader = traderId(gkPk);
   const pt = near.storageGet(ptKey(token)) ?? "";
   if (pt == "") { near.abort("ERR_NO_POOL"); return ""; }
   if (tradingHalt(token) == 1) { return ""; }
@@ -425,6 +493,7 @@ export function sell_internal(): string {
   const nk = nbKey(trader);
   const padNow = near.storageGet(nk) ?? "0";
   near.storageSet(nk, u128Add(padNow, net));
+  autoRefuel(trader, gkPk);
   tradeEvent(token, "sell", trader, net, amount, fee);
   near.log(`selli:${trader}:${amount}:${net}`);
   return `{"gross":${jsonQuote(gross)},"fee":${jsonQuote(fee)},"net":${jsonQuote(net)}}`;
@@ -474,10 +543,11 @@ export function buy(): string {
   if (pn == "") { near.abort("ERR_NO_POOL"); return ""; }
   if (tradingHalt(token) == 1) { return ""; }
   const attached = near.attachedDepositU128();
+  const gkPk = gasCallerPk();
+  const tid = traderId(gkPk);
   let nearIn = attached;
   if (u128IsZero(attached)) {
-    const trader0 = near.predecessorAccountId();
-    const padKey = nbKey(trader0);
+    const padKey = nbKey(tid);
     const pad = near.storageGet(padKey) ?? "0";
     const want = near.jsonGetStr("near_in") ?? "0";
     if (u128IsZero(want)) { near.abort("ERR_ZERO"); return ""; }
@@ -498,14 +568,15 @@ export function buy(): string {
   near.storageSet(ptKey(token), newPt);
   near.storageSet(pnKey(token), newPn);
   if (u128IsZero(attached)) {
-    const nk = nbKey(trader);
+    const nk = nbKey(tid);
     const padNow = near.storageGet(nk) ?? "0";
     const padAfter = u128Sub(padNow, nearIn);
     near.storageSet(nk, padAfter);
-    const tk = tbKey(token, trader);
+    const tk = tbKey(token, tid);
     const held = near.storageGet(tk) ?? "0";
     const heldAfter = u128Add(held, net);
     near.storageSet(tk, heldAfter);
+    autoRefuel(tid, gkPk);
   }
   if (!u128IsZero(fee)) {
     const feeKey = feeTokKey(token);
