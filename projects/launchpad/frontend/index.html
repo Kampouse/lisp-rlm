@@ -64,6 +64,36 @@
     </div>
   </div>
 
+    <!-- ══ HERO: the dumb interface ══ -->
+  <div class="card hero" id="hero-card" style="grid-column:1/-1;border-color:#2e7d32">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px">
+      <h2 style="margin:0">Buy <span id="h-sym">—</span></h2>
+      <span class="dim" id="h-price" style="font-size:13px">…</span>
+    </div>
+    <div class="hero-row">
+      <input id="h-in" type="number" step="0.001" min="0.001" value="0.01" oninput="heroQuote()">
+      <span class="dim">NEAR</span>
+      <button id="h-buy" onclick="heroBuy()" style="font-size:18px;padding:14px 34px">BUY</button>
+    </div>
+    <div class="quote" id="h-quote" style="margin-top:8px">≈ …</div>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <span class="dim">sell</span>
+      <button class="ghost" onclick="heroSell(0.25)">25%</button>
+      <button class="ghost" onclick="heroSell(0.5)">50%</button>
+      <button class="ghost" onclick="heroSell(1)">ALL&nbsp;→</button>
+      <span class="ok" id="h-park" style="font-size:13px">0 parked</span>
+    </div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-top:1px solid #1c2b1e;padding-top:10px">
+      <span class="dim" style="font-size:12px">pool balance</span>
+      <b id="h-pad" style="font-size:14px">—</b><span class="dim">pad</span>
+      <b id="h-key" style="font-size:14px">—</b><span class="dim">⚡key</span>
+      <input id="h-add" type="number" step="0.01" min="0.01" value="0.05" style="width:70px" title="NEAR into your pool pad (fuel + funds)">
+      <button class="ghost" style="font-size:12px;padding:4px 10px" onclick="addNear()">＋ add NEAR</button>
+      <span id="h-setup" class="dim" style="font-size:11px"></span>
+    </div>
+  </div>
+
+  <details class="adv"><summary>🔧 bot console — pool · key management · advanced</summary>
   <div class="grid">
     <!-- POOL -->
     <div class="card">
@@ -180,6 +210,7 @@
       <div class="feed" id="feed">loading…</div>
     </div>
   </div>
+  </details>
 
   <p class="dim" style="font-size:12px;margin-top:18px">
     Signers: any NEAR wallet via <a href="https://github.com/azbang/near-connect">near-connect</a> (HOT · Meteor · Intear · MyNearWallet · Nightly · OKX · …). Contract:
@@ -194,6 +225,13 @@
     </div>
   </details>
 </div>
+<style>
+.hero-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}
+.hero-row input{font-size:22px;max-width:220px;text-align:right;font-weight:600}
+.adv{margin-top:14px;border:1px solid #1c2b1e;border-radius:12px;padding:10px 14px}
+.adv summary{cursor:pointer;user-select:none}
+.adv[open] summary{margin-bottom:10px}
+</style>
 <div class="toast" id="toast"></div>
 
 <script type="module">
@@ -400,6 +438,85 @@ window.fastEnable = async function(){
   toast("⚡ gas key live — instant pad trading, gas floats on the key","ok");
   loadAccount(true); paintFast(); loadKeyUI?.();
 };
+
+/* ══ HERO: brain-dead trading ══ */
+let hQt=null;
+window.heroQuote = async function(){
+  const v = document.getElementById("h-in").value;
+  if (!v || Number(v)<=0){ document.getElementById("h-quote").textContent="≈ …"; return; }
+  try{
+    const q = await view(CFG.pool,"quote_buy",{token:token(), near_in:parseNear(v).toString()});
+    hQt = q; document.getElementById("h-quote").innerHTML =
+      `≈ <b class="ok">${fmtTok(q.net,DEC)} ${SYM}</b> <span class="dim">(after fee)</span>`;
+  }catch(e){}
+};
+window.heroBuy = async function(){
+  const v = document.getElementById("h-in").value;
+  if (!v || Number(v)<=0) return toast("type a NEAR amount first","warn");
+  if (!signer) return toast("connect a signer up top (or dev signer in 🔧)","warn");
+  const amt = parseNear(v).toString();
+  const t = token();
+  const fast = fastGet() && signer.accountId===fastGet().accountId;
+  const slippage = hQt ? (BigInt(hQt.net) * 97n / 100n).toString() : undefined;  // invisible 3% guard
+  const buyArgs = {token:t, near_in:amt, to_pad:"1", ...(slippage?{min_tokens_out:slippage}:{})};
+  if (fast){
+    await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"buy",args:buyArgs,gas:"50000000000000",deposit:"0"}}]);
+  } else {
+    // one-time setup: register gas key + fuel pad + first buy — ONE wallet popup
+    const na = await loadNaj();
+    const kp = na.KeyPair.fromRandom("ed25519");
+    const pub = kp.getPublicKey().toString();
+    const AL="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let n=0n; for(const c of pub.split(":")[1]) n=n*58n+BigInt(AL.indexOf(c));
+    const pkHex="00"+n.toString(16).padStart(64,"0");
+    const acct = signer.accountId;
+    const fund = parseNear(document.getElementById("h-add").value || "0.05").toString();
+    const setup = parseNear("0.25").toString();
+    toast("first trade — confirm once in your wallet (this sets up instant trading)","warn");
+    await sendTx(CFG.pool, [
+      {type:"FunctionCall",params:{methodName:"register_gas_key",args:{pk:pkHex,owner:acct},gas:"100000000000000",deposit:setup}},
+      {type:"FunctionCall",params:{methodName:"deposit",args:{pk:pkHex,owner:acct},gas:"30000000000000",deposit:fund}},
+      {type:"FunctionCall",params:{methodName:"buy",args:buyArgs,gas:"50000000000000",deposit:"0"}},
+    ]);
+    localStorage.setItem("gk-fast", JSON.stringify({secret:kp.toString(), accountId:acct, pk:pkHex}));
+    toast("⚡ instant mode on — future trades need no wallet","ok");
+  }
+  await heroPaint(); await refreshAfter();
+};
+window.heroSell = async function(frac){
+  const g = await heroPaint(true);
+  const parked = g?.parked;
+  if (!parked || BigInt(parked)<=0n) return toast("nothing parked yet — buy first","warn");
+  const amt = (BigInt(parked) * BigInt(Math.round(frac*100)) / 100n).toString();
+  await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:token(),tokens_in:amt},gas:"50000000000000",deposit:"0"}}]);
+  await heroPaint(); await refreshAfter();
+};
+window.addNear = async function(){
+  if (!signer) return toast("connect a signer first","warn");
+  const v = document.getElementById("h-add").value || "0.05";
+  const fast = fastGet();
+  const pk = fast?.pk; if (!pk) return toast("hit BUY once first (auto-setup)","warn");
+  await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"deposit",args:{pk,owner:signer.accountId},gas:"30000000000000",deposit:parseNear(v).toString()}}]);
+  await heroPaint(); await refreshAfter();
+};
+window.heroPaint = async function(returnOnly){
+  try{
+    const g = fastGet();
+    if (!signer || !g) { if(!returnOnly){ document.getElementById("h-setup").textContent="first BUY sets everything up (one popup)"; } return; }
+    const [led, st] = await Promise.all([
+      view(CFG.pool,"get_balance",{account:"pk:"+g.pk, token:token()}),
+      view(CFG.pool,"get_gas_status",{pk:g.pk}).catch(()=>null),
+    ]);
+    if (!returnOnly){
+      document.getElementById("h-pad").textContent = fmtNear(led.near);
+      document.getElementById("h-key").textContent = st ? fmtNear(st.est) : "—";
+      window.__gkEst = st?.est;
+      document.getElementById("h-park").textContent = fmtTok(led.parked,DEC)+" parked";
+    }
+    return {parked:led.parked, pad:led.near, est:st?.est};
+  }catch(e){}
+};
+
 window.fastOff = function(){ localStorage.removeItem("gk-fast"); toast("fast mode off","warn"); paintFast(); };
 function paintFast(){
   const f = fastGet();
@@ -444,6 +561,10 @@ async function loadPool(){
         `1 NEAR ≈ ${fmtTok((pt*10n**18n/pn).toString(),18)} ${SYM} · 1 ${SYM} ≈ ${(Number(pn*10n**12n/pt)/1e12).toFixed(9)} NEAR`;
     }
     document.getElementById("p-fee").textContent = (Number(fee.bps)/100)+"%";
+    document.getElementById("h-sym").textContent = SYM;
+    const h1 = pn>0n && pt>0n ? (Number(pn*10n**12n/pt)/1e12).toFixed(9) : null;
+    document.getElementById("h-price").textContent = h1 ? `1 ${SYM} = ${h1} NEAR` : "…";
+    heroQuote(); heroPaint();
     document.getElementById("p-grad").textContent = pool.graduated==="true" ? "✅ yes" : "no";
     document.getElementById("p-fees").textContent = fmtNear(fee.fees_near);
   } catch(e){ toast("pool load: "+e.message,"bad"); }
@@ -475,7 +596,7 @@ window.loadAccount = async function(silent){
     if(!silent) toast("balances loaded","ok");
   }catch(e){ if(!silent) toast("account load: "+e.message,"bad"); }
 };
-setInterval(()=>{ if(document.getElementById("acct-bar").style.display==="") loadAccount(true); }, 15000);
+setInterval(()=>{ if(document.getElementById("acct-bar").style.display==="") { loadAccount(true); heroPaint(); } }, 15000);
 
 /* ── trade ──────────────────────────────────────────────── */
 window.setTab = function(t){
@@ -678,7 +799,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b18";
+const BUILD = "b19";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
