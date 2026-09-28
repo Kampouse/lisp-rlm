@@ -31,20 +31,17 @@ fn u128_add_normal_interp() {
     assert!(eval(code).is_ok(), "normal add should succeed");
 }
 
-
 #[test]
 fn u128_sub_normal_interp() {
     let code = "(let ((a 100) (b 200)) (u128/store a 1000 0) (u128/store b 200 0) (u128/sub \"1000\" \"200\") (u128/load a))";
     assert!(eval(code).is_ok(), "normal sub should succeed");
 }
 
-
 #[test]
 fn u128_mul_normal_interp() {
     let code = "(let ((a 100)) (u128/store a 100 0) (u128/mul \"100\" \"50\") (u128/load a))";
     assert!(eval(code).is_ok(), "normal mul should succeed");
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════
 // WASM TRAP TESTS (via near-mock binary)
@@ -61,11 +58,14 @@ fn run_near_mock(lisp: &str) -> (i32, String, String) {
     let wasm_path = format!("/tmp/u128_test_{}.wasm", id);
     std::fs::write(&tmp_path, lisp).unwrap();
 
-    // Compile
-    let compile_out = Command::new("cargo")
-        .args(["run", "--bin", "near-compile", "--", &tmp_path, &wasm_path])
+    // Compile — direct binary, NOT `cargo run --bin near-compile`: that bin
+    // name died in a rename (real name: `compile`), and cargo-run inside a
+    // running test suite deadlocks on the target-dir lock anyway. Same
+    // direct-binary pattern as test_compile_cli.rs. (2026-09-17)
+    let compile_out = Command::new("./target/release/compile")
+        .args([&tmp_path, &wasm_path])
         .output()
-        .expect("near-compile failed");
+        .expect("compile binary failed");
 
     if !compile_out.status.success() {
         return (
@@ -98,10 +98,11 @@ fn u128_add_overflow_traps_wasm() {
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
         !stdout.contains("Success"),
-        "overflow must trap: stdout={}, stderr={}", stdout, stderr
+        "overflow must trap: stdout={}, stderr={}",
+        stdout,
+        stderr
     );
 }
-
 
 #[test]
 fn u128_sub_underflow_traps_wasm() {
@@ -113,10 +114,11 @@ fn u128_sub_underflow_traps_wasm() {
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
         !stdout.contains("Success"),
-        "underflow must trap: stdout={}, stderr={}", stdout, stderr
+        "underflow must trap: stdout={}, stderr={}",
+        stdout,
+        stderr
     );
 }
-
 
 #[test]
 fn u128_mul_by_zero_traps_wasm() {
@@ -130,10 +132,11 @@ fn u128_mul_by_zero_traps_wasm() {
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
         stdout.contains("Success"),
-        "mul by zero should succeed (result 0): stdout={}, stderr={}", stdout, stderr
+        "mul by zero should succeed (result 0): stdout={}, stderr={}",
+        stdout,
+        stderr
     );
 }
-
 
 #[test]
 fn u128_mul_by_negative_traps_wasm() {
@@ -146,10 +149,11 @@ fn u128_mul_by_negative_traps_wasm() {
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
         !stdout.contains("Success"),
-        "mul by negative must trap: stdout={}, stderr={}", stdout, stderr
+        "mul by negative must trap: stdout={}, stderr={}",
+        stdout,
+        stderr
     );
 }
-
 
 #[test]
 fn u128_checked_to_i64_overflow_traps_wasm() {
@@ -165,7 +169,8 @@ fn u128_checked_to_i64_overflow_traps_wasm() {
     assert!(
         !stdout.contains("Success"),
         "checked_to_i64 overflow should trap: stdout={}, stderr={}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
 
@@ -183,10 +188,11 @@ fn u128_add_normal_wasm() {
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
         stdout.contains("Success"),
-        "normal add should succeed: stdout={}, stderr={}", stdout, stderr
+        "normal add should succeed: stdout={}, stderr={}",
+        stdout,
+        stderr
     );
 }
-
 
 #[test]
 fn u128_sub_normal_wasm() {
@@ -201,10 +207,11 @@ fn u128_sub_normal_wasm() {
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
         stdout.contains("Success"),
-        "normal sub should succeed: stdout={}, stderr={}", stdout, stderr
+        "normal sub should succeed: stdout={}, stderr={}",
+        stdout,
+        stderr
     );
 }
-
 
 #[test]
 fn u128_mul_normal_wasm() {
@@ -219,10 +226,11 @@ fn u128_mul_normal_wasm() {
     let (_code, stdout, stderr) = run_near_mock(lisp);
     assert!(
         stdout.contains("Success"),
-        "normal mul should succeed: stdout={}, stderr={}", stdout, stderr
+        "normal mul should succeed: stdout={}, stderr={}",
+        stdout,
+        stderr
     );
 }
-
 
 #[test]
 fn u128_fit_i64_small_wasm() {
@@ -285,19 +293,34 @@ fn u128_addr_to_str_interp() {
     let code = "(let ((a 100) (buf 200)) (u128/store a 1000000000000 0) (u128/to_str a buf))";
     let r = eval(code);
     assert!(r.is_ok());
-    assert!(r.unwrap().contains("1000000000000"), "to_str must render decimal");
+    assert!(
+        r.unwrap().contains("1000000000000"),
+        "to_str must render decimal"
+    );
 }
 
 #[test]
 fn u128_addr_fit_and_checked_interp() {
-    assert!(eval("(let ((a 100)) (u128/store a 42 0) (u128/fit_i64 a))")
-        .unwrap().contains("1"), "42 fits i64");
-    assert!(eval("(let ((a 100)) (u128/store a 42 1) (u128/fit_i64 a))")
-        .unwrap().contains("0"), "2^64+42 does not fit");
-    assert!(eval("(let ((a 100)) (u128/store a 42 0) (u128/checked_to_i64 a))").is_ok(),
-        "checked_to_i64 fits path ok");
-    assert!(eval("(let ((a 100)) (u128/store a 42 1) (u128/checked_to_i64 a))").is_err(),
-        "checked_to_i64 overflow must hard-error");
+    assert!(
+        eval("(let ((a 100)) (u128/store a 42 0) (u128/fit_i64 a))")
+            .unwrap()
+            .contains("1"),
+        "42 fits i64"
+    );
+    assert!(
+        eval("(let ((a 100)) (u128/store a 42 1) (u128/fit_i64 a))")
+            .unwrap()
+            .contains("0"),
+        "2^64+42 does not fit"
+    );
+    assert!(
+        eval("(let ((a 100)) (u128/store a 42 0) (u128/checked_to_i64 a))").is_ok(),
+        "checked_to_i64 fits path ok"
+    );
+    assert!(
+        eval("(let ((a 100)) (u128/store a 42 1) (u128/checked_to_i64 a))").is_err(),
+        "checked_to_i64 overflow must hard-error"
+    );
 }
 
 #[test]
@@ -314,7 +337,16 @@ fn u128_addr_new_from_i64_from_yocto_interp() {
 #[test]
 fn u128_addr_out_of_bounds_interp() {
     // 4 MiB cap (64 wasm pages) — store at the edge must hard-error
-    assert!(eval("(u128/store 4194304 1 0)").is_err(), "OOB store must err");
-    assert!(eval("(u128/store 4194288 1 0)").is_ok(), "last in-bounds 16B window at cap-16");
-    assert!(eval("(u128/load 4194296)").is_err(), "window crossing cap must err");
+    assert!(
+        eval("(u128/store 4194304 1 0)").is_err(),
+        "OOB store must err"
+    );
+    assert!(
+        eval("(u128/store 4194288 1 0)").is_ok(),
+        "last in-bounds 16B window at cap-16"
+    );
+    assert!(
+        eval("(u128/load 4194296)").is_err(),
+        "window crossing cap must err"
+    );
 }

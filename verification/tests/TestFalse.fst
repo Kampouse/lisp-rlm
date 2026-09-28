@@ -23,5 +23,5 @@ let eval_string s =
   | Some e -> eval_expr 20 e
   | None -> 0
 
-val test_wrong : unit -> Lemma (eval_string "42" = 999)
+[@@ expect_failure]
 let test_wrong () = assert_norm (eval_string "42" = 999)

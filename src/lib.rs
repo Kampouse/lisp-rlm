@@ -29,8 +29,8 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod bls_validate;
-pub mod builtin_schnorr;
 pub mod builtin_ed25519;
+pub mod builtin_schnorr;
 pub mod bytecode;
 pub mod clojure;
 mod dispatch;

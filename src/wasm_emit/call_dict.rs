@@ -21,7 +21,10 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 if self.p2_mode || self.wasi_mode {
                     let alloc_local = self.local_idx("__dict_alloc");
-                    v.extend(self.heap_bump_runtime(std::cmp::max((total_slots * 8) as u32, 64 * 8), "__dict_alloc"));
+                    v.extend(self.heap_bump_runtime(
+                        std::cmp::max((total_slots * 8) as u32, 64 * 8),
+                        "__dict_alloc",
+                    ));
                     // Store n_pairs at ptr[0]: addr, value, store
                     v.push(Instruction::LocalGet(alloc_local));
                     v.push(Instruction::I32WrapI64);

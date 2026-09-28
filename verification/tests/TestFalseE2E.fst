@@ -101,5 +101,5 @@ let run_vm s =
   | None -> 0
 
 // FALSE: 3 + 4 != 99
-val t_bad : unit -> Lemma (run_vm "(+ 3 4)" = 99)
+[@@ expect_failure]
 let t_bad () = assert_norm (run_vm "(+ 3 4)" = 99)

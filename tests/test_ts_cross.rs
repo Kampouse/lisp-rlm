@@ -6,16 +6,19 @@
 //! lowering (entry param save → call-await → continuation restore), and the
 //! NEP-141-style allowance pattern where the VAULT CONTRACT is the spender.
 
-use std::sync::{Mutex, OnceLock};
 use lisp_rlm_wasm::ts_frontend::ts_to_lisp_source;
-use lisp_rlm_wasm::{parse_all, compile_near_from_exprs};
+use lisp_rlm_wasm::{compile_near_from_exprs, parse_all};
+use std::sync::{Mutex, OnceLock};
 
 const TOKEN_SRC: &str = include_str!("../fixtures/token_allowance.ts");
 const VAULT_SRC: &str = include_str!("../fixtures/vault_cross.ts");
 
 fn lock() -> std::sync::MutexGuard<'static, ()> {
     static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() { Ok(g) => g, Err(p) => p.into_inner() }
+    match L.get_or_init(|| Mutex::new(())).lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    }
 }
 
 fn wasm_path(src: &str, tag: &str) -> String {
@@ -33,11 +36,20 @@ fn run(acct: &str, method: &str, args: &str, signer: &str) -> String {
     let vault = wasm_path(VAULT_SRC, "vlt");
     let manifest = format!("token.cc.test.near={},vault.cc.test.near={}", token, vault);
     let mut cmd = std::process::Command::new("./target/release/near-mock");
-    cmd.arg("cross").arg("/tmp/cc-test-state.bin").arg(&manifest).arg(acct).arg(method).arg(args)
+    cmd.arg("cross")
+        .arg("/tmp/cc-test-state.bin")
+        .arg(&manifest)
+        .arg(acct)
+        .arg(method)
+        .arg(args)
         .env("NEAR_MOCK_SIGNER", signer)
         .env("NEAR_MOCK_BLOCK_TS", "1800000000000000000");
     let out = cmd.output().expect("near-mock");
-    format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
 }
 
 #[test]
@@ -47,27 +59,99 @@ fn cross_contract_deposit_and_fail_closed() {
     let u: u128 = 10u128.pow(18);
 
     // setup on the token
-    assert!(run("token.cc.test.near", "ftMint", &format!(r#"{{"to":"alice.test.near","amount":"{}"}}"#, 1_000_000*u), "alice.test.near").contains("supply:"));
-    assert!(run("token.cc.test.near", "ftIncreaseAllowance", &format!(r#"{{"spender":"vault.cc.test.near","amount":"{}"}}"#, 500_000*u), "alice.test.near").contains("allowance:"));
+    assert!(run(
+        "token.cc.test.near",
+        "ftMint",
+        &format!(r#"{{"to":"alice.test.near","amount":"{}"}}"#, 1_000_000 * u),
+        "alice.test.near"
+    )
+    .contains("supply:"));
+    assert!(run(
+        "token.cc.test.near",
+        "ftIncreaseAllowance",
+        &format!(
+            r#"{{"spender":"vault.cc.test.near","amount":"{}"}}"#,
+            500_000 * u
+        ),
+        "alice.test.near"
+    )
+    .contains("allowance:"));
 
     // THE cross-call: vault.deposit → promise → token.ftTransferFrom → callback
-    let out = run("vault.cc.test.near", "deposit", &format!(r#"{{"user":"alice.test.near","amount":"{}"}}"#, 300_000*u), "alice.test.near");
-    assert!(out.contains(&format!("deposited:{}", 300_000*u)), "deposit failed: {out}");
+    let out = run(
+        "vault.cc.test.near",
+        "deposit",
+        &format!(r#"{{"user":"alice.test.near","amount":"{}"}}"#, 300_000 * u),
+        "alice.test.near",
+    );
+    assert!(
+        out.contains(&format!("deposited:{}", 300_000 * u)),
+        "deposit failed: {out}"
+    );
 
     // state moved across BOTH contracts
-    assert!(run("token.cc.test.near", "ftBalanceOf", r#"{"who":"alice.test.near"}"#, "alice.test.near").contains(&format!("bal:{}", 700_000*u)));
-    assert!(run("token.cc.test.near", "ftBalanceOf", r#"{"who":"vault.cc.test.near"}"#, "alice.test.near").contains(&format!("bal:{}", 300_000*u)));
-    assert!(run("vault.cc.test.near", "getTotalDeposits", r#"{"who":"alice.test.near"}"#, "alice.test.near").contains(&format!("deposits:{}", 300_000*u)));
+    assert!(run(
+        "token.cc.test.near",
+        "ftBalanceOf",
+        r#"{"who":"alice.test.near"}"#,
+        "alice.test.near"
+    )
+    .contains(&format!("bal:{}", 700_000 * u)));
+    assert!(run(
+        "token.cc.test.near",
+        "ftBalanceOf",
+        r#"{"who":"vault.cc.test.near"}"#,
+        "alice.test.near"
+    )
+    .contains(&format!("bal:{}", 300_000 * u)));
+    assert!(run(
+        "vault.cc.test.near",
+        "getTotalDeposits",
+        r#"{"who":"alice.test.near"}"#,
+        "alice.test.near"
+    )
+    .contains(&format!("deposits:{}", 300_000 * u)));
 
     // fail-closed: 300K > 200K remaining allowance → sub-call traps → revert → vault aborts
-    let out = run("vault.cc.test.near", "deposit", &format!(r#"{{"user":"alice.test.near","amount":"{}"}}"#, 300_000*u), "alice.test.near");
-    assert!(out.contains("token transfer failed"), "should fail closed: {out}");
+    let out = run(
+        "vault.cc.test.near",
+        "deposit",
+        &format!(r#"{{"user":"alice.test.near","amount":"{}"}}"#, 300_000 * u),
+        "alice.test.near",
+    );
+    assert!(
+        out.contains("token transfer failed"),
+        "should fail closed: {out}"
+    );
     // NO partial state: balances and deposits unchanged by the failed deposit
-    assert!(run("token.cc.test.near", "ftBalanceOf", r#"{"who":"alice.test.near"}"#, "alice.test.near").contains(&format!("bal:{}", 700_000*u)));
-    assert!(run("vault.cc.test.near", "getTotalDeposits", r#"{"who":"alice.test.near"}"#, "alice.test.near").contains(&format!("deposits:{}", 300_000*u)));
+    assert!(run(
+        "token.cc.test.near",
+        "ftBalanceOf",
+        r#"{"who":"alice.test.near"}"#,
+        "alice.test.near"
+    )
+    .contains(&format!("bal:{}", 700_000 * u)));
+    assert!(run(
+        "vault.cc.test.near",
+        "getTotalDeposits",
+        r#"{"who":"alice.test.near"}"#,
+        "alice.test.near"
+    )
+    .contains(&format!("deposits:{}", 300_000 * u)));
 
     // a second in-allowance deposit works and both ledgers agree
-    let out = run("vault.cc.test.near", "deposit", &format!(r#"{{"user":"alice.test.near","amount":"{}"}}"#, 150_000*u), "alice.test.near");
-    assert!(out.contains(&format!("deposited:{}", 450_000*u)), "{out}");
-    assert!(run("token.cc.test.near", "ftBalanceOf", r#"{"who":"vault.cc.test.near"}"#, "alice.test.near").contains(&format!("bal:{}", 450_000*u)));
+    let out = run(
+        "vault.cc.test.near",
+        "deposit",
+        &format!(r#"{{"user":"alice.test.near","amount":"{}"}}"#, 150_000 * u),
+        "alice.test.near",
+    );
+    assert!(out.contains(&format!("deposited:{}", 450_000 * u)), "{out}");
+    assert!(run(
+        "token.cc.test.near",
+        "ftBalanceOf",
+        r#"{"who":"vault.cc.test.near"}"#,
+        "alice.test.near"
+    )
+    .contains(&format!("bal:{}", 450_000 * u)));
 }

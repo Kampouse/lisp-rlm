@@ -561,7 +561,11 @@ impl WasmEmitter {
                 if a.len() != 2 {
                     return Err("byte-at: expected 2 args (string, index)".into());
                 }
-                let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                let ma8 = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                };
                 let mut v = Vec::new();
                 v.extend(self.expr(&a[0])?);
                 v.extend(self.emit_untag());
@@ -586,7 +590,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
                 v.push(Instruction::LocalTee(idx_i)); // idx on stack (saved too? LocalTee stores)
-                // oops: need raw's len above idx: reorder — store idx FIRST then compare
+                                                      // oops: need raw's len above idx: reorder — store idx FIRST then compare
                 v = Vec::new();
                 v.extend(self.expr(&a[0])?);
                 v.extend(self.emit_untag());
@@ -604,9 +608,9 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::Else);
                 v.push(Instruction::LocalGet(raw_i));
-                v.push(Instruction::I32WrapI64);   // ptr (low 32 bits)
+                v.push(Instruction::I32WrapI64); // ptr (low 32 bits)
                 v.push(Instruction::LocalGet(idx_i));
-                v.push(Instruction::I32WrapI64);   // idx
+                v.push(Instruction::I32WrapI64); // idx
                 v.push(Instruction::I32Add);
                 v.push(Instruction::I32Load8U(ma8));
                 v.push(Instruction::I64ExtendI32U);
@@ -774,9 +778,7 @@ impl WasmEmitter {
             // exceed the buffers' allocated length (hard-error policy).
             "limb-add" => {
                 if a.len() != 5 {
-                    return Err(
-                        "limb-add: expected 5 args (a, b, r, la, lb)".into()
-                    );
+                    return Err("limb-add: expected 5 args (a, b, r, la, lb)".into());
                 }
                 let ra = self.local_idx("__la_ra");
                 let rb = self.local_idx("__la_rb");
@@ -849,7 +851,11 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(i));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalSet(carry));
-                let ma32 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ma32 = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 2,
+                    memory_index: 0,
+                };
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 v.push(Instruction::Loop(BlockType::Empty));
                 // if i >= m → exit branch computes lr & final carry limb
@@ -974,9 +980,7 @@ impl WasmEmitter {
             // call's ARGS in one function (sequential calls are fine).
             "limb-sub" => {
                 if a.len() != 5 {
-                    return Err(
-                        "limb-sub: expected 5 args (a, b, r, la, lb)".into()
-                    );
+                    return Err("limb-sub: expected 5 args (a, b, r, la, lb)".into());
                 }
                 let ra = self.local_idx("__lsb_ra");
                 let rb = self.local_idx("__lsb_rb");
@@ -1043,7 +1047,11 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(i));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalSet(borrow));
-                let ma32 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ma32 = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 2,
+                    memory_index: 0,
+                };
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 v.push(Instruction::Loop(BlockType::Empty));
                 // if i >= m → underflow trap check + strip + lr
@@ -1186,9 +1194,7 @@ impl WasmEmitter {
             // Scans from the MOST significant limb down (descending).
             "limb-cmp" => {
                 if a.len() != 4 {
-                    return Err(
-                        "limb-cmp: expected 4 args (a, b, la, lb)".into()
-                    );
+                    return Err("limb-cmp: expected 4 args (a, b, la, lb)".into());
                 }
                 let ra = self.local_idx("__lc_ra");
                 let rb = self.local_idx("__lc_rb");
@@ -1237,7 +1243,11 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::I64Sub);
                 v.push(Instruction::LocalSet(i));
-                let ma32 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ma32 = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 2,
+                    memory_index: 0,
+                };
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 v.push(Instruction::Loop(BlockType::Empty));
                 // if i < 0 → equal → 0
@@ -1312,9 +1322,7 @@ impl WasmEmitter {
             // (< 1e9) throughout. Result length = la+lb, stripped.
             "limb-mul" => {
                 if a.len() != 5 {
-                    return Err(
-                        "limb-mul: expected 5 args (a, b, r, la, lb)".into()
-                    );
+                    return Err("limb-mul: expected 5 args (a, b, r, la, lb)".into());
                 }
                 let ra = self.local_idx("__lm_ra");
                 let rb = self.local_idx("__lm_rb");
@@ -1370,7 +1378,11 @@ impl WasmEmitter {
                 v.push(Instruction::If(BlockType::Empty));
                 v.push(Instruction::Unreachable);
                 v.push(Instruction::End);
-                let ma32 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ma32 = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 2,
+                    memory_index: 0,
+                };
                 // zero r[0 .. la+lb)
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalSet(z));
@@ -1782,7 +1794,7 @@ impl WasmEmitter {
                 v.extend(self.emit_rtheap_alloc(dst_i, new_len_i));
                 v.push(Instruction::LocalGet(dst_i));
                 v.push(Instruction::LocalSet(dst_save_i)); // save original dst
-                // Word copy: qwords = new_len / 8, remain = new_len & 7
+                                                           // Word copy: qwords = new_len / 8, remain = new_len & 7
                 v.push(Instruction::LocalGet(new_len_i));
                 v.push(Instruction::I64Const(3));
                 v.push(Instruction::I64ShrU);
@@ -2582,17 +2594,36 @@ impl WasmEmitter {
                 if a.len() != 2 {
                     return Err("str=: expected 2 args".into());
                 }
-                // String equality: untag both, compare length then mem-compare.
-                // Result is a tagged bool (1=true, 0=false).
-                self.str_eq(a)
+                // Delegate to the shared emit_str_eq helper (same path the
+                // dict ops use): untag both operands, word-wise compare,
+                // produce a TAGGED bool (8=true / 1=false). The previous
+                // inline byte-loop read len/ptr straight off the TAGGED
+                // values (len×8, ptr×8+5 — garbage addresses) and tagged
+                // its result with TAG_CLOSURE(3), which is truthy — so a
+                // FALSE str= still branched into the then-arm. Found via
+                // the per-step-signer scenario probe (2026-09-06): every
+                // caller identity was "allowed".
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_str_eq());
+                Ok(v)
             }
             "str!=" => {
                 if a.len() != 2 {
                     return Err("str!=: expected 2 args".into());
                 }
-                // String inequality: negate str=.
-                self.str_eq(a)?;
-                self.emit_bool_not()
+                // Delegate to emit_str_eq (tagged bool out), then negate the
+                // tagged bool. The old path fed emit_bool_not a RAW 0/1,
+                // which it decodes as ((raw>>3)^1)&1 — for raw 1 that is
+                // (0^1)=1, i.e. "not equal" reported EQUAL. (str!= "a" "b")
+                // returned false; (str!= "a" "a") returned true.
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_str_eq());
+                v.extend(self.emit_bool_not()?);
+                Ok(v)
             }
             "str-index-of" => {
                 if a.len() != 2 {
@@ -4324,7 +4355,11 @@ impl WasmEmitter {
                 let out_ptr_i = self.local_idx("__hd_op");
                 let i_i = self.local_idx("__hd_i");
                 let nibble_i = self.local_idx("__hd_nib");
-                let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+                let ma8 = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                };
                 let mut v = Vec::new();
                 // Untag input → (len<<32|ptr)
                 v.extend(self.expr(&a[0])?);
@@ -4454,7 +4489,10 @@ impl WasmEmitter {
     /// other tags → __to_string (tagged in, tagged out)
     /// Over-allocates 6*len+2 (worst case \u00XY per byte); actual length
     /// is w − dst after the write pass — no counting pass needed.
-    pub(crate) fn json_quote_emit(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+    pub(crate) fn json_quote_emit(
+        &mut self,
+        a: &[LispVal],
+    ) -> Result<Vec<Instruction<'static>>, String> {
         use wasm_encoder::Instruction as I;
         if a.len() != 1 {
             return Err("json-quote: expected 1 arg".into());
@@ -4467,9 +4505,16 @@ impl WasmEmitter {
     /// for the shared __json_quote helper — the TS frontend auto-inserts
     /// (json-quote ...) around interpolated values when building JSON, so
     /// TS contracts carried one inline escaping routine per site).
-    pub(crate) fn json_quote_emit_from(&mut self, pre: Vec<Instruction<'static>>) -> Result<Vec<Instruction<'static>>, String> {
+    pub(crate) fn json_quote_emit_from(
+        &mut self,
+        pre: Vec<Instruction<'static>>,
+    ) -> Result<Vec<Instruction<'static>>, String> {
         use wasm_encoder::Instruction as I;
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
         let v_i = self.local_idx("__jq_v");
         let p_i = self.local_idx("__jq_p");
         let len_i = self.local_idx("__jq_len");
@@ -4584,7 +4629,7 @@ impl WasmEmitter {
         v.push(I::If(BlockType::Empty));
         v.extend(wr2(&mut vec![], w_i, ma8.clone(), 0x5C, 0x75)); // \u
         v.extend(wr2(&mut vec![], w_i, ma8.clone(), 0x30, 0x30)); // 00
-        // hi nibble: 48 + d + (d>=10)*39
+                                                                  // hi nibble: 48 + d + (d>=10)*39
         v.push(I::LocalGet(w_i));
         v.push(I::I32WrapI64);
         v.push(I::LocalGet(c_i));
@@ -4648,7 +4693,7 @@ impl WasmEmitter {
         v.push(I::Br(0));
         v.push(I::End); // loop
         v.push(I::End); // block
-        // write closing '"'
+                        // write closing '"'
         v.push(I::LocalGet(w_i));
         v.push(I::I32WrapI64);
         v.push(I::I64Const(0x22));
@@ -4794,7 +4839,7 @@ impl WasmEmitter {
         v.push(Instruction::Br(0));
         v.push(Instruction::End); // L2
         v.push(Instruction::End); // B
-        // match → found = 1, exit A   (Br depth: If=0, L1=1, A=2)
+                                  // match → found = 1, exit A   (Br depth: If=0, L1=1, A=2)
         v.push(Instruction::LocalGet(match_i));
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::If(BlockType::Empty));
@@ -4935,7 +4980,7 @@ impl WasmEmitter {
         v.push(Instruction::Br(0));
         v.push(Instruction::End); // L2
         v.push(Instruction::End); // B
-        // match → result = idx, exit A
+                                  // match → result = idx, exit A
         v.push(Instruction::LocalGet(match_i));
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::If(BlockType::Empty));
@@ -5085,9 +5130,21 @@ impl WasmEmitter {
         Ok(v)
     }
 
-    fn str_case(&mut self, a: &[LispVal], upper: bool) -> Result<Vec<Instruction<'static>>, String> {
-        let ma0 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+    fn str_case(
+        &mut self,
+        a: &[LispVal],
+        upper: bool,
+    ) -> Result<Vec<Instruction<'static>>, String> {
+        let ma0 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
         let src_i = self.local_idx("__scase_src");
         let len_i = self.local_idx("__scase_len");
         let ptr_i = self.local_idx("__scase_ptr");
@@ -5204,7 +5261,11 @@ impl WasmEmitter {
     /// {0x09..=0x0D, 0x20} only; interp uses Rust Unicode trim — documented
     /// divergence for non-ASCII input.
     fn str_trim(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
-        let ma0 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let ma0 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
         let src_i = self.local_idx("__strm_src");
         let len_i = self.local_idx("__strm_len");
         let ptr_i = self.local_idx("__strm_ptr");
@@ -5319,7 +5380,11 @@ impl WasmEmitter {
 
     /// (str-starts-with s prefix) → bool. Prefix must be a string literal.
     fn str_starts_with(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
-        let ma0 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let ma0 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
         let pfx_str = match &a[1] {
             LispVal::Str(s) => s.clone(),
             _ => return Err("str-starts-with: prefix must be a string literal".into()),
@@ -5410,7 +5475,11 @@ impl WasmEmitter {
     /// Hoisted length check (hay_len < slen ⇒ false), then compare the last
     /// slen bytes at base = hay_len − slen.
     fn str_ends_with(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
-        let ma0 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let ma0 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
         let sfx_str = match &a[1] {
             LispVal::Str(s) => s.clone(),
             _ => return Err("str-ends-with: suffix must be a string literal".into()),
@@ -5510,8 +5579,16 @@ impl WasmEmitter {
     /// Exact worst-case capacity (machine-checked):
     /// max(s_len, (s_len/from_len)*to_len + s_len%from_len).
     fn str_replace(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
-        let ma0 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let ma0 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
         let from_str = match &a[1] {
             LispVal::Str(s) => s.clone(),
             _ => return Err("str-replace: pattern must be a string literal".into()),
@@ -5521,7 +5598,10 @@ impl WasmEmitter {
             _ => return Err("str-replace: replacement must be a string literal".into()),
         };
         if from_str.is_empty() {
-            return Err("str-replace: empty pattern unsupported in wasm (interp inserts between chars)".into());
+            return Err(
+                "str-replace: empty pattern unsupported in wasm (interp inserts between chars)"
+                    .into(),
+            );
         }
         let from_bytes = from_str.as_bytes();
         let to_bytes = to_str.as_bytes();
@@ -5581,8 +5661,8 @@ impl WasmEmitter {
         v.push(Instruction::I64RemU);
         v.push(Instruction::I64Add);
         v.push(Instruction::LocalSet(rhan_i)); // formula candidate
-        // branch-free max: t = s_len − formula; m = t >> 63 (−1 if t<0);
-        // cap = s_len − (t & m)
+                                               // branch-free max: t = s_len − formula; m = t >> 63 (−1 if t<0);
+                                               // cap = s_len − (t & m)
         let ct_i = self.local_idx("__srp_ct");
         let cm_i = self.local_idx("__srp_cm");
         v.push(Instruction::LocalGet(s_len_i));
@@ -5599,7 +5679,7 @@ impl WasmEmitter {
         v.push(Instruction::I64And);
         v.push(Instruction::I64Sub);
         v.push(Instruction::LocalSet(rhan_i)); // cap = max
-        // Runtime bump alloc cap bytes
+                                               // Runtime bump alloc cap bytes
         v.push(Instruction::I64Const(56));
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::I64Load(ma8.clone()));
@@ -5778,7 +5858,10 @@ impl WasmEmitter {
 
     /// Body of str_to_num given pre-evaluated input instrs (2026-09-02
     /// split for the shared __str_to_num helper — was inline per site).
-    pub(crate) fn str_to_num_from(&mut self, pre: Vec<Instruction<'static>>) -> Result<Vec<Instruction<'static>>, String> {
+    pub(crate) fn str_to_num_from(
+        &mut self,
+        pre: Vec<Instruction<'static>>,
+    ) -> Result<Vec<Instruction<'static>>, String> {
         let ma = wasm_encoder::MemArg {
             offset: 0,
             align: 0,
@@ -5869,20 +5952,20 @@ impl WasmEmitter {
         v.push(Instruction::I32And);
         v.push(Instruction::If(wasm_encoder::BlockType::Empty));
 
-            // acc = acc * 10 + (ch - '0')
-            v.push(Instruction::LocalGet(acc_i));
-            v.push(Instruction::I64Const(10));
-            v.push(Instruction::I64Mul);
-            v.push(Instruction::LocalGet(ch_i));
-            v.push(Instruction::I64ExtendI32U); // extend ch (i32) to i64
-            v.push(Instruction::I64Const(48));
-            v.push(Instruction::I64Sub);
-            v.push(Instruction::I64Add);
-            v.push(Instruction::LocalSet(acc_i));
+        // acc = acc * 10 + (ch - '0')
+        v.push(Instruction::LocalGet(acc_i));
+        v.push(Instruction::I64Const(10));
+        v.push(Instruction::I64Mul);
+        v.push(Instruction::LocalGet(ch_i));
+        v.push(Instruction::I64ExtendI32U); // extend ch (i32) to i64
+        v.push(Instruction::I64Const(48));
+        v.push(Instruction::I64Sub);
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(acc_i));
 
         v.push(Instruction::Else);
-            v.push(Instruction::I32Const(0));
-            v.push(Instruction::LocalSet(all_i));
+        v.push(Instruction::I32Const(0));
+        v.push(Instruction::LocalSet(all_i));
 
         v.push(Instruction::End); // end if
 
@@ -6019,6 +6102,11 @@ impl WasmEmitter {
     }
 
     fn emit_bool_not(&mut self) -> Result<Vec<Instruction<'static>>, String> {
+        // Tagged bool in → tagged bool out. Payload = tagged>>3, payload^1
+        // flips it, retag with TAG_BOOL (=1). The old retag ORed 3
+        // (TAG_CLOSURE) — both possible outputs (3, 11) are truthy, so NOT
+        // always reported true; only caller (str!=) followed after the
+        // emit_str_eq delegation, which is how it surfaced (2026-09-06).
         let mut v = Vec::new();
         v.push(Instruction::I64Const(3));
         v.push(Instruction::I64ShrU);
@@ -6026,19 +6114,37 @@ impl WasmEmitter {
         v.push(Instruction::I64Xor);
         v.push(Instruction::I64Const(3));
         v.push(Instruction::I64Shl);
-        v.push(Instruction::I64Const(3));
+        v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Or);
         Ok(v)
     }
 }
 
-fn wr2(_t: &mut Vec<wasm_encoder::Instruction<'static>>, w: u32, ma8: wasm_encoder::MemArg, b0: i64, b1: i64) -> Vec<wasm_encoder::Instruction<'static>> {
+fn wr2(
+    _t: &mut Vec<wasm_encoder::Instruction<'static>>,
+    w: u32,
+    ma8: wasm_encoder::MemArg,
+    b0: i64,
+    b1: i64,
+) -> Vec<wasm_encoder::Instruction<'static>> {
     use wasm_encoder::Instruction as I;
     vec![
-        I::LocalGet(w), I::I32WrapI64, I::I64Const(b0), I::I64Store8(ma8.clone()),
-        I::LocalGet(w), I::I64Const(1), I::I64Add, I::LocalSet(w),
-        I::LocalGet(w), I::I32WrapI64, I::I64Const(b1), I::I64Store8(ma8),
-        I::LocalGet(w), I::I64Const(1), I::I64Add, I::LocalSet(w),
+        I::LocalGet(w),
+        I::I32WrapI64,
+        I::I64Const(b0),
+        I::I64Store8(ma8.clone()),
+        I::LocalGet(w),
+        I::I64Const(1),
+        I::I64Add,
+        I::LocalSet(w),
+        I::LocalGet(w),
+        I::I32WrapI64,
+        I::I64Const(b1),
+        I::I64Store8(ma8),
+        I::LocalGet(w),
+        I::I64Const(1),
+        I::I64Add,
+        I::LocalSet(w),
     ]
 }
 
@@ -6064,6 +6170,102 @@ impl WasmEmitter {
     /// path's semantics. Pure-literal / all-constant shapes still delegate
     /// to fold_binop so compile-time folding and the try-body
     /// non-numeric-literal catch semantics are unchanged.
+    /// Syntactic numeric-provenance check: is this expression's runtime
+    /// value guaranteed NOT a string (TAG_STR)? Conservative — unknown
+    /// shapes return false and take the safe polymorphic dispatch.
+    pub(crate) fn expr_is_numeric(&self, e: &LispVal) -> bool {
+        match e {
+            LispVal::Num(_) => true,
+            LispVal::Sym(s) => self.numeric_locals.contains(s),
+            LispVal::List(items) if !items.is_empty() => {
+                let LispVal::Sym(head) = &items[0] else {
+                    return false;
+                };
+                match head.as_str() {
+                    // numeric binops: numeric iff all operands are (the
+                    // emitter's -*/mod are numeric-only; + dispatches to
+                    // poly_add which will take the fast path itself when
+                    // its operands are numeric — the RESULT is then a
+                    // tagged num)
+                    "+" | "-" | "*" | "/" | "mod" => {
+                        items.len() >= 3 && items[1..].iter().all(|x| self.expr_is_numeric(x))
+                    }
+                    // numeric-result builtins (TAG_NUM results)
+                    "str->num"
+                    | "str-to-num"
+                    | "u128/to-i64"
+                    | "u128/from-i64"
+                    | "vec-length"
+                    | "length"
+                    | "len"
+                    | "str-length"
+                    | "str-index-of"
+                    | "abs"
+                    | "max"
+                    | "min"
+                    | "near/json_get_int"
+                    | "near/block_index"
+                    | "near/block_timestamp"
+                    | "near/epoch_height"
+                    | "near/storage_usage"
+                    | "near/prepaid_gas"
+                    | "near/used_gas" => true,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// STRICT numeric provenance for RAW slots (2026-09-14): the value is
+    /// guaranteed TAG_NUM — never Nil, never a host string, never unknown.
+    /// Bare near/json_get_int is EXCLUDED (nil-on-miss/garbage, 2026-09-14
+    /// semantics) — it keeps numeric_locals provenance (dispatch-skip is
+    /// nil-safe: nil isn't TAG_STR) but NOT a raw slot (nil stored raw would
+    /// read back as Num 0).
+    pub(crate) fn expr_is_raw_safe(&self, e: &LispVal) -> bool {
+        match e {
+            LispVal::Num(_) => true,
+            LispVal::Sym(s) => self.raw_locals.contains(s),
+            LispVal::List(items) if !items.is_empty() => {
+                let LispVal::Sym(head) = &items[0] else {
+                    return false;
+                };
+                match head.as_str() {
+                    "+" | "-" | "*" | "/" | "mod" => {
+                        items.len() >= 3 && items[1..].iter().all(|x| self.expr_is_raw_safe(x))
+                    }
+                    "str->num"
+                    | "str-to-num"
+                    | "u128/to-i64"
+                    | "vec-length"
+                    | "length"
+                    | "len"
+                    | "str-length"
+                    | "str-index-of"
+                    | "abs"
+                    | "max"
+                    | "min"
+                    | "near/block_index"
+                    | "near/block_timestamp"
+                    | "near/epoch_height"
+                    | "near/storage_usage"
+                    | "near/prepaid_gas"
+                    | "near/used_gas" => {
+                        // TAG_NUM results only. u128/lt|gt|eq are TAGGED
+                        // BOOL (payload 0/1, tag 1 — falsy Bool == 1, NOT
+                        // 0): the i64.eqz bare-truthiness fast path reads a
+                        // bool-false as always-truthy (multisig's u128Lt
+                        // threshold guard caught it). EXCLUDED.
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn emit_poly_add(
         &mut self,
         a: &[LispVal],
@@ -6073,10 +6275,21 @@ impl WasmEmitter {
             .map(|x| self.const_eval(x).unwrap_or_else(|| x.clone()))
             .collect();
         let all_num = folded.iter().all(|x| matches!(x, LispVal::Num(_)));
-        let any_nonnum_literal = folded
-            .iter()
-            .any(|x| matches!(x, LispVal::Str(_) | LispVal::Bool(_) | LispVal::Nil | LispVal::Vec(_)));
+        let any_nonnum_literal = folded.iter().any(|x| {
+            matches!(
+                x,
+                LispVal::Str(_) | LispVal::Bool(_) | LispVal::Nil | LispVal::Vec(_)
+            )
+        });
         if a.is_empty() || self.wasi_mode || self.p2_mode || all_num || any_nonnum_literal {
+            return self.fold_binop(a, Instruction::I64Add, 0);
+        }
+        // Numeric provenance (2026-09-14, gas): all operands syntactically
+        // guaranteed TAG_NUM (literals/numeric locals/numeric-binop results)
+        // → direct tagged add, skip the runtime string dispatch entirely.
+        // (~9 dead instrs per `+` in numeric hot loops — measured 14% on the
+        // loop cond alone; this is the body's share.)
+        if a.iter().all(|x| self.expr_is_numeric(x)) {
             return self.fold_binop(a, Instruction::I64Add, 0);
         }
         // Depth-keyed locals (reuses the str-cat nesting counter so a real

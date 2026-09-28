@@ -71,7 +71,10 @@ pub(crate) fn patch_err_brs(v: &mut Vec<Instruction<'static>>) {
 
 impl WasmEmitter {
     /// Entry from call_core: `(try BODY (catch VAR HANDLER...))`.
-    pub(crate) fn emit_try_from(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+    pub(crate) fn emit_try_from(
+        &mut self,
+        a: &[LispVal],
+    ) -> Result<Vec<Instruction<'static>>, String> {
         if a.len() != 2 {
             return Err("try: expected (try body (catch var handler...))".into());
         }
@@ -80,10 +83,17 @@ impl WasmEmitter {
             LispVal::List(cl) if cl.len() >= 3 && cl[0] == LispVal::Sym("catch".into()) => {
                 match &cl[1] {
                     LispVal::Sym(s) => (s.clone(), cl[2..].to_vec()),
-                    other => return Err(format!("try: catch variable must be symbol, got {}", other)),
+                    other => {
+                        return Err(format!("try: catch variable must be symbol, got {}", other))
+                    }
                 }
             }
-            other => return Err(format!("try: expected (catch var handler...), got {}", other)),
+            other => {
+                return Err(format!(
+                    "try: expected (catch var handler...), got {}",
+                    other
+                ))
+            }
         };
         self.emit_try(body, &var, &handler)
     }
@@ -105,7 +115,10 @@ impl WasmEmitter {
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(flag));
         v.push(Instruction::Block(BlockType::Empty));
-        self.try_stack.push(TryFrame { flag_local: flag, e_local });
+        self.try_stack.push(TryFrame {
+            flag_local: flag,
+            e_local,
+        });
         let r = self.expr(body);
         self.try_stack.pop();
         let mut body_v = r?;
@@ -139,8 +152,12 @@ impl WasmEmitter {
         v.push(Instruction::LocalSet(flag)); // consumed — reset
 
         match saved {
-            Some(old) => { self.locals.insert(catch_var.to_string(), old); }
-            None => { self.locals.remove(catch_var); }
+            Some(old) => {
+                self.locals.insert(catch_var.to_string(), old);
+            }
+            None => {
+                self.locals.remove(catch_var);
+            }
         }
         Ok(v)
     }
@@ -158,7 +175,9 @@ impl WasmEmitter {
         if self.try_stack.is_empty() || !v.iter().any(|i| matches!(i, Instruction::Unreachable)) {
             return;
         }
-        let Some(f) = self.try_stack.last().copied() else { return; };
+        let Some(f) = self.try_stack.last().copied() else {
+            return;
+        };
         let msg_const = self
             .expr(&LispVal::Str(msg.to_string()))
             .unwrap_or_else(|_| vec![Instruction::I64Const(TAG_NIL)]);
@@ -177,12 +196,10 @@ impl WasmEmitter {
         *v = out;
     }
 
-    pub(crate) fn try_guard(
-        &mut self,
-        v: &mut Vec<Instruction<'static>>,
-        msg: &str,
-    ) -> bool {
-        let Some(frame) = self.try_stack.last().copied() else { return false; };
+    pub(crate) fn try_guard(&mut self, v: &mut Vec<Instruction<'static>>, msg: &str) -> bool {
+        let Some(frame) = self.try_stack.last().copied() else {
+            return false;
+        };
         v.push(Instruction::I64Const(1));
         v.push(Instruction::LocalSet(frame.flag_local));
         // e = message string (tagged). Literal emission may itself need the

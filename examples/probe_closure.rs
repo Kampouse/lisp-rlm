@@ -3,7 +3,10 @@ use lisp_rlm_wasm::wasm_emit::compile_fuzz;
 fn check(name: &str, src: &str) {
     let wasm = match compile_fuzz(src) {
         Ok(w) => w,
-        Err(e) => { println!("{name}: COMPILE ERR: {}", e); return; }
+        Err(e) => {
+            println!("{name}: COMPILE ERR: {}", e);
+            return;
+        }
     };
     match wasmtime::Module::new(&wasmtime::Engine::default(), &wasm) {
         Ok(_) => println!("{name}: module validates ({})", wasm.len()),
@@ -13,7 +16,10 @@ fn check(name: &str, src: &str) {
 
 fn main() {
     // n_lambdas = 1
-    check("single", "(define (make-adder n) (lambda (x) (+ x n)))\n(define (run) ((make-adder 10) 5))");
+    check(
+        "single",
+        "(define (make-adder n) (lambda (x) (+ x n)))\n(define (run) ((make-adder 10) 5))",
+    );
     // n_lambdas = 2 — nested else-chain depth
     check("double", "(define (make-adder n) (lambda (x) (+ x n)))\n(define (make-mul n) (lambda (x) (* x n)))\n(define (run) (+ ((make-adder 10) 5) ((make-mul 3) 4)))");
     // n_lambdas = 5 — deep chain

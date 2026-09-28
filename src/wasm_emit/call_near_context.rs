@@ -159,7 +159,9 @@ impl WasmEmitter {
             }
             "near/validator_total_stake" => self.read_u128_low(85),
             "near/signer_to_buf" => {
-                self.need_host(4); self.need_host(0); self.need_host(1);
+                self.need_host(4);
+                self.need_host(0);
+                self.need_host(1);
                 // Writes signer_account_id to SIGNER_BUF (4096), returns length as tagged NUM
                 const SIGNER_BUF: i64 = 4096;
                 let mut v = Vec::new();
@@ -167,7 +169,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(4));
                 // read_register(0, SIGNER_BUF): register_id first, then ptr
-                v.push(Instruction::I64Const(0));          // register_id
+                v.push(Instruction::I64Const(0)); // register_id
                 v.push(Instruction::I64Const(SIGNER_BUF)); // ptr
                 v.push(Self::host_call(0));
                 // register_len(0): returns length of register 0
@@ -180,7 +182,11 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 v.extend(self.expr(&a[0])?);
                 let __wval = self.local_idx("__wval");
-                let ma = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+                let ma = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
                 // Save value to local, then store as u128 (16 bytes) at AMOUNT_MEM (256)
                 v.push(Instruction::LocalSet(__wval));
                 // Low 64 bits at addr 256

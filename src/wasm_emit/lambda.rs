@@ -271,11 +271,20 @@ impl WasmEmitter {
         let saved_locals = self.locals.clone();
         let saved_next_local = self.next_local;
         let saved_captured_map = self.captured_map.clone();
+        let saved_limb_slots = self.limb_slots.clone();
+        let saved_parse_cache = self.parse_cache.clone();
 
         // Set up lambda function
         self.locals.clear();
         self.next_local = 0;
         self.captured_map.clear();
+        // outer limb slots reference the OUTER function's local numbering —
+        // meaningless here; eligible-name lets inside the body re-bind fresh
+        // pairs under the lambda's own numbering. Same for the parse cache:
+        // outer cache pairs are outer-numbered and outer-valued — both
+        // worlds would alias this lambda's locals if left live.
+        self.limb_slots.clear();
+        self.parse_cache.clear();
         let _env_idx = self.local_idx("__closure_ptr"); // first param: closure pointer
         for p in params {
             self.local_idx(p);
@@ -291,12 +300,20 @@ impl WasmEmitter {
         // Pre-insert placeholder
         let total_params = params.len() + 1;
         let placeholder_idx = self.funcs.len();
-        self.fn_sources.insert(name.clone(), format!("{}", LispVal::List(
-            std::iter::once(LispVal::Sym("lambda".to_string()))
-                .chain(std::iter::once(LispVal::List(params.iter().map(|p| LispVal::Sym(p.clone())).collect())))
-                .chain(std::iter::once(body.clone()))
-                .collect::<Vec<_>>(),
-        )));
+        self.fn_sources.insert(
+            name.clone(),
+            format!(
+                "{}",
+                LispVal::List(
+                    std::iter::once(LispVal::Sym("lambda".to_string()))
+                        .chain(std::iter::once(LispVal::List(
+                            params.iter().map(|p| LispVal::Sym(p.clone())).collect()
+                        )))
+                        .chain(std::iter::once(body.clone()))
+                        .collect::<Vec<_>>(),
+                )
+            ),
+        );
         self.funcs.push(FuncDef {
             name: name.clone(),
             param_count: total_params,
@@ -326,6 +343,8 @@ impl WasmEmitter {
         self.locals = saved_locals;
         self.next_local = saved_next_local;
         self.captured_map = saved_captured_map;
+        self.limb_slots = saved_limb_slots;
+        self.parse_cache = saved_parse_cache;
 
         // Build closure value: allocate heap memory [fn_idx, cap1, cap2, ...]
         let mut v = Vec::new();
@@ -353,6 +372,22 @@ impl WasmEmitter {
 
             // Store each captured value (self.locals is restored to enclosing scope at this point)
             for (i, cap) in captured.iter().enumerate() {
+                // limb locals materialize to their tagged decimal form at
+                // capture time (closure cells are tagged — the lambda body
+                // parses on use, same as the pre-limb behavior)
+                if let Some(&(lo, hi)) = self.limb_slots.get(cap) {
+                    let mat = self.emit_limb_materialize(lo, hi)?;
+                    v.extend(mat);
+                    // materialize left the tagged string on the stack; save to
+                    // a temp, store address, reload (i64.store operand order)
+                    let t = self.local_idx(&format!("__cap_{}", i));
+                    v.push(Instruction::LocalSet(t));
+                    v.push(Instruction::I64Const((ptr + ((i as u32 + 1) * 8)) as i64));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::LocalGet(t));
+                    v.push(Instruction::I64Store(ma));
+                    continue;
+                }
                 let &local_idx = self
                     .locals
                     .get(cap)
@@ -381,21 +416,59 @@ impl WasmEmitter {
         }
         let LispVal::Sym(op) = &items[0] else { return };
         match op.as_str() {
-            "near/store" => { self.need_host(17); self.need_host(18); self.need_host(0); self.need_host(1); }
-            "near/kv" => { self.need_host(17); }
-            "near/kv-get" => { self.need_host(18); self.need_host(0); }
-            "near/load" => { self.need_host(18); self.need_host(0); self.need_host(1); }
-            "near/remove" => { self.need_host(19); }
-            "near/has_key" => { self.need_host(20); }
+            "near/store" => {
+                self.need_host(17);
+                self.need_host(18);
+                self.need_host(0);
+                self.need_host(1);
+            }
+            "near/kv" => {
+                self.need_host(17);
+            }
+            "near/kv-get" => {
+                self.need_host(18);
+                self.need_host(0);
+            }
+            "near/load" => {
+                self.need_host(18);
+                self.need_host(0);
+                self.need_host(1);
+            }
+            "near/remove" => {
+                self.need_host(19);
+            }
+            "near/has_key" => {
+                self.need_host(20);
+            }
             "near/return" => self.need_host(25),
             "near/log" => self.need_host(28),
             "near/panic" => self.need_host(27),
-            "near/current_account_id" => { self.need_host(3); self.need_host(0); self.need_host(1); }
-            "near/signer_account_id" => { self.need_host(4); self.need_host(0); self.need_host(1); }
-            "near/signer_to_buf" => { self.need_host(4); self.need_host(0); self.need_host(1); }
+            "near/current_account_id" => {
+                self.need_host(3);
+                self.need_host(0);
+                self.need_host(1);
+            }
+            "near/signer_account_id" => {
+                self.need_host(4);
+                self.need_host(0);
+                self.need_host(1);
+            }
+            "near/signer_to_buf" => {
+                self.need_host(4);
+                self.need_host(0);
+                self.need_host(1);
+            }
             "near/write_amount" => {} // no host calls, just memory ops
-            "near/predecessor_account_id" => { self.need_host(6); self.need_host(0); self.need_host(1); }
-            "near/input" => { self.need_host(7); self.need_host(0); self.need_host(1); }
+            "near/predecessor_account_id" => {
+                self.need_host(6);
+                self.need_host(0);
+                self.need_host(1);
+            }
+            "near/input" => {
+                self.need_host(7);
+                self.need_host(0);
+                self.need_host(1);
+            }
             "near/block_index" => self.need_host(8),
             "near/block_timestamp" => self.need_host(9),
             "near/epoch_height" => self.need_host(10),
@@ -501,7 +574,7 @@ impl WasmEmitter {
             }
             "near/load-amount" => {
                 self.need_host(18); // storage_read
-                self.need_host(0);  // read_register
+                self.need_host(0); // read_register
             }
             "near/log_num" => self.need_host(28),
             "print" | "println" => {

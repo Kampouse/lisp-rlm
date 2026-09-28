@@ -7,8 +7,8 @@
 //! precision"), root-caused with wasm2wat.
 
 use lisp_rlm_wasm::parse_all;
-use lisp_rlm_wasm::typing;
 use lisp_rlm_wasm::ts_frontend::ts_to_lisp_source;
+use lisp_rlm_wasm::typing;
 
 fn wasm_eval(src: &str) -> Result<String, String> {
     let exprs = parse_all(src).map_err(|e| e.to_string())?;
@@ -20,16 +20,37 @@ fn wasm_eval(src: &str) -> Result<String, String> {
     let module = Module::new(&engine, &wasm).map_err(|e| e.to_string())?;
     let mut store = Store::new(&engine, ());
     let mut linker = Linker::new(&engine);
-    linker.func_wrap("env", "read_register", |_: Caller<'_, ()>, _: i64, _: i64| {}).map_err(|e| e.to_string())?;
-    linker.func_wrap("env", "register_len", |_: i64| -> i64 { 0 }).map_err(|e| e.to_string())?;
-    linker.func_wrap("env", "input", |_: Caller<'_, ()>, _: i64| {}).map_err(|e| e.to_string())?;
-    linker.func_wrap("env", "value_return", |_: Caller<'_, ()>, _: i64, _: i64| {}).map_err(|e| e.to_string())?;
-    let inst = linker.instantiate(&mut store, &module).map_err(|e| e.to_string())?;
-    let run = inst.get_typed_func::<(), ()>(&mut store, "run").map_err(|e| e.to_string())?;
+    linker
+        .func_wrap(
+            "env",
+            "read_register",
+            |_: Caller<'_, ()>, _: i64, _: i64| {},
+        )
+        .map_err(|e| e.to_string())?;
+    linker
+        .func_wrap("env", "register_len", |_: i64| -> i64 { 0 })
+        .map_err(|e| e.to_string())?;
+    linker
+        .func_wrap("env", "input", |_: Caller<'_, ()>, _: i64| {})
+        .map_err(|e| e.to_string())?;
+    linker
+        .func_wrap(
+            "env",
+            "value_return",
+            |_: Caller<'_, ()>, _: i64, _: i64| {},
+        )
+        .map_err(|e| e.to_string())?;
+    let inst = linker
+        .instantiate(&mut store, &module)
+        .map_err(|e| e.to_string())?;
+    let run = inst
+        .get_typed_func::<(), ()>(&mut store, "run")
+        .map_err(|e| e.to_string())?;
     run.call(&mut store, ()).map_err(|e| e.to_string())?;
     let mem = inst.get_memory(&mut store, "memory").unwrap();
     let mut rb = [0u8; 8];
-    mem.read(&mut store, 64, &mut rb).map_err(|e| e.to_string())?;
+    mem.read(&mut store, 64, &mut rb)
+        .map_err(|e| e.to_string())?;
     let v = i64::from_le_bytes(rb);
     let tag = v & 7;
     let payload = ((v as u64) >> 3) as u64;
@@ -37,7 +58,8 @@ fn wasm_eval(src: &str) -> Result<String, String> {
         let ptr = (payload & 0xFFFF_FFFF) as usize;
         let len = ((payload as u64) >> 32) as usize;
         let mut buf = vec![0u8; len];
-        mem.read(&mut store, ptr, &mut buf).map_err(|e| e.to_string())?;
+        mem.read(&mut store, ptr, &mut buf)
+            .map_err(|e| e.to_string())?;
         Ok(format!("str:{}", String::from_utf8_lossy(&buf)))
     } else {
         Ok(format!("num:{}", (v >> 3) as i64))
@@ -59,9 +81,8 @@ fn nested_second_operand_no_clobber() {
     assert_eq!(r, "num:0");
 
     // small nested both-sides sanity
-    let r = wasm_eval(
-        r#"(define (run) (u128/lt (u128/mul "30" "40") (u128/mul "25" "50")))"#,
-    ).expect("must run");
+    let r = wasm_eval(r#"(define (run) (u128/lt (u128/mul "30" "40") (u128/mul "25" "50")))"#)
+        .expect("must run");
     assert_eq!(r, "num:1");
 }
 
@@ -79,12 +100,18 @@ fn ts_bigint_surface() {
     let ir = ts_to_lisp_source(ts).expect("lowering");
     // consts fold to decimal strings; all arithmetic routes through u128/*
     // (no raw + - * / in bigint context — those trap in the type checker)
-    assert!(ir.contains(r#"(u128/mul amt (u128/add "10000" "500"))"#),
-        "consts must fold to strings and stay in u128 ops: {ir}");
-    assert!(ir.contains(r#"(u128/div (u128/add (u128/mul amt"#),
-        "fee math must be u128 all the way: {ir}");
-    assert!(!ir.contains("(+ ") && !ir.contains("(* ") && !ir.contains("(- "),
-        "no raw i64 arithmetic may appear in bigint context: {ir}");
+    assert!(
+        ir.contains(r#"(u128/mul amt (u128/add "10000" "500"))"#),
+        "consts must fold to strings and stay in u128 ops: {ir}"
+    );
+    assert!(
+        ir.contains(r#"(u128/div (u128/add (u128/mul amt"#),
+        "fee math must be u128 all the way: {ir}"
+    );
+    assert!(
+        !ir.contains("(+ ") && !ir.contains("(* ") && !ir.contains("(- "),
+        "no raw i64 arithmetic may appear in bigint context: {ir}"
+    );
 }
 
 #[test]
@@ -103,18 +130,61 @@ fn bigint_cmp_boundary_inclusive() {
         let tmp = std::env::temp_dir().join("nm_bnd.wasm");
         std::fs::write(&tmp, &wasm).unwrap();
         let out = std::process::Command::new("./target/release/near-mock")
-            .arg(&tmp).arg("t").arg(format!(r#"{{"x":"{a}","y":"{b}"}}"#))
-            .output().unwrap();
+            .arg(&tmp)
+            .arg("t")
+            .arg(format!(r#"{{"x":"{a}","y":"{b}"}}"#))
+            .output()
+            .unwrap();
         String::from_utf8_lossy(&out.stdout).to_string()
     };
     // equal values — inclusive ops say yes, strict ops say no
-    assert!(eq("5000000000000000000000000", "5000000000000000000000000", ">=").contains("yes"));
-    assert!(eq("5000000000000000000000000", "5000000000000000000000000", "<=").contains("yes"));
-    assert!(eq("5000000000000000000000000", "5000000000000000000000000", ">").contains("no"));
-    assert!(eq("5000000000000000000000000", "5000000000000000000000000", "<").contains("no"));
-    assert!(eq("5000000000000000000000000000", "5000000000000000000000000000", "!=").contains("no"));
-    assert!(eq("5000000000000000000000000000", "5000000000000000000000000000", "==").contains("yes"));
+    assert!(eq(
+        "5000000000000000000000000",
+        "5000000000000000000000000",
+        ">="
+    )
+    .contains("yes"));
+    assert!(eq(
+        "5000000000000000000000000",
+        "5000000000000000000000000",
+        "<="
+    )
+    .contains("yes"));
+    assert!(eq(
+        "5000000000000000000000000",
+        "5000000000000000000000000",
+        ">"
+    )
+    .contains("no"));
+    assert!(eq(
+        "5000000000000000000000000",
+        "5000000000000000000000000",
+        "<"
+    )
+    .contains("no"));
+    assert!(eq(
+        "5000000000000000000000000000",
+        "5000000000000000000000000000",
+        "!="
+    )
+    .contains("no"));
+    assert!(eq(
+        "5000000000000000000000000000",
+        "5000000000000000000000000000",
+        "=="
+    )
+    .contains("yes"));
     // distinct values still behave
-    assert!(eq("6000000000000000000000000", "5000000000000000000000000", ">=").contains("yes"));
-    assert!(eq("4000000000000000000000000", "5000000000000000000000000000", ">=").contains("no"));
+    assert!(eq(
+        "6000000000000000000000000",
+        "5000000000000000000000000",
+        ">="
+    )
+    .contains("yes"));
+    assert!(eq(
+        "4000000000000000000000000",
+        "5000000000000000000000000000",
+        ">="
+    )
+    .contains("no"));
 }

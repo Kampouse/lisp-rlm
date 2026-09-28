@@ -1,5 +1,34 @@
 use super::*;
 
+/// Append wasm computing the hex-nibble value of the ASCII char in `c`
+/// (accepts '0'-'9', 'a'-'f', 'A'-'F') into local `val`.
+/// val = c - 48; if val > 9 { val = c - (c < 97 ? 55 : 87) }
+fn emit_hex_nibble(v: &mut Vec<Instruction<'static>>, c: u32, val: u32) {
+    v.push(Instruction::LocalGet(c));
+    v.push(Instruction::I32Const(48));
+    v.push(Instruction::I32Sub);
+    v.push(Instruction::LocalSet(val));
+    v.push(Instruction::LocalGet(val));
+    v.push(Instruction::I32Const(9));
+    v.push(Instruction::I32GtU);
+    v.push(Instruction::If(BlockType::Empty));
+    v.push(Instruction::LocalGet(c));
+    v.push(Instruction::I32Const(97));
+    v.push(Instruction::I32LtU);
+    v.push(Instruction::If(BlockType::Empty));
+    v.push(Instruction::LocalGet(c));
+    v.push(Instruction::I32Const(55)); // 'A'..'F'
+    v.push(Instruction::I32Sub);
+    v.push(Instruction::LocalSet(val));
+    v.push(Instruction::Else);
+    v.push(Instruction::LocalGet(c));
+    v.push(Instruction::I32Const(87)); // 'a'..'f'
+    v.push(Instruction::I32Sub);
+    v.push(Instruction::LocalSet(val));
+    v.push(Instruction::End);
+    v.push(Instruction::End);
+}
+
 impl WasmEmitter {
     pub(crate) fn call_near_promise(
         &mut self,
@@ -19,9 +48,30 @@ impl WasmEmitter {
                 let gas = self.expr(&a[3])?;
                 let dep = self.expr(&a[4])?;
                 let mut v = Vec::new();
-                // Write deposit u128 to TEMP_MEM (zero high 64, write low 64)
-                // Stack: [addr_i32, val_i64] for i64.store
-                // First zero out high 64 bits
+                let h = self.ensure_u128_str_helpers();
+                let dep_local = self.local_idx("__nc_dep");
+                // Deposit: Num OR u128 decimal string. BUG FIX 2026-09-10:
+                // the old code untagged the value and stored it as the low-64
+                // — for a Str deposit that wrote the TAGGED STRING BITS as
+                // the amount (silently wrong yocto on-chain; found by the
+                // promise differential harness). Now branch on the tag:
+                // TAG_STR → decimal-parse helper (same machinery as the batch
+                // forms), else → zero-extend the Num low-64 as before.
+                v.extend(dep);
+                v.push(Instruction::LocalSet(dep_local));
+                v.push(Instruction::LocalGet(dep_local));
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                // — str path: decimal → u128 LE at TEMP_MEM —
+                v.push(Instruction::LocalGet(dep_local));
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::call_user(h.parse));
+                v.push(Instruction::Drop);
+                v.push(Instruction::Else);
+                // — num path (old behavior): zero high 64, store low 64 —
                 v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(0));
@@ -30,7 +80,6 @@ impl WasmEmitter {
                     align: 3,
                     memory_index: 0,
                 }));
-                // Zero out low 64 bits
                 v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(0));
@@ -39,16 +88,16 @@ impl WasmEmitter {
                     align: 3,
                     memory_index: 0,
                 }));
-                // Write deposit (low 64 bits) to TEMP_MEM (addr first, then val)
                 v.push(Instruction::I64Const(TEMP_MEM));
                 v.push(Instruction::I32WrapI64);
-                v.extend(dep);
-                v.extend(self.emit_untag());
+                v.push(Instruction::LocalGet(dep_local));
+                v.extend(self.emit_untag()); // local holds the TAGGED value
                 v.push(Instruction::I64Store(wasm_encoder::MemArg {
                     offset: 0,
                     align: 3,
                     memory_index: 0,
                 }));
+                v.push(Instruction::End);
                 // account_id (len, ptr)
                 v.extend(acct.clone());
                 v.extend(self.emit_untag());
@@ -109,9 +158,7 @@ impl WasmEmitter {
                 let cbname_lit = match &a[4] {
                     LispVal::Str(s) => s.clone(),
                     _ => {
-                        return Err(
-                            "near/call-await: callback name must be a string literal".into(),
-                        )
+                        return Err("near/call-await: callback name must be a string literal".into())
                     }
                 };
                 if !self.exports.iter().any(|(_, e, _)| *e == cbname_lit) {
@@ -134,12 +181,15 @@ impl WasmEmitter {
                 let zero_str = LispVal::Str("0".into());
 
                 // — idx = promise_batch_create(target) —
-                v.extend(target.clone());
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
+                // target: eval once → local (2026-09-11 fix — was double-eval)
+                let t_l = self.local_idx("__ca_t");
                 v.extend(target);
                 v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(t_l));
+                v.push(Instruction::LocalGet(t_l));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(t_l));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(39));
@@ -147,6 +197,16 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(idx_l));
 
                 // — action 1: (idx, method, args, 0, gas) —
+                // FIX 2026-09-11: evaluate method/args ONCE into locals, then
+                // extract len/ptr from the local. The old code evaluated each
+                // expression TWICE (once for len via >>32, once for ptr via
+                // wrap-i32): literals are I64Const (harmless), but runtime
+                // strings (str-cat, storage reads, template literals) bump-
+                // allocated TWICE and side-effecting subexpressions ran twice.
+                // On nearcore the second eval's heap pointer diverged →
+                // silent receipt drop (bug report 2026-09-11).
+                let m_l = self.local_idx("__ca_m");
+                let a_l = self.local_idx("__ca_a");
                 v.extend(self.expr(&zero_str)?);
                 v.push(Instruction::LocalSet(amt_l));
                 v.push(Instruction::LocalGet(amt_l));
@@ -155,20 +215,24 @@ impl WasmEmitter {
                 v.push(Instruction::Drop);
                 v.push(Instruction::LocalGet(idx_l));
                 v.extend(self.emit_untag());
-                v.extend(method.clone());
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
+                // method: eval once → local, extract len + ptr from local
                 v.extend(method);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
-                v.extend(args.clone());
-                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(m_l));
+                v.push(Instruction::LocalGet(m_l));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(m_l));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                // args: eval once → local, extract len + ptr from local
                 v.extend(args);
                 v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(a_l));
+                v.push(Instruction::LocalGet(a_l));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(a_l));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(TEMP_MEM as i64));
@@ -193,6 +257,9 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(cb_l));
 
                 // — action 2: (cb, callback, "", 0, cb_gas) —
+                // Same single-eval fix as action 1 (2026-09-11).
+                let cn_l = self.local_idx("__ca_cn");
+                let cba_l = self.local_idx("__ca_cba");
                 v.extend(self.expr(&zero_str)?);
                 v.push(Instruction::LocalSet(amt_l));
                 v.push(Instruction::LocalGet(amt_l));
@@ -201,20 +268,24 @@ impl WasmEmitter {
                 v.push(Instruction::Drop);
                 v.push(Instruction::LocalGet(cb_l));
                 v.extend(self.emit_untag());
-                v.extend(cbname.clone());
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
+                // cbname: eval once → local
                 v.extend(cbname);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
-                v.extend(cbargs.clone());
-                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(cn_l));
+                v.push(Instruction::LocalGet(cn_l));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(cn_l));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
+                // cbargs: eval once → local
                 v.extend(cbargs);
                 v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(cba_l));
+                v.push(Instruction::LocalGet(cba_l));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(cba_l));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(TEMP_MEM as i64));
@@ -325,6 +396,10 @@ impl WasmEmitter {
                 }));
                 v.push(Instruction::I64Const(0));
                 v.extend(gas);
+                v.extend(self.emit_untag()); // BUG FIX 2026-09-10: gas reached the
+                                             // host still 3-bit-TAGGED (8× the intended value — found by the
+                                             // promise differential harness, tests/test_promise_differential.rs).
+                                             // promise_create/batch untag their gas; this arm missed it.
                 v.push(Self::host_call(31));
                 // TAG the returned promise idx — the raw host i64 flowed into
                 // user bindings; a later untag shifted it to 0 (promise_return
@@ -447,7 +522,7 @@ impl WasmEmitter {
                 self.need_host(39);
                 self.need_host(44);
                 let recv = self.expr(&a[0])?; // tagged Str
-                let amt = self.expr(&a[1])?;  // tagged Num
+                let amt = self.expr(&a[1])?; // tagged Num
                 let mut v = Vec::new();
                 // promise_batch_create(account_id_len, account_id_ptr)
                 // len = packed >> 32
@@ -461,17 +536,25 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(39)); // → batch idx on stack
-                // u128 amount lo at TEMP_MEM
+                                             // u128 amount lo at TEMP_MEM
                 v.push(Instruction::I64Const(TEMP_MEM as i64));
                 v.push(Instruction::I32WrapI64);
                 v.extend(amt.clone());
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 // u128 hi = 0 at TEMP_MEM+8
                 v.push(Instruction::I64Const(TEMP_MEM as i64 + 8));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 // promise_batch_action_transfer(batch_idx, amount_ptr)
                 v.push(Instruction::I64Const(TEMP_MEM as i64));
                 v.push(Self::host_call(44));
@@ -485,13 +568,15 @@ impl WasmEmitter {
                 // machinery (39 + 44). Real NEAR amounts (e.g. 1 N =
                 // 10^24 yocto ≈ 2^80) cannot ride the i64 path.
                 if a.len() != 2 {
-                    return Err("near/transfer_u128: need 2 args (receiver_id, amount_yocto_str)".into());
+                    return Err(
+                        "near/transfer_u128: need 2 args (receiver_id, amount_yocto_str)".into(),
+                    );
                 }
                 self.need_host(39);
                 self.need_host(44);
                 let h = self.ensure_u128_str_helpers();
                 let recv = self.expr(&a[0])?; // tagged Str
-                let amt = self.expr(&a[1])?;  // tagged Str (decimal)
+                let amt = self.expr(&a[1])?; // tagged Str (decimal)
                 let ra = self.local_idx("__tr128_recv");
                 let aa = self.local_idx("__tr128_amt");
                 let mut v = Vec::new();
@@ -581,7 +666,8 @@ impl WasmEmitter {
                 }
                 let idx = self.expr(&a[0])?;
                 let mut v = Vec::new();
-                v.extend(self.expr(&a[0])?); v.extend(self.emit_untag()); // idx
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag()); // idx
                 v.push(Self::host_call(41));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -590,11 +676,20 @@ impl WasmEmitter {
                 if a.len() != 3 {
                     return Err("near/promise_batch_action_deploy_contract: need 3 args (idx, code_ptr, code_len)".into());
                 }
-                let idx = self.expr(&a[0])?;
                 let code_ptr = self.expr(&a[1])?;
                 let code_len = self.expr(&a[2])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(code_len);
                 v.extend(code_ptr);
                 v.push(Self::host_call(42));
@@ -698,13 +793,22 @@ impl WasmEmitter {
                 if a.len() != 5 {
                     return Err("near/promise_batch_action_stake: need 5 args (idx, amount_ptr, amount_len, pk_ptr, pk_len)".into());
                 }
-                let idx = self.expr(&a[0])?;
                 let amount_ptr = self.expr(&a[1])?;
                 let amount_len = self.expr(&a[2])?;
                 let pk_ptr = self.expr(&a[3])?;
                 let pk_len = self.expr(&a[4])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(amount_ptr);
                 v.extend(amount_len);
                 v.extend(pk_ptr);
@@ -717,12 +821,21 @@ impl WasmEmitter {
                 if a.len() != 4 {
                     return Err("near/promise_batch_action_add_key_with_full_access: need 4 args (idx, pk_ptr, pk_len, nonce)".into());
                 }
-                let idx = self.expr(&a[0])?;
                 let pk_ptr = self.expr(&a[1])?;
                 let pk_len = self.expr(&a[2])?;
                 let nonce = self.expr(&a[3])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(pk_ptr);
                 v.extend(pk_len);
                 v.extend(nonce);
@@ -734,7 +847,6 @@ impl WasmEmitter {
                 if a.len() != 7 {
                     return Err("near/promise_batch_action_add_key_with_function_call: need 7 args (idx, pk_ptr, pk_len, nonce, method_ptr, method_len, allowance)".into());
                 }
-                let idx = self.expr(&a[0])?;
                 let pk_ptr = self.expr(&a[1])?;
                 let pk_len = self.expr(&a[2])?;
                 let nonce = self.expr(&a[3])?;
@@ -742,7 +854,17 @@ impl WasmEmitter {
                 let method_len = self.expr(&a[5])?;
                 let allowance = self.expr(&a[6])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(pk_ptr);
                 v.extend(pk_len);
                 v.extend(nonce);
@@ -760,11 +882,20 @@ impl WasmEmitter {
                             .into(),
                     );
                 }
-                let idx = self.expr(&a[0])?;
                 let pk_ptr = self.expr(&a[1])?;
                 let pk_len = self.expr(&a[2])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(pk_ptr);
                 v.extend(pk_len);
                 v.push(Self::host_call(48));
@@ -778,11 +909,20 @@ impl WasmEmitter {
                             .into(),
                     );
                 }
-                let idx = self.expr(&a[0])?;
                 let ptr = self.expr(&a[1])?;
                 let len = self.expr(&a[2])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(ptr);
                 v.extend(len);
                 v.push(Self::host_call(49));
@@ -850,7 +990,9 @@ impl WasmEmitter {
                 // The Lisp-level arg is a tagged string (u128 bytes from near/load-bytes
                 // or near/attached_deposit_u128); we untag it to extract the pointer.
                 if a.len() != 2 {
-                    return Err("near/batch-transfer: expected 2 args (promise_idx, amount_bytes)".into());
+                    return Err(
+                        "near/batch-transfer: expected 2 args (promise_idx, amount_bytes)".into(),
+                    );
                 }
                 self.need_host(44);
                 let idx = self.expr(&a[0])?;
@@ -963,10 +1105,19 @@ impl WasmEmitter {
                 if a.len() != 2 {
                     return Err("near/promise_set_refund_to: need 2 args (idx, acct)".into());
                 }
-                let idx = self.expr(&a[0])?;
                 let acct = self.expr(&a[1])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(acct.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
@@ -985,11 +1136,20 @@ impl WasmEmitter {
                         "near/promise_batch_action_state_init: need 3 args (idx, code, amt)".into(),
                     );
                 }
-                let idx = self.expr(&a[0])?;
                 let code = self.expr(&a[1])?;
                 let amt = self.expr(&a[2])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(code.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
@@ -1007,11 +1167,20 @@ impl WasmEmitter {
                 if a.len() != 3 {
                     return Err("near/promise_batch_action_state_init_by_account_id: need 3 args (idx, acct, amt)".into());
                 }
-                let idx = self.expr(&a[0])?;
                 let acct = self.expr(&a[1])?;
                 let amt = self.expr(&a[2])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(acct.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
@@ -1062,14 +1231,23 @@ impl WasmEmitter {
                 if a.len() != 6 {
                     return Err("near/promise_batch_action_function_call_weight: need 6 args (idx, method, args, amount, gas, weight)".into());
                 }
-                let idx = self.expr(&a[0])?;
                 let method = self.expr(&a[1])?;
                 let args = self.expr(&a[2])?;
                 let amount = self.expr(&a[3])?;
                 let gas = self.expr(&a[4])?;
                 let weight = self.expr(&a[5])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(method.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
@@ -1100,10 +1278,19 @@ impl WasmEmitter {
                             .into(),
                     );
                 }
-                let idx = self.expr(&a[0])?;
                 let code = self.expr(&a[1])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(code.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
@@ -1120,10 +1307,19 @@ impl WasmEmitter {
                 if a.len() != 2 {
                     return Err("near/promise_batch_action_deploy_global_contract_by_account_id: need 2 args (idx, code)".into());
                 }
-                let idx = self.expr(&a[0])?;
                 let code = self.expr(&a[1])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(code.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
@@ -1143,17 +1339,113 @@ impl WasmEmitter {
                             .into(),
                     );
                 }
-                let idx = self.expr(&a[0])?;
+                // nearcore's host fn (near-vm-runner logic/host.rs read_contract_id)
+                // expects EXACTLY 32 RAW BYTES (CryptoHash) — not a hex/base58
+                // string. Contract-side hashes are 64-char lowercase hex (what
+                // `deploy --global` prints), so decode them inline into a
+                // static 32-byte scratch buffer before host call 77. Non-64-char
+                // args trap loudly instead of silently adopting a wrong hash.
                 let hash = self.expr(&a[1])?;
+                let scratch = self.heap_bump(32);
+
+                let raw = self.local_idx("__ugc_raw");
+                let src = self.local_idx("__ugc_src");
+                let i = self.local_idx("__ugc_i");
+                let c = self.local_idx_i32("__ugc_c");
+                let hi = self.local_idx_i32("__ugc_hi");
+                let val = self.local_idx_i32("__ugc_val");
+
+                let ma8 = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 0,
+                    memory_index: 0,
+                };
+
                 let mut v = Vec::new();
-                v.extend(idx);
-                v.extend(hash.clone());
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(hash);
                 v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(raw));
+                v.push(Instruction::LocalGet(raw));
+                v.push(Instruction::I64Const(0xFFFFFFFF));
+                v.push(Instruction::I64And);
+                v.push(Instruction::LocalSet(src));
+                // loud failure: hash arg must be exactly 64 hex chars
+                v.push(Instruction::LocalGet(raw));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(64));
+                v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Unreachable);
+                v.push(Instruction::End);
+                // for i in 0..32: scratch[i] = hexval(src[2i])<<4 | hexval(src[2i+1])
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::LocalSet(i));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64LtU);
+                v.push(Instruction::If(BlockType::Empty));
+                // hi nibble → hi
+                v.push(Instruction::LocalGet(src));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I64Const(2));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Load8U(ma8.clone()));
+                v.push(Instruction::LocalSet(c));
+                emit_hex_nibble(&mut v, c, val);
+                v.push(Instruction::LocalGet(val));
+                v.push(Instruction::I32Const(4));
+                v.push(Instruction::I32Shl);
+                v.push(Instruction::LocalSet(hi));
+                // lo nibble → val
+                v.push(Instruction::LocalGet(src));
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I64Const(2));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Load8U(ma8.clone()));
+                v.push(Instruction::LocalSet(c));
+                emit_hex_nibble(&mut v, c, val);
+                // scratch[i] = hi | lo  (store pops addr first, then value)
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(scratch as i32));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalGet(hi));
+                v.push(Instruction::LocalGet(val));
+                v.push(Instruction::I32Or);
+                v.push(Instruction::I32Store8(ma8.clone()));
+                // i += 1
+                v.push(Instruction::LocalGet(i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalSet(i));
+                // Br(1) targets the Loop — continue iterating
+                v.push(Instruction::Br(1));
+                v.push(Instruction::End); // if
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                                          // host call: (idx, len=32, scratch)
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I32Const(scratch as i32));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(77));
                 v.push(Instruction::I64Const(0));
@@ -1163,10 +1455,19 @@ impl WasmEmitter {
                 if a.len() != 2 {
                     return Err("near/promise_batch_action_use_global_contract_by_account_id: need 2 args (idx, acct)".into());
                 }
-                let idx = self.expr(&a[0])?;
                 let acct = self.expr(&a[1])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(acct.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
@@ -1186,11 +1487,20 @@ impl WasmEmitter {
                             .into(),
                     );
                 }
-                let idx = self.expr(&a[0])?;
                 let pk = self.expr(&a[1])?;
                 let amt = self.expr(&a[2])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(pk.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
@@ -1208,11 +1518,20 @@ impl WasmEmitter {
                 if a.len() != 3 {
                     return Err("near/promise_batch_action_add_gas_key_with_full_access: need 3 args (idx, pk, nonces)".into());
                 }
-                let idx = self.expr(&a[0])?;
                 let pk = self.expr(&a[1])?;
                 let nonces = self.expr(&a[2])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(pk.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));
@@ -1230,14 +1549,23 @@ impl WasmEmitter {
                 if a.len() != 6 {
                     return Err("near/promise_batch_action_add_gas_key_with_function_call: need 6 args (idx, pk, nonces, allow, recv, methods)".into());
                 }
-                let idx = self.expr(&a[0])?;
                 let pk = self.expr(&a[1])?;
                 let nonces = self.expr(&a[2])?;
                 let allow = self.expr(&a[3])?;
                 let recv = self.expr(&a[4])?;
                 let methods = self.expr(&a[5])?;
                 let mut v = Vec::new();
-                v.extend(idx);
+                // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
+                // lisp-land (batch_create emits tag_num); host args must be RAW.
+                // Passing the tagged value only worked while the batch was
+                // promise #0 (tagged 0 == raw 0) — a prior transferU128/batch
+                // shifted the index and the host saw idx*8 (on-chain
+                // InvalidPromiseIndex; mock DAG panic). Stage/untag/local.
+                let batch_idx_l = self.local_idx("batch_idx");
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(batch_idx_l));
+                v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(pk.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));

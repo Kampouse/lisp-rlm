@@ -1,0 +1,182 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1680 950" font-family="-apple-system, Helvetica, Arial, sans-serif">
+  <defs>
+    <style>
+      .bg    { fill: #0A0A0F; }
+      .panel { fill: #101017; stroke: #26262E; stroke-width: 1.5; }
+      .tee   { fill: #0D1512; stroke: #00EC97; stroke-width: 2; }
+      .box   { fill: #16161E; stroke: #3A3A46; stroke-width: 1.2; }
+      .gbox  { fill: #12241D; stroke: #00EC97; stroke-width: 1.4; }
+      .bbox  { fill: #141A26; stroke: #4A7DBD; stroke-width: 1.4; }
+      .title { fill: #F2F2F5; font-size: 22px; font-weight: 700; }
+      .sub   { fill: #8A8A96; font-size: 13px; }
+      .ph    { fill: #9A9AA6; font-size: 12px; font-weight: 700; letter-spacing: 1.5px; }
+      .h     { fill: #F2F2F5; font-size: 14px; font-weight: 700; }
+      .t     { fill: #C9C9D2; font-size: 12.5px; }
+      .td    { fill: #8A8A96; font-size: 11.5px; }
+      .mono  { fill: #00EC97; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+      .monoN { fill: #C9C9D2; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; }
+      .step  { fill: #0A0A0F; font-size: 11px; font-weight: 700; }
+      .ok    { fill: #00EC97; font-size: 11.5px; font-weight: 700; }
+      .arr   { stroke: #55555F; stroke-width: 1.6; fill: none; marker-end: url(#ah); }
+      .arrG  { stroke: #00EC97; stroke-width: 1.8; fill: none; marker-end: url(#ahG); }
+      .arrB  { stroke: #4A7DBD; stroke-width: 1.8; fill: none; marker-end: url(#ahB); }
+      .arrL  { stroke: #C9A227; stroke-width: 1.4; fill: none; stroke-dasharray: 5 4; marker-end: url(#ahY); }
+      .lbl   { fill: #A8A8B2; font-size: 11.5px; }
+      .lblG  { fill: #00EC97; font-size: 11.5px; font-weight: 600; }
+      .lblB  { fill: #7FA8D9; font-size: 11.5px; font-weight: 600; }
+      .lock  { fill: #FFD166; font-size: 11.5px; font-weight: 700; }
+      .foot  { fill: #5A5A66; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+    </style>
+    <marker id="ah"  viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#55555F"/></marker>
+    <marker id="ahG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#00EC97"/></marker>
+    <marker id="ahB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#4A7DBD"/></marker>
+    <marker id="ahY" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#C9A227"/></marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1680" height="950"/>
+  <text class="title" x="40" y="46">nostr-from-contract · prod architecture</text>
+  <text class="sub"  x="40" y="72">NEAR mainnet · OutLayer TEE · Cloudflare bridge · public relays — the event is signed in the TEE and verified on-chain before any relay sees it</text>
+
+  <!-- ══ CALLER ══ -->
+  <rect class="box" x="40" y="150" width="180" height="96" rx="10"/>
+  <text class="h" x="56" y="176">caller</text>
+  <text class="monoN" x="56" y="198">alice.near</text>
+  <text class="monoN" x="56" y="218">post({content:"gm"})</text>
+
+  <!-- ══ NEAR CHAIN ══ -->
+  <rect class="panel" x="270" y="120" width="350" height="640" rx="12"/>
+  <text class="ph" x="290" y="148">NEAR BLOCKCHAIN · MAINNET</text>
+
+  <rect class="gbox" x="290" y="168" width="310" height="290" rx="10"/>
+  <text class="h" x="306" y="194">registrar contract</text>
+  <text class="t"  x="306" y="222">post() — attests predecessor_id</text>
+  <text class="t"  x="306" y="244">freezes args (caller, content)</text>
+  <text class="t"  x="306" y="266">→ request_execution(outlayer.near)</text>
+  <text class="td" x="306" y="288">deposit + 100 TGas · .then(callback)</text>
+  <line x1="306" y1="308" x2="584" y2="308" stroke="#26262E" stroke-width="1"/>
+  <text class="t"  x="306" y="332">on_outlayer_result():</text>
+  <text class="t"  x="306" y="354">id  = SHA256(serialized)  ✓</text>
+  <text class="t"  x="306" y="376">schnorrVerify(id, sig, pk) ✓</text>
+  <text class="td" x="306" y="396">BIP-340 verifier stitched in at</text>
+  <text class="td" x="306" y="412">compile time — no protocol host fn</text>
+  <text class="t"  x="306" y="436">stores pk:&lt;caller&gt; · emits event</text>
+
+  <rect class="box" x="290" y="490" width="310" height="96" rx="10"/>
+  <text class="h" x="306" y="516">outlayer.near</text>
+  <text class="t"  x="306" y="540">pays TEE worker, takes result,</text>
+  <text class="t"  x="306" y="560">returns it via promise callback</text>
+
+  <rect class="box" x="290" y="618" width="310" height="112" rx="10"/>
+  <text class="h" x="306" y="644">state</text>
+  <text class="monoN" x="306" y="668">pk:&lt;caller&gt; → nostr pk</text>
+  <text class="monoN" x="306" y="688">ev:&lt;id&gt; → {pk, id, sig}</text>
+  <text class="td" x="306" y="712">sk is never stored anywhere</text>
+
+  <!-- ══ OUTLAYER TEE ══ -->
+  <rect class="tee" x="670" y="120" width="380" height="640" rx="12"/>
+  <text class="ph" x="690" y="148" fill="#00EC97">OUTLAYER TEE · INTEL TDX</text>
+
+  <rect class="box" x="690" y="168" width="340" height="64" rx="10"/>
+  <text class="h" x="706" y="192">project secret S</text>
+  <text class="td" x="706" y="214">env-injected at runtime · TDX-sealed</text>
+
+  <rect class="gbox" x="690" y="256" width="340" height="360" rx="10"/>
+  <text class="h" x="706" y="282">worker.wasm  (bip340_nostr)</text>
+  <circle cx="717" cy="312" r="11" fill="#00EC97"/><text class="step" x="713" y="316">1</text>
+  <text class="t" x="736" y="316">sk = SHA256(S‖0x1f‖caller) mod n</text>
+  <circle cx="717" cy="352" r="11" fill="#00EC97"/><text class="step" x="713" y="356">2</text>
+  <text class="t" x="736" y="356">NIP-01 serialize → id = SHA256</text>
+  <circle cx="717" cy="392" r="11" fill="#00EC97"/><text class="step" x="713" y="396">3</text>
+  <text class="t" x="736" y="396">BIP-340 sign → sig (r‖s)</text>
+  <text class="td" x="736" y="414">19/19 official vectors · 2 runs</text>
+  <circle cx="717" cy="452" r="11" fill="#4A7DBD"/><text class="step" x="713" y="456">4</text>
+  <text class="t" x="736" y="456">http-post → CF bridge</text>
+  <circle cx="717" cy="492" r="11" fill="#00EC97"/><text class="step" x="713" y="496">5</text>
+  <text class="t" x="736" y="496">stdout: {id, sig} — 193 bytes</text>
+  <line x1="706" y1="522" x2="1014" y2="522" stroke="#26262E" stroke-width="1"/>
+  <text class="lock" x="706" y="550">🔒 sk never leaves the TDX enclave</text>
+  <text class="td" x="706" y="576">metered: sign ≈ 500M instr (2 runs)</text>
+  <text class="td" x="706" y="596">cap 10G/run · e2e rehearsed locally</text>
+
+  <rect class="box" x="690" y="640" width="340" height="90" rx="10"/>
+  <text class="h" x="706" y="666">result submission</text>
+  <text class="t" x="706" y="690">OutLayer submits {id, sig} on-chain</text>
+  <text class="td" x="706" y="712">with TDX attestation (code+I/O hash)</text>
+
+  <!-- ══ CLOUDFLARE ══ -->
+  <rect class="panel" x="1100" y="120" width="250" height="640" rx="12"/>
+  <text class="ph" x="1120" y="148">CLOUDFLARE</text>
+
+  <rect class="bbox" x="1120" y="380" width="210" height="150" rx="10"/>
+  <text class="h" x="1136" y="406">worker route</text>
+  <text class="monoN" x="1136" y="430">POST /event</text>
+  <text class="t"  x="1136" y="454">optional: verify sig</text>
+  <text class="t"  x="1136" y="472">(@noble/curves)</text>
+  <text class="td" x="1136" y="494">rate-limit per pk</text>
+
+  <rect class="bbox" x="1120" y="560" width="210" height="150" rx="10"/>
+  <text class="h" x="1136" y="586">durable object</text>
+  <text class="t"  x="1136" y="610">ws client — only DOs</text>
+  <text class="t"  x="1136" y="628">can open outbound ws</text>
+  <text class="td" x="1136" y="650">stateless · keyless ·</text>
+  <text class="td" x="1136" y="668">can drop, cannot forge</text>
+
+  <!-- ══ RELAYS ══ -->
+  <rect class="panel" x="1400" y="120" width="240" height="640" rx="12"/>
+  <text class="ph" x="1420" y="148">PUBLIC RELAYS</text>
+
+  <rect class="box" x="1420" y="380" width="200" height="150" rx="10"/>
+  <text class="h" x="1436" y="406">relay (nos.lol…)</text>
+  <text class="monoN" x="1436" y="430">["EVENT", ev]</text>
+  <text class="t"  x="1436" y="454">→</text>
+  <text class="monoN" x="1436" y="476">["OK", id, true]</text>
+  <text class="td" x="1436" y="500">accepts: sig valid</text>
+
+  <rect class="box" x="1420" y="560" width="200" height="150" rx="10"/>
+  <text class="h" x="1436" y="586">readers</text>
+  <text class="t"  x="1436" y="610">any Nostr client</text>
+  <text class="t"  x="1436" y="628">self-verifies sig —</text>
+  <text class="t"  x="1436" y="646">trustless last hop</text>
+
+  <!-- ══ ARROWS ══ -->
+  <!-- 1 caller -> registrar -->
+  <path class="arrG" d="M220,198 L286,198"/>
+  <text class="lblG" x="224" y="188">1 post()</text>
+
+  <!-- 2 registrar -> outlayer.near -->
+  <path class="arr" d="M445,458 L445,486"/>
+  <text class="lbl" x="455" y="478">2 request_execution</text>
+
+  <!-- 3 outlayer -> TEE worker -->
+  <path class="arr" d="M600,538 L686,438"/>
+  <text class="lbl" x="624" y="492">3 run</text>
+
+  <!-- 4 worker -> CF worker -->
+  <path class="arrB" d="M1030,452 L1116,452"/>
+  <text class="lblB" x="1046" y="440">4 POST</text>
+
+  <!-- 5 result: TEE -> outlayer.near -> registrar callback -->
+  <path class="arrG" d="M860,730 L860,790 L445,790 L445,730"/>
+  <text class="lblG" x="560" y="782">5 result {id,sig} + TDX attestation → on_outlayer_result (verify, store, emit)</text>
+
+  <!-- 6 worker -> DO -->
+  <path class="arrB" d="M1225,530 L1225,556"/>
+  <text class="lblB" x="1233" y="548">6 ws</text>
+
+  <!-- 7 DO -> relay -->
+  <path class="arrB" d="M1330,635 L1416,560"/>
+  <text class="lblB" x="1352" y="600">7</text>
+
+  <!-- 8 relay -> readers -->
+  <path class="arr" d="M1520,530 L1520,556"/>
+
+  <!-- legend -->
+  <rect x="40" y="830" width="1600" height="1" fill="#26262E"/>
+  <text class="lblG" x="40" y="862">— green: signed / verified data</text>
+  <text class="lblB" x="300" y="862">— blue: transport hop (can drop, cannot forge)</text>
+  <text class="lbl"  x="640" y="862">— gray: on-chain control flow</text>
+  <text class="lock" x="880" y="862">🔒 = secret boundary</text>
+
+  <text class="foot" x="40" y="906">rehearsed e2e: lisp-rlm/scripts/nostr_local (near-mock + inlayer, 7/7 asserts) · relay proof: nos.lol OK + readback</text>
+  <text class="foot" x="40" y="926">on-chain verify = stitched BIP-340 (no protocol host fn) · http-post = wasi:http P2 builtin · identity = SHA256(S‖"nostr"‖caller) mod n</text>
+</svg>

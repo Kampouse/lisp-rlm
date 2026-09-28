@@ -20,8 +20,8 @@ impl WasmEmitter {
                 }
                 let prefix = self.expr(&a[0])?;
                 self.need_host(36); // storage_iter_prefix
-                self.need_host(0);  // read_register
-                self.need_host(1);  // register_len
+                self.need_host(0); // read_register
+                self.need_host(1); // register_len
                 let p = self.local_idx("__itp_p");
                 let mut v = Vec::new();
                 v.extend(prefix);

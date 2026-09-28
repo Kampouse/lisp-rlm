@@ -107,11 +107,21 @@ enum Commands {
     /// Fuel-meter a compiled contract (delegates to near-compile bench)
     Bench { file: String },
     /// Account status: balance, storage, code hash, active keys
-    Account { id: String, #[arg(long, default_value = "testnet")] network: String },
+    Account {
+        id: String,
+        #[arg(long, default_value = "testnet")]
+        network: String,
+    },
     /// Validate local NEAR credentials against on-chain access keys
-    Keys { #[arg(long, default_value = "testnet")] network: String },
+    Keys {
+        #[arg(long, default_value = "testnet")]
+        network: String,
+    },
     /// Create + fund a fresh testnet account via the public faucet
-    Faucet { #[arg(long)] name: Option<String> },
+    Faucet {
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// List contract ABI: exports with signatures (scraped from source)
     Abi { dir: Option<String> },
     /// Rebuild + retest on every source change (Ctrl-C to stop)
@@ -127,7 +137,11 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum SolCmd {
-    Compile { input: String, #[arg(short, long)] output: String },
+    Compile {
+        input: String,
+        #[arg(short, long)]
+        output: String,
+    },
 }
 
 #[derive(clap::Args, Clone)]
@@ -162,9 +176,13 @@ fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
         Commands::Init { name, lisp } => cmd_init(&name, lisp, cli.json),
         Commands::Build { dir, target } => cmd_build(dir.as_deref(), target.as_deref(), cli.json),
-        Commands::Simulate { path, method, args, view, prepaid } => {
-            cmd_simulate(&path, &method, &args, view, prepaid, cli.json)
-        }
+        Commands::Simulate {
+            path,
+            method,
+            args,
+            view,
+            prepaid,
+        } => cmd_simulate(&path, &method, &args, view, prepaid, cli.json),
         Commands::Test { dir } => cmd_test(dir.as_deref(), cli.json),
         Commands::Deploy { dir, near, force } => {
             let project_dir = dir.clone().unwrap_or_else(|| ".".into());
@@ -180,7 +198,14 @@ fn run(cli: Cli) -> Result<(), String> {
             clamp_gas_if_needed(&mut a, &project_dir, &near.account, cli.json)?;
             delegate("near-compile", &a)
         }
-        Commands::Call { contract, method, args, near, deposit, gas } => {
+        Commands::Call {
+            contract,
+            method,
+            args,
+            near,
+            deposit,
+            gas,
+        } => {
             let mut a = vec!["call".into(), contract, method];
             if let Some(x) = &args {
                 a.push(x.clone());
@@ -197,7 +222,13 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             delegate("near-compile", &a)
         }
-        Commands::View { contract, method, args, account, network } => {
+        Commands::View {
+            contract,
+            method,
+            args,
+            account,
+            network,
+        } => {
             let mut a = vec!["view".into(), contract, method];
             if let Some(x) = &args {
                 a.push(x.clone());
@@ -210,7 +241,13 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             delegate("near-compile", &a)
         }
-        Commands::Create { account_id, funder, network, key_path, fund } => {
+        Commands::Create {
+            account_id,
+            funder,
+            network,
+            key_path,
+            fund,
+        } => {
             let mut a = vec!["create".into(), account_id];
             if let Some(f) = &funder {
                 a.push(f.clone());
@@ -309,8 +346,7 @@ export function get_count(): string {{
   ]
 }
 "#;
-    fs::write(base.join("tests/scenarios/counter.json"), scenario)
-        .map_err(|e| format!("{}", e))?;
+    fs::write(base.join("tests/scenarios/counter.json"), scenario).map_err(|e| format!("{}", e))?;
 
     if json {
         println!(
@@ -319,7 +355,11 @@ export function get_count(): string {{
                 .unwrap()
         );
     } else {
-        println!("Created project '{}' ({}):", name, if lisp { "lisp" } else { "ts" });
+        println!(
+            "Created project '{}' ({}):",
+            name,
+            if lisp { "lisp" } else { "ts" }
+        );
         println!("  cd {} && lisp-rlm build && lisp-rlm test", name);
     }
     Ok(())
@@ -417,8 +457,9 @@ fn compile_source(source: &str, src: &str, target: &str) -> Result<Vec<u8>, Stri
     match target {
         "near" => lisp_rlm_wasm::wasm_emit::compile_near(&effective)
             .map_err(|e| augment(format!("{}", e))),
-        "outlayer" | "wasi" | "wasi-p1" => lisp_rlm_wasm::wasi::compile_outlayer(&effective)
-            .map_err(|e| format!("{}", e)),
+        "outlayer" | "wasi" | "wasi-p1" => {
+            lisp_rlm_wasm::wasi::compile_outlayer(&effective).map_err(|e| format!("{}", e))
+        }
         "outlayer-p2" | "wasi-p2" | "component" => {
             lisp_rlm_wasm::wasi::compile_outlayer_p2(&effective).map_err(|e| format!("{}", e))
         }
@@ -510,7 +551,10 @@ fn cmd_test(dir: Option<&str>, json: bool) -> Result<(), String> {
             .iter()
             .enumerate()
         {
-            let method = step["method"].as_str().ok_or("step missing method")?.to_string();
+            let method = step["method"]
+                .as_str()
+                .ok_or("step missing method")?
+                .to_string();
             let args = step["args"].to_string();
             let view = step["view"].as_bool().unwrap_or(false);
             let mut a: Vec<String> = vec![wasm.clone(), method.clone(), args];
@@ -531,12 +575,20 @@ fn cmd_test(dir: Option<&str>, json: bool) -> Result<(), String> {
                         "expect_error": want_err, "got": out.trim()
                     }));
                     if !json {
-                        eprintln!("FAIL {} step {} ({}): expected error '{}', got success/other", scen_name, i, method, want_err);
+                        eprintln!(
+                            "FAIL {} step {} ({}): expected error '{}', got success/other",
+                            scen_name, i, method, want_err
+                        );
                     }
                 }
                 continue;
             }
-            let result_line = out.lines().rev().find(|l| l.contains('📄')).unwrap_or("").to_string();
+            let result_line = out
+                .lines()
+                .rev()
+                .find(|l| l.contains('📄'))
+                .unwrap_or("")
+                .to_string();
             if let Some(expect) = step["expect"].as_str() {
                 let got = result_line.trim().trim_start_matches('📄').trim();
                 let ok = got.contains(expect);
@@ -549,7 +601,10 @@ fn cmd_test(dir: Option<&str>, json: bool) -> Result<(), String> {
                         "expect": expect, "got": got
                     }));
                     if !json {
-                        eprintln!("FAIL {} step {} ({}): expect '{}' got '{}'", scen_name, i, method, expect, got);
+                        eprintln!(
+                            "FAIL {} step {} ({}): expect '{}' got '{}'",
+                            scen_name, i, method, expect, got
+                        );
                     }
                 }
             } else {
@@ -601,20 +656,22 @@ fn cmd_sol(input: &str, output: &str, json: bool) -> Result<(), String> {
     let sol = fs::read_to_string(input).map_err(|e| format!("read {}: {}", input, e))?;
     let vals = lisp_rlm_wasm::solidity::translate_solidity(&sol)?;
     let lisp: String = vals.iter().map(|v| format!("{}\n", v)).collect();
-    let wasm = lisp_rlm_wasm::wasm_emit::compile_near_untyped(&lisp).map_err(|e| format!("{}", e))?;
+    let wasm =
+        lisp_rlm_wasm::wasm_emit::compile_near_untyped(&lisp).map_err(|e| format!("{}", e))?;
     fs::write(output, &wasm).map_err(|e| format!("write: {}", e))?;
     if json {
         println!(
             "{}",
-            serde_json::to_string(&serde_json::json!({"ok": true, "bytes": wasm.len(), "output": output}))
-                .unwrap()
+            serde_json::to_string(
+                &serde_json::json!({"ok": true, "bytes": wasm.len(), "output": output})
+            )
+            .unwrap()
         );
     } else {
         println!("{} ({} bytes)", output, wasm.len());
     }
     Ok(())
 }
-
 
 // ── RPC + new commands ────────────────────────────────────────────────────
 
@@ -625,7 +682,11 @@ fn rpc_url(network: &str) -> &'static str {
     }
 }
 
-fn rpc_query(network: &str, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+fn rpc_query(
+    network: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("{}", e))?;
     rt.block_on(async {
         let client = reqwest::Client::new();
@@ -667,7 +728,10 @@ fn cmd_account(id: &str, network: &str, json: bool) -> Result<(), String> {
                 .filter_map(|k| {
                     k["public_key"].as_str().map(|pk| {
                         let perm = if k["access_key"]["permission"].is_string() {
-                            k["access_key"]["permission"].as_str().unwrap_or("?").to_string()
+                            k["access_key"]["permission"]
+                                .as_str()
+                                .unwrap_or("?")
+                                .to_string()
                         } else {
                             "FunctionCall".to_string()
                         };
@@ -688,8 +752,15 @@ fn cmd_account(id: &str, network: &str, json: bool) -> Result<(), String> {
         );
     } else {
         println!("👤 {} ({})", id, network);
-        println!("   💰 {} NEAR (locked {})", fmt_near(acct["amount"].as_str().unwrap_or("0")), fmt_near(acct["locked"].as_str().unwrap_or("0")));
-        println!("   💾 {} bytes storage", acct["storage_usage"].as_u64().unwrap_or(0));
+        println!(
+            "   💰 {} NEAR (locked {})",
+            fmt_near(acct["amount"].as_str().unwrap_or("0")),
+            fmt_near(acct["locked"].as_str().unwrap_or("0"))
+        );
+        println!(
+            "   💾 {} bytes storage",
+            acct["storage_usage"].as_u64().unwrap_or(0)
+        );
         println!("   🧩 code: {}", acct["code_hash"].as_str().unwrap_or("?"));
         println!("   🔑 {} access key(s)", key_list.len());
         for k in &key_list {
@@ -711,7 +782,11 @@ fn cmd_keys(network: &str, json: bool) -> Result<(), String> {
     }
     let mut rows: Vec<serde_json::Value> = Vec::new();
     for e in &entries {
-        let account = e.path().file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let account = e
+            .path()
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
         let local_pk = fs::read_to_string(e.path())
             .ok()
             .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
@@ -729,7 +804,10 @@ fn cmd_keys(network: &str, json: bool) -> Result<(), String> {
             Ok(list) => {
                 let has = list["keys"]
                     .as_array()
-                    .map(|ks| ks.iter().any(|k| k["public_key"].as_str() == Some(local_pk.as_str())))
+                    .map(|ks| {
+                        ks.iter()
+                            .any(|k| k["public_key"].as_str() == Some(local_pk.as_str()))
+                    })
                     .unwrap_or(false);
                 let bal = rpc_query(
                     network,
@@ -745,12 +823,19 @@ fn cmd_keys(network: &str, json: bool) -> Result<(), String> {
         rows.push(serde_json::json!({"account": account, "key_ok": ok, "balance": balance}));
     }
     if json {
-        println!("{}", serde_json::to_string(&serde_json::json!({"ok": true, "keys": rows})).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({"ok": true, "keys": rows})).unwrap()
+        );
     } else {
         for r in &rows {
             println!(
                 "{} {:<48} {} NEAR",
-                if r["key_ok"].as_bool().unwrap_or(false) { "✅" } else { "❌" },
+                if r["key_ok"].as_bool().unwrap_or(false) {
+                    "✅"
+                } else {
+                    "❌"
+                },
                 r["account"].as_str().unwrap_or("?"),
                 r["balance"].as_str().unwrap_or("?")
             );
@@ -760,7 +845,9 @@ fn cmd_keys(network: &str, json: bool) -> Result<(), String> {
 }
 
 fn dirs_home() -> PathBuf {
-    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn cmd_faucet(name: Option<&str>, json: bool) -> Result<(), String> {
@@ -807,13 +894,25 @@ fn cmd_faucet(name: Option<&str>, json: bool) -> Result<(), String> {
     });
     let dir = dirs_home().join(".near-credentials/testnet");
     fs::create_dir_all(&dir).map_err(|e| format!("{}", e))?;
-    fs::write(dir.join(format!("{}.json", account)), serde_json::to_string_pretty(&cred).unwrap())
-        .map_err(|e| format!("{}", e))?;
+    fs::write(
+        dir.join(format!("{}.json", account)),
+        serde_json::to_string_pretty(&cred).unwrap(),
+    )
+    .map_err(|e| format!("{}", e))?;
     if json {
-        println!("{}", serde_json::to_string(&serde_json::json!({"ok": true, "account": account, "funded": true})).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string(
+                &serde_json::json!({"ok": true, "account": account, "funded": true})
+            )
+            .unwrap()
+        );
     } else {
         println!("🚰 Created + funded {}", account);
-        println!("   key saved to ~/.near-credentials/testnet/{}.json", account);
+        println!(
+            "   key saved to ~/.near-credentials/testnet/{}.json",
+            account
+        );
         println!("   use: lisp-rlm deploy . --account {}", account);
     }
     Ok(())
@@ -826,8 +925,8 @@ fn hex_short(b: &[u8]) -> String {
 fn cmd_abi(dir: Option<&str>, json: bool) -> Result<(), String> {
     let project_dir = dir.unwrap_or(".");
     let (src, _out, _t) = load_near_json(project_dir)?;
-    let source = fs::read_to_string(Path::new(project_dir).join(&src))
-        .map_err(|e| format!("{}", e))?;
+    let source =
+        fs::read_to_string(Path::new(project_dir).join(&src)).map_err(|e| format!("{}", e))?;
     let mut abi: Vec<serde_json::Value> = Vec::new();
     if src.ends_with(".ts") || src.ends_with(".mts") {
         // scrape `export [async] function NAME(params): RET`
@@ -839,8 +938,21 @@ fn cmd_abi(dir: Option<&str>, json: bool) -> Result<(), String> {
             let rest = l.trim_start_matches("export function").trim();
             if let Some(open) = rest.find('(') {
                 let name = rest[..open].trim().to_string();
-                let params = rest[open + 1..].split(')').next().unwrap_or("").trim().to_string();
-                let ret = rest.split("): ").nth(1).map(|r| r.trim_end_matches(|c| c == ' ' || c == '{').trim().to_string()).unwrap_or_default();
+                let params = rest[open + 1..]
+                    .split(')')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let ret = rest
+                    .split("): ")
+                    .nth(1)
+                    .map(|r| {
+                        r.trim_end_matches(|c| c == ' ' || c == '{')
+                            .trim()
+                            .to_string()
+                    })
+                    .unwrap_or_default();
                 let view = name.starts_with("get_") || ret == "string";
                 abi.push(serde_json::json!({"name": name, "kind": if view {"view"} else {"call"}, "params": params, "returns": ret}));
             }
@@ -861,9 +973,15 @@ fn cmd_abi(dir: Option<&str>, json: bool) -> Result<(), String> {
         }
     }
     if json {
-        println!("{}", serde_json::to_string(&serde_json::json!({"ok": true, "abi": abi})).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({"ok": true, "abi": abi})).unwrap()
+        );
     } else {
-        println!("{:<4} {:<24} {:<44} {}", "KIND", "NAME", "PARAMS", "RETURNS");
+        println!(
+            "{:<4} {:<24} {:<44} {}",
+            "KIND", "NAME", "PARAMS", "RETURNS"
+        );
         for a in &abi {
             println!(
                 "{:<4} {:<24} {:<44} {}",
@@ -918,7 +1036,11 @@ fn snapshot(dir: &str) -> Vec<(String, u128)> {
 }
 
 /// Skip deploy when the on-chain code hash already matches local wasm.
-fn deploy_preflight(project_dir: &str, near: &NearAuth, json: bool) -> Result<Option<String>, String> {
+fn deploy_preflight(
+    project_dir: &str,
+    near: &NearAuth,
+    json: bool,
+) -> Result<Option<String>, String> {
     // build if stale/missing (quiet)
     let (_src, output, _t) = load_near_json(project_dir)?;
     let out = Path::new(project_dir).join(&output);
@@ -933,7 +1055,8 @@ fn deploy_preflight(project_dir: &str, near: &NearAuth, json: bool) -> Result<Op
         Some(a) => a.clone(),
         None => {
             // near.json account (resolve_near_ctx will error later if absent)
-            let c = fs::read_to_string(Path::new(project_dir).join("near.json")).unwrap_or_default();
+            let c =
+                fs::read_to_string(Path::new(project_dir).join("near.json")).unwrap_or_default();
             let j: serde_json::Value = serde_json::from_str(&c).unwrap_or(serde_json::Value::Null);
             j["account"].as_str().unwrap_or("").to_string()
         }
@@ -952,7 +1075,9 @@ fn deploy_preflight(project_dir: &str, near: &NearAuth, json: bool) -> Result<Op
     };
     use sha2::Digest;
     let local_hash = hex(&sha2::Sha256::digest(&wasm));
-    if onchain_hash == local_hash && local_hash != "1111111111111111111111111111111111111111111111111111111111111111" {
+    if onchain_hash == local_hash
+        && local_hash != "1111111111111111111111111111111111111111111111111111111111111111"
+    {
         return Ok(Some(format!(
             "🟰 already deployed — on-chain code hash matches local ({}…) — use --force to redeploy",
             &local_hash[..8]
@@ -967,14 +1092,20 @@ fn hex(b: &[u8]) -> String {
 
 /// Balance-aware gas attach: when no explicit --gas was given, clamp the
 /// default to what the signer can actually afford (reserve 0.05 NEAR).
-fn clamp_gas_if_needed(args: &mut Vec<String>, project_dir: &str, account: &Option<String>, json: bool) -> Result<(), String> {
+fn clamp_gas_if_needed(
+    args: &mut Vec<String>,
+    project_dir: &str,
+    account: &Option<String>,
+    json: bool,
+) -> Result<(), String> {
     if args.iter().any(|a| a == "--gas") {
         return Ok(());
     }
     let signer = match account {
         Some(a) => a.clone(),
         None => {
-            let c = fs::read_to_string(Path::new(project_dir).join("near.json")).unwrap_or_default();
+            let c =
+                fs::read_to_string(Path::new(project_dir).join("near.json")).unwrap_or_default();
             let j: serde_json::Value = serde_json::from_str(&c).unwrap_or(serde_json::Value::Null);
             j["account"].as_str().unwrap_or("").to_string()
         }
@@ -983,11 +1114,16 @@ fn clamp_gas_if_needed(args: &mut Vec<String>, project_dir: &str, account: &Opti
         return Ok(());
     }
     let jval = |v: &serde_json::Value| -> u128 {
-        v.as_u64().map(|n| n as u128)
+        v.as_u64()
+            .map(|n| n as u128)
             .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
             .unwrap_or(0)
     };
-    let price = match rpc_query("testnet", "gas_price", serde_json::json!({"finality": "final"})) {
+    let price = match rpc_query(
+        "testnet",
+        "gas_price",
+        serde_json::json!({"finality": "final"}),
+    ) {
         Ok(v) => jval(&v["gas_price"]),
         Err(_) => return Ok(()),
     };
@@ -1013,9 +1149,16 @@ fn clamp_gas_if_needed(args: &mut Vec<String>, project_dir: &str, account: &Opti
         let clamped = affordable.saturating_mul(9) / 10; // headroom for fees
         if clamped < 10_000_000_000_000 {
             if !json {
-                eprintln!("⚠️  {} has ~{} NEAR — cannot afford gas; skipping send", signer, fmt_near(&bal.to_string()));
+                eprintln!(
+                    "⚠️  {} has ~{} NEAR — cannot afford gas; skipping send",
+                    signer,
+                    fmt_near(&bal.to_string())
+                );
             }
-            return Err(format!("signer {} cannot afford gas (balance {} yocto)", signer, bal));
+            return Err(format!(
+                "signer {} cannot afford gas (balance {} yocto)",
+                signer, bal
+            ));
         }
         if !json {
             eprintln!("⚠️  attaching {} gas ({} NEAR balance can't cover the 300 Tgas default) — use --gas to override", clamped, fmt_near(&bal.to_string()));
@@ -1083,7 +1226,10 @@ fn find_bin(name: &str) -> Option<PathBuf> {
             candidates.push(
                 d.parent()
                     .and_then(|rd| rd.parent())
-                    .map(|repo| repo.parent().map(|p| p.join("near-vm-run/target/release").join(name)))
+                    .map(|repo| {
+                        repo.parent()
+                            .map(|p| p.join("near-vm-run/target/release").join(name))
+                    })
                     .flatten()
                     .unwrap_or_default(),
             );
@@ -1137,21 +1283,35 @@ fn wasm_func_exports(wasm: &[u8]) -> Vec<String> {
     }
     let mut p = 8usize;
     while p < wasm.len() {
-        let Some(id) = wasm.get(p).copied() else { break };
+        let Some(id) = wasm.get(p).copied() else {
+            break;
+        };
         p += 1;
-        let Some(size) = read_uleb(wasm, &mut p) else { break };
+        let Some(size) = read_uleb(wasm, &mut p) else {
+            break;
+        };
         let sect_end = p + size as usize;
         if id == 7 {
-            let Some(count) = read_uleb(wasm, &mut p) else { break };
+            let Some(count) = read_uleb(wasm, &mut p) else {
+                break;
+            };
             for _ in 0..count {
-                let Some(nlen) = read_uleb(wasm, &mut p) else { break };
+                let Some(nlen) = read_uleb(wasm, &mut p) else {
+                    break;
+                };
                 let nlen = nlen as usize;
-                let Some(name_bytes) = wasm.get(p..p + nlen) else { break };
+                let Some(name_bytes) = wasm.get(p..p + nlen) else {
+                    break;
+                };
                 let name = String::from_utf8_lossy(name_bytes).to_string();
                 p += nlen;
-                let Some(kind) = wasm.get(p).copied() else { break };
+                let Some(kind) = wasm.get(p).copied() else {
+                    break;
+                };
                 p += 1;
-                let Some(_idx) = read_uleb(wasm, &mut p) else { break };
+                let Some(_idx) = read_uleb(wasm, &mut p) else {
+                    break;
+                };
                 if kind == 0 {
                     exports.push(name);
                 }

@@ -70,7 +70,11 @@ impl Interp {
     fn nil(&mut self, src: &str) {
         match self.eval(src) {
             Ok(LispVal::Nil) => {}
-            other => panic!("expected Nil from {}, got {:?}", src, other.map(|v| format!("{:?}", v))),
+            other => panic!(
+                "expected Nil from {}, got {:?}",
+                src,
+                other.map(|v| format!("{:?}", v))
+            ),
         }
     }
 }
@@ -90,7 +94,10 @@ fn interp_storage_family_lifecycle() {
 
     // >8 bytes — proves no tagged-word truncation
     let long = "0123456789abcdefghij".repeat(4); // 80 chars
-    assert_eq!(it.n(&format!("(near/storage_set \"long\" \"{}\")", long)), 0);
+    assert_eq!(
+        it.n(&format!("(near/storage_set \"long\" \"{}\")", long)),
+        0
+    );
     assert_eq!(it.s("(near/storage_get \"long\")"), long);
 
     // overwrite
@@ -147,10 +154,7 @@ fn mem_read(caller: &mut Caller<'_, ()>, ptr: usize, len: usize) -> Vec<u8> {
 /// Returns the near/return payload: raw string bytes for Str results,
 /// decoded untagged i64 for Num results.
 fn run_near(w: &World, body: &str) -> Result<Val, String> {
-    let src = format!(
-        "(memory 4)\n{}\n(export \"main\" main)",
-        body
-    );
+    let src = format!("(memory 4)\n{}\n(export \"main\" main)", body);
     let wasm = compile_near_untyped(&src).map_err(|e| format!("compile: {}", e))?;
     let engine = Engine::default();
     let mut store = Store::new(&engine, ());
@@ -161,19 +165,34 @@ fn run_near(w: &World, body: &str) -> Result<Val, String> {
     {
         let regs = regs.clone();
         linker
-            .func_wrap("env", "read_register", move |mut caller: Caller<'_, ()>, reg: i64, ptr: i64| {
-                let bytes = regs.lock().unwrap().get(&reg).cloned().unwrap_or_default();
-                let mem = caller.get_export("memory").and_then(|m| m.into_memory()).unwrap();
-                mem.write(&mut caller, ptr as usize, &bytes).unwrap();
-            })
+            .func_wrap(
+                "env",
+                "read_register",
+                move |mut caller: Caller<'_, ()>, reg: i64, ptr: i64| {
+                    let bytes = regs.lock().unwrap().get(&reg).cloned().unwrap_or_default();
+                    let mem = caller
+                        .get_export("memory")
+                        .and_then(|m| m.into_memory())
+                        .unwrap();
+                    mem.write(&mut caller, ptr as usize, &bytes).unwrap();
+                },
+            )
             .unwrap();
     }
     {
         let regs = regs.clone();
         linker
-            .func_wrap("env", "register_len", move |_caller: Caller<'_, ()>, reg: i64| -> i64 {
-                regs.lock().unwrap().get(&reg).map(|b| b.len() as i64).unwrap_or(0)
-            })
+            .func_wrap(
+                "env",
+                "register_len",
+                move |_caller: Caller<'_, ()>, reg: i64| -> i64 {
+                    regs.lock()
+                        .unwrap()
+                        .get(&reg)
+                        .map(|b| b.len() as i64)
+                        .unwrap_or(0)
+                },
+            )
             .unwrap();
     }
     {
@@ -187,59 +206,93 @@ fn run_near(w: &World, body: &str) -> Result<Val, String> {
     {
         let st = w.storage.clone();
         linker
-            .func_wrap("env", "storage_write", move |mut caller: Caller<'_, ()>, klen: i64, kptr: i64, vlen: i64, vptr: i64, _reg: i64| -> i64 {
-                let key = mem_read(&mut caller, kptr as usize, klen as usize);
-                let val = mem_read(&mut caller, vptr as usize, vlen as usize);
-                st.lock().unwrap().insert(key, val);
-                0
-            })
+            .func_wrap(
+                "env",
+                "storage_write",
+                move |mut caller: Caller<'_, ()>,
+                      klen: i64,
+                      kptr: i64,
+                      vlen: i64,
+                      vptr: i64,
+                      _reg: i64|
+                      -> i64 {
+                    let key = mem_read(&mut caller, kptr as usize, klen as usize);
+                    let val = mem_read(&mut caller, vptr as usize, vlen as usize);
+                    st.lock().unwrap().insert(key, val);
+                    0
+                },
+            )
             .unwrap();
     }
     {
         let st = w.storage.clone();
         let regs = regs.clone();
         linker
-            .func_wrap("env", "storage_read", move |mut caller: Caller<'_, ()>, klen: i64, kptr: i64, reg: i64| -> i64 {
-                let key = mem_read(&mut caller, kptr as usize, klen as usize);
-                match st.lock().unwrap().get(&key) {
-                    Some(v) => {
-                        regs.lock().unwrap().insert(reg, v.clone());
-                        1
+            .func_wrap(
+                "env",
+                "storage_read",
+                move |mut caller: Caller<'_, ()>, klen: i64, kptr: i64, reg: i64| -> i64 {
+                    let key = mem_read(&mut caller, kptr as usize, klen as usize);
+                    match st.lock().unwrap().get(&key) {
+                        Some(v) => {
+                            regs.lock().unwrap().insert(reg, v.clone());
+                            1
+                        }
+                        None => 0,
                     }
-                    None => 0,
-                }
-            })
+                },
+            )
             .unwrap();
     }
     {
         let st = w.storage.clone();
         linker
-            .func_wrap("env", "storage_remove", move |mut caller: Caller<'_, ()>, klen: i64, kptr: i64, _reg: i64| -> i64 {
-                let key = mem_read(&mut caller, kptr as usize, klen as usize);
-                st.lock().unwrap().remove(&key).map(|_| 1).unwrap_or(0)
-            })
+            .func_wrap(
+                "env",
+                "storage_remove",
+                move |mut caller: Caller<'_, ()>, klen: i64, kptr: i64, _reg: i64| -> i64 {
+                    let key = mem_read(&mut caller, kptr as usize, klen as usize);
+                    st.lock().unwrap().remove(&key).map(|_| 1).unwrap_or(0)
+                },
+            )
             .unwrap();
     }
     {
         let st = w.storage.clone();
         linker
-            .func_wrap("env", "storage_has_key", move |mut caller: Caller<'_, ()>, klen: i64, kptr: i64| -> i64 {
-                let key = mem_read(&mut caller, kptr as usize, klen as usize);
-                if st.lock().unwrap().contains_key(&key) { 1 } else { 0 }
-            })
+            .func_wrap(
+                "env",
+                "storage_has_key",
+                move |mut caller: Caller<'_, ()>, klen: i64, kptr: i64| -> i64 {
+                    let key = mem_read(&mut caller, kptr as usize, klen as usize);
+                    if st.lock().unwrap().contains_key(&key) {
+                        1
+                    } else {
+                        0
+                    }
+                },
+            )
             .unwrap();
     }
     {
         let returned = returned.clone();
         linker
-            .func_wrap("env", "value_return", move |mut caller: Caller<'_, ()>, len: i64, ptr: i64| {
-                let bytes = mem_read(&mut caller, ptr as usize, len as usize);
-                *returned.lock().unwrap() = Some(bytes);
-            })
+            .func_wrap(
+                "env",
+                "value_return",
+                move |mut caller: Caller<'_, ()>, len: i64, ptr: i64| {
+                    let bytes = mem_read(&mut caller, ptr as usize, len as usize);
+                    *returned.lock().unwrap() = Some(bytes);
+                },
+            )
             .unwrap();
     }
     linker
-        .func_wrap("env", "log_utf8", |_caller: Caller<'_, ()>, _l: i64, _p: i64| {})
+        .func_wrap(
+            "env",
+            "log_utf8",
+            |_caller: Caller<'_, ()>, _l: i64, _p: i64| {},
+        )
         .unwrap();
 
     let module = Module::new(&engine, &wasm).map_err(|e| format!("module: {}", e))?;
@@ -266,8 +319,18 @@ enum Val {
 /// observable for nil-on-miss at the value_return boundary.
 fn assert_nil_payload(v: &Val, what: &str) {
     let Val::Bytes(b) = v;
-    assert_eq!(b.len(), 8, "{}: nil payload is 8 bytes (was 0 bytes for \"\")", what);
-    assert!(b.iter().all(|&x| x == 0), "{}: nil payload is all-zero, got {:?}", what, b);
+    assert_eq!(
+        b.len(),
+        8,
+        "{}: nil payload is 8 bytes (was 0 bytes for \"\")",
+        what
+    );
+    assert!(
+        b.iter().all(|&x| x == 0),
+        "{}: nil payload is all-zero, got {:?}",
+        what,
+        b
+    );
 }
 
 impl Val {
@@ -290,7 +353,9 @@ fn wasm_fresh_memory_persistence() {
     // THE erc20-hazard killer: value written in run 1 must read back intact
     // in run 2 — a fresh instance with a fresh heap. A tagged-word store
     // (ptr|len) would return heap garbage here; the string family must not.
-    let w = World { storage: Arc::new(Mutex::new(HashMap::new())) };
+    let w = World {
+        storage: Arc::new(Mutex::new(HashMap::new())),
+    };
 
     let long = "0123456789abcdefghij".repeat(4); // 80 chars
     let src1 = format!(
@@ -301,29 +366,47 @@ fn wasm_fresh_memory_persistence() {
     assert_eq!(v.as_i64(), 0, "set returns Num(0)");
 
     // run 2: fresh memory, same storage — read back
-    let v = run_near(&w, "(define (main) (near/return (near/storage_get \"k\")))")
-        .expect("run2 get k");
+    let v =
+        run_near(&w, "(define (main) (near/return (near/storage_get \"k\")))").expect("run2 get k");
     assert_eq!(v.as_str(), "hello", "short string survives fresh memory");
 
-    let v = run_near(&w, "(define (main) (near/return (near/storage_get \"long\")))")
-        .expect("run3 get long");
-    assert_eq!(v.as_str(), long, "80-char string survives fresh memory — no 8B truncation");
+    let v = run_near(
+        &w,
+        "(define (main) (near/return (near/storage_get \"long\")))",
+    )
+    .expect("run3 get long");
+    assert_eq!(
+        v.as_str(),
+        long,
+        "80-char string survives fresh memory — no 8B truncation"
+    );
 
     // miss → nil (e48d64c): near/return emits the 8-zero-byte nil payload
     // (the old Str("") path emitted a 0-length payload — length is the
     // distinguishing observable at value_return)
-    let v = run_near(&w, "(define (main) (near/return (near/storage_get \"nope\")))")
-        .expect("run4 miss");
+    let v = run_near(
+        &w,
+        "(define (main) (near/return (near/storage_get \"nope\")))",
+    )
+    .expect("run4 miss");
     assert_nil_payload(&v, "missing key");
 
     // has → 1 / 0
     let v = run_near(&w, "(define (main) (near/return (near/storage_has \"k\")))").unwrap();
     assert_eq!(v.as_i64(), 1);
-    let v = run_near(&w, "(define (main) (near/return (near/storage_has \"nope\")))").unwrap();
+    let v = run_near(
+        &w,
+        "(define (main) (near/return (near/storage_has \"nope\")))",
+    )
+    .unwrap();
     assert_eq!(v.as_i64(), 0);
 
     // remove → get nil, has 0
-    run_near(&w, "(define (main) (near/return (near/storage_remove \"k\")))").unwrap();
+    run_near(
+        &w,
+        "(define (main) (near/return (near/storage_remove \"k\")))",
+    )
+    .unwrap();
     let v = run_near(&w, "(define (main) (near/return (near/storage_get \"k\")))").unwrap();
     assert_nil_payload(&v, "removed key");
     let v = run_near(&w, "(define (main) (near/return (near/storage_has \"k\")))").unwrap();
@@ -331,7 +414,11 @@ fn wasm_fresh_memory_persistence() {
 
     // overwrite
     run_near(&w, "(define (main) (near/storage_set \"long\" \"second\"))").unwrap();
-    let v = run_near(&w, "(define (main) (near/return (near/storage_get \"long\")))").unwrap();
+    let v = run_near(
+        &w,
+        "(define (main) (near/return (near/storage_get \"long\")))",
+    )
+    .unwrap();
     assert_eq!(v.as_str(), "second", "overwrite wins");
 }
 
@@ -339,17 +426,29 @@ fn wasm_fresh_memory_persistence() {
 fn wasm_non_string_value_traps() {
     // Num value → TAG_STR assertion trap (unreachable) — wasm twin of the
     // interp "expected string value" hard error. Same event class.
-    let w = World { storage: Arc::new(Mutex::new(HashMap::new())) };
+    let w = World {
+        storage: Arc::new(Mutex::new(HashMap::new())),
+    };
     let r = run_near(&w, "(define (main) (near/storage_set \"k\" 42))");
-    assert!(r.is_err(), "Num value must trap, got {:?}", r.as_ref().map(|v| v.as_str()));
+    assert!(
+        r.is_err(),
+        "Num value must trap, got {:?}",
+        r.as_ref().map(|v| v.as_str())
+    );
 }
 
 #[test]
 fn wasm_storage_bytes_on_chain_shape() {
     // Host-side view: stored bytes must be the exact UTF-8 of the value —
     // this is what a NEAR explorer / contract migration would see on-chain.
-    let w = World { storage: Arc::new(Mutex::new(HashMap::new())) };
-    run_near(&w, "(define (main) (near/storage_set \"explorer-view\" \"pure bytes\"))").unwrap();
+    let w = World {
+        storage: Arc::new(Mutex::new(HashMap::new())),
+    };
+    run_near(
+        &w,
+        "(define (main) (near/storage_set \"explorer-view\" \"pure bytes\"))",
+    )
+    .unwrap();
     let st = w.storage.lock().unwrap();
     let got = st
         .get("explorer-view".as_bytes())
@@ -367,7 +466,9 @@ fn wasm_storage_bytes_on_chain_shape() {
 
 #[test]
 fn wasm_storage_cache_semantics() {
-    let w = World { storage: Arc::new(Mutex::new(HashMap::new())) };
+    let w = World {
+        storage: Arc::new(Mutex::new(HashMap::new())),
+    };
 
     // tx 1: seed
     run_near(&w, r#"(define (main) (begin (near/storage_set "k" "v1") (near/storage_set "ka" "A") (near/storage_set "kb" "B") (near/return "ok")))"#)
@@ -385,8 +486,11 @@ fn wasm_storage_cache_semantics() {
 
     // tx 3: fresh instance — must see tx 2's write (erc20-hazard class:
     // per-instance cache, never persisted)
-    let r = run_near(&w, r#"(define (main) (near/return (default (near/storage_get "k") "MISS")))"#)
-        .unwrap();
+    let r = run_near(
+        &w,
+        r#"(define (main) (near/return (default (near/storage_get "k") "MISS")))"#,
+    )
+    .unwrap();
     assert_eq!(r.as_str(), "v2", "fresh instance reads committed value");
 
     // tx 4: remove invalidates too — get caches, remove flushes, get misses
@@ -395,7 +499,11 @@ fn wasm_storage_cache_semantics() {
         r#"(define (main) (near/return (str-concat (default (near/storage_get "k") "MISS") "|" (begin (near/storage_remove "k") (default (near/storage_get "k") "MISS")))))"#,
     )
     .unwrap();
-    assert_eq!(r.as_str(), "v2|MISS", "remove must invalidate the cached read");
+    assert_eq!(
+        r.as_str(),
+        "v2|MISS",
+        "remove must invalidate the cached read"
+    );
 
     // tx 5: same-length keys must NOT alias in the cache (exact byte
     // compare — regression for the (klen>>3)<<3 peephole-eaten tail loop)
@@ -404,7 +512,11 @@ fn wasm_storage_cache_semantics() {
         r#"(define (main) (near/return (str-concat (default (near/storage_get "ka") "?") (default (near/storage_get "kb") "?") (default (near/storage_get "ka") "?"))))"#,
     )
     .unwrap();
-    assert_eq!(r.as_str(), "ABA", "same-length keys are distinct cache entries");
+    assert_eq!(
+        r.as_str(),
+        "ABA",
+        "same-length keys are distinct cache entries"
+    );
 
     // tx 6: cross-family write (tagged-word near/store) must flush the
     // string-family cache — the raw 8-byte value reads back as a Str
@@ -413,18 +525,27 @@ fn wasm_storage_cache_semantics() {
         r#"(define (main) (begin (near/storage_set "cf" "seeded") (near/return (str-concat (default (near/storage_get "cf") "?") "|" (begin (near/store "cf" 4242) (to-string (str-length (default (near/storage_get "cf") "?"))))))))"#,
     )
     .unwrap();
-    assert_eq!(r.as_str(), "seeded|8", "near/store must flush the cache (8 raw bytes)");
+    assert_eq!(
+        r.as_str(),
+        "seeded|8",
+        "near/store must flush the cache (8 raw bytes)"
+    );
 }
 
 #[test]
 fn wasm_storage_cache_overflow_and_long_keys() {
-    let w = World { storage: Arc::new(Mutex::new(HashMap::new())) };
+    let w = World {
+        storage: Arc::new(Mutex::new(HashMap::new())),
+    };
 
     // >64 distinct keys: table fills, further reads run uncached — every
     // value must still be exact (fallback correctness)
     let mut src = String::from("(define (main) (begin ");
     for i in 0..70 {
-        src.push_str(&format!("(near/storage_set \"key{:02}\" \"val{:02}x\") ", i, i));
+        src.push_str(&format!(
+            "(near/storage_set \"key{:02}\" \"val{:02}x\") ",
+            i, i
+        ));
     }
     src.push_str("(near/return \"ok\")))");
     run_near(&w, &src).unwrap();
@@ -432,7 +553,10 @@ fn wasm_storage_cache_overflow_and_long_keys() {
     // read all 70 back in one tx: reads 65..70 hit the overflow fallback
     let mut src = String::from("(define (main) (near/return (str-concat ");
     for i in 0..70 {
-        src.push_str(&format!("(default (near/storage_get \"key{:02}\") \"?\") ", i));
+        src.push_str(&format!(
+            "(default (near/storage_get \"key{:02}\") \"?\") ",
+            i
+        ));
     }
     src.push_str(")))");
     let r = run_near(&w, &src).unwrap();

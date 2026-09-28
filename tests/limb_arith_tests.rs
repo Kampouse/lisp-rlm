@@ -7,9 +7,9 @@ use near_parameters::vm::VMKind;
 use near_parameters::{RuntimeConfigStore, RuntimeFeesConfig};
 use near_primitives_core::code::ContractCode;
 use near_primitives_core::config::ViewConfig;
-use near_vm_runner::logic::VMContext;
 use near_vm_runner::logic::mocks::mock_external::MockedExternal;
-use near_vm_runner::{Contract, prepare, run};
+use near_vm_runner::logic::VMContext;
+use near_vm_runner::{prepare, run, Contract};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -17,8 +17,12 @@ use std::sync::Arc;
 fn call(wasm: &[u8], method: &str) -> (Option<String>, Vec<u8>) {
     struct CodeWrap(Arc<ContractCode>);
     impl Contract for CodeWrap {
-        fn hash(&self) -> near_primitives_core::hash::CryptoHash { *self.0.hash() }
-        fn get_code(&self) -> Option<Arc<ContractCode>> { Some(self.0.clone()) }
+        fn hash(&self) -> near_primitives_core::hash::CryptoHash {
+            *self.0.hash()
+        }
+        fn get_code(&self) -> Option<Arc<ContractCode>> {
+            Some(self.0.clone())
+        }
     }
     let contract = CodeWrap(Arc::new(ContractCode::new(wasm.to_vec(), None)));
     let context = VMContext {
@@ -54,10 +58,7 @@ fn call(wasm: &[u8], method: &str) -> (Option<String>, Vec<u8>) {
     let prepared = prepare(&contract, Arc::new(wasm_config), None, gas_counter, method);
     let outcome = run(prepared, &mut ext, &context, fees).expect("runner error");
     (
-        outcome
-            .aborted
-            .as_ref()
-            .map(|e| format!("{e:?}")),
+        outcome.aborted.as_ref().map(|e| format!("{e:?}")),
         outcome.return_data.as_value().unwrap_or_default(),
     )
 }
@@ -76,7 +77,8 @@ const PROLOG: &str = r#"
 #[test]
 fn limb_add_fib_100() {
     // fib via 3 rotating limb buffers (mirrors the deployed bnlimb program)
-    let src = format!(r#"{PROLOG}
+    let src = format!(
+        r#"{PROLOG}
 (define (fib n)
   (let ((A (buf-alloc 128)) (B (buf-alloc 128)) (R (buf-alloc 128)))
     (begin
@@ -88,7 +90,8 @@ fn limb_add_fib_100() {
           (recur b r a lb (limb-add a b r la lb) (+ i 1)))))))
 (define (run) (near/return (fib 100)))
 (export "run" run #t)
-"#);
+"#
+    );
     let wasm = compile(&src);
     let (aborted, ret) = call(&wasm, "run");
     assert!(aborted.is_none(), "fib aborted: {aborted:?}");
@@ -98,7 +101,8 @@ fn limb_add_fib_100() {
 
 #[test]
 fn limb_sub_exact_and_strip() {
-    let src = format!(r#"{PROLOG}
+    let src = format!(
+        r#"{PROLOG}
 (define (run)
   (let ((A (buf-alloc 64)) (B (buf-alloc 64)) (R (buf-alloc 64)))
     (begin
@@ -111,7 +115,8 @@ fn limb_sub_exact_and_strip() {
       (limb-set! B 2 888888888)
       (near/return (fmt R (limb-sub A B R 4 3))))))
 (export "run" run #t)
-"#);
+"#
+    );
     let wasm = compile(&src);
     let (aborted, ret) = call(&wasm, "run");
     assert!(aborted.is_none(), "sub aborted: {aborted:?}");
@@ -128,7 +133,8 @@ fn limb_sub_exact_and_strip() {
 #[test]
 fn limb_sub_strips_to_shorter_length() {
     // 1000000000 - 1 = 999999999 → single limb (strip works)
-    let src = format!(r#"{PROLOG}
+    let src = format!(
+        r#"{PROLOG}
 (define (run)
   (let ((A (buf-alloc 64)) (B (buf-alloc 64)) (R (buf-alloc 64)))
     (begin
@@ -137,7 +143,8 @@ fn limb_sub_strips_to_shorter_length() {
       (limb-set! B 0 1)
       (near/return (fmt R (limb-sub A B R 2 1))))))
 (export "run" run #t)
-"#);
+"#
+    );
     let wasm = compile(&src);
     let (aborted, ret) = call(&wasm, "run");
     assert!(aborted.is_none(), "strip aborted: {aborted:?}");
@@ -146,7 +153,8 @@ fn limb_sub_strips_to_shorter_length() {
 
 #[test]
 fn limb_sub_underflow_traps() {
-    let src = format!(r#"{PROLOG}
+    let src = format!(
+        r#"{PROLOG}
 (define (run)
   (let ((A (buf-alloc 64)) (B (buf-alloc 64)) (R (buf-alloc 64)))
     (begin
@@ -154,7 +162,8 @@ fn limb_sub_underflow_traps() {
       (limb-set! B 0 3)
       (near/return (to-string (limb-sub B A R 1 1))))))
 (export "run" run #t)
-"#);
+"#
+    );
     let wasm = compile(&src);
     let (aborted, _ret) = call(&wasm, "run");
     assert!(aborted.is_some(), "3-5 must trap (checked policy)");
@@ -163,7 +172,8 @@ fn limb_sub_underflow_traps() {
 #[test]
 fn limb_cmp_signs_and_length_crossing() {
     // [0,1]=1e9 (2 limbs) vs [999999999] (1 limb): length wins → 1
-    let src = format!(r#"{PROLOG}
+    let src = format!(
+        r#"{PROLOG}
 (define (run)
   (let ((A (buf-alloc 64)) (B (buf-alloc 64)))
     (begin
@@ -172,7 +182,8 @@ fn limb_cmp_signs_and_length_crossing() {
       (limb-set! B 0 999999999)
       (near/return (str-cat (str-cat (to-string (limb-cmp A B 2 1)) (to-string (limb-cmp B A 1 2))) (to-string (limb-cmp A A 2 2)))))))
 (export "run" run #t)
-"#);
+"#
+    );
     let wasm = compile(&src);
     let (aborted, ret) = call(&wasm, "run");
     assert!(aborted.is_none(), "cmp aborted: {aborted:?}");
@@ -181,7 +192,8 @@ fn limb_cmp_signs_and_length_crossing() {
 
 #[test]
 fn limb_mul_factorial_100() {
-    let src = format!(r#"{PROLOG}
+    let src = format!(
+        r#"{PROLOG}
 (define (fact n)
   (let ((X (buf-alloc 4096)) (Y (buf-alloc 4096)) (B (buf-alloc 8)))
     (begin
@@ -193,7 +205,8 @@ fn limb_mul_factorial_100() {
           (recur y x (begin (limb-set! B 0 k) (limb-mul x B y lx 1)) (+ k 1)))))))
 (define (run) (near/return (fact 100)))
 (export "run" run #t)
-"#);
+"#
+    );
     let wasm = compile(&src);
     let (aborted, ret) = call(&wasm, "run");
     assert!(aborted.is_none(), "fact aborted: {aborted:?}");
@@ -207,7 +220,8 @@ fn limb_mul_two_big_numbers() {
     // A = [1,1,1] = 10^18 + 10^9 + 1. A^2 = 10^36 + 2*10^27 + 3*10^18
     // + 2*10^9 + 1 — crosses many limbs, tests the carry-into-still-zero-slot
     // invariant and multi-limb carries
-    let src = format!(r#"{PROLOG}
+    let src = format!(
+        r#"{PROLOG}
 (define (run)
   (let ((A (buf-alloc 64)) (B (buf-alloc 64)) (R (buf-alloc 128)))
     (begin
@@ -219,7 +233,8 @@ fn limb_mul_two_big_numbers() {
       (limb-set! B 2 1)
       (near/return (fmt R (limb-mul A B R 3 3))))))
 (export "run" run #t)
-"#);
+"#
+    );
     let wasm = compile(&src);
     let (aborted, ret) = call(&wasm, "run");
     assert!(aborted.is_none(), "mul aborted: {aborted:?}");

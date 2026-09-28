@@ -182,6 +182,21 @@
 (define (tag-nonce tags) (tag-get tags "nonce"))
 (define (tag-expires tags) (tag-get tags "expires"))
 
+;; Sentinel protocol (2026-09-03, mirrored from the TS twin): senders may
+;; replace every double-quote in tags/ct args with "~" to survive hosts
+;; whose json_get_str truncates at quote bytes; unsentinel restores them
+;; byte-exact before event verification. No-op when nothing was sentineled.
+(define (unsentinel-loop s i n out)
+  (if (= i n)
+      out
+      (let ((c (str-slice s i (+ i 1))))
+        (if (= c "~")
+            (unsentinel-loop s (+ i 1) n (str-cat out "\""))
+            (unsentinel-loop s (+ i 1) n (str-cat out c))))))
+
+(define (unsentinel s)
+  (unsentinel-loop s 0 (str-length s) ""))
+
 (define (event-serialize pk cat kind tags content)
   (str-cat "[0,\""
     (str-cat pk (str-cat "\","
@@ -234,8 +249,8 @@
 (define (verify-owner-event action-str)
   (let ((pk (near/json_get_str "pk"))
         (kind (near/json_get_str "kind"))
-        (tags (near/json_get_str "tags"))
-        (content (near/json_get_str "ct"))
+        (tags (unsentinel (near/json_get_str "tags")))
+        (content (unsentinel (near/json_get_str "ct")))
         (sig (near/json_get_str "sig"))
         (cat (near/json_get_str "cat")))
     (if (!= (str-length pk) 64)
@@ -276,8 +291,8 @@
 (define (verify-guardian-event action-str)
   (let ((pk (near/json_get_str "pk"))
         (kind (near/json_get_str "kind"))
-        (tags (near/json_get_str "tags"))
-        (content (near/json_get_str "ct"))
+        (tags (unsentinel (near/json_get_str "tags")))
+        (content (unsentinel (near/json_get_str "ct")))
         (sig (near/json_get_str "sig"))
         (cat (near/json_get_str "cat")))
     (if (!= (str-length pk) 64)
@@ -504,7 +519,7 @@
     ;; signed inside the action tag, replay-protected by the nonce
     ;; window — and it eliminates the pi:<name> counter write entirely
     ;; (propose is now a single storage write: ~0.35 Tgas cheaper)
-    (let ((id (tag-nonce (near/json_get_str "tags"))))
+    (let ((id (tag-nonce (unsentinel (near/json_get_str "tags")))))
       (if (= (str-length id) 0)
           (die "ERR_EVENT_NONCE")
           0)
@@ -520,7 +535,7 @@
         (np (default (near/json_get_str "np") ""))
         (nt (default (near/json_get_str "nt") ""))
         (ts (near/block_timestamp)))
-    (let ((id (tag-nonce (near/json_get_str "tags"))))
+    (let ((id (tag-nonce (unsentinel (near/json_get_str "tags")))))
       (if (u128/lt pexp (to-string ts))
           (die "ERR_EXPIRED")
           0)
@@ -676,8 +691,8 @@
   (let ((pk (default (near/json_get_str "pk") ""))
         (sig (default (near/json_get_str "sig") ""))
         (kind (default (near/json_get_str "kind") ""))
-        (tags (default (near/json_get_str "tags") ""))
-        (ct (default (near/json_get_str "ct") ""))
+        (tags (unsentinel (default (near/json_get_str "tags") "")))
+        (ct (unsentinel (default (near/json_get_str "ct") "")))
         (cat (default (near/json_get_str "cat") "")))
     (if (= kind "37500")
         0

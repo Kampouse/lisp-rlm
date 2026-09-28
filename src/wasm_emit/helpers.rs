@@ -93,7 +93,10 @@ impl WasmEmitter {
     }
 
     pub(crate) fn emit_tag_num(&self) -> Vec<Instruction<'static>> {
-        self.emit_tag(TAG_NUM)
+        // TAG_NUM = 0: x << 3 | 0 == x << 3 — skip the const-0 Or. The
+        // shorter form is what lets peephole cancel tag/untag pairs around
+        // raw-local reads/writes ((3,Shl) directly followed by (3,ShrS)).
+        vec![Instruction::I64Const(TAG_BITS), Instruction::I64Shl]
     }
 
     /// Checked twin of emit_tag_num: tags the payload on the stack but TRAPS
@@ -328,23 +331,31 @@ impl WasmEmitter {
         self.emit_tag(TAG_ARRAY)
     }
 
-    pub(crate) fn emit_tagged_const(&self, val: i64, tag: i64) -> Result<Vec<Instruction<'static>>, String> {
+    pub(crate) fn emit_tagged_const(
+        &self,
+        val: i64,
+        tag: i64,
+    ) -> Result<Vec<Instruction<'static>>, String> {
         // Money-safety: `val << TAG_BITS` overflows silently for payloads
         // outside [-2^60, 2^60) (release-mode Rust wraps). i64::MAX literally
         // compiled to -1 at runtime. Refuse instead — a literal the tagged
         // scheme can't represent must never deploy.
-        let tagged = val
-            .checked_mul(1 << TAG_BITS)
-            .ok_or_else(|| format!(
+        let tagged = val.checked_mul(1 << TAG_BITS).ok_or_else(|| {
+            format!(
                 "integer literal {} exceeds tagged range [-2^60, 2^60): silent corruption on-chain",
                 val
-            ))?;
+            )
+        })?;
         Ok(vec![Instruction::I64Const(tagged | tag)])
     }
 
     /// Wrapping twin for wrap-* ops: their contract IS wrap semantics, so the
     /// tag shift wraps too instead of refusing.
-    pub(crate) fn emit_tagged_const_wrapping(&self, val: i64, tag: i64) -> Vec<Instruction<'static>> {
+    pub(crate) fn emit_tagged_const_wrapping(
+        &self,
+        val: i64,
+        tag: i64,
+    ) -> Vec<Instruction<'static>> {
         vec![Instruction::I64Const(val.wrapping_mul(1 << TAG_BITS) | tag)]
     }
 
@@ -843,13 +854,13 @@ impl WasmEmitter {
             // Check val == 4 (Nil)
             Instruction::LocalGet(tmp),
             Instruction::I64Const(TAGGED_NIL),
-            Instruction::I64Eq,             // → i32
-            Instruction::I32Or,             // → i32 (false | nil)
+            Instruction::I64Eq, // → i32
+            Instruction::I32Or, // → i32 (false | nil)
             // Check val == 0 (Num 0 — TAGGED_NUM(0) = 0 << 3 | 0 = 0)
             Instruction::LocalGet(tmp),
             Instruction::I64Const(0),
-            Instruction::I64Eq,             // → i32
-            Instruction::I32Or,             // → i32 (false | nil | zero)
+            Instruction::I64Eq, // → i32
+            Instruction::I32Or, // → i32 (false | nil | zero)
             // invert: 0 → truthy, 1 → falsy
             Instruction::I32Eqz,        // → i32
             Instruction::I64ExtendI32U, // → i64 for callers
@@ -1075,70 +1086,77 @@ impl WasmEmitter {
         off
     }
 
-    pub(crate) fn process_hex_escapes(input: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(input.len());
-        let mut i = 0;
-        while i < input.len() {
-            if input[i] == b'\\' && i + 1 < input.len() {
-                let c = input[i + 1];
-                match c {
-                    b'x' if i + 3 < input.len() => {
-                        let hi = input[i + 2];
-                        let lo = input[i + 3];
-                        let hex_val = |b: u8| -> Option<u8> {
-                            if b.is_ascii_digit() {
-                                Some(b - b'0')
-                            } else if (b'A'..=b'F').contains(&b) {
-                                Some(b - b'A' + 10)
-                            } else if (b'a'..=b'f').contains(&b) {
-                                Some(b - b'a' + 10)
-                            } else {
-                                None
-                            }
-                        };
-                        if let (Some(h), Some(l)) = (hex_val(hi), hex_val(lo)) {
-                            out.push(h << 4 | l);
-                            i += 4;
-                            continue;
-                        }
-                    }
-                    b'n' => {
-                        out.push(b'\n');
-                        i += 2;
-                        continue;
-                    }
-                    b't' => {
-                        out.push(b'\t');
-                        i += 2;
-                        continue;
-                    }
-                    b'r' => {
-                        out.push(b'\r');
-                        i += 2;
-                        continue;
-                    }
-                    b'0' => {
-                        out.push(0);
-                        i += 2;
-                        continue;
-                    }
-                    b'\\' => {
-                        out.push(b'\\');
-                        i += 2;
-                        continue;
-                    }
-                    b'"' => {
-                        out.push(b'"');
-                        i += 2;
-                        continue;
-                    }
-                    _ => {}
-                }
-            }
-            out.push(input[i]);
-            i += 1;
+    /// Allocate a UNIQUE zeroed 8-byte slot (no content dedupe). For
+    /// mutable runtime caches — memoized value-define slots. alloc_data
+    /// dedupes by content, so three zeroed slots would alias one address
+    /// (found the hard way: every const cached into offset 256).
+    pub(crate) fn alloc_memo_slot(&mut self) -> i32 {
+        let off = self.next_data_offset;
+        self.data_segments.push((off, vec![0u8; 8]));
+        self.next_data_offset += 8;
+        self.next_data_offset = (self.next_data_offset + 7) & !7;
+        off as i32
+    }
+
+    /// Cached tx-input read (2026-09-14, gas): the input lands in
+    /// INPUT_CACHE_BUF once per transaction (flag + len slots, zeroed per
+    /// tx with memory). Every json getter previously issued 3 host calls
+    /// (input, register_len, read_register) PER CALL — arg-heavy
+    /// entrypoints burned them on every getter. Emits:
+    ///   if flag == 0: input(0); len-slot = register_len(0);
+    ///                 read_register(0, INPUT_CACHE_BUF); flag = 1
+    ///   ilen_local = len-slot
+    /// Ends with the length in `ilen` (i32 local supplied by the caller).
+    pub(crate) fn emit_input_read_cached(&mut self, ilen: u32, v: &mut Vec<Instruction<'static>>) {
+        self.need_host(7);
+        self.need_host(0);
+        self.need_host(1);
+        if self.input_flag_slot.is_none() {
+            self.input_flag_slot = Some(self.alloc_memo_slot());
+            self.input_len_slot = Some(self.alloc_memo_slot());
         }
-        out
+        let flag = self.input_flag_slot.unwrap();
+        let len_slot = self.input_len_slot.unwrap();
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
+        // if flag == 0 → load
+        v.push(Instruction::I32Const(flag));
+        v.push(Instruction::I64Load(ma8.clone()));
+        v.push(Instruction::I64Eqz);
+        v.push(Instruction::If(wasm_encoder::BlockType::Empty));
+        {
+            // input(0) — void
+            v.push(Instruction::I64Const(0));
+            v.push(Self::host_call(7));
+            // len-slot = register_len(0)   (addr first, then value)
+            v.push(Instruction::I32Const(len_slot));
+            v.push(Instruction::I64Const(0));
+            v.push(Self::host_call(1));
+            v.push(Instruction::I64Store(ma8.clone()));
+            // read_register(0, INPUT_CACHE_BUF) — void
+            v.push(Instruction::I64Const(0));
+            v.push(Instruction::I64Const(INPUT_CACHE_BUF));
+            v.push(Self::host_call(0));
+            // flag = 1
+            v.push(Instruction::I32Const(flag));
+            v.push(Instruction::I64Const(1));
+            v.push(Instruction::I64Store(ma8.clone()));
+        }
+        v.push(Instruction::End);
+        // ilen = len-slot (i32 load — the sites' ilen locals are i32; the
+        // few i64-ilen scanners wrap up themselves). align 2: natural for
+        // i32.load (align 3 would exceed it — invalid).
+        let ma4 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 2,
+            memory_index: 0,
+        };
+        v.push(Instruction::I32Const(len_slot));
+        v.push(Instruction::I32Load(ma4));
+        v.push(Instruction::LocalSet(ilen));
     }
 
     pub(crate) fn emit_runtime_alloc(&mut self, n_bytes: i64) -> Vec<Instruction<'static>> {
@@ -1189,7 +1207,6 @@ impl WasmEmitter {
         Instruction::Call(HOST_BASE | idx as u32)
     }
 
-
     /// Register a stitched WASM import (e.g. schnorr_verify_bip340).
     /// Returns the sentinel index to use with wasm_import_call().
     pub(crate) fn need_wasm_import(
@@ -1199,7 +1216,9 @@ impl WasmEmitter {
         results: Vec<ValType>,
     ) -> usize {
         for (i, (n, _, _)) in self.wasm_imports.iter().enumerate() {
-            if *n == name { return i; }
+            if *n == name {
+                return i;
+            }
         }
         let idx = self.wasm_imports.len();
         self.wasm_imports.push((name, params, results));
@@ -1331,16 +1350,11 @@ impl WasmEmitter {
     /// record = 18 parts = 17 inline ~700B copies ≈ 12KB per site; that is
     /// why the TS twin wasm was +46% over lisp). Same trick as __to_string:
     /// emit the body ONCE as __str_concat(a,b) and Call it from sites.
-/// Generic shared-helper emitter: body = params on stack + generator.
+    /// Generic shared-helper emitter: body = params on stack + generator.
     /// Scans max local index to size the frame (same pattern as
     /// __to_string / __str_concat).
     #[allow(clippy::type_complexity)]
-    fn ensure_shared_fn<F>(
-        &mut self,
-        name: &str,
-        n_params: usize,
-        build: F,
-    ) -> u32
+    fn ensure_shared_fn<F>(&mut self, name: &str, n_params: usize, build: F) -> u32
     where
         F: FnOnce(&mut Self) -> Result<Vec<Instruction<'static>>, String>,
     {
@@ -1396,7 +1410,11 @@ impl WasmEmitter {
             param_count: n_params,
             local_count: total,
             instrs: body,
-            local_entries: if entries.is_empty() { None } else { Some(entries) },
+            local_entries: if entries.is_empty() {
+                None
+            } else {
+                Some(entries)
+            },
             custom_type: None,
         });
         (self.funcs.len() - 1) as u32
@@ -1465,8 +1483,16 @@ impl WasmEmitter {
         if let Some(idx) = self.funcs.iter().position(|f| f.name == "__to_string") {
             return idx as u32;
         }
-        let ma0 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let ma0 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
         let mut ins: Vec<Instruction<'static>> = Vec::new();
         // All locals i64: 0=param, 1=tagged, 2=tag, 3=raw, 4=heap,
         //                 5=buf, 6=len, 7=offset, 8=digits, 9=widx, 10=val
@@ -1509,7 +1535,7 @@ impl WasmEmitter {
         ins.push(Instruction::I32WrapI64); // addr (i32)
         ins.push(Instruction::LocalGet(4)); // value (i64)
         ins.push(Instruction::I64Store(ma8)); // mem[56] = heap + 3
-        // Write 'n','i','l'
+                                              // Write 'n','i','l'
         ins.push(Instruction::LocalGet(5));
         ins.push(Instruction::I32WrapI64); // addr
         ins.push(Instruction::I32Const(110));
@@ -1526,7 +1552,7 @@ impl WasmEmitter {
         ins.push(Instruction::I32WrapI64); // addr
         ins.push(Instruction::I32Const(108));
         ins.push(Instruction::I32Store8(ma0)); // 'l'
-        // TAG_STR: ((len<<32)|buf)<<3 | 5, len=3
+                                               // TAG_STR: ((len<<32)|buf)<<3 | 5, len=3
         ins.push(Instruction::I64Const(3));
         ins.push(Instruction::I64Const(32));
         ins.push(Instruction::I64Shl); // 3 << 32
@@ -1583,7 +1609,7 @@ impl WasmEmitter {
         ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::I32Const(101));
         ins.push(Instruction::I32Store8(ma0)); // 'e'
-        // TAG_STR len=4
+                                               // TAG_STR len=4
         ins.push(Instruction::I64Const(4));
         ins.push(Instruction::I64Const(32));
         ins.push(Instruction::I64Shl);
@@ -1636,7 +1662,7 @@ impl WasmEmitter {
         ins.push(Instruction::I32WrapI64);
         ins.push(Instruction::I32Const(101));
         ins.push(Instruction::I32Store8(ma0)); // 'e'
-        // TAG_STR len=5
+                                               // TAG_STR len=5
         ins.push(Instruction::I64Const(5));
         ins.push(Instruction::I64Const(32));
         ins.push(Instruction::I64Shl);
@@ -1705,7 +1731,7 @@ impl WasmEmitter {
         ins.push(Instruction::I64Const(1));
         ins.push(Instruction::I64Add);
         ins.push(Instruction::LocalSet(6)); // len = digits + 1
-        // TAG_STR return
+                                            // TAG_STR return
         ins.push(Instruction::LocalGet(6));
         ins.push(Instruction::I64Const(32));
         ins.push(Instruction::I64Shl); // len << 32
@@ -1757,7 +1783,7 @@ impl WasmEmitter {
         ins.push(Instruction::I64Add);
         ins.push(Instruction::I64LtS); // widx < buf+offset?
         ins.push(Instruction::BrIf(1)); // break if done
-        // Write digit: mem[widx] = '0' + (raw % 10)
+                                        // Write digit: mem[widx] = '0' + (raw % 10)
         ins.push(Instruction::LocalGet(9));
         ins.push(Instruction::I32WrapI64); // addr
         ins.push(Instruction::LocalGet(3));

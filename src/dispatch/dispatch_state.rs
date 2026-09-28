@@ -69,8 +69,10 @@ pub fn handle(
             let out = s.join(" ");
             if name == "println" {
                 println!("{}", out);
+                state.logs.push(format!("{}\n", out));
             } else {
                 print!("{}", out);
+                state.logs.push(out.clone());
             }
             Ok(Some(LispVal::Str(out)))
         }

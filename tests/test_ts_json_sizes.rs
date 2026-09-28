@@ -12,8 +12,8 @@
 // length (emit_rtheap_alloc), so values up to INPUT_BUF (16KB) work.
 
 use lisp_rlm_wasm::compile_near_from_exprs;
-use lisp_rlm_wasm::ts_frontend::ts_to_lisp_source;
 use lisp_rlm_wasm::parse_all;
+use lisp_rlm_wasm::ts_frontend::ts_to_lisp_source;
 use std::sync::MutexGuard;
 
 const ECHO_TS: &str = r#"
@@ -97,15 +97,18 @@ fn json_sizes_echo_matrix() {
             "256:256:256:4",
         ),
         // ({"a":700}) single key — was OK (control)
-        (
-            serde_json::json!({"a": "a".repeat(700)}),
-            "700:0:0:0",
-        ),
+        (serde_json::json!({"a": "a".repeat(700)}), "700:0:0:0"),
     ];
     for (args, want) in cases {
         let out = call(&wasm, "m", &args.to_string());
         let got = ret_line(&out);
-        assert_eq!(got, want, "args_len={} args={:?}", args.to_string().len(), args.to_string().chars().take(80).collect::<String>());
+        assert_eq!(
+            got,
+            want,
+            "args_len={} args={:?}",
+            args.to_string().len(),
+            args.to_string().chars().take(80).collect::<String>()
+        );
     }
 }
 
@@ -138,7 +141,11 @@ export function content(id: string, msgPoint: string, g2gen: string): string {
     let g2gen = "07".repeat(192);
     let args = serde_json::json!({"id": "m1", "msgPoint": msg, "g2gen": g2gen});
     let s = args.to_string();
-    assert!(s.len() > 600, "setPoints-shaped args must be 600+B, got {}", s.len());
+    assert!(
+        s.len() > 600,
+        "setPoints-shaped args must be 600+B, got {}",
+        s.len()
+    );
     let out = call(&wasm, "pts", &s);
     assert_eq!(ret_line(&out), "m1:192:384", "setPoints-shaped lengths");
 

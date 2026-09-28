@@ -19,7 +19,12 @@ export function deposit(): string {
 }
 
 export function balance(): string {
-  return near.storageGet("bal") ?? "0";
+  // REAL Ⓝ balance — transfers (flash-loan out, repay back) move value
+  // through the engine's account balance, not through storage writes; a
+  // deposit-only storage ledger goes stale the instant a flash loan runs
+  // (honest: 1005 = 1000 + fee; stiff: 405 = 1005 − 600 with the transfer
+  // receipt committed independently of the aborted settle).
+  return toStr(near.accountBalance());
 }
 
 export function flashLoan(amount: string, borrower: string): string {

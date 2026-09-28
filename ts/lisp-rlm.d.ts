@@ -40,7 +40,26 @@ declare function strJoin(separator: string, parts: LispArr<string>): string;
 // rebuild via jsonSet with an ENCODED value (jsonQuote(s) for strings,
 // toStr(n) for numbers — object literals self-encode).
 declare type LispObj = string;
-/** integer aliases — the compiler treats these as number */
+
+// ── JSON API v3 (2026-09-15) — the JS-like layer ────────────────────────
+// READING ARGS, the 10-line story:
+//
+//   // 1. The handle (zero copies — reads rewrite to the shared input
+//   //    scanner + per-tx input cache):
+//   const o = near.input();
+//   const name = o.name ?? "anon";      // string, fallback on missing
+//   const amt  = o.amount ?? 0;         // NUMBER — typed read, no strToNum
+//   const deep = o.user.name;           // nested ("" on miss — guard it)
+//
+//   // 2. Typed destructuring (ONE single-pass scan for all keys):
+//   const { who, count } = near.args<{ who: string, count: number }>();
+//
+//   // 3. Legacy getters (also nil-on-miss, pair with ??):
+//   const k = near.jsonGetStr("k") ?? "";
+//   const n = near.jsonGetInt("n") ?? 0;
+//
+// Handles are nil-ON-MISS (?? fires exactly when JS ?? would). Legacy
+// `o.key` on PLAIN strings keeps the "" contract (back-compat).
 declare type i32 = number;
 declare type i64 = number;
 declare type u128 = number;
@@ -60,6 +79,12 @@ declare function strIndexOf(haystack: string, needle: string): number;
 declare function strToNum(s: string): number;
 declare function toStr(n: any): string;
 declare function jsonGet(key: string, json: string): string;
+/** Single-pass multi-key extraction from the TX INPUT (2026-09-14):
+ *  jsonExtract("a", "b", "n") → ["val", "", "7"] — raw span strings
+ *  (strings unquoted, numbers as text, objects/arrays as full JSON text,
+ *  missing keys → ""). One scan of the input for ALL keys — cheaper gas
+ *  than N jsonGetStr/Int calls on arg-heavy entrypoints. Max 8 keys. */
+declare function jsonExtract(...keys: string[]): LispArr<string>;
 declare function hexDecode(hex: string): string;
 declare function sha256Hash(msg: string): string;
 // NOTE: predicate builtins return 0/1 ints (dialect semantics), not
@@ -92,10 +117,12 @@ declare function u128Sub(a: any, b: any): string;
 declare function u128Mul(a: any, b: any): string;
 declare function u128Div(a: any, b: any): string;
 declare function u128Mod(a: any, b: any): string;
-declare function u128Lt(a: any, b: any): number;
-declare function u128Gt(a: any, b: any): number;
-declare function u128Eq(a: any, b: any): number;
-declare function u128IsZero(s: string): number;
+// comparisons lower to u128/lt|gt|eq : (str,str) → bool — use directly in
+// if(...); do NOT wrap in toStr() (checker rejects str ≠ bool).
+declare function u128Lt(a: any, b: any): boolean;
+declare function u128Gt(a: any, b: any): boolean;
+declare function u128Eq(a: any, b: any): boolean;
+declare function u128IsZero(s: string): boolean;
 
 // ── the `near` namespace (member passthrough, camelCase auto-snakifies) ─
 
@@ -131,17 +158,49 @@ declare const near: {
    * with `??`:
    *   let g = near.jsonGetStr("g") ?? "default";
    * Bare use on a miss yields nil: strLength sees 0, but str-concat
-   * renders "nil" — guard explicitly.
+   * renders it "nil" — guard explicitly.
+   * Object/array values return the FULL balanced span as raw JSON text
+   * (2026-09-14): `{"o": {"i": 1}}` → `{"i": 1}` (was just "{").
+   * Chain with the 2-arg form or dot-path jsonGet for nested reads.
    */
   jsonGetStr(key: string): string | null;
-  /** {"k": ["a","b"]} → LispArr<string>; max 64 elements, nil if missing */
+  /** 2-arg form (2026-09-14): scan the GIVEN JSON string (not the tx
+   *  input) — same behavior as jsonGet(key, json), dot-paths supported.
+   *  (Previously compiled but silently ignored the second arg.) */
+  jsonGetStr(key: string, json: string): string | null;
+  /** JSON API v3 (2026-09-15): the tx-input HANDLE — `const o =
+   *  near.input()` then `o.prop` / `o.prop ?? fallback`. Property reads
+   *  rewrite at compile time to the shared input scanner + per-tx input
+   *  cache (zero copies). nil-ON-MISS: `o.k ?? fb` fires exactly when JS
+   *  ?? would; a NUMBER fallback selects the typed INT getter (no
+   *  strToNum ceremony). Nested `o.a.b` works ("" contract — guard it);
+   *  ?? on nested paths is rejected until the str-nil buffer op lands.
+   *  The handle itself is not a value (binds a dead nil — never read it
+   *  bare). */
+  input(): LispObj;
+  /** JSON API v3 (2026-09-15): typed single-pass arg binding —
+   *  `const {a, n} = near.args<{a: string, n: number}>()`. ONE
+   *  jsonExtract scan for all keys; number-typed fields arrive parsed.
+   *  Missing fields: str → "", num → 0. Max 8 fields. */
+  args<T>(): T;
+  /** {"k": ["a", 12, {"n":1}]} → LispArr of raw span strings — strings
+   * unquoted, numbers as text, nested objects/arrays as full JSON text
+   * (2026-09-14: nested elements + max raised 64 → 512). nil if missing */
   jsonArr(key: string): LispArr<string>;
   /**
    * Read a numeric arg from the transaction input JSON.
    * Missing key → null — pair with `??`:
    *   let n = near.jsonGetInt("n") ?? 0;
+   * Found-but-non-numeric ("n": "abc", true, {…}) → null too (2026-09-14):
+   * a silent 0 was indistinguishable from a real zero. "12x" → 12 (prefix).
    */
   jsonGetInt(key: string): number | null;
+  /** 2-arg form (2026-09-17): scan the GIVEN JSON string (not the tx
+   *  input) — mirrors jsonGetStr(key, json). Dot-paths supported.
+   *  Miss → null (?? fires). Found-but-non-numeric → null too.
+   *  (Previously compiled but silently ignored the second arg — the
+   *  literal/dynamic key was looked up in the tx input instead.) */
+  jsonGetInt(key: string, json: string): number | null;
   jsonReturnStr(v: string): void;
   jsonReturnInt(v: number): void;
 
@@ -160,8 +219,10 @@ declare const near: {
   attachedDepositHigh(): number;
   accountBalance(): string;
   // compile-time u128 constant as (lo64, hi64) split — see wasm_emit
-  // deposit check: writes attached_deposit to TEMP_MEM, compares u128
-  depositGte(lo64: number, hi64: number): number;
+  // deposit check: writes attached_deposit to TEMP_MEM, compares u128.
+  // Returns a REAL bool (TAG_BOOL) — use `!depositGte(...)` for gates;
+  // `== 0` never fires (tag mismatch → false).
+  depositGte(lo64: number, hi64: number): boolean;
   transfer(toAccountId: string, yoctoAmount: string): void;
   transferU128(toAccountId: string, amount: string): void;
   storeU128(key: string, value: string): void;
@@ -249,12 +310,30 @@ declare const near: {
   promiseBatchThen(p: number, target: string): number;
   promiseBatchActionTransfer(p: number, yoctoAmount: string): void;
   /** Note arg order: deposit (string) BEFORE gas. */
-  promiseBatchActionFunctionCall(p: number, method: string, argsJson: string, yoctoDeposit: string, gas: number): void;
+  promiseBatchActionFunctionCall(p: number, method: string, argsJson: string, yoctoDeposit: string | bigint, gas: number): void;
   promiseBatchActionCreateAccount(p: number): void;
+  /** Global contracts (protocol 66): deploy code immutably under its sha256 code hash. */
+  promiseBatchActionDeployGlobalContract(p: number, code: string): void;
+  /** Global contracts: deploy code updatable by the owner account id. */
+  promiseBatchActionDeployGlobalContractByAccountId(p: number, code: string): void;
+  /** Global contracts: adopt an existing global under this account. */
+  promiseBatchActionUseGlobalContract(p: number, sha256Hex: string): void;
+  /** Function call with gas weight (batched chains). */
+  promiseBatchActionFunctionCallWeight(p: number, method: string, argsJson: string, yoctoDeposit: string | bigint, gas: number, weight: number): void;
+  /** Staking: stake yocto on the validator key. */
+  promiseBatchActionStake(p: number, yoctoAmount: string, publicKey: string): void;
+  /** Add an access key with full access. */
+  promiseBatchActionAddKeyWithFullAccess(p: number, publicKey: string): void;
+  /** Add a function-call access key with allowance. */
+  promiseBatchActionAddKeyWithFunctionCall(p: number, publicKey: string, allowance: string, receiverId: string, methodNames: string[]): void;
+  /** Delete an access key. */
+  promiseBatchActionDeleteKey(p: number, publicKey: string): void;
+  /** Delete this account, sending remaining balance to beneficiary. */
+  promiseBatchActionDeleteAccount(p: number, beneficiaryId: string): void;
   /** Return a promise as this call's outcome (async return pattern). */
   promiseReturn(p: number): void;
   /** Number of promise results readable in this callback. */
-  promiseResultsCount(): number;
+  promiseResultCount(): number;
   /** Whether promise result idx succeeded (1/0) — callbacks only. */
   promiseSucceeded(idx: number): number;
   // Raw-ABI forms (ptr/len pairs, not strings) also exist for stake,

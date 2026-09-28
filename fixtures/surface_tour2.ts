@@ -62,7 +62,10 @@ export function inputEcho(): string {
 }
 
 export function iterProbe(): string {
-  // storage iteration — mock hosts are noops; must not trap
+  // storage_iter_* are DEPRECATED on current protocol (verified on testnet
+  // 2026-09-11: "Attempted to call deprecated host function
+  // storage_iter_prefix"). This probe pins that fidelity: the call must
+  // TRAP with mainnet's exact wording, never silently iterate.
   let a = near.iterPrefix("st2:");
   let b = near.iterNext(a);
   return `iter:${b}`;

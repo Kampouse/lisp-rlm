@@ -32,6 +32,10 @@ let num_val v =
 
 // === Polymorphic Arithmetic ===
 // If either operand is Float, use float arithmetic. Otherwise integer.
+// DIVERGENCE (documented, 2026-09-03): the trailing Num 0 fallback does NOT match
+// Rust — num_arith_checked (bytecode.rs:4617) hard-errors on non-numeric operands.
+// num_arith is the HISTORICAL lenient model kept for existing proofs; new proofs
+// must use num_arith_strict, which mirrors Rust exactly.
 val num_arith : a:lisp_val -> b:lisp_val
   -> (int -> int -> int)
   -> (ffloat -> ffloat -> ffloat)
@@ -43,6 +47,29 @@ let num_arith a b int_op float_op =
   | Num x,   Float y -> Float (float_op (ff_of_int x) y)
   | Num x,   Num y   -> Num (int_op x y)
   | _, _              -> Num 0
+
+// === Strict arithmetic (RUST GROUND TRUTH) ===
+// None = the Rust VM raises Err("type error: {op} expects numbers").
+// Float mixing: Rust promotes to f64 (float_op); Num/Num takes int_op.
+val num_arith_strict : a:lisp_val -> b:lisp_val
+  -> (int -> int -> int)
+  -> (ffloat -> ffloat -> ffloat)
+  -> Tot (option lisp_val)
+let num_arith_strict a b int_op float_op =
+  match a, b with
+  | Float x, Float y -> Some (Float (float_op x y))
+  | Float x, Num y   -> Some (Float (float_op x (ff_of_int y)))
+  | Num x,   Float y -> Some (Float (float_op (ff_of_int x) y))
+  | Num x,   Num y   -> Some (Num (int_op x y))
+  | _, _              -> None
+
+// The two agree whenever strict succeeds.
+val num_arith_strict_agrees : a:lisp_val -> b:lisp_val
+  -> i_op:(int -> int -> int) -> f_op:(ffloat -> ffloat -> ffloat)
+  -> Lemma
+  (requires Some? (num_arith_strict a b i_op f_op))
+  (ensures (match num_arith_strict a b i_op f_op with Some w -> w == num_arith a b i_op f_op | None -> false))
+let num_arith_strict_agrees a b i_op f_op = ()
 
 // === Polymorphic Numeric Comparison (THE FIX) ===
 // Float-aware comparison. No truncation.

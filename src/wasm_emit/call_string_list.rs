@@ -12,7 +12,11 @@ use super::*;
 impl WasmEmitter {
     /// Domain entry (wired into call.rs try_domain! chain). Unknown ops must
     /// return "__not_handled__" so the dispatcher falls through.
-    pub(crate) fn call_string_list(&mut self, op: &str, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+    pub(crate) fn call_string_list(
+        &mut self,
+        op: &str,
+        a: &[LispVal],
+    ) -> Result<Vec<Instruction<'static>>, String> {
         match op {
             "str-split" => {
                 if a.len() != 2 {
@@ -60,7 +64,11 @@ impl WasmEmitter {
     fn emit_runtime_alloc_dyn(&mut self, count_i: u32) -> Vec<Instruction<'static>> {
         let tmp = self.local_idx("__rad_tmp");
         let new_ptr = self.local_idx("__rad_new");
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
         let mem_limit = (self.memory_pages as i64) * 65536;
         vec![
             Instruction::I64Const(56),
@@ -108,7 +116,11 @@ impl WasmEmitter {
 
     /// (string->list s) → list of 1-char views. len 0 → empty list.
     fn str_to_list(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
         let (mut v, len_i, ptr_i) = self.str_unwrap(&a[0], "s2l");
         let lp_i = self.local_idx("__s2l_lp");
         let cnt_i = self.local_idx("__s2l_cnt");
@@ -192,7 +204,11 @@ impl WasmEmitter {
         filter_empties: bool,
         action: SplitAction,
     ) -> Vec<Instruction<'static>> {
-        let ma0 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let ma0 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
         let i_i = self.local_idx(&format!("__{}_i", pfx));
         let start_i = self.local_idx(&format!("__{}_start", pfx));
         let j_i = self.local_idx(&format!("__{}_j", pfx));
@@ -300,7 +316,11 @@ impl WasmEmitter {
                     v.push(Instruction::I64Shl);
                     v.push(Instruction::I64Const(5));
                     v.push(Instruction::I64Or);
-                    v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                    v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 3,
+                        memory_index: 0,
+                    }));
                     v.push(Instruction::LocalGet(w_i));
                     v.push(Instruction::I64Const(1));
                     v.push(Instruction::I64Add);
@@ -334,7 +354,7 @@ impl WasmEmitter {
         v.push(Instruction::Br(0));
         v.push(Instruction::End); // Loop
         v.push(Instruction::End); // Block
-        // tail: action(start, len)
+                                  // tail: action(start, len)
         let tail_guard = filter_empties; // only emit part when non-empty
         match action {
             SplitAction::Count => {
@@ -381,7 +401,11 @@ impl WasmEmitter {
                 fill.push(Instruction::I64Shl);
                 fill.push(Instruction::I64Const(5));
                 fill.push(Instruction::I64Or);
-                fill.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 }));
+                fill.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
                 fill.push(Instruction::LocalGet(w_i));
                 fill.push(Instruction::I64Const(1));
                 fill.push(Instruction::I64Add);
@@ -403,9 +427,21 @@ impl WasmEmitter {
 
     /// (str-split s delim) filter_empties=false → interp semantics (Rust
     /// split, empties dropped). (str-split-exact ...) keep all parts.
-    fn str_split_emit(&mut self, a: &[LispVal], keep_empties: bool) -> Result<Vec<Instruction<'static>>, String> {
-        let ma0 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+    fn str_split_emit(
+        &mut self,
+        a: &[LispVal],
+        keep_empties: bool,
+    ) -> Result<Vec<Instruction<'static>>, String> {
+        let ma0 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
         let d_str = match &a[1] {
             LispVal::Str(s) => s.clone(),
             _ => return Err("str-split: delimiter must be a string literal".into()),
@@ -477,7 +513,11 @@ impl WasmEmitter {
     /// (str-chunk s n) — interp port: n pieces, piece size ceil(total/n).
     /// n <= 0 traps (interp errors on n=0).
     fn str_chunk(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
         let (mut v, len_i, ptr_i) = self.str_unwrap(&a[0], "schk");
         let n_i = self.local_idx("__schk_n");
         let cs_i = self.local_idx("__schk_cs"); // chunk size
@@ -615,9 +655,21 @@ impl WasmEmitter {
     /// str-join(sep-literal, list) and list->string(list) — shared: elements
     /// passed through __to_string (matches interp's stringify), converted
     /// raws cached in a temp array so conversion runs once.
-    fn str_join_emit(&mut self, a: &[LispVal], list_arg_idx: usize) -> Result<Vec<Instruction<'static>>, String> {
-        let ma0 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+    fn str_join_emit(
+        &mut self,
+        a: &[LispVal],
+        list_arg_idx: usize,
+    ) -> Result<Vec<Instruction<'static>>, String> {
+        let ma0 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
         // sep literal (may be "" for list->string)
         let (sep_bytes, sep_base): (Vec<u8>, u32) = if list_arg_idx == 1 {
             match &a[0] {

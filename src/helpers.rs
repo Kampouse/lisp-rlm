@@ -2,13 +2,50 @@ use crate::types::LispVal;
 
 /// All builtin function names recognized by the VM and tree-walker.
 pub const BUILTIN_NAMES: &[&str] = &[
-    "+", "-", "*", "/", "mod",
-    "=", "==", "!=", "/=", "<", ">", "<=", ">=",
-    "list", "vec", "vec-nth", "vec-assoc", "vec-len", "vec-conj", "vec-contains?", "vec-slice", "vec?", "car", "cdr", "cons", "len", "append", "nth",
-    "str-cat", "str-concat", "str-contains", "to-string", "str-length",
-    "str-substring", "str-split", "str-split-exact", "str-trim",
-    "str-index-of", "str-upcase", "str-downcase",
-    "str-starts-with", "str-ends-with", "str=", "str!=",
+    "+",
+    "-",
+    "*",
+    "/",
+    "mod",
+    "=",
+    "==",
+    "!=",
+    "/=",
+    "<",
+    ">",
+    "<=",
+    ">=",
+    "list",
+    "vec",
+    "vec-nth",
+    "vec-assoc",
+    "vec-len",
+    "vec-conj",
+    "vec-contains?",
+    "vec-slice",
+    "vec?",
+    "car",
+    "cdr",
+    "cons",
+    "len",
+    "append",
+    "nth",
+    "str-cat",
+    "str-concat",
+    "str-contains",
+    "to-string",
+    "str-length",
+    "str-substring",
+    "str-split",
+    "str-split-exact",
+    "str-trim",
+    "str-index-of",
+    "str-upcase",
+    "str-downcase",
+    "str-starts-with",
+    "str-ends-with",
+    "str=",
+    "str!=",
     "json-decode-bytes",
     "nil?",
     "list?",
@@ -20,7 +57,13 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "to-int",
     "to-num",
     "type?",
-    "u64-and", "u64-or", "u64-xor", "u64-shr", "u64-shl", "u64-not", "u64-mul-hi",
+    "u64-and",
+    "u64-or",
+    "u64-xor",
+    "u64-shr",
+    "u64-shl",
+    "u64-not",
+    "u64-mul-hi",
     "dict",
     "dict/get",
     "dict/set",
@@ -73,10 +116,6 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "http-get-json",
     "llm",
     "llm-code",
-    "rlm-set",
-    "rlm-get",
-    "final",
-    "eval",
     "contract-check-param",
     "contract-check-return",
     "contract-wrap",
@@ -94,7 +133,6 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "rollback-to",
     "rlm",
     "read-all",
-    "read",
     "load-file",
     "sub-rlm",
     "rlm-tokens",
@@ -219,7 +257,6 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "inexact->exact",
     // Runtime
     "now",
-    "reset-eval-budget",
     "elapsed",
     "sleep",
     "save-state",
@@ -243,50 +280,168 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "string-suffix?",
     "string-prefix?",
     "str->num",
-    "tag-test", "get-field",
+    "tag-test",
+    "get-field",
     // NEAR mock builtins
-    "near-reset", "near-promises", "near-register", "near-register-source", "near-contracts",
-    "near/store", "near/load", "near/remove", "near/has", "near/has_key", "near/kv", "near/storage_usage",
-    "near/storage_set", "near/storage_get", "near/storage_has", "near/storage_remove",
-    "near/storage_write", "near/storage_read", "near/storage_has_key",
-    "near/storage_iter_prefix", "near/storage_iter_next",
-    "storage-iter-prefix", "storage_iter_prefix", "storage-iter-next", "storage_iter_next",
-    "near/account_id", "near/signer_id", "near/predecessor_id", "near/block_height", "near/block_timestamp",
-    "near/attached_deposit", "near/prepaid_gas", "near/random_seed", "near/input",
-    "near/return", "near/return_str", "near/return_json", "near/json_return_str",
-    "near/panic", "near/abort", "near/assert", "near/require",
-    "near/log", "near/log_str",
-    "near/promise_create", "near/promise_then", "near/promise_and",
-    "near/promise_results_count", "near/promise_result", "near/promise_return",
-    "near/call", "near/call-await", "near/transfer", "near/transfer_u128", "near/deploy_contract",
-    "near/batch_create", "near/batch_action_create", "near/batch_action_function_call",
-    "near/batch_action_transfer", "near/batch_action_deploy_contract", "near/batch_action_stake",
-    "near/batch_action_add_key", "near/batch_action_delete_key", "near/batch_action_delete_account",
-    "near/batch_action_delete_key_full_access", "near/batch_action_delete_key_function_call",
+    "near-reset",
+    "near-promises",
+    "near-register",
+    "near-register-source",
+    "near-contracts",
+    "near/store",
+    "near/load",
+    "near/remove",
+    "near/has",
+    "near/has_key",
+    "near/kv",
+    "near/storage_usage",
+    "near/storage_set",
+    "near/storage_get",
+    "near/storage_has",
+    "near/storage_remove",
+    "near/storage_write",
+    "near/storage_read",
+    "near/storage_has_key",
+    "near/storage_iter_prefix",
+    "near/storage_iter_next",
+    "storage-iter-prefix",
+    "storage_iter_prefix",
+    "storage-iter-next",
+    "storage_iter_next",
+    "near/account_id",
+    "near/signer_id",
+    "near/predecessor_id",
+    "near/block_height",
+    "near/block_timestamp",
+    "near/attached_deposit",
+    "near/prepaid_gas",
+    "near/random_seed",
+    "near/input",
+    "near/return",
+    "near/return_str",
+    "near/return_json",
+    "near/json_return_str",
+    "near/panic",
+    "near/abort",
+    "near/assert",
+    "near/require",
+    "near/log",
+    "near/log_str",
+    "near/promise_create",
+    "near/promise_then",
+    "near/promise_and",
+    "near/promise_results_count",
+    "near/promise_result",
+    "near/promise_return",
+    // Raw promise BATCH forms (the emitter/corpus surface — production
+    // callers like outlayer-oracle/nostr-gov use these names). The
+    // interpreter's legacy aliases (near/batch_*) stay; these were missing
+    // from the COMPILE allowlist, so any define using them failed
+    // "compilation failed for define" — found by the promise differential
+    // harness 2026-09-10.
+    "near/promise_batch_create",
+    "near/promise_batch_then",
+    "near/promise_batch_action_create_account",
+    "near/promise_batch_action_deploy_contract",
+    "near/promise_batch_action_function_call",
+    "near/promise_batch_action_function_call_weight",
+    "near/promise_batch_action_transfer",
+    "near/promise_batch_action_stake",
+    "near/promise_batch_action_add_key_with_full_access",
+    "near/promise_batch_action_add_key_with_function_call",
+    "near/promise_batch_action_delete_key",
+    "near/promise_batch_action_delete_account",
+    // global-contract + state-init + gas-key batch family (2026-09-27: the
+    // compile allowlist never got these — any define using them failed
+    // "compilation failed for define"; found by the promise differential
+    // harness when adding use_global_contract coverage)
+    "near/promise_batch_action_state_init",
+    "near/promise_batch_action_state_init_by_account_id",
+    "near/promise_batch_action_deploy_global_contract",
+    "near/promise_batch_action_deploy_global_contract_by_account_id",
+    "near/promise_batch_action_use_global_contract",
+    "near/promise_batch_action_use_global_contract_by_account_id",
+    "near/promise_batch_action_transfer_to_gas_key",
+    "near/promise_batch_action_add_gas_key_with_full_access",
+    "near/promise_batch_action_add_gas_key_with_function_call",
+    "near/call",
+    "near/call-await",
+    "near/transfer",
+    "near/transfer_u128",
+    "near/deploy_contract",
+    "near/batch_create",
+    "near/batch_action_create",
+    "near/batch_action_function_call",
+    "near/batch_action_transfer",
+    "near/batch_action_deploy_contract",
+    "near/batch_action_stake",
+    "near/batch_action_add_key",
+    "near/batch_action_delete_key",
+    "near/batch_action_delete_account",
+    "near/batch_action_delete_key_full_access",
+    "near/batch_action_delete_key_function_call",
     "near/batch_action_delete_key_with_access_key",
     "near/batch_commit",
-    "near/keccak256", "near/keccak512", "near/sha256",
-    "near/ed25519_verify", "near/ecdsa_verify", "near/hmac_sha256",
-    "near/iter_prefix", "near/iter_range", "near/iter_next",
-    "near/config", "near/current_account_id", "near/signer_account_id", "near/predecessor_account_id",
+    "near/keccak256",
+    "near/keccak512",
+    "near/sha256",
+    "near/ed25519_verify",
+    "near/ecdsa_verify",
+    "near/hmac_sha256",
+    "near/iter_prefix",
+    "near/iter_range",
+    "near/iter_next",
+    "near/config",
+    "near/current_account_id",
+    "near/signer_account_id",
+    "near/predecessor_account_id",
     // u128 builtins (string-based decimal values, NEAR yocto scale)
-    "u128/add", "u128/sub", "u128/mul", "u128/div", "u128/mod",
-    "u128/lt", "u128/gt", "u128/eq",
-    "u128/from-i64", "u128/to-i64", "u128/is-zero",
+    "u128/add",
+    "u128/sub",
+    "u128/mul",
+    "u128/div",
+    "u128/mod",
+    "u128/lt",
+    "u128/gt",
+    "u128/eq",
+    "u128/from-i64",
+    "u128/to-i64",
+    "u128/is-zero",
     // u128 address family (raw limbs in linear memory — wasm_emit/call_u128.rs;
     // names that don't collide with the string-based spec, commit 4b1403e)
-    "u128/store", "u128/load", "u128/load_high", "u128/new",
-    "u128/from_yocto", "u128/to_str", "u128/from_str",
-    "u128/fit_i64", "u128/checked_to_i64", "u128/to_i64", "u128/from_i64",
+    "u128/store",
+    "u128/load",
+    "u128/load_high",
+    "u128/new",
+    "u128/from_yocto",
+    "u128/to_str",
+    "u128/from_str",
+    "u128/fit_i64",
+    "u128/checked_to_i64",
+    "u128/to_i64",
+    "u128/from_i64",
     // interp ports of wasm_emit/call_core.rs intrinsics (surface_parity, T6 class)
-    "wrap-add", "wrap-sub", "wrap-mul", "muldiv", "isqrt",
-    "band", "bor", "bnot", "shl", "shr",
+    "wrap-add",
+    "wrap-sub",
+    "wrap-mul",
+    "muldiv",
+    "isqrt",
+    "band",
+    "bor",
+    "bnot",
+    "shl",
+    "shr",
     // near/kv-get: runtime twin of near/kv (eval_near_builtin) — was missing
     // from the compile gate, so lisp-run rejected it (GAPS t18/t19)
     "near/kv-get",
     // wallet-factory byte/string builtins (wasm_emit/call_string.rs, commit fb825ba)
-    "str-len", "str-contains-byte", "str-repeat", "hex-encode", "base64-decode",
-    "near/store-bytes", "near/load-bytes",
+    "str-len",
+    "str-contains-byte",
+    "str-repeat",
+    "hex-encode",
+    "base64-decode",
+    "near/store-bytes",
+    "near/load-bytes",
     "tag-test",
     "get-field",
     "sha256",
@@ -311,10 +466,7 @@ pub fn is_builtin_name(name: &str) -> bool {
 pub fn is_truthy(v: &LispVal) -> bool {
     !matches!(
         v,
-        LispVal::Nil
-            | LispVal::Bool(false)
-            | LispVal::Num(0)
-            | LispVal::Float(0.0)
+        LispVal::Nil | LispVal::Bool(false) | LispVal::Num(0) | LispVal::Float(0.0)
     )
 }
 
@@ -438,8 +590,8 @@ pub fn do_arith_checked(
     } else {
         let init = as_num(&args[0])?;
         let res: Result<i64, String> = args[1..].iter().try_fold(init, |a, b| {
-            let r = op_int(a, as_num(b)?)
-                .ok_or_else(|| format!("integer overflow in {}", op_name))?;
+            let r =
+                op_int(a, as_num(b)?).ok_or_else(|| format!("integer overflow in {}", op_name))?;
             crate::bytecode::check_num_range(r, op_name)
         });
         Ok(LispVal::Num(res?))
@@ -515,7 +667,12 @@ pub fn match_pattern(pattern: &LispVal, value: &LispVal) -> Option<Vec<(String, 
             // Tagged sum-type pattern: (:type::variant ?f1 ?f2 ...)
             if let LispVal::Sym(tag) = &pats[0] {
                 if tag.contains("::") && !tag.starts_with('?') {
-                    if let LispVal::Tagged { type_name, variant_id, fields } = value {
+                    if let LispVal::Tagged {
+                        type_name,
+                        variant_id,
+                        fields,
+                    } = value
+                    {
                         if tag != &format!("{}::{}", type_name, variant_id) {
                             return None;
                         }
@@ -696,7 +853,7 @@ pub fn json_set_impl(json: &str, key: &str, encoded_value: &str) -> String {
         }
         let matched = (i - key_start) == key.len() && &json[key_start..i] == key;
         i += 1; // past closing quote
-        // skip ws, optional ':', ws
+                // skip ws, optional ':', ws
         while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\n' | b'\r') {
             i += 1;
         }
@@ -819,7 +976,7 @@ pub fn get_doc(name: &str) -> Option<&'static str> {
         "str-upcase" | "string-upcase" => "(str-upcase s) — Uppercase.",
         "str-downcase" | "string-downcase" => "(str-downcase s) — Lowercase.",
         "str-replace" | "string-replace" => "(str-replace s old new) — Replace substring.",
-        "str-join" => "(str-join sep lst) — Join list of strings with separator. Separator FIRST.",
+        "str-join" => "(str-join lst sep) — Join list of strings with separator.",
 
         // Predicates
         "nil?" | "null?" => "(nil? x) — Is x nil?",
@@ -905,33 +1062,58 @@ pub struct TypeVariant {
     pub n_fields: u8,
 }
 
-thread_local! {
-    static TYPE_REGISTRY: RefCell<HashMap<String, TypeVariant>> = RefCell::new(HashMap::new());
-}
+// Type registry: a REAL global (Mutex), not thread_local. The compile
+// entry points run on a dedicated big-stack thread (see run_deep — the
+// wasm emitter's recursive descent needs 4+ MB of stack for large real
+// contracts; a thread_local registry would silently empty on that thread
+// and break deftype constructor resolution across parse→emit splits).
+static TYPE_REGISTRY: std::sync::LazyLock<std::sync::Mutex<HashMap<String, TypeVariant>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 /// Register a type definition. Silently ignores duplicate constructor names.
 pub fn register_type(type_name: &str, variants: &[(&str, u8)]) {
-    TYPE_REGISTRY.with(|reg| {
-        let mut reg = reg.borrow_mut();
-        for (i, (name, n_fields)) in variants.iter().enumerate() {
-            let variant = TypeVariant {
-                type_name: type_name.to_string(),
-                variant_id: i as u16,
-                n_fields: *n_fields,
-            };
-            reg.entry(name.to_string()).or_insert(variant);
-        }
-    });
+    let mut reg = TYPE_REGISTRY.lock().unwrap();
+    for (i, (name, n_fields)) in variants.iter().enumerate() {
+        let variant = TypeVariant {
+            type_name: type_name.to_string(),
+            variant_id: i as u16,
+            n_fields: *n_fields,
+        };
+        reg.entry(name.to_string()).or_insert(variant);
+    }
 }
 
 /// Look up a constructor. Returns None if not a registered constructor.
 pub fn lookup_constructor(name: &str) -> Option<TypeVariant> {
-    TYPE_REGISTRY.with(|reg| reg.borrow().get(name).cloned())
+    TYPE_REGISTRY.lock().unwrap().get(name).cloned()
 }
 
 /// Clear all registered types. Used by tests.
 pub fn clear_type_registry() {
-    TYPE_REGISTRY.with(|reg| reg.borrow_mut().clear());
+    TYPE_REGISTRY.lock().unwrap().clear();
+}
+
+/// Stack headroom for the compiler's recursive passes. The wasm emitter's
+/// expr() descent over deeply nested IR (long function bodies chain into
+/// nested let/begin forms — one level per statement) needs ~4 MB for a
+/// 1300-line real contract and grows with body size; the default 2 MiB
+/// thread stack overflows (found compiling the PLONK verifier inside a
+/// cargo-test thread — abort, not a catchable panic). 256 MiB of VIRTUAL
+/// reservation costs nothing until touched.
+const DEEP_STACK_BYTES: usize = 256 * 1024 * 1024;
+
+/// Run `f` on a dedicated big-stack thread (scoped — borrows non-'static
+/// data). Panics inside propagate to the caller on join, preserving error
+/// reporting. Every public compile entry point runs through this.
+pub(crate) fn run_deep<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(DEEP_STACK_BYTES)
+            .spawn_scoped(s, f)
+            .expect("spawn deep-stack compiler thread")
+            .join()
+            .expect("deep-stack compiler thread panicked")
+    })
 }
 
 /// Split a define's trailing items into (optional type annotation, body items).

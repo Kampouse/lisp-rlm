@@ -10,14 +10,14 @@ impl WasmEmitter {
         self.need_host(0);
         self.need_host(1);
         let mut setup = Vec::new();
-        setup.push(Instruction::I64Const(0));
-        setup.push(Self::host_call(7));
-        setup.push(Instruction::I64Const(0));
-        setup.push(Self::host_call(1));
-        setup.push(Instruction::I64Const(0));
-        setup.push(Instruction::I64Const(INPUT_BUF));
-        setup.push(Self::host_call(0));
-        self.json_get_from_buf(key, value_type, INPUT_BUF, &mut setup)
+        // cached input read (3 host calls once per tx); the setup must END
+        // with the length ON THE STACK (json_get_from_buf's buf_len_setup
+        // contract — the old uncached sequence left register_len's result)
+        let ilen32 = self.local_idx_i32("__jgi32_len");
+        self.emit_input_read_cached(ilen32, &mut setup);
+        setup.push(Instruction::LocalGet(ilen32));
+        setup.push(Instruction::I64ExtendI32U);
+        self.json_get_from_buf(key, value_type, INPUT_CACHE_BUF, &mut setup)
     }
 
     pub fn json_get_wasi(
@@ -52,7 +52,9 @@ impl WasmEmitter {
             v.push(Instruction::I64And);
             v.push(Instruction::I64Const(crate::wasm_emit::TAG_STR as i64));
             v.push(Instruction::I64Eq);
-            v.push(Instruction::If(wasm_encoder::BlockType::Result(ValType::I64)));
+            v.push(Instruction::If(wasm_encoder::BlockType::Result(
+                ValType::I64,
+            )));
             {
                 let jga_len = self.local_idx_i32("__jga_len");
                 let jga_ptr = self.local_idx_i32("__jga_ptr");
@@ -62,7 +64,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(3));
                 v.push(Instruction::I64ShrU);
                 v.push(Instruction::LocalSet(jga_tmp)); // reuse as payload
-                // len = payload >> 32
+                                                        // len = payload >> 32
                 v.push(Instruction::LocalGet(jga_tmp));
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
@@ -78,7 +80,10 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(heap_dst as i32));
                 v.push(Instruction::LocalGet(jga_ptr));
                 v.push(Instruction::LocalGet(jga_len));
-                v.push(Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+                v.push(Instruction::MemoryCopy {
+                    src_mem: 0,
+                    dst_mem: 0,
+                });
                 v.push(Instruction::LocalGet(jga_len));
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(32));
@@ -347,6 +352,82 @@ impl WasmEmitter {
         close!();
         close!();
         close!();
+        // I1-parity fix (2026-09-14): patterns are now the BARE quoted key
+        // (callers no longer glue the colon). After a key match, skip
+        // whitespace and REQUIRE ':' — `{"k" : v}` must match like the
+        // inline scanners (json_get_str/json_get_int I1, 2026-08-27).
+        // cmp_j is dead after the compare loop — reuse as scan cursor.
+        ins.push(Instruction::LocalGet(temp));
+        open_if!();
+        ins.push(Instruction::LocalGet(scan_i));
+        ins.push(Instruction::LocalGet(pat_len));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(cmp_j));
+        open_block!();
+        let colon_ws_block = ls.len() - 1;
+        open_loop!();
+        let colon_ws_loop = ls.len() - 1;
+        ins.push(Instruction::LocalGet(cmp_j));
+        ins.push(Instruction::LocalGet(json_len));
+        ins.push(Instruction::I32GeS);
+        open_if!();
+        br_to!(colon_ws_block);
+        close!();
+        ins.push(Instruction::LocalGet(json_ptr));
+        ins.push(Instruction::LocalGet(cmp_j));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma8.clone()));
+        ins.push(Instruction::LocalSet(ch));
+        ins.push(Instruction::LocalGet(ch));
+        ins.push(Instruction::I32Const(0x20));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::LocalGet(ch));
+        ins.push(Instruction::I32Const(0x09));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        ins.push(Instruction::LocalGet(ch));
+        ins.push(Instruction::I32Const(0x0A));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        ins.push(Instruction::LocalGet(ch));
+        ins.push(Instruction::I32Const(0x0D));
+        ins.push(Instruction::I32Eq);
+        ins.push(Instruction::I32Or);
+        open_if!();
+        ins.push(Instruction::LocalGet(cmp_j));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(cmp_j));
+        br_to!(colon_ws_loop);
+        close!();
+        close!();
+        close!();
+        // non-ws byte at cmp_j (or cmp_j == json_len): require ':'
+        ins.push(Instruction::LocalGet(cmp_j));
+        ins.push(Instruction::LocalGet(json_len));
+        ins.push(Instruction::I32LtS);
+        open_if!();
+        ins.push(Instruction::LocalGet(json_ptr));
+        ins.push(Instruction::LocalGet(cmp_j));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::I32Load8U(ma8.clone()));
+        ins.push(Instruction::I32Const(0x3A));
+        ins.push(Instruction::I32Eq);
+        open_if!();
+        // colon found — scan_i past it; temp stays 1, the break below exits
+        ins.push(Instruction::LocalGet(cmp_j));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(scan_i));
+        open_else!();
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(temp));
+        close!();
+        open_else!();
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(temp));
+        close!();
+        close!();
         ins.push(Instruction::LocalGet(temp));
         open_if!();
         br_to!(scan_block);
@@ -359,24 +440,18 @@ impl WasmEmitter {
         close!();
         close!();
 
-        // Not found: the scan loop exits when scan_i + pat_len > json_len
-        // (or scan_i >= json_len) — either way, if the remaining bytes
-        // cannot hold the pattern, there is no match → return 0. The old
-        // `scan_i >= json_len` guard missed the mid-range exit and fell
-        // through to value extraction, producing garbage (len-0 spans).
-        ins.push(Instruction::LocalGet(scan_i));
-        ins.push(Instruction::LocalGet(pat_len));
-        ins.push(Instruction::I32Add);
-        ins.push(Instruction::LocalGet(json_len));
-        ins.push(Instruction::I32GtS);
+        // Not found gate (I1-parity, 2026-09-14): temp==0 means no key +
+        // colon match survived (bounds exit or colon check failure) →
+        // miss. temp==1 means scan_i already points PAST the colon — the
+        // ws loop below lands on the value. (The old bounds re-check
+        // `scan_i + pat_len > json_len` could false-positive after a
+        // bare-key match near the buffer end: {"a":1} → 5+3 > 7.)
+        ins.push(Instruction::LocalGet(temp));
+        ins.push(Instruction::I32Eqz);
         open_if!();
         ins.push(Instruction::I64Const(0));
         ins.push(Instruction::Return);
         close!();
-        ins.push(Instruction::LocalGet(scan_i));
-        ins.push(Instruction::LocalGet(pat_len));
-        ins.push(Instruction::I32Add);
-        ins.push(Instruction::LocalSet(scan_i));
         open_block!();
         let ws_block = ls.len() - 1;
         open_loop!();
@@ -1694,15 +1769,80 @@ impl WasmEmitter {
             // If still matching after validation
             ins.push(Instruction::LocalGet(temp));
             open_if!();
-            // Set cur_key = k
-            ins.push(Instruction::I32Const(k as i32));
-            ins.push(Instruction::LocalSet(cur_key));
-            // Advance scan_i past pattern
+            // I1-parity (2026-09-14): patterns are bare quoted keys — skip
+            // ws after the key and REQUIRE ':' before extracting. cmp_j is
+            // dead after the compare loop — reuse as the scan cursor.
             ins.push(Instruction::LocalGet(scan_i));
             ins.push(Instruction::LocalGet(key_lens[k]));
             ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalSet(cmp_j));
+            open_block!();
+            let colon_ws_block_k = ls.len() - 1;
+            open_loop!();
+            let colon_ws_loop_k = ls.len() - 1;
+            ins.push(Instruction::LocalGet(cmp_j));
+            ins.push(Instruction::LocalGet(json_len));
+            ins.push(Instruction::I32GeS);
+            open_if!();
+            br_to!(colon_ws_block_k);
+            close!();
+            ins.push(Instruction::LocalGet(json_ptr));
+            ins.push(Instruction::LocalGet(cmp_j));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::I32Load8U(ma8.clone()));
+            ins.push(Instruction::LocalSet(ch));
+            ins.push(Instruction::LocalGet(ch));
+            ins.push(Instruction::I32Const(0x20));
+            ins.push(Instruction::I32Eq);
+            ins.push(Instruction::LocalGet(ch));
+            ins.push(Instruction::I32Const(0x09));
+            ins.push(Instruction::I32Eq);
+            ins.push(Instruction::I32Or);
+            ins.push(Instruction::LocalGet(ch));
+            ins.push(Instruction::I32Const(0x0A));
+            ins.push(Instruction::I32Eq);
+            ins.push(Instruction::I32Or);
+            ins.push(Instruction::LocalGet(ch));
+            ins.push(Instruction::I32Const(0x0D));
+            ins.push(Instruction::I32Eq);
+            ins.push(Instruction::I32Or);
+            open_if!();
+            ins.push(Instruction::LocalGet(cmp_j));
+            ins.push(Instruction::I32Const(1));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::LocalSet(cmp_j));
+            br_to!(colon_ws_loop_k);
+            close!();
+            close!();
+            close!();
+            // non-ws byte at cmp_j (or past end): require ':'
+            ins.push(Instruction::LocalGet(cmp_j));
+            ins.push(Instruction::LocalGet(json_len));
+            ins.push(Instruction::I32LtS);
+            open_if!();
+            ins.push(Instruction::LocalGet(json_ptr));
+            ins.push(Instruction::LocalGet(cmp_j));
+            ins.push(Instruction::I32Add);
+            ins.push(Instruction::I32Load8U(ma8.clone()));
+            ins.push(Instruction::I32Const(0x3A));
+            ins.push(Instruction::I32Eq);
+            open_if!();
+            // colon found — cur_key = k, scan_i past the colon
+            ins.push(Instruction::I32Const(k as i32));
+            ins.push(Instruction::LocalSet(cur_key));
+            ins.push(Instruction::LocalGet(cmp_j));
+            ins.push(Instruction::I32Const(1));
+            ins.push(Instruction::I32Add);
             ins.push(Instruction::LocalSet(scan_i));
             br_to!(try_block); // break out of try-all-keys block → go to value extraction
+            open_else!();
+            ins.push(Instruction::I32Const(0));
+            ins.push(Instruction::LocalSet(temp));
+            close!();
+            open_else!();
+            ins.push(Instruction::I32Const(0));
+            ins.push(Instruction::LocalSet(temp));
+            close!();
             close!(); // match valid
             close!(); // match
         }
@@ -1950,7 +2090,13 @@ impl WasmEmitter {
             ins.push(Instruction::LocalGet(0));
             ins.push(Instruction::I64Store(ma));
         }
-        // found++; continue scan
+        // found++; continue scan. depth=1 restore (2026-09-14): the
+        // object-value balanced copy REUSES the depth local and leaves it
+        // at 0 — without this, every key AFTER an extracted object value
+        // was rejected by the depth-1 gate (extract "outer" killed the
+        // rest of the scan). Applies to all three extraction exits.
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::LocalSet(depth));
         ins.push(Instruction::LocalGet(found));
         ins.push(Instruction::I32Const(1));
         ins.push(Instruction::I32Add);
@@ -2034,7 +2180,14 @@ impl WasmEmitter {
         br_to!(brk_loop);
         close!();
         close!(); // brk
-                  // Store packed result
+                  // the balanced loop breaks ON the closing }/] (copied but not
+                  // consumed) — step past it so the resumed scan doesn't decrement
+                  // depth back to 0 on the leftover closer (2026-09-14)
+        ins.push(Instruction::LocalGet(scan_i));
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::I32Add);
+        ins.push(Instruction::LocalSet(scan_i));
+        // Store packed result
         ins.push(Instruction::I32Const(stdout_buf));
         ins.push(Instruction::LocalGet(cur_key));
         ins.push(Instruction::I32Const(slot_size));
@@ -2057,6 +2210,8 @@ impl WasmEmitter {
             ins.push(Instruction::LocalGet(0));
             ins.push(Instruction::I64Store(ma));
         }
+        ins.push(Instruction::I32Const(1));
+        ins.push(Instruction::LocalSet(depth)); // depth restore (see string branch)
         ins.push(Instruction::LocalGet(found));
         ins.push(Instruction::I32Const(1));
         ins.push(Instruction::I32Add);
@@ -2144,6 +2299,8 @@ impl WasmEmitter {
                 ins.push(Instruction::LocalGet(0));
                 ins.push(Instruction::I64Store(ma));
             }
+            ins.push(Instruction::I32Const(1));
+            ins.push(Instruction::LocalSet(depth)); // depth restore (see string branch)
             ins.push(Instruction::LocalGet(found));
             ins.push(Instruction::I32Const(1));
             ins.push(Instruction::I32Add);
@@ -2287,10 +2444,11 @@ impl WasmEmitter {
                     crate::wasm_emit::USER_BASE | arr_func_idx,
                 ));
             } else {
-                // Key segment - use __json_get
+                // Key segment - use __json_get (bare quoted key — it skips
+                // ws and requires ':' at match time; I1-parity 2026-09-14)
                 let mut pattern = vec![b'"'];
                 pattern.extend(seg_name.as_bytes());
-                pattern.extend_from_slice(b"\":");
+                pattern.push(b'"');
                 let pat_off = self.alloc_data(&pattern) as i64;
                 let pat_len = pattern.len() as i64;
                 let pat_packed = (pat_off as u64) | ((pat_len as u64) << 32);
@@ -2511,7 +2669,7 @@ impl WasmEmitter {
         Ok(v)
     }
 
-/// (near/json_get_arr "key") → TAG_ARRAY of strings from the input JSON:
+    /// (near/json_get_arr "key") → TAG_ARRAY of strings from the input JSON:
     /// {"key": ["a", "b", ...]}. Elements: quoted strings (escape-aware,
     /// raw bytes kept — json_get_str semantics) or bare tokens. Cap 64
     /// elements (M1). Missing key / malformed → nil.
@@ -2524,7 +2682,7 @@ impl WasmEmitter {
         pattern.push(b'"');
         let pat_off = self.alloc_data(&pattern) as i32;
         let pat_len = pattern.len() as i32;
-        const MAXELEM: i32 = 64;
+        const MAXELEM: i32 = 512;
 
         let pos = self.local_idx_i32("__jga_pos");
         let ilen = self.local_idx_i32("__jga_ilen");
@@ -2551,9 +2709,17 @@ impl WasmEmitter {
         let alen = self.local_idx("__jga_alen");
         let result = self.local_idx("__jga_res");
 
-        let ma8 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
-        let ma64 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
-        let ib = INPUT_BUF as i32;
+        let ma8 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
+        let ma64 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
+        let ib = INPUT_CACHE_BUF as i32; // cached input (2026-09-14)
         let scratch = self.heap_bump((8 * MAXELEM) as u32) as i32;
 
         let mut v = Vec::new();
@@ -2602,16 +2768,8 @@ impl WasmEmitter {
         // Block $fail
         v.push(Instruction::Block(BlockType::Empty));
 
-        // input → INPUT_BUF
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(7));
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(1));
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::LocalSet(ilen));
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Const(ib as i64));
-        v.push(Self::host_call(0));
+        // cached input read (ilen is i32 here — direct)
+        self.emit_input_read_cached(ilen, &mut v);
         v.push(Instruction::I32Const(0));
         v.push(Instruction::LocalSet(pos));
         v.push(Instruction::I32Const(0));
@@ -2923,43 +3081,126 @@ impl WasmEmitter {
         v.push(Instruction::I32Const(1));
         v.push(Instruction::LocalSet(wasq));
         v.push(Instruction::Else);
-        // bare-token element: esta = token start; pos ends at , or ]
-        v.push(Instruction::I32Const(0));
-        v.push(Instruction::LocalSet(wasq));
-        v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::LocalSet(esta));
-        v.push(Instruction::Block(BlockType::Empty));
-        v.push(Instruction::Loop(BlockType::Empty));
-        v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::LocalGet(ilen));
-        v.push(Instruction::I32GeS);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2));
+        {
+            // nested element (2026-09-14): '{' or '[' — depth-tracked
+            // balanced span, INCLUDING the closer. pos ends PAST the closer
+            // so the record (pos - esta) covers it and the following
+            // skip_ws + ','/']' check sees the separator. wasq stays 0.
+            v.push(Instruction::LocalGet(bcur));
+            v.push(Instruction::I32Const(0x7B));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::LocalGet(bcur));
+            v.push(Instruction::I32Const(0x5B));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::If(BlockType::Empty));
+            {
+                v.push(Instruction::LocalGet(pos));
+                v.push(Instruction::LocalSet(esta));
+                // depth starts at 0: the opening {/[ (the current byte)
+                // bumps it to 1 — the matching closer returns it to 0
+                v.push(Instruction::I32Const(0));
+                v.push(Instruction::LocalSet(depth));
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(pos));
+                v.push(Instruction::LocalGet(ilen));
+                v.push(Instruction::I32GeS);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::Br(2));
+                v.push(Instruction::End);
+                v.push(Instruction::I32Const(ib));
+                v.push(Instruction::LocalGet(pos));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::I32Load8U(ma8.clone()));
+                v.push(Instruction::LocalSet(bcur));
+                // open: { or [ → depth++
+                v.push(Instruction::LocalGet(bcur));
+                v.push(Instruction::I32Const(0x7B));
+                v.push(Instruction::I32Eq);
+                v.push(Instruction::LocalGet(bcur));
+                v.push(Instruction::I32Const(0x5B));
+                v.push(Instruction::I32Eq);
+                v.push(Instruction::I32Or);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(depth));
+                v.push(Instruction::I32Const(1));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalSet(depth));
+                v.push(Instruction::End);
+                // close: } or ] → depth--; at 0 → step PAST the closer, exit
+                v.push(Instruction::LocalGet(bcur));
+                v.push(Instruction::I32Const(0x7D));
+                v.push(Instruction::I32Eq);
+                v.push(Instruction::LocalGet(bcur));
+                v.push(Instruction::I32Const(0x5D));
+                v.push(Instruction::I32Eq);
+                v.push(Instruction::I32Or);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(depth));
+                v.push(Instruction::I32Const(1));
+                v.push(Instruction::I32Sub);
+                v.push(Instruction::LocalSet(depth));
+                v.push(Instruction::LocalGet(depth));
+                v.push(Instruction::I32Eqz);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(pos));
+                v.push(Instruction::I32Const(1));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalSet(pos));
+                v.push(Instruction::Br(4));
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(pos));
+                v.push(Instruction::I32Const(1));
+                v.push(Instruction::I32Add);
+                v.push(Instruction::LocalSet(pos));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End);
+                v.push(Instruction::End);
+                v.push(Instruction::I32Const(0));
+                v.push(Instruction::LocalSet(wasq));
+            }
+            v.push(Instruction::Else);
+            // bare-token element: esta = token start; pos ends at , or ]
+            v.push(Instruction::I32Const(0));
+            v.push(Instruction::LocalSet(wasq));
+            v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::LocalSet(esta));
+            v.push(Instruction::Block(BlockType::Empty));
+            v.push(Instruction::Loop(BlockType::Empty));
+            v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::LocalGet(ilen));
+            v.push(Instruction::I32GeS);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::Br(2));
+            v.push(Instruction::End);
+            v.push(Instruction::I32Const(ib));
+            v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I32Add);
+            v.push(Instruction::I32Load8U(ma8.clone()));
+            v.push(Instruction::LocalSet(bcur));
+            v.push(Instruction::LocalGet(bcur));
+            v.push(Instruction::I32Const(0x2C));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::LocalGet(bcur));
+            v.push(Instruction::I32Const(0x5D));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::Br(2));
+            v.push(Instruction::End);
+            v.push(Instruction::LocalGet(pos));
+            v.push(Instruction::I32Const(1));
+            v.push(Instruction::I32Add);
+            v.push(Instruction::LocalSet(pos));
+            v.push(Instruction::Br(0));
+            v.push(Instruction::End);
+            v.push(Instruction::End);
+        }
         v.push(Instruction::End);
-        v.push(Instruction::I32Const(ib));
-        v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I32Add);
-        v.push(Instruction::I32Load8U(ma8.clone()));
-        v.push(Instruction::LocalSet(bcur));
-        v.push(Instruction::LocalGet(bcur));
-        v.push(Instruction::I32Const(0x2C));
-        v.push(Instruction::I32Eq);
-        v.push(Instruction::LocalGet(bcur));
-        v.push(Instruction::I32Const(0x5D));
-        v.push(Instruction::I32Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(2));
-        v.push(Instruction::End);
-        v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I32Const(1));
-        v.push(Instruction::I32Add);
-        v.push(Instruction::LocalSet(pos));
-        v.push(Instruction::Br(0));
-        v.push(Instruction::End);
-        v.push(Instruction::End);
-        v.push(Instruction::End);
-        // cap: cnt < 64 else fail
+        v.push(Instruction::End); // end element dispatch if(quote)/else
+                                  // cap: cnt < 64 else fail
         v.push(Instruction::LocalGet(cnt));
         v.push(Instruction::I32Const(MAXELEM));
         v.push(Instruction::I32LtS);
@@ -3169,18 +3410,18 @@ impl WasmEmitter {
             align: 0,
             memory_index: 0,
         };
-        let ib = INPUT_BUF;
+        let ib = INPUT_CACHE_BUF; // cached input (2026-09-14)
         let mut v = Vec::new();
 
-        // Read input to INPUT_BUF
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(7)); // input(0)
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(1)); // register_len(0)
-        v.push(Instruction::LocalSet(ilen));
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Const(ib));
-        v.push(Self::host_call(0)); // read_register(0, ib)
+        // Cached input read (3 host calls once per tx); ilen is i64 here —
+        // the helper's i32 local is wrapped up
+        {
+            let ilen32 = self.local_idx_i32("__js_ilen32");
+            self.emit_input_read_cached(ilen32, &mut v);
+            v.push(Instruction::LocalGet(ilen32));
+            v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::LocalSet(ilen));
+        }
 
         // pos = 0, depth = 0
         v.push(Instruction::I64Const(0));
@@ -3534,9 +3775,15 @@ impl WasmEmitter {
         v.push(Instruction::End);
         v.push(Instruction::End);
 
-        // Parse digits
+        // Parse digits — with a saw-any-digit flag: a found-but-non-numeric
+        // value ("n": "abc", true, {…}) must be NIL so `??` fires, not a
+        // silent 0 indistinguishable from a real zero (2026-09-14). Prefix
+        // rule: "12x" → 12 (digits consumed), "" / "abc" → nil.
+        let sawdg = self.local_idx("__js_sawdg");
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(res));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(sawdg));
         v.push(Instruction::Block(BlockType::Empty));
         v.push(Instruction::Loop(BlockType::Empty));
         v.push(Instruction::LocalGet(pos));
@@ -3566,7 +3813,7 @@ impl WasmEmitter {
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::Br(2));
         v.push(Instruction::End);
-        // res = res*10 + (dg - 0x30)
+        // res = res*10 + (dg - 0x30); sawdg = 1
         v.push(Instruction::LocalGet(res));
         v.push(Instruction::I64Const(10));
         v.push(Instruction::I64Mul);
@@ -3575,6 +3822,8 @@ impl WasmEmitter {
         v.push(Instruction::I64Sub);
         v.push(Instruction::I64Add);
         v.push(Instruction::LocalSet(res));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::LocalSet(sawdg));
         v.push(Instruction::LocalGet(pos));
         v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add);
@@ -3592,9 +3841,16 @@ impl WasmEmitter {
         v.push(Instruction::I64Sub);
         v.push(Instruction::LocalSet(res));
         v.push(Instruction::End); // end if neg
-        // then-branch result: tagged NUM (caller no longer re-tags)
+                                  // found-but-non-numeric (no digit consumed) → NIL (?? fires), not a
+                                  // silent 0 (2026-09-14)
+        v.push(Instruction::LocalGet(sawdg));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Result(ValType::I64)));
         v.push(Instruction::LocalGet(res));
         v.extend(self.emit_tag_num());
+        v.push(Instruction::Else);
+        v.push(Instruction::I64Const(TAG_NIL));
+        v.push(Instruction::End); // end if sawdg
         v.push(Instruction::Else);
         // miss: TAG_NIL
         v.push(Instruction::I64Const(TAG_NIL));
@@ -3612,9 +3868,11 @@ impl WasmEmitter {
         self.need_host(7);
         self.need_host(0);
         self.need_host(1);
+        // I1-parity (2026-09-14): bare quoted key — the scanner below
+        // skips ws after the key and requires ':' at match time.
         let mut pattern = vec![b'"'];
         pattern.extend(key.as_bytes());
-        pattern.extend_from_slice(b"\":");
+        pattern.push(b'"');
         let pat_off = self.alloc_data(&pattern);
         let pat_len = pattern.len() as i64;
         let pos = self.local_idx("__ju_pos");
@@ -3633,22 +3891,21 @@ impl WasmEmitter {
             align: 0,
             memory_index: 0,
         };
-        let ib = INPUT_BUF;
+        let ib = INPUT_CACHE_BUF; // cached input (2026-09-14)
         let mut v = offset_expr;
 
         // Store offset to a temp local
         let off_local = self.local_idx("__ju_offset");
         v.push(Instruction::LocalSet(off_local));
 
-        // Read input to INPUT_BUF
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(7));
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(1));
-        v.push(Instruction::LocalSet(ilen));
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Const(ib));
-        v.push(Self::host_call(0));
+        // Cached input read; ilen is i64 here — wrap up from the i32 local
+        {
+            let ilen32 = self.local_idx_i32("__ju_ilen32");
+            self.emit_input_read_cached(ilen32, &mut v);
+            v.push(Instruction::LocalGet(ilen32));
+            v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::LocalSet(ilen));
+        }
 
         // pos = 0, depth = 0
         v.push(Instruction::I64Const(0));
@@ -3796,6 +4053,79 @@ impl WasmEmitter {
         v.push(Instruction::End);
         v.push(Instruction::End);
         v.push(Instruction::End);
+        // I1-parity (2026-09-14): bare quoted key — skip ws after the key
+        // and REQUIRE ':' (jj is dead after the compare loop — reuse as
+        // cursor; on success jj rests ON the colon, consumed below).
+        v.push(Instruction::LocalGet(mi));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I64Const(pat_len));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(jj));
+        v.push(Instruction::Block(BlockType::Empty));
+        v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(jj));
+        v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64GeS);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2));
+        v.push(Instruction::End);
+        v.push(Instruction::I64Const(ib));
+        v.push(Instruction::LocalGet(jj));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone()));
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(scan_byte));
+        v.push(Instruction::LocalGet(scan_byte));
+        v.push(Instruction::I64Const(0x20));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::LocalGet(scan_byte));
+        v.push(Instruction::I64Const(0x09));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(scan_byte));
+        v.push(Instruction::I64Const(0x0A));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalGet(scan_byte));
+        v.push(Instruction::I64Const(0x0D));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(jj));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(jj));
+        v.push(Instruction::Br(0));
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        // require ':' at jj (or mi = 0)
+        v.push(Instruction::LocalGet(jj));
+        v.push(Instruction::LocalGet(ilen));
+        v.push(Instruction::I64LtS);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(ib));
+        v.push(Instruction::LocalGet(jj));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Load8U(ma8.clone()));
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::I64Const(0x3A));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Else);
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::End);
+        v.push(Instruction::Else);
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(mi));
+        v.push(Instruction::End);
+        v.push(Instruction::End); // end mi==1 colon gate
         v.push(Instruction::LocalGet(mi));
         v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Eq);
@@ -3816,8 +4146,9 @@ impl WasmEmitter {
         v.push(Instruction::I64LtS);
         v.push(Instruction::If(BlockType::Empty));
 
-        v.push(Instruction::LocalGet(pos));
-        v.push(Instruction::I64Const(pat_len));
+        // past the colon (jj rests ON ':' from the colon check above)
+        v.push(Instruction::LocalGet(jj));
+        v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add);
         v.push(Instruction::LocalSet(pos));
 
@@ -4058,19 +4389,11 @@ impl WasmEmitter {
             align: 0,
             memory_index: 0,
         };
-        let ib = INPUT_BUF as i32;
+        let ib = INPUT_CACHE_BUF as i32; // cached input (2026-09-14)
         let mut v = Vec::new();
 
-        // Read input to INPUT_BUF
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(7));
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(1));
-        v.push(Instruction::I32WrapI64);
-        v.push(Instruction::LocalSet(ilen));
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Const(ib as i64));
-        v.push(Self::host_call(0));
+        // Cached input read → INPUT_CACHE_BUF (3 host calls once per tx)
+        self.emit_input_read_cached(ilen, &mut v);
 
         v.push(Instruction::I32Const(0));
         v.push(Instruction::LocalSet(pos));
@@ -4354,6 +4677,14 @@ impl WasmEmitter {
         // close quote that never came (json_get_str "by" on {"by": 3}
         // returned "}"). cok now flags string (1) vs bare token (0);
         // bare tokens keep pos on the first value byte.
+        //
+        // Object/array spanning (2026-09-14): a value starting with '{' or
+        // '[' is returned as the FULL balanced span (raw JSON text, no
+        // unescape) — matching __json_get's dynamic/dot-path behavior.
+        // Before, the quote-branch didn't check cok, so {"o": {"i": 1}}
+        // returned just "{" (the inner "i" quote terminated the scan).
+        let ook = self.local_idx_i32("__jss_ook");
+        let odepth = self.local_idx_i32("__jss_od");
         v.push(Instruction::I32Const(ib));
         v.push(Instruction::LocalGet(pos));
         v.push(Instruction::I32Add);
@@ -4361,6 +4692,21 @@ impl WasmEmitter {
         v.push(Instruction::I32Const(0x22));
         v.push(Instruction::I32Eq);
         v.push(Instruction::LocalSet(cok));
+        // ook = first byte is '{' or '['
+        v.push(Instruction::I32Const(ib));
+        v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Load8U(ma8.clone()));
+        v.push(Instruction::I32Const(0x7B));
+        v.push(Instruction::I32Eq);
+        v.push(Instruction::I32Const(ib));
+        v.push(Instruction::LocalGet(pos));
+        v.push(Instruction::I32Add);
+        v.push(Instruction::I32Load8U(ma8.clone()));
+        v.push(Instruction::I32Const(0x5B));
+        v.push(Instruction::I32Eq);
+        v.push(Instruction::I32Or);
+        v.push(Instruction::LocalSet(ook));
         // if string value: pos += 1 (skip the opening quote)
         v.push(Instruction::LocalGet(cok));
         v.push(Instruction::If(BlockType::Empty));
@@ -4375,14 +4721,22 @@ impl WasmEmitter {
         // backslash escapes, so any value containing \" truncated at the
         // first escaped quote (silent corruption). Now tracks backslash-run
         // parity: a 0x22 closes only when the preceding backslash run is
-        // EVEN (\\" is a real quote, \\" is not). Escapes are NOT
+        // EVEN (\\" is a real quote, \" is not). Escapes are NOT
         // decoded — the raw byte slice is returned (documented semantics).
+        //
+        // Object/array values (ook): depth-tracked balanced scan — quotes
+        // and commas INSIDE the span are data, not terminators. The span
+        // INCLUDES the closing brace/bracket (count it, then exit).
+        // Limitation (same as __json_get): braces inside quoted strings
+        // within the object miscount depth — fine for the contract corpus.
         let bs = self.local_idx_i32("__jss_bs");
         let bcur = self.local_idx_i32("__jss_bcur");
         v.push(Instruction::I32Const(0));
         v.push(Instruction::LocalSet(slen));
         v.push(Instruction::I32Const(0));
         v.push(Instruction::LocalSet(bs));
+        v.push(Instruction::I32Const(0));
+        v.push(Instruction::LocalSet(odepth));
         v.push(Instruction::Block(BlockType::Empty));
         v.push(Instruction::Loop(BlockType::Empty));
         v.push(Instruction::LocalGet(pos));
@@ -4400,57 +4754,114 @@ impl WasmEmitter {
         v.push(Instruction::I32Add);
         v.push(Instruction::I32Load8U(ma8.clone()));
         v.push(Instruction::LocalSet(bcur));
-        // bare token: the value ends at the next , } ] (JSON grammar —
-        // bare tokens are numbers/true/false/null; trailing whitespace
-        // before the delimiter rides along, harmless for str->num)
-        v.push(Instruction::LocalGet(cok));
-        v.push(Instruction::I32Eqz);
+        // ── object/array branch: depth-tracked balanced scan ──
+        v.push(Instruction::LocalGet(ook));
         v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(bcur));
-        v.push(Instruction::I32Const(0x2C));
-        v.push(Instruction::I32Eq);
-        v.push(Instruction::LocalGet(bcur));
-        v.push(Instruction::I32Const(0x7D));
-        v.push(Instruction::I32Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::LocalGet(bcur));
-        v.push(Instruction::I32Const(0x5D));
-        v.push(Instruction::I32Eq);
-        v.push(Instruction::I32Or);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(3));
-        v.push(Instruction::End);
-        v.push(Instruction::End);
-        v.push(Instruction::LocalGet(bcur));
-        v.push(Instruction::I32Const(0x22));
-        v.push(Instruction::I32Eq);
-        v.push(Instruction::If(BlockType::Empty));
-        // quote — real close iff backslash run is even
-        v.push(Instruction::LocalGet(bs));
-        v.push(Instruction::I32Const(1));
-        v.push(Instruction::I32And);
-        v.push(Instruction::I32Eqz);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::Br(3));
-        v.push(Instruction::End);
-        // escaped quote — the escape is consumed by it
-        v.push(Instruction::I32Const(0));
-        v.push(Instruction::LocalSet(bs));
+        {
+            // open: { or [ → depth++
+            v.push(Instruction::LocalGet(bcur));
+            v.push(Instruction::I32Const(0x7B));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::LocalGet(bcur));
+            v.push(Instruction::I32Const(0x5B));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::LocalGet(odepth));
+            v.push(Instruction::I32Const(1));
+            v.push(Instruction::I32Add);
+            v.push(Instruction::LocalSet(odepth));
+            v.push(Instruction::End);
+            // close: } or ] → depth--; at 0 → count this byte and exit.
+            // Br depth: 0=If(depth0), 1=If(close), 2=If(ook), 3=Loop,
+            // 4=measure Block — Br(4) exits the measure loop.
+            v.push(Instruction::LocalGet(bcur));
+            v.push(Instruction::I32Const(0x7D));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::LocalGet(bcur));
+            v.push(Instruction::I32Const(0x5D));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::LocalGet(odepth));
+            v.push(Instruction::I32Const(1));
+            v.push(Instruction::I32Sub);
+            v.push(Instruction::LocalSet(odepth));
+            v.push(Instruction::LocalGet(odepth));
+            v.push(Instruction::I32Eqz);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::LocalGet(slen));
+            v.push(Instruction::I32Const(1));
+            v.push(Instruction::I32Add);
+            v.push(Instruction::LocalSet(slen));
+            v.push(Instruction::Br(4));
+            v.push(Instruction::End);
+            v.push(Instruction::End);
+        }
         v.push(Instruction::Else);
-        // not a quote: extend or reset the backslash run
-        v.push(Instruction::LocalGet(bcur));
-        v.push(Instruction::I32Const(0x5C));
-        v.push(Instruction::I32Eq);
-        v.push(Instruction::If(BlockType::Empty));
-        v.push(Instruction::LocalGet(bs));
-        v.push(Instruction::I32Const(1));
-        v.push(Instruction::I32Add);
-        v.push(Instruction::LocalSet(bs));
-        v.push(Instruction::Else);
-        v.push(Instruction::I32Const(0));
-        v.push(Instruction::LocalSet(bs));
-        v.push(Instruction::End);
-        v.push(Instruction::End);
+        {
+            // bare token (cok==0): the value ends at the next , } ]
+            // (JSON grammar — bare tokens are numbers/true/false/null;
+            // trailing whitespace before the delimiter rides along,
+            // harmless for str->num). Br(4): 0=If(delim), 1=If(!cok),
+            // 2=If(ook), 3=Loop, 4=measure Block.
+            v.push(Instruction::LocalGet(cok));
+            v.push(Instruction::I32Eqz);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::LocalGet(bcur));
+            v.push(Instruction::I32Const(0x2C));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::LocalGet(bcur));
+            v.push(Instruction::I32Const(0x7D));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::LocalGet(bcur));
+            v.push(Instruction::I32Const(0x5D));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::I32Or);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::Br(4));
+            v.push(Instruction::End);
+            v.push(Instruction::End);
+            // string value (cok==1): quote closes iff backslash run is
+            // even. GATED on cok (2026-09-14): ungated, a quote inside a
+            // non-string context terminated the scan early.
+            v.push(Instruction::LocalGet(bcur));
+            v.push(Instruction::I32Const(0x22));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::LocalGet(cok));
+            v.push(Instruction::I32Const(1));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::I32And);
+            v.push(Instruction::If(BlockType::Empty));
+            // quote — real close iff backslash run is even
+            v.push(Instruction::LocalGet(bs));
+            v.push(Instruction::I32Const(1));
+            v.push(Instruction::I32And);
+            v.push(Instruction::I32Eqz);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::Br(4));
+            v.push(Instruction::End);
+            // escaped quote — the escape is consumed by it
+            v.push(Instruction::I32Const(0));
+            v.push(Instruction::LocalSet(bs));
+            v.push(Instruction::Else);
+            // not a (closing) quote: extend or reset the backslash run
+            v.push(Instruction::LocalGet(bcur));
+            v.push(Instruction::I32Const(0x5C));
+            v.push(Instruction::I32Eq);
+            v.push(Instruction::If(BlockType::Empty));
+            v.push(Instruction::LocalGet(bs));
+            v.push(Instruction::I32Const(1));
+            v.push(Instruction::I32Add);
+            v.push(Instruction::LocalSet(bs));
+            v.push(Instruction::Else);
+            v.push(Instruction::I32Const(0));
+            v.push(Instruction::LocalSet(bs));
+            v.push(Instruction::End);
+            v.push(Instruction::End);
+        }
+        v.push(Instruction::End); // end if(ook)/else
         v.push(Instruction::LocalGet(slen));
         v.push(Instruction::I32Const(1));
         v.push(Instruction::I32Add);
@@ -4494,7 +4905,25 @@ impl WasmEmitter {
         v.push(Instruction::LocalGet(rh_dst64));
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::LocalSet(rh_dst));
+        // Object/array spans copy RAW (verbatim JSON text — no unescape:
+        // the span must round-trip as valid JSON). Strings/bare tokens
+        // unescape as before.
+        v.push(Instruction::LocalGet(ook));
+        v.push(Instruction::If(BlockType::Empty));
+        {
+            v.push(Instruction::LocalGet(rh_dst));
+            v.push(Instruction::LocalGet(src_addr));
+            v.push(Instruction::LocalGet(slen));
+            v.push(Instruction::MemoryCopy {
+                src_mem: 0,
+                dst_mem: 0,
+            });
+            v.push(Instruction::LocalGet(slen));
+            v.push(Instruction::LocalSet(out_len));
+        }
+        v.push(Instruction::Else);
         v.extend(self.emit_unescape_copy(rh_dst, src_addr, slen, out_len));
+        v.push(Instruction::End);
         // Return packed: (out_len << 32) | rh_dst
         v.push(Instruction::LocalGet(out_len));
         v.push(Instruction::I64ExtendI32U);
@@ -4911,6 +5340,9 @@ impl WasmEmitter {
         let str_ptr = self.local_idx("__jrs_ptr");
         let str_len = self.local_idx("__jrs_len");
         let ci = self.local_idx("__jrs_ci");
+        let oi = self.local_idx("__jrs_oi");
+        let bb = self.local_idx("__jrs_b");
+        let dg = self.local_idx("__jrs_dg");
         let mut v = Vec::new();
 
         // Write prefix: {"result": "
@@ -4966,42 +5398,195 @@ impl WasmEmitter {
         v.push(Instruction::End);
         v.push(Instruction::End);
 
-        // Copy string bytes to ib + prefix_len
+        // ── bounds: INPUT_BUF is 16 KiB; worst-case escape is 6× (\u00XX).
+        // 12 (prefix) + 6×2700 + 2 (suffix) = 16214 ≤ 16384. Longer strings trap.
+        v.push(Instruction::LocalGet(str_len));
+        v.push(Instruction::I64Const(2700));
+        v.push(Instruction::I64GtS);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Unreachable);
+        v.push(Instruction::End);
+
+        // ── escape copy loop: JSON-escape each source byte into ib+oi ──
+        // oi = output index (starts at prefix_len), ci = input index.
+        // " → \"  backslash → \\  \n \r \t → 2-byte, <0x20 → \u00XX, else verbatim
+        v.push(Instruction::I64Const(prefix_len));
+        v.push(Instruction::LocalSet(oi));
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(ci));
         v.push(Instruction::Block(BlockType::Empty));
         v.push(Instruction::Loop(BlockType::Empty));
+        // if ci >= str_len: break
         v.push(Instruction::LocalGet(ci));
         v.push(Instruction::LocalGet(str_len));
         v.push(Instruction::I64GeS);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::Br(2));
         v.push(Instruction::End);
-        // dst
-        v.push(Instruction::I64Const(ib + prefix_len));
-        v.push(Instruction::LocalGet(ci));
-        v.push(Instruction::I64Add);
-        v.push(Instruction::I32WrapI64);
-        // src
+        // b = load8u(str_ptr + ci); ci += 1
         v.push(Instruction::LocalGet(str_ptr));
         v.push(Instruction::LocalGet(ci));
         v.push(Instruction::I64Add);
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::I32Load8U(ma8.clone()));
-        v.push(Instruction::I32Store8(ma8.clone()));
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(bb));
         v.push(Instruction::LocalGet(ci));
         v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add);
         v.push(Instruction::LocalSet(ci));
+        // dispatch on b: if/else-if chain — each arm writes escaped bytes at ib+oi
+        // write2(c1, c2): store8(ib+oi, c1); store8(ib+oi+1, c2); oi += 2
+        fn push_store8_at_oi(
+            ib: i64,
+            oi: u32,
+            off: i64,
+            val: i64,
+            ma8: &wasm_encoder::MemArg,
+        ) -> Vec<Instruction<'static>> {
+            vec![
+                Instruction::I64Const(ib),
+                Instruction::LocalGet(oi),
+                Instruction::I64Add,
+                Instruction::I64Const(off),
+                Instruction::I64Add,
+                Instruction::I32WrapI64,
+                Instruction::I64Const(val),
+                Instruction::I32WrapI64,
+                Instruction::I32Store8(ma8.clone()),
+            ]
+        }
+        fn push_oi_add(oi: u32, n: i64) -> Vec<Instruction<'static>> {
+            vec![
+                Instruction::LocalGet(oi),
+                Instruction::I64Const(n),
+                Instruction::I64Add,
+                Instruction::LocalSet(oi),
+            ]
+        }
+        // guard digit: dg + (dg < 10 ? 48 : 87) — ASCII hex digit
+        fn push_hex_digit(dg: u32) -> Vec<Instruction<'static>> {
+            vec![
+                Instruction::LocalGet(dg),
+                Instruction::I64Const(10),
+                Instruction::I64LtS,
+                Instruction::If(BlockType::Result(wasm_encoder::ValType::I64)),
+                Instruction::I64Const(48),
+                Instruction::Else,
+                Instruction::I64Const(87),
+                Instruction::End,
+                Instruction::I64Add,
+            ]
+        }
+        // arm guard: (b == code) or (b < 32) for the unicode arm
+        v.push(Instruction::LocalGet(bb));
+        v.push(Instruction::I64Const(0x22));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.extend(push_store8_at_oi(ib, oi, 0, 92, &ma8)); // backslash
+        v.extend(push_store8_at_oi(ib, oi, 1, 34, &ma8)); // '"'
+        v.extend(push_oi_add(oi, 2));
+        v.push(Instruction::Else);
+        v.push(Instruction::LocalGet(bb));
+        v.push(Instruction::I64Const(0x5C));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.extend(push_store8_at_oi(ib, oi, 0, 92, &ma8));
+        v.extend(push_store8_at_oi(ib, oi, 1, 92, &ma8)); // '\\'
+        v.extend(push_oi_add(oi, 2));
+        v.push(Instruction::Else);
+        v.push(Instruction::LocalGet(bb));
+        v.push(Instruction::I64Const(10));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.extend(push_store8_at_oi(ib, oi, 0, 92, &ma8));
+        v.extend(push_store8_at_oi(ib, oi, 1, 110, &ma8)); // 'n'
+        v.extend(push_oi_add(oi, 2));
+        v.push(Instruction::Else);
+        v.push(Instruction::LocalGet(bb));
+        v.push(Instruction::I64Const(13));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.extend(push_store8_at_oi(ib, oi, 0, 92, &ma8));
+        v.extend(push_store8_at_oi(ib, oi, 1, 114, &ma8)); // 'r'
+        v.extend(push_oi_add(oi, 2));
+        v.push(Instruction::Else);
+        v.push(Instruction::LocalGet(bb));
+        v.push(Instruction::I64Const(9));
+        v.push(Instruction::I64Eq);
+        v.push(Instruction::If(BlockType::Empty));
+        v.extend(push_store8_at_oi(ib, oi, 0, 92, &ma8));
+        v.extend(push_store8_at_oi(ib, oi, 1, 116, &ma8)); // 't'
+        v.extend(push_oi_add(oi, 2));
+        v.push(Instruction::Else);
+        v.push(Instruction::LocalGet(bb));
+        v.push(Instruction::I64Const(32));
+        v.push(Instruction::I64LtU);
+        v.push(Instruction::If(BlockType::Empty));
+        // \u00XX: 92,117,48,48,hi,lo
+        v.extend(push_store8_at_oi(ib, oi, 0, 92, &ma8));
+        v.extend(push_store8_at_oi(ib, oi, 1, 117, &ma8)); // 'u'
+        v.extend(push_store8_at_oi(ib, oi, 2, 48, &ma8)); // '0'
+        v.extend(push_store8_at_oi(ib, oi, 3, 48, &ma8)); // '0'
+                                                          // hi digit: dg = b>>4; dg += (dg<10 ? 48 : 87); store8(ib+oi+4, dg)
+        v.push(Instruction::LocalGet(bb));
+        v.push(Instruction::I64Const(4));
+        v.push(Instruction::I64ShrU);
+        v.push(Instruction::LocalSet(dg));
+        v.push(Instruction::LocalGet(dg));
+        v.extend(push_hex_digit(dg));
+        v.push(Instruction::LocalSet(dg));
+        v.push(Instruction::I64Const(ib));
+        v.push(Instruction::LocalGet(oi));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I64Const(4));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(dg));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Store8(ma8.clone()));
+        // lo digit: dg = b&15; dg += (dg<10 ? 48 : 87); store8(ib+oi+5, dg)
+        v.push(Instruction::LocalGet(bb));
+        v.push(Instruction::I64Const(15));
+        v.push(Instruction::I64And);
+        v.push(Instruction::LocalSet(dg));
+        v.push(Instruction::LocalGet(dg));
+        v.extend(push_hex_digit(dg));
+        v.push(Instruction::LocalSet(dg));
+        v.push(Instruction::I64Const(ib));
+        v.push(Instruction::LocalGet(oi));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I64Const(5));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(dg));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Store8(ma8.clone()));
+        v.extend(push_oi_add(oi, 6));
+        v.push(Instruction::Else);
+        // verbatim byte
+        v.push(Instruction::I64Const(ib));
+        v.push(Instruction::LocalGet(oi));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::LocalGet(bb));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I32Store8(ma8.clone()));
+        v.extend(push_oi_add(oi, 1));
+        v.push(Instruction::End); // close if(<32)
+        v.push(Instruction::End); // close if(9)
+        v.push(Instruction::End); // close if(13)
+        v.push(Instruction::End); // close if(10)
+        v.push(Instruction::End); // close if(92)
+        v.push(Instruction::End); // close if(34)
+                                  // loop continue
         v.push(Instruction::Br(0));
         v.push(Instruction::End);
         v.push(Instruction::End);
 
-        // Write '"}'
+        // Write '"}' at oi
         v.push(Instruction::I64Const(ib));
-        v.push(Instruction::LocalGet(str_len));
-        v.push(Instruction::I64Add);
-        v.push(Instruction::I64Const(prefix_len));
+        v.push(Instruction::LocalGet(oi));
         v.push(Instruction::I64Add);
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::I64Const(0x22));
@@ -5009,19 +5594,17 @@ impl WasmEmitter {
         v.push(Instruction::I32Store8(ma8.clone()));
 
         v.push(Instruction::I64Const(ib));
-        v.push(Instruction::LocalGet(str_len));
+        v.push(Instruction::LocalGet(oi));
         v.push(Instruction::I64Add);
-        v.push(Instruction::I64Const(prefix_len + 1));
+        v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add);
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::I64Const(b'}' as i64));
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::I32Store8(ma8.clone()));
 
-        // value_return(prefix_len + str_len + 2, ib)
-        v.push(Instruction::I64Const(prefix_len));
-        v.push(Instruction::LocalGet(str_len));
-        v.push(Instruction::I64Add);
+        // value_return(oi + 2, ib)
+        v.push(Instruction::LocalGet(oi));
         v.push(Instruction::I64Const(2));
         v.push(Instruction::I64Add);
         v.push(Instruction::I64Const(ib));
@@ -5058,18 +5641,17 @@ impl WasmEmitter {
             align: 0,
             memory_index: 0,
         };
-        let ib = INPUT_BUF;
+        let ib = INPUT_CACHE_BUF; // cached input (2026-09-14)
         let mut v = Vec::new();
 
-        // Read input to INPUT_BUF
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(7));
-        v.push(Instruction::I64Const(0));
-        v.push(Self::host_call(1));
-        v.push(Instruction::LocalSet(ilen));
-        v.push(Instruction::I64Const(0));
-        v.push(Instruction::I64Const(ib));
-        v.push(Self::host_call(0));
+        // Cached input read; ilen is i64 here — wrap up from the i32 local
+        {
+            let ilen32 = self.local_idx_i32("__ja_ilen32");
+            self.emit_input_read_cached(ilen32, &mut v);
+            v.push(Instruction::LocalGet(ilen32));
+            v.push(Instruction::I64ExtendI32U);
+            v.push(Instruction::LocalSet(ilen));
+        }
 
         v.push(Instruction::I64Const(0));
         v.push(Instruction::LocalSet(pos));
@@ -6035,12 +6617,12 @@ impl WasmEmitter {
             memory_index: 0,
         };
         let stdout_buf: i32 = 2097152; // 2MB — must be above heap (200000-999980) and wit adapter (900000+)
-        // Params: 0=json packed, 1=key packed, 2=value packed (all i64)
-        // 21 i32 locals (indices 3..23):
-        //   3=scan_i 4=ch 5=depth 6=in_str 7=esc 8=key_len 9=key_ptr 10=val_len
-        //   11=val_ptr 12=match 13=key_start 14=kj 15=value_start 16=value_end
-        //   17=close_pos 18=brace_pos 19=member_count 20=out_len 21=json_len
-        //   22=json_ptr 23=seg_len
+                                       // Params: 0=json packed, 1=key packed, 2=value packed (all i64)
+                                       // 21 i32 locals (indices 3..23):
+                                       //   3=scan_i 4=ch 5=depth 6=in_str 7=esc 8=key_len 9=key_ptr 10=val_len
+                                       //   11=val_ptr 12=match 13=key_start 14=kj 15=value_start 16=value_end
+                                       //   17=close_pos 18=brace_pos 19=member_count 20=out_len 21=json_len
+                                       //   22=json_ptr 23=seg_len
         let mut ins: Vec<Instruction<'static>> = Vec::new();
 
         // ── micro-helpers (plain fns over fixed local indices) ──

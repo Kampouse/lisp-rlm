@@ -73,6 +73,7 @@ pub const SENTINEL_BUF: i32 = MAX_MEMORY_P2 - OL_RET_AREA_SIZE - HTTP_MAX_RESPON
 pub const SENTINEL_BUF_SIZE: i32 = HTTP_MAX_RESPONSE;
 
 /// OutLayer return area - at very END of memory
+pub const ENV_JSON_BUF: i32 = 8192; // env JSON table (env/get v7)
 pub const OL_RET_AREA_BASE: i32 = MAX_MEMORY_P2 - OL_RET_AREA_SIZE;
 
 /// HTTP scratch area for poll results, future handles, etc.
@@ -554,6 +555,7 @@ pub fn build_http_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::Wor
             "near-vrf",
             "outlayer-wallet",
             "near-rpc",
+            "near-storage",
         ];
         for subdir in dep_dirs {
             let dir = wit_dir.join(subdir);
@@ -615,6 +617,7 @@ pub fn build_combined_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser:
             "near-vrf",
             "outlayer-wallet",
             "near-rpc",
+            "near-storage",
         ];
         for subdir in dep_dirs {
             let dir = wit_dir.join(subdir);
@@ -654,7 +657,8 @@ pub fn build_combined_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser:
 /// Build WIT metadata for the outlayer-nohttp world — outlayer host functions
 /// WITHOUT wasi:http. Used when the program needs storage/view/call/etc. but
 /// does NOT make HTTP requests, avoiding HTTP adapter traps in inlayer runtime.
-pub fn build_outlayer_nohttp_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser::WorldId), String> {
+pub fn build_outlayer_nohttp_wit_metadata(
+) -> Result<(wit_parser::Resolve, wit_parser::WorldId), String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let mut resolve = wit_parser::Resolve::new();

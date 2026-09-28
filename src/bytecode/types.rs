@@ -1,5 +1,5 @@
 //! Core bytecode types: BinOp, Ty, Op, CompiledLoop
-//! 
+//!
 //! Extracted from bytecode/mod.rs for maintainability.
 //! These types are used by the bytecode compiler and runtime.
 

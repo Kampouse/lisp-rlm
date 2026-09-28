@@ -6,12 +6,14 @@ package near:outlayer-combined@0.1.0;
 
 world outlayer-nohttp {
     import outlayer:api/host@0.1.0;
+    import wasi:cli/environment@0.2.12;
+    import near:storage/api@0.1.0;
 
-    import wasi:io/poll@0.2.2;
-    import wasi:io/error@0.2.2;
-    import wasi:io/streams@0.2.2;
-    import wasi:cli/stdin@0.2.2;
-    import wasi:cli/stdout@0.2.2;
+    import wasi:io/poll@0.2.12;
+    import wasi:io/error@0.2.12;
+    import wasi:io/streams@0.2.12;
+    import wasi:cli/stdin@0.2.12;
+    import wasi:cli/stdout@0.2.12;
 
-    export run: func(input: string) -> result<string>;
+    export wasi:cli/run@0.2.12;
 }

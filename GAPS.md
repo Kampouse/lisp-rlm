@@ -156,7 +156,14 @@
 
 ## Known Bugs
 
+- [ ] **`jsonSet` value operand: local holding a `jsonQuote` result gets escape-re-quoted** — `jsonSet(obj, k, v)` where `v` is a LOCAL that received `jsonQuote(x)` via assignment produces `"\"https://…\""` (value re-quoted with escaped quotes). Passing `jsonQuote(...)` DIRECTLY as the operand is clean (runtime or literal, both fine); `__json_set` itself copies verbatim (both write paths are `copy_from(11,10)`), so the corruption is in the branch-assign/local read path — root cause NOT found (time-boxed). **Workaround (proven): only pass direct `jsonQuote(...)` calls (or pre-quoted literals) as json-set values** — launch.ts uses exclusively proven shapes. Repro: /tmp/jq2.ts t2 (local → escapes) vs t3 (direct → clean); t4 proves the local's bytes are clean before the jsonSet.
 - [ ] **REPL `:call!` stale value** — After mutable call, `:call` shows stale value (block cache). Wait a block and retry. Minor.
+- [x] ~~**17 batch-action arms passed TAGGED promise indices**~~ — **FIXED 2026-09-27.** `promise_batch_create` returns a tagged idx (n<<3); the batch-action arms in `src/wasm_emit/call_near_promise.rs` (deploy_contract, stake, add_key×2, delete_key, delete_account, set_refund_to, state_init×2, fn_call_weight, deploy_global×2, use_global×2, transfer_to_gas_key, add_gas_key×2) forwarded it raw — only worked while the batch was promise #0 (tagged 0 == raw 0). A `transferU128` BEFORE the chain (launchpad excess-deposit refund) made the token batch #1 → host received 8 → live tx on gcfactory26 failed "8 does not correspond to existing promises"; near-mock's DAG also panicked InvalidPromiseIndex. Fix: every arm stages idx → untag → `local_idx("batch_idx")` → LocalGet at host position. Regression: tests/test_promise_differential.rs `batch_idx_after_transfer_u128_parity` (also fixed the test harness: interp_schedule had no `"transfer"` arm, so `near/transfer_u128` promises vanished from the canonical schedule while still consuming an index).
+- [ ] **Nested user-call as direct call argument can lose its last char** — `bigDiv(mm(), y)` (call result passed STRAIGHT as an argument, not via a local) truncated the arg by one char depending on module layout: dd (direct) gave floor(1e49/y) while ddv (`const v = mm(); bigDiv(v, y)`) and ddlit (literal arg) gave the correct floor(1e50/y) — same emitter, same inputs, different function count/layout. State-dependent slot aliasing (free_locals recycling vs anonymous stage slots is the suspect — reserve_stage_slots indices are never tracked in `locals`, and inner-let scope exit pushes recycled indices). **Workaround (proven): bind nested call results to a local before passing** — pool.ts does this in buy/ft_on_transfer/quote_buy. Repro: projects/launchpad pool-e2e arc 2026-09-27; probes in /tmp/math_helpers.ts history (dd vs ddv/ddlit).
+- [x] ~~**`!u128IsZero(x)` never fired**~~ — **FIXED 2026-09-27.** statically_bool listed u128/gt|lt|gte|lte|eq but not u128/is-zero, so `!` took the (= x 0) path: TAG_BOOL vs TAG_NUM 0 never tag-matches → the branch never fired (ft_resolve_transfer logged correct values but persisted nothing — receipts 69BZLn5L-era). Fixed: added u128/is-zero to both statically_bool arms. Regression: tests/test_ts_pool_math.rs (not_u128_is_zero_branches_on_*).
+- [x] ~~**String local + u128 call in `+` → u128/add parse trap**~~ — **FIXED 2026-09-27.** The `+` dispatch's stringy_nonnumeric had no Identifier arm: `out = out + u128Div(...)` with `let out = ""` fell through to u128/add → parse("") trap (pool.ts bigDiv). Fixed: Identifier arm (string local → concat), EXCLUDING bigint locals — and scan_one_bigint_let now marks purely-numeric string inits ("0") as bigint so `let acc = "0"; acc = acc + u128Add(acc, x)` stays ARITHMETIC (dual STRING_LOCALS/BIGINT_LOCALS membership is expected; bigint wins). Regression: tests/test_ts_pool_math.rs (big_div_exact_over_u128_boundary, bigint_local_plus_u128_call_stays_arithmetic).
+- [x] ~~**near-mock scenario args double-encoded**~~ — **FIXED 2026-09-27.** Scenario steps with string args re-serialized via Value::to_string() — the contract received `{\"k\":\"v\"}` (outer quotes + escaped inner quotes = invalid JSON) and every jsonGetStr returned nil; object-form args were fine, so older scenarios never caught it. Fix: Value::String passes through verbatim (src/bin/near_mock/mod.rs).
+- [x] ~~**near-mock receipts Interrupt under scenario ticker**~~ — **FIXED 2026-09-27.** sub_execute set epoch deadline u64::MAX — wasmtime computes deadline = current_epoch + delta, so once the scenario ticker advanced the epoch at all, k + u64::MAX wrapped below current → every receipt trapped instantly (cross mode never ticked, so latent). Fix: u64::MAX/2 (src/bin/near_mock/promises.rs).
 - [x] ~~**Double value_return**~~ — **FIXED.** `RETURN_FLAG` global prevents export wrapper's `value_return` when `near/return` was called explicitly.
 - [x] ~~**Combined logging**~~ — **FIXED.** `(near/log "str" num)` uses two separate `log_utf8` calls.
 
@@ -245,10 +252,13 @@ Tagged value scheme (3-bit tag in bottom bits):
   instead of "indices out of range". Errors now propagate (f79d26c).
 
 ### KNOWN — pinned, not fixed (see t-file markers)
-- **User-fn arity: no validation (ARITY-PIN, t20).** `(f2 1)` with
-  (define (f2 a b) ...) runs with b = nil (arith-coerced to 0); `(f2 1 2 3)`
-  silently drops the extra arg. Should be a hard error. Fix needs agreement
-  between the inlining compiler path and vm_call_lambda — not a one-liner.
+- ~~**User-fn arity: no validation (ARITY-PIN, t20).**~~ → RESOLVED
+  2026-09-14 (stale entry — it was fixed 2026-08-26, round-3 fix 3, and
+  this bullet just never got struck). Verified live: direct calls, apply,
+  anonymous lambdas, variadic minimums all hard-error "arity mismatch:
+  <fn> expects N args, got M"; the wasm emitter has a static call-site
+  check (call.rs) and the typechecker checks too (checker.rs). Choke
+  point: run_compiled_lambda.
 - **Compiled arithmetic coerces non-numbers to 0** — ✅ FIXED (round-3
   fix 4, 2026-08-26): bare arith/comparisons now hard-error on non-numeric
   operands; see round-3 section below. String numerics via u128/*.
@@ -261,23 +271,25 @@ Tagged value scheme (3-bit tag in bottom bits):
   via I64DivU, so interp-Err ≡ wasm-trap holds). (b) tree-walker `mod` used
   `i64::rem_euclid` via do_arith — zero divisor panicked; now guarded (every
   divisor in the fold). Stale pin updated: core_language test_mod_zero_divisor.
-- **Inline builtin table shadows the dispatch modules with weaker
-  semantics** (t13): str-length counts BYTES ("héllo" → 6; dispatch impl
-  counts chars), str-split does NOT filter empty parts ("" → (""); dispatch
-  filters), to-int of an unparseable string → 0 (dispatch errors). The
-  dispatch versions are dead code for these names. Whichever semantics is
-  canonical, the two tables should agree.
+- ~~**Inline builtin table shadows the dispatch modules with weaker
+  semantics** (t13):~~ → RESOLVED 2026-09-14 — the tables now AGREE, on
+  the wasm-anchored semantics: str-length counts BYTES ("héllo" → 6;
+  matches wasm + inline + str-substring's byte-index decision), str-split
+  KEEPS empty parts ("a,,b" → 3; "" → 1), to-int of an unparseable
+  string returns 0 (matches wasm __str_to_num + inline). The dispatch
+  arms were divergent dead code; lisp-run behavior is unchanged (inline
+  table always shadowed). Pinned by t13-string-edges.lisp + probes.
 - **Recursion depth semantics** (t11, pinned as actual): direct
   self-recursion compiles to iterative CallSelf frames — NO depth limit;
   the 1M-op execution budget is the only ceiling (sum-to 10000 = 50005000
   runs clean). Mutual recursion and value-dispatched calls DO cross
   run_compiled_lambda each hop and are capped at max_call_depth=256 total
   crossings (254-deep chain + body = 256 OK; 255 fails).
-- **lisp-run surface gaps vs this tracker** (t18/t19): near/has_key,
-  near/kv-get (write near/kv exists, read does not — asymmetric),
-  isqrt, wrap-add: all compile-error "unknown function or special form"
-  in the CLI despite being listed as implemented above (they exist only on
-  other paths).
+- ~~**lisp-run surface gaps vs this tracker** (t18/t19):~~ → STALE, all
+  work now (verified 2026-09-14): near/has_key, isqrt, wrap-add,
+  near/kv-get AND near/kv (the write — this entry had the asymmetry
+  BACKWARDS: the write is `near/kv` not `kv-set`; kv round-trip
+  probe passes: `(near/kv 99 "k")` → `(near/kv-get "k")` → 99).
 
 ### Semantics pinned as ACTUAL (not bugs)
 - Floats print via Rust `{}`: 5.0 → "5" (no trailing .0); 2.5 → "2.5".
@@ -739,3 +751,378 @@ Board after: battery 1587/0 · gauntlet 69/69 · twins 68/68 trace-equivalent
 (FT branch live in BOTH twins; phantom-token execute pinned to
 MOCK-CHAIN-FAILURE). The TS-twin live-vs-mock discrepancy from this morning is
 explained: same noop-host bug — mock swallowed what live NEAR executed.
+
+## 2026-09-10 — FUZZ HARNESS DEEP-COMPARE UPGRADE (step 1 of the bug-finding plan)
+
+`tests/test_wasm_fuzz.rs` compared only tagged i64 words for Num/Bool/Nil and
+checked ONLY TAG VALIDITY for Str/List returns (`tag > 5 → INVALID`) — string
+CONTENT, list CONTENT, and the print/log channel were invisible. Three blind
+spots, one latent harness bug, one real divergence found while upgrading:
+
+1. **HARNESS BUG (fixed)**: local tag constants predated TAG_ARRAY=6 — a valid
+   array return would have been reported as "INVALID TAG" (false positive).
+   Decoding now uses `src/tagged_value.rs` as single source of truth.
+2. **DEEP COMPARE (new)**: Str returns compare byte-exact (ptr/len read from
+   post-run memory); List returns deep-decode as TAG_ARRAY `[count, elems...]`
+   and compare element-wise. Out-of-bounds ptr/len/count report as CORRUPT —
+   heap-corruption-class signal, not a skip.
+3. **LOG CHANNEL (new)**: `log_utf8` (near host 28 — note ARG ORDER is
+   (len, ptr)) is now implemented for capture; wasm logs must match the
+   trailing VM log entries (wasm runs only `run`, so suffix match).
+   `EvalState` gained a `logs: Vec<String>` field; `print`/`println` record
+   there (stdout behavior unchanged).
+4. **TRAP CLASS (new)**: wasm trap while ClosureVM succeeded now reports as
+   "WASM TRAP" instead of a generic error string.
+5. **REAL DIVERGENCE FOUND — pinned**: `(print x)` returns `Str(rendered)` in
+   the ClosureVM (src/dispatch/dispatch_state.rs print arm) but `nil` in wasm
+   (src/wasm_emit/call_near_io.rs print arm ends with TAG_NIL). WASM is the
+   reference (2026-08-26 anchor) → the INTERPRETER is wrong here; pinned in
+   the harness as `is_pinned_print_return` until dispatch is aligned.
+   TODO: make interpreter print return Nil (one-line fix + tests).
+
+Status: all 66 tests green (61 existing + 5 new deep probes: string content,
+list content, nested lists, list-of-strings, print channel, mixed
+str-cat/number->string). No new VM↔wasm value divergences on the existing
+corpus — the generators don't emit string/list-returning programs yet, so the
+deep compare bites on hand probes and any future generator extension
+(strategies for str-cat/substring/list builds are the natural next grow).
+
+Next (step 2): host-effect diffing — run the wasm leg under near-mock
+MockChain and compare storage writes + promise schedule + input(); targets
+the G-14/promise_result/storage-string-safety/mem[56] bug class. The print
+channel captured here is the template.
+
+## 2026-09-10 (evening) — STRING/LIST GENERATORS + 2 REAL BUGS FIXED
+
+Extended the fuzz generators to the string/list surface (all-3-surface ops
+only: str-cat, str-concat, str-contains, str-index-of, str-length,
+str-substring, to-string; list, len, car, cdr, cons, nth) with 8 new props
++ edge probes (unicode, empty-needle, coercion, to-string of every type).
+Also added `FuzzVerdict` — skips are now VISIBLE (Matched / Pinned /
+SkippedVmError / SkippedCompile / Uncomparable), so probes assert
+NON-VACUOUS comparison (an earlier probe had passed vacuously through the
+compile-skip path — `number->string` is interpreter-only).
+
+**BUG 1 (FIXED): `to-string` quoted strings in the interpreter.**
+`(to-string "abc")` → `"\"abc\""` (Display-based) in BOTH VM dispatches
+(dispatch_strings.rs + bytecode/mod.rs) but `"abc"` (identity) in wasm —
+`__int_to_str` does TAG_STR passthrough (wasm_emit/helpers.rs:1430). Found
+by `edge_to_string_types` on day one of content comparison. Fixed both
+interpreter paths to Str-identity; `tests/core_language.rs
+::test_to_string_string` re-pinned (was pinning the wrong side). No
+corpus/runtime usage relied on quoting; `json-quote` is the designated
+quoting op. Clojure `str` semantics agree.
+
+**BUG 2 (FIXED): `print`/`println` failed the type checker outside near
+mode.** Checker only accepted compiler builtins via `near_wildcard`
+(checker.rs:227) — fuzz-mode programs with print died "undefined variable
+'print'", so EVERY print program was SkippedCompile and the log channel
+NEVER fired (my morning GAPS entry overstated this — the machinery existed
+but was unreachable). Fixed: print/println added to the pure builtin table
+as `'a → nil` (nil per the wasm reference; interpreter's Str return stays a
+pinned divergence). `prop_print_channel` now compares logs for real.
+
+**Pins added**: `(str-cat "x" 42)` errors (no coercion — to-string is the
+bridge) → SkippedVmError, pinned in `edge_str_cat_coercion`.
+
+Status: test_wasm_fuzz 78/0 (+2 ignored pre-existing); core_language 160/0;
+surface_parity, source_differential, fuzz_test, limb_arith, norvig all
+green. test_api_sweep failures are environmental (needs
+`target/release/near-mock` built — pre-existing, not related).
+
+No divergences found in: unicode str-length/contains (byte-vs-char
+semantics agree), empty-needle index-of/contains, substring ranges,
+nested/mixed lists, list print rendering, string×control-flow.
+
+Known follow-ups: (1) HOF×strings (map over string lists) unprobed —
+HofCompile coverage exists in F* but no VM-level probe; (2) the print
+surface is now compilable in fuzz mode — prop_print_channel should
+eventually print LISTS and structured values, not just leaves; (3)
+to-string of floats/vecs (uncomparable channels) still skip.
+
+## 2026-09-10 (night) — STEP 2: PROMISE DIFFERENTIAL HARNESS — 5 REAL BUGS
+
+New harness `tests/test_promise_differential.rs`: interpreter promise-log
+(EvalState.near_promises) vs REAL wasm host-call schedule. The wasm leg runs
+compile_near output under wasmtime with REAL host implementations (promise
+family hosts 30-35/39-43, storage, registers, input, log) that RECORD the
+schedule; the interp leg's mock log is normalized to the same canonical ops
+(sugar expanded: near/call → [create, return]; near/call-await → [batch_create,
+fn_call, batch_then(self), fn_call(cb), return]). Compares schedule + final
+storage. The fuzz harness stubs hosts as return-0 — promise programs were
+NEVER differentially testable before this.
+
+**BUG 1 (interp, fixed): promise ABI gas/deposit SWAPPED.** Interp read
+gas@3/deposit@4 for promise_create, promise_then,
+promise_batch_action_function_call; the emitter (and corpus — outlayer-oracle,
+nostr-gov) use DEPOSIT-before-GAS. The mock log recorded swapped values since
+forever; nothing caught it because nothing diffed the log against reality.
+Interp now matches the wasm ABI; deposits recorded as decimal strings
+(Num or Str accepted — matches emitter u128-str machinery).
+
+**BUG 2 (emitter, fixed, CRITICAL): near/promise_then gas sent to host
+STILL TAGGED — 8× the intended gas.** The arm pushed `gas` without
+emit_untag (create/batch arms untag). Every on-chain promise_then callback
+was attached with 8× the specified gas (wasting gas; corrupting gas-budget
+arithmetic). Fixed: untag added (call_near_promise.rs then-arm).
+
+**BUG 3 (interp, fixed): raw near/promise_batch_* forms UNCOMPILABLE.**
+BUILTIN_NAMES (compile allowlist) had the near/batch_* legacy aliases but
+NOT the near/promise_batch_* names the emitter/corpus/production use — any
+define using them failed "compilation failed for define". Dispatch arms
+existed; only compilation was blocked. All promise_batch forms added.
+
+**BUG 4 (interp, fixed): near/call-await missing from the dispatch ROUTING
+GATE.** eval_near_builtin_match omitted it → "unknown builtin" at runtime
+(arm existed inside eval_near_builtin). One-line gate fix.
+
+**BUG 5 (emitter, fixed, CRITICAL — DeFi-grade): near/call with a STRING
+deposit attached GARBAGE yocto.** The arm untagged the deposit value and
+stored it as the low-64 — for a decimal-string deposit (the ONLY way to
+express amounts > 2^61, and what production passes) that wrote the TAGGED
+STRING BITS as the amount. Repro showed deposit=107374182688 instead of
+10^24. Fixed: runtime tag branch — TAG_STR → u128 decimal parse helper
+(same machinery as batch forms), else → zero-extended Num low-64. Checker
+near/call deposit retyped int→any (str deposits were rejected); interp
+near/call records Str deposits.
+
+Also: explicit exports now suppress the auto _run wrapper export (harness
+worked around by exporting run explicitly — this is emitter behavior, not
+changed, but worth knowing: a program with ONLY (export "cb" ...) has NO
+entry export).
+
+Status: test_promise_differential 11/11 (create/then/and/return/batch ops,
+near/call + call-await sugar, storage roundtrip, str+num deposits, missing
+keys). Regression sweep green: core_language 160, test_wasm_fuzz 78,
+wallet_diff 16, money_safety 16, surface_parity, safe_corpus,
+source_differential, norvig, fuzz_test. test_regression: 27 failures are
+ENVIRONMENTAL (wasm-tools CLI not installed — spawn error at test line 40,
+unrelated to these changes).
+
+Next: (1) promise_result consumption diffing needs receipt EXECUTION —
+near-mock MockChain is the right venue (scenario-style, library mode);
+(2) prop-style generators for promise programs (random batch graphs) once
+the surface settles; (3) re-audit on-chain callers of promise_then for the
+8× gas budget impact (callback gas was over-attached — funds wasted, not
+lost, but gas accounting in callers may now under-attach after the fix).
+
+## 2026-09-11 → 09-13 — THE zk STACK SESSIONS (8 compiler bugs, 4 zk apps, gas engine)
+
+### CRITICAL: the embedded near-mock was 6 months stale — full re-sync
+
+`src/bin/near_mock/` (the near-mock binary the test suite runs against)
+was a 6-month-old copy that predated the entire finite-wasm gas engine,
+error-chain surfacing, and receipt-semantics fixes. Every gas number
+from the embedded mock was ~65× LOW on compute-heavy code. Full re-sync
+from the standalone crate (`../near-mock/src/near_mock/`). Files changed:
+all 13. Integration fixes: crate::→crate:: path rewrites, wasmparser
+0.228→0.248, skills/ include path adjustment.
+
+Post-sync calibration (verified against testnet receipts):
+- mock compute deltas match mainnet within 0.2%
+- fn receipts: mock 33.0 Tgas vs chain 33.6 Tgas (1.8% delta)
+- full Poseidon: mock 145.2 vs chain 146.1 Tgas
+
+### Compiler bugs found by REAL CONTRACTS (8 fixed + 2 near-mock)
+
+All found by the fp254 CIOS probe or the Groth16 verifier contract —
+no fuzz harness caught any of these:
+
+1. **Hoist-order reversal** — while-body `let` re-inits inserted at
+   begin-position REVERSED source order. `const ai = e1; let C =
+   e2(reads ai)` ran C first (saw nil→0/stale). The fp254 “values
+   vanish” repro. Fix: in-source-order emission.
+
+2. **In-place declarations** — mid-body declarations (const s16 =
+   t[16]+C after an inner loop) evaluated at body TOP with stale
+   pre-loop state. Every CIOS limb wrong. Fix: set! at source position.
+
+3. **Array-literal aliasing** — array/list literals allocated at fixed
+   compile-time addresses: ciosMul(a, ciosMul(a,b)) silently zeroed its
+   own input (mulTwice all-zero limbs on-chain). Fix: runtime-heap
+   allocation for array/list ops.
+
+4. **alt_bn128 hex bridge** — raw hex ASCII passed to hosts instead of
+   decoded binary. A 384B pairing gate arrived as 768 ASCII bytes that
+   PASSED len%192==0 and decoded as garbage. Fix: hex⇄binary bridge.
+
+5. **Bool-in-if always-true** — `const take = r < 2; if (take)` →
+   numeric (!= x 0) compare: bool-vs-num tag mismatch → always true.
+   Poseidon partial rounds hashed wrong. Fix: tag-aware if emitter.
+
+6. **+ concat (const strings)** — top-level `const ONE_HEX = "..."` in a
+   + expression dispatched to numeric addition (multiexp buffer came out
+   198B instead of 288B — decimal garbage). Fix: CONST_FOLDS Str values
+   recognized in concat dispatch.
+
+7. **+ concat (nullish locals)** — `(storageGet() ?? "") + var` failed
+   because expr_is_stringy didn't look through parens or recognize
+   nullish-with-string-fallback. Fix: ParenthesizedExpression pass-through
+   + LogicalOperator::Coalesce arm.
+
+8. **M2 impure declarations** — `const b = host_call()` after an early
+   return still executed (state corruption: post-return storage writes).
+   Fix: hoist to nil + guarded set! when initializer contains calls.
+
+9. **Nested returns vanish** — `return` in an inner while only stopped
+   the inner loop; the value was discarded. Fix: function-level
+   __fn_done/__fn_res flags, conds stop on them.
+
+10. **near-mock error chains hidden** — cross-mode traps printed the
+    backtrace but hid the root host error (BLS12381InvalidInput,
+    ProhibitedInView) in the chain. Fix: TxOutcome.error carries full chain.
+
+### zk applications built and deployed (all on testnet)
+
+1. **Groth16 verifier** (34 Tgas) — verifies any snarkjs/circom proof
+2. **zk-Identity** — anonymous credentials (Merkle membership + nullifier)
+3. **zk-Vote v3** — choice sealed inside circuit (Poseidon(choice,blinding))
+4. **zk-Vote v4** — homomorphic tally via additive ElGamal on BN254:
+   encrypted_i = choice·G + r·T, chain adds points, only sum decrypted.
+   Nobody (not even tally authority) sees individual choices.
+
+### near-mock gas engine (the calibration breakthrough)
+
+Finite-wasm instrumentation ported from nearcore prepare_v3 with PV155
+costs. Key discovery: the embedded mock's compute gas was ~65× LOW
+because it was missing the engine entirely. Post-sync: within 0.2% of
+mainnet on compute-heavy contracts.
+
+### BN254 fix in near-mock
+PAIRING_CHECK_ELEMENT_SIZE was POINT_SIZE+POINT_SIZE (128B) instead
+of nearcore's POINT_SIZE + POINT_SIZE*2 (192B = 64B G1 ‖ 128B G2).
+Every real 192B pairing gate trapped. Fix: POINT_SIZE + POINT_SIZE*2.
+
+### Operational gotchas discovered (add to your checklist)
+- ~~Top-level const arrays don't work~~ → FIXED 2026-09-13: non-literal
+  top-level consts emit value-defines properly (from_exprs path skipped
+  them silently). ~~Note: each REFERENCE re-evaluates the initializer
+  (matches interpreter semantics) — fine for correctness, hoist to a
+  local if hot-loop perf matters~~ → FIXED 2026-09-14: value defines
+  are MEMOIZED (unique zeroed data slot per define; 0 → eval + cache,
+  non-zero → cached tagged value; memory re-inits per tx so the cache
+  is per-transaction — same freshness as the interp's letrec binding,
+  same once-only semantics as JS module consts). Array consts now
+  allocate ONCE per tx (the Poseidon RP-literal heap trap class is
+  dead). Two traps found on the way: wasm store operand order is
+  ADDR-FIRST (value-first fails validation), and alloc_data DEDUPES by
+  content — three zeroed slots aliased one address (every const cached
+  into offset 256). 6 regression tests in test_const_memoize.
+- ~~near.jsonGetStr() requires compile-time string literals~~ → FIXED
+  2026-09-13: dynamic keys work (runtime pattern → __json_get scanner,
+  results heap-copied so consecutive reads don't clobber). jsonGetInt
+  too (lookup + shared __str_to_num parse). ~~Known edge: space BEFORE the
+  colon (`"k" : v`) doesn't match — same as from_buf~~ → FIXED 2026-09-14
+  (I1-parity): __json_get + __json_extract_N + json_get_from_buf +
+  json_dyn_lookup_str + json_get_u128 all take the BARE quoted key and
+  skip ws + require ':' at match time — `"k" : v` matches on every
+  lookup path now, matching the literal inline scanners (I1, 08-27).
+  4 regression tests in test_dynamic_json (spaced dyn/lit/dot/suffix-key).
+  Remaining edges (documented, lisp-only): json/get (json_get_auto) still
+  has its own glued-colon scanner — lisp surface, rarely used; and
+  jsonGetStr on an OBJECT value returns just `{` (never spans objects —
+  use dot-path jsonGet("a.b") for nested access; pre-existing, not
+  colon-related).
+- ~~for...of has scoping issues with captured vars~~ → FIXED 2026-09-13:
+  declarations in for/for-of bodies and if-branches now hoist (while-style
+  bind-nil + set! at source position). Also fixed the emitter bug found on
+  the way: local slot cross-type reuse (i64 slot flipped to i32) produced
+  wasm that failed validation — vec-push in a for-loop was the trigger
+- ~~Function definitions must come BEFORE callers~~ → FIXED (hoisting in
+  lower_program; verified 2026-09-13)
+- ~~continue not supported~~ → FIXED 2026-09-13: while/for/for-of. Also
+  fixed two latent loop bugs: `while(true)` + exits (int≠bool cond) and
+  return-as-last-statement (unbound __fn_done guard)
+- ~~"0".repeat(n) not supported~~ → FIXED 2026-09-13: repeat/padStart/
+  padEnd lower to str-repeat / repeat+slice expressions
+- string + string can dispatch to numeric — use strCat() explicitly
+- BN254 G1 generator is **(1, 2)** — NOT (1, P-1)
+- snarkjs JS API (fullProve) is 60s+; use CLI (snarkjs groth16 prove) = 1.4s
+- NEAR accounts: state persists through contract redeploy — "already
+  initialized" traps. Use a FRESH account for a new VK.
+- Storage via near-mock single-wasm mode: state file at /tmp/near-mock-state.bin
+- near-mock cross mode prints number returns as raw tagged bytes (📄 shows
+  garbage) — return strings from test exports, or use single-wasm mode
+
+### JSON v2 (2026-09-14, Tier 1+2) — all verified on near-mock
+
+1. **jsonGetStr(key, json) 2-arg form**: now scans the GIVEN JSON string
+   (dot-paths work). Was a silent footgun — compiled fine, scanned the tx
+   input, ignored arg 2.
+2. **Object/array spanning**: jsonGetStr on {"o": {...}} returns the FULL
+   balanced span as raw JSON text (was just "{" — the measure loop's
+   quote-branch didn't check the string flag). Dynamic/dot-path already
+   spanned (__json_get). Known limitation (all spanning paths): braces
+   inside quoted strings within the span miscount depth.
+3. **jsonGetInt found-but-non-numeric → nil**: "n": "abc"/true/{…} now
+   fires ?? fallback (was silent 0, indistinguishable from a real zero).
+   Prefix rule: "12x" → 12. Literal + dynamic paths.
+4. **jsonExtract(...keys)** (TS): single-pass multi-key extraction from
+   tx input via __json_extract_N — LispArr of raw span strings ("" on
+   miss), max 8 keys. Measured 2.3× cheaper than N individual getters
+   (0.019 vs 0.042 Tgas for 4 keys). Also fixed a LATENT extract bug on
+   the way: an extracted OBJECT value left the scan's depth local at 0
+   and scan_i ON the closer — every key AFTER it was silently dropped
+   (extract "outer" first killed the rest; affected lisp json-extract
+   too). depth=1 restore + scan_i++ past the closer at all three
+   extraction exits.
+5. **jsonArr**: nested elements (objects/arrays as full JSON text spans)
+   + element cap 64 → 512. Strings unquoted, numbers as text (raw spans).
+6. DEFERRED — dynamic keys for jsonArr: needs buffer-parameterization of
+   the whole json_get_arr scanner (ib constant in ~40 sites). Low payoff;
+   use literal keys or jsonExtract.
+
+12 regression tests in test_json_v2. Suites green: json_v2(12),
+dynamic_json(15), api_sweep, json_set, json_wasm, ts_json_sizes,
+toplevel_const, const_memoize, loop_decl_scope, continue, repeat_pad
+(95) + core_language(160), groth16, poseidon, multisig, cross, yield,
+annotations, options, interp, norvig, surface_parity (178).
+
+### PLONK verifier analysis (in progress, skeleton deployed)
+
+Key finding: ALL PLONK verification operations map to existing alt_bn128
+hosts. The G2 scalar mul I initially feared doesn't exist — both G2 points
+in the final pairing are static VK values. Estimated ~35-160 Tgas.
+Transcript fully documented (5 challenges, exact byte ordering).
+See: zk/identity/plonk_transcript.md, zk/identity/plonk_on_near.md,
+zk/identity/plonk_verifier.ts (skeleton + init deployed).
+
+### Voting system evolution (what each version taught)
+
+v1: plaintext choice → too obvious
+v2: “encrypted” choice → was actually plaintext (user caught it)
+v3: choice in circuit → visible at reveal (user caught it again)
+v4: homomorphic tally → nobody sees individual choices ✓
+    trust gap: tally authority is single party
+    fix: 2-of-3 threshold (2 days) or MPC (not available on NEAR)
+
+### Known limitation: Noir on NEAR
+
+Noir is a frontend, not a proof system. The arkworks backend that would
+emit Groth16 over BN254 (our hosts) died 2 years ago. bb's default
+(Honk/Shplemini) needs Grumpkin MSMs we can't cheaply verify on-chain.
+NEAR's MPC network doesn't support BN254 threshold decryption. The path
+is PLONK (universal setup) + Honk port (stitched wasm Grumpkin) — but
+both are multi-day projects, not weekend spikes.
+
+## 2026-09-27 — TS `!` FIXED, bare-truthiness `if (s)` still JS-divergent (OPEN, deliberate)
+
+`!x` now matches JS for all four falsy shapes: lowered to a temp-bound
+tag-falsy check OR empty-string compare (ts_frontend.rs LogicalNot arm,
+`__not_tmp`; checker's mixed-pair `=` widened because runtime `=` is a
+total structural compare — no trap, false on tag mismatch). Verified
+23/23 in projects/launchpad (charsetrepro): `!""`=true, `!"a"`=false,
+`!0`=true, `!5`=false, `!null`=true, `!true`=false, `!!"x"`=NONEMPTY,
+plus `const s = jsonGetStr(k) ?? ""; if (!s)` identifier shape.
+
+REMAINING DIVERGENCE (accepted tradeoff, revisit only if a contract
+needs it): a BARE condition `if (s)` / `while (s)` with `s=""` still
+takes the then-branch — wasm `if` truthiness is tag-aware with falsy =
+{Bool false, Nil, Num 0}; "" keeps its STR tag so it's truthy. JS would
+not take the branch. Wrapping every condition with the empty-string
+check would tax gas + code size on EVERY branch of EVERY contract for a
+rare pattern — deliberately skipped (same reasoning as the pre-!-fix
+era). Central fix spot if ever wanted: to_bool/truthy in ts_frontend.rs
+(~4655) — all if/while/ternary conditions flow through it. Workaround
+today: `if (strLength(s) > 0)` when s is statically a string; `!s` is
+now exact in all cases.

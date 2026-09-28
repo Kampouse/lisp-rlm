@@ -103,8 +103,16 @@ impl WasmEmitter {
     /// LispVal::Vec Display: strings quoted, ", " separators.
     /// Entry: tagged value on stack. Exit: tagged STR on stack.
     fn array_to_str_code(&mut self) -> Vec<Instruction<'static>> {
-        let ma8 = |off: u64| wasm_encoder::MemArg { offset: off, align: 0, memory_index: 0 };
-        let ma64 = wasm_encoder::MemArg { offset: 0, align: 3, memory_index: 0 };
+        let ma8 = |off: u64| wasm_encoder::MemArg {
+            offset: off,
+            align: 0,
+            memory_index: 0,
+        };
+        let ma64 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
         let b = |i: i32| Instruction::I32Const(i);
         let n = |i: i64| Instruction::I64Const(i);
         let lg = |l: u32| Instruction::LocalGet(l);
@@ -129,183 +137,340 @@ impl WasmEmitter {
         let mut v: Vec<Instruction<'static>> = Vec::new();
         let store8_at = |v: &mut Vec<_>, l: u32, off: i64, byte: i32| {
             v.push(lg(l));
-            if off != 0 { v.push(n(off)); v.push(Instruction::I64Add); }
+            if off != 0 {
+                v.push(n(off));
+                v.push(Instruction::I64Add);
+            }
             v.push(Instruction::I32WrapI64);
             v.push(b(byte));
             v.push(Instruction::I32Store8(ma8(0)));
         };
 
         v.push(ls(val)); // val on stack → local
-        // base = (val >> 3) & 0xFFFFFFFF
-        v.push(lg(val)); v.push(n(3)); v.push(Instruction::I64ShrS);
-        v.push(n(0xFFFFFFFF)); v.push(Instruction::I64And); v.push(ls(base));
+                         // base = (val >> 3) & 0xFFFFFFFF
+        v.push(lg(val));
+        v.push(n(3));
+        v.push(Instruction::I64ShrS);
+        v.push(n(0xFFFFFFFF));
+        v.push(Instruction::I64And);
+        v.push(ls(base));
         // cnt = i64[base]
-        v.push(lg(base)); v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I64Load(ma64.clone())); v.push(ls(cnt));
+        v.push(lg(base));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Load(ma64.clone()));
+        v.push(ls(cnt));
         // sz = max(cnt*26 + 16, 64); dst = heap bump (aligned 8)
-        v.push(lg(cnt)); v.push(n(26)); v.push(Instruction::I64Mul);
-        v.push(n(16)); v.push(Instruction::I64Add); v.push(ls(sz));
-        v.push(lg(sz)); v.push(n(64)); v.push(Instruction::I64LtS);
+        v.push(lg(cnt));
+        v.push(n(26));
+        v.push(Instruction::I64Mul);
+        v.push(n(16));
+        v.push(Instruction::I64Add);
+        v.push(ls(sz));
+        v.push(lg(sz));
+        v.push(n(64));
+        v.push(Instruction::I64LtS);
         v.push(Instruction::If(BlockType::Empty));
-        v.push(n(64)); v.push(ls(sz));
+        v.push(n(64));
+        v.push(ls(sz));
         v.push(Instruction::End);
-        v.push(b(56)); v.push(Instruction::I64Load(ma64.clone())); v.push(ls(dst));
         v.push(b(56));
-        v.push(lg(dst)); v.push(lg(sz)); v.push(n(7)); v.push(Instruction::I64Add);
-        v.push(n(-8)); v.push(Instruction::I64And); v.push(Instruction::I64Or);
+        v.push(Instruction::I64Load(ma64.clone()));
+        v.push(ls(dst));
+        v.push(b(56));
+        v.push(lg(dst));
+        v.push(lg(sz));
+        v.push(n(7));
+        v.push(Instruction::I64Add);
+        v.push(n(-8));
+        v.push(Instruction::I64And);
+        v.push(Instruction::I64Or);
         v.push(Instruction::I64Store(ma64.clone()));
         // cur = dst; mem[cur] = '['
-        v.push(lg(dst)); v.push(ls(cur));
+        v.push(lg(dst));
+        v.push(ls(cur));
         store8_at(&mut v, cur, 0, 91); // '['
-        v.push(lg(cur)); v.push(n(1)); v.push(Instruction::I64Add); v.push(ls(cur));
+        v.push(lg(cur));
+        v.push(n(1));
+        v.push(Instruction::I64Add);
+        v.push(ls(cur));
         // for i in 0..cnt
-        v.push(n(0)); v.push(ls(i));
+        v.push(n(0));
+        v.push(ls(i));
         v.push(Instruction::Block(BlockType::Empty));
         v.push(Instruction::Loop(BlockType::Empty));
-        v.push(lg(i)); v.push(lg(cnt)); v.push(Instruction::I64GeS);
+        v.push(lg(i));
+        v.push(lg(cnt));
+        v.push(Instruction::I64GeS);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::Br(2));
         v.push(Instruction::End);
         // separator ", "
-        v.push(lg(i)); v.push(n(0)); v.push(Instruction::I64GtS);
+        v.push(lg(i));
+        v.push(n(0));
+        v.push(Instruction::I64GtS);
         v.push(Instruction::If(BlockType::Empty));
         store8_at(&mut v, cur, 0, 44); // ','
         store8_at(&mut v, cur, 1, 32); // ' '
-        v.push(lg(cur)); v.push(n(2)); v.push(Instruction::I64Add); v.push(ls(cur));
+        v.push(lg(cur));
+        v.push(n(2));
+        v.push(Instruction::I64Add);
+        v.push(ls(cur));
         v.push(Instruction::End);
         // elem = i64[base + 8 + i*8]
         v.push(lg(base));
-        v.push(lg(i)); v.push(n(8)); v.push(Instruction::I64Mul); v.push(Instruction::I64Add);
-        v.push(n(8)); v.push(Instruction::I64Add);
+        v.push(lg(i));
+        v.push(n(8));
+        v.push(Instruction::I64Mul);
+        v.push(Instruction::I64Add);
+        v.push(n(8));
+        v.push(Instruction::I64Add);
         v.push(Instruction::I32WrapI64);
-        v.push(Instruction::I64Load(ma64.clone())); v.push(ls(elem));
+        v.push(Instruction::I64Load(ma64.clone()));
+        v.push(ls(elem));
         // etag = elem & 7
-        v.push(lg(elem)); v.push(n(7)); v.push(Instruction::I64And); v.push(ls(etag));
+        v.push(lg(elem));
+        v.push(n(7));
+        v.push(Instruction::I64And);
+        v.push(ls(etag));
 
         // NUM branch
-        v.push(lg(etag)); v.push(n(TAG_NUM)); v.push(Instruction::I64Eq);
+        v.push(lg(etag));
+        v.push(n(TAG_NUM));
+        v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
-        v.push(lg(elem)); v.push(n(3)); v.push(Instruction::I64ShrS); v.push(ls(nn));
+        v.push(lg(elem));
+        v.push(n(3));
+        v.push(Instruction::I64ShrS);
+        v.push(ls(nn));
         // negative: '-' then nn = -nn
-        v.push(lg(nn)); v.push(n(0)); v.push(Instruction::I64LtS);
+        v.push(lg(nn));
+        v.push(n(0));
+        v.push(Instruction::I64LtS);
         v.push(Instruction::If(BlockType::Empty));
         store8_at(&mut v, cur, 0, 45); // '-'
-        v.push(lg(cur)); v.push(n(1)); v.push(Instruction::I64Add); v.push(ls(cur));
-        v.push(n(0)); v.push(lg(nn)); v.push(Instruction::I64Sub); v.push(ls(nn));
+        v.push(lg(cur));
+        v.push(n(1));
+        v.push(Instruction::I64Add);
+        v.push(ls(cur));
+        v.push(n(0));
+        v.push(lg(nn));
+        v.push(Instruction::I64Sub);
+        v.push(ls(nn));
         v.push(Instruction::End);
-        v.push(lg(nn)); v.push(Instruction::I64Eqz);
+        v.push(lg(nn));
+        v.push(Instruction::I64Eqz);
         v.push(Instruction::If(BlockType::Empty));
         store8_at(&mut v, cur, 0, 48); // '0'
-        v.push(lg(cur)); v.push(n(1)); v.push(Instruction::I64Add); v.push(ls(cur));
+        v.push(lg(cur));
+        v.push(n(1));
+        v.push(Instruction::I64Add);
+        v.push(ls(cur));
         v.push(Instruction::Else);
         // digits backward from cur+19, then copy
-        v.push(lg(cur)); v.push(n(19)); v.push(Instruction::I64Add); v.push(ls(tmp));
-        v.push(n(0)); v.push(ls(nd));
+        v.push(lg(cur));
+        v.push(n(19));
+        v.push(Instruction::I64Add);
+        v.push(ls(tmp));
+        v.push(n(0));
+        v.push(ls(nd));
         v.push(Instruction::Block(BlockType::Empty));
         v.push(Instruction::Loop(BlockType::Empty));
-        v.push(lg(nn)); v.push(Instruction::I64Eqz);
+        v.push(lg(nn));
+        v.push(Instruction::I64Eqz);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::Br(2));
         v.push(Instruction::End);
-        v.push(lg(tmp)); v.push(n(1)); v.push(Instruction::I64Sub); v.push(ls(tmp));
+        v.push(lg(tmp));
+        v.push(n(1));
+        v.push(Instruction::I64Sub);
+        v.push(ls(tmp));
         store8_at(&mut v, tmp, 0, 48); // placeholder overwritten below
-        // dig = nn % 10 + 48
-        v.push(lg(tmp)); v.push(Instruction::I32WrapI64);
-        v.push(lg(nn)); v.push(n(10)); v.push(Instruction::I64RemU);
-        v.push(n(48)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+                                       // dig = nn % 10 + 48
+        v.push(lg(tmp));
+        v.push(Instruction::I32WrapI64);
+        v.push(lg(nn));
+        v.push(n(10));
+        v.push(Instruction::I64RemU);
+        v.push(n(48));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
         v.push(Instruction::I32Store8(ma8(0)));
-        v.push(lg(nn)); v.push(n(10)); v.push(Instruction::I64DivU); v.push(ls(nn));
-        v.push(lg(nd)); v.push(n(1)); v.push(Instruction::I64Add); v.push(ls(nd));
+        v.push(lg(nn));
+        v.push(n(10));
+        v.push(Instruction::I64DivU);
+        v.push(ls(nn));
+        v.push(lg(nd));
+        v.push(n(1));
+        v.push(Instruction::I64Add);
+        v.push(ls(nd));
         v.push(Instruction::Br(0));
         v.push(Instruction::End); // loop
         v.push(Instruction::End); // block
-        // copy tmp..tmp+nd-1 → cur
-        v.push(n(0)); v.push(ls(j));
+                                  // copy tmp..tmp+nd-1 → cur
+        v.push(n(0));
+        v.push(ls(j));
         v.push(Instruction::Block(BlockType::Empty));
         v.push(Instruction::Loop(BlockType::Empty));
-        v.push(lg(j)); v.push(lg(nd)); v.push(Instruction::I64GeS);
+        v.push(lg(j));
+        v.push(lg(nd));
+        v.push(Instruction::I64GeS);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::Br(2));
         v.push(Instruction::End);
-        v.push(lg(cur)); v.push(lg(j)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(lg(tmp)); v.push(lg(j)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(lg(cur));
+        v.push(lg(j));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(lg(tmp));
+        v.push(lg(j));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
         v.push(Instruction::I32Load8U(ma8(0)));
         v.push(Instruction::I32Store8(ma8(0)));
-        v.push(lg(j)); v.push(n(1)); v.push(Instruction::I64Add); v.push(ls(j));
+        v.push(lg(j));
+        v.push(n(1));
+        v.push(Instruction::I64Add);
+        v.push(ls(j));
         v.push(Instruction::Br(0));
         v.push(Instruction::End); // loop
         v.push(Instruction::End); // block
-        v.push(lg(cur)); v.push(lg(nd)); v.push(Instruction::I64Add); v.push(ls(cur));
+        v.push(lg(cur));
+        v.push(lg(nd));
+        v.push(Instruction::I64Add);
+        v.push(ls(cur));
         v.push(Instruction::End); // if nn==0
-        // tag dispatch: exclusive if/else-if chain (each element takes exactly one)
-        // BOOL branch
+                                  // tag dispatch: exclusive if/else-if chain (each element takes exactly one)
+                                  // BOOL branch
         v.push(Instruction::Else);
-        v.push(lg(etag)); v.push(n(TAG_BOOL)); v.push(Instruction::I64Eq);
+        v.push(lg(etag));
+        v.push(n(TAG_BOOL));
+        v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
-        v.push(lg(elem)); v.push(n(3)); v.push(Instruction::I64ShrS);
-        v.push(n(0)); v.push(Instruction::I64Eq);
+        v.push(lg(elem));
+        v.push(n(3));
+        v.push(Instruction::I64ShrS);
+        v.push(n(0));
+        v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
         // "false"
-        store8_at(&mut v, cur, 0, 102); store8_at(&mut v, cur, 1, 97);
-        store8_at(&mut v, cur, 2, 108); store8_at(&mut v, cur, 3, 115);
+        store8_at(&mut v, cur, 0, 102);
+        store8_at(&mut v, cur, 1, 97);
+        store8_at(&mut v, cur, 2, 108);
+        store8_at(&mut v, cur, 3, 115);
         store8_at(&mut v, cur, 4, 101);
-        v.push(lg(cur)); v.push(n(5)); v.push(Instruction::I64Add); v.push(ls(cur));
+        v.push(lg(cur));
+        v.push(n(5));
+        v.push(Instruction::I64Add);
+        v.push(ls(cur));
         v.push(Instruction::Else);
         // "true"
-        store8_at(&mut v, cur, 0, 116); store8_at(&mut v, cur, 1, 114);
-        store8_at(&mut v, cur, 2, 117); store8_at(&mut v, cur, 3, 101);
-        v.push(lg(cur)); v.push(n(4)); v.push(Instruction::I64Add); v.push(ls(cur));
+        store8_at(&mut v, cur, 0, 116);
+        store8_at(&mut v, cur, 1, 114);
+        store8_at(&mut v, cur, 2, 117);
+        store8_at(&mut v, cur, 3, 101);
+        v.push(lg(cur));
+        v.push(n(4));
+        v.push(Instruction::I64Add);
+        v.push(ls(cur));
         v.push(Instruction::End);
 
         // NIL branch
         v.push(Instruction::Else);
-        v.push(lg(etag)); v.push(n(TAG_NIL)); v.push(Instruction::I64Eq);
+        v.push(lg(etag));
+        v.push(n(TAG_NIL));
+        v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
-        store8_at(&mut v, cur, 0, 110); store8_at(&mut v, cur, 1, 105);
+        store8_at(&mut v, cur, 0, 110);
+        store8_at(&mut v, cur, 1, 105);
         store8_at(&mut v, cur, 2, 108); // "nil"
-        v.push(lg(cur)); v.push(n(3)); v.push(Instruction::I64Add); v.push(ls(cur));
+        v.push(lg(cur));
+        v.push(n(3));
+        v.push(Instruction::I64Add);
+        v.push(ls(cur));
         // (no End — NIL's If stays open, chained into STR via Else)
 
         // STR branch: '"' bytes '"' (quoted, matches interp Vec Display)
         v.push(Instruction::Else);
-        v.push(lg(etag)); v.push(n(TAG_STR)); v.push(Instruction::I64Eq);
+        v.push(lg(etag));
+        v.push(n(TAG_STR));
+        v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
-        v.push(lg(elem)); v.push(n(3)); v.push(Instruction::I64ShrS); v.push(ls(nn));
-        v.push(lg(nn)); v.push(n(0xFFFFFFFF)); v.push(Instruction::I64And); v.push(ls(sp));
-        v.push(lg(nn)); v.push(n(32)); v.push(Instruction::I64ShrU); v.push(ls(sl));
+        v.push(lg(elem));
+        v.push(n(3));
+        v.push(Instruction::I64ShrS);
+        v.push(ls(nn));
+        v.push(lg(nn));
+        v.push(n(0xFFFFFFFF));
+        v.push(Instruction::I64And);
+        v.push(ls(sp));
+        v.push(lg(nn));
+        v.push(n(32));
+        v.push(Instruction::I64ShrU);
+        v.push(ls(sl));
         store8_at(&mut v, cur, 0, 34); // '"'
-        v.push(lg(cur)); v.push(n(1)); v.push(Instruction::I64Add); v.push(ls(cur));
-        v.push(n(0)); v.push(ls(j));
+        v.push(lg(cur));
+        v.push(n(1));
+        v.push(Instruction::I64Add);
+        v.push(ls(cur));
+        v.push(n(0));
+        v.push(ls(j));
         v.push(Instruction::Block(BlockType::Empty));
         v.push(Instruction::Loop(BlockType::Empty));
-        v.push(lg(j)); v.push(lg(sl)); v.push(Instruction::I64GeS);
+        v.push(lg(j));
+        v.push(lg(sl));
+        v.push(Instruction::I64GeS);
         v.push(Instruction::If(BlockType::Empty));
         v.push(Instruction::Br(2));
         v.push(Instruction::End);
-        v.push(lg(cur)); v.push(lg(j)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
-        v.push(lg(sp)); v.push(lg(j)); v.push(Instruction::I64Add); v.push(Instruction::I32WrapI64);
+        v.push(lg(cur));
+        v.push(lg(j));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(lg(sp));
+        v.push(lg(j));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
         v.push(Instruction::I32Load8U(ma8(0)));
         v.push(Instruction::I32Store8(ma8(0)));
-        v.push(lg(j)); v.push(n(1)); v.push(Instruction::I64Add); v.push(ls(j));
+        v.push(lg(j));
+        v.push(n(1));
+        v.push(Instruction::I64Add);
+        v.push(ls(j));
         v.push(Instruction::Br(0));
         v.push(Instruction::End);
         v.push(Instruction::End);
-        v.push(lg(cur)); v.push(lg(sl)); v.push(Instruction::I64Add); v.push(ls(cur));
+        v.push(lg(cur));
+        v.push(lg(sl));
+        v.push(Instruction::I64Add);
+        v.push(ls(cur));
         store8_at(&mut v, cur, 0, 34); // '"'
-        v.push(lg(cur)); v.push(n(1)); v.push(Instruction::I64Add); v.push(ls(cur));
+        v.push(lg(cur));
+        v.push(n(1));
+        v.push(Instruction::I64Add);
+        v.push(ls(cur));
         // (no End — STR's If stays open, chained into the default via Else)
 
         // default: ARRAY → "<vec>", other tags → "?"
         v.push(Instruction::Else);
-        v.push(lg(etag)); v.push(n(TAG_ARRAY)); v.push(Instruction::I64Eq);
+        v.push(lg(etag));
+        v.push(n(TAG_ARRAY));
+        v.push(Instruction::I64Eq);
         v.push(Instruction::If(BlockType::Empty));
-        store8_at(&mut v, cur, 0, 60); store8_at(&mut v, cur, 1, 118);
-        store8_at(&mut v, cur, 2, 101); store8_at(&mut v, cur, 3, 99);
+        store8_at(&mut v, cur, 0, 60);
+        store8_at(&mut v, cur, 1, 118);
+        store8_at(&mut v, cur, 2, 101);
+        store8_at(&mut v, cur, 3, 99);
         store8_at(&mut v, cur, 4, 62); // "<vec>"
-        v.push(lg(cur)); v.push(n(5)); v.push(Instruction::I64Add); v.push(ls(cur));
+        v.push(lg(cur));
+        v.push(n(5));
+        v.push(Instruction::I64Add);
+        v.push(ls(cur));
         v.push(Instruction::Else);
         store8_at(&mut v, cur, 0, 63); // '?'
-        v.push(lg(cur)); v.push(n(1)); v.push(Instruction::I64Add); v.push(ls(cur));
+        v.push(lg(cur));
+        v.push(n(1));
+        v.push(Instruction::I64Add);
+        v.push(ls(cur));
         v.push(Instruction::End);
         // close the 5-level tag dispatch chain (NUM/BOOL/NIL/STR/ARRAY-else)
         v.push(Instruction::End);
@@ -314,17 +479,29 @@ impl WasmEmitter {
         v.push(Instruction::End);
 
         // i++
-        v.push(lg(i)); v.push(n(1)); v.push(Instruction::I64Add); v.push(ls(i));
+        v.push(lg(i));
+        v.push(n(1));
+        v.push(Instruction::I64Add);
+        v.push(ls(i));
         v.push(Instruction::Br(0));
         v.push(Instruction::End); // loop
         v.push(Instruction::End); // block
-        // ']'
+                                  // ']'
         store8_at(&mut v, cur, 0, 93);
-        v.push(lg(cur)); v.push(n(1)); v.push(Instruction::I64Add); v.push(ls(cur));
+        v.push(lg(cur));
+        v.push(n(1));
+        v.push(Instruction::I64Add);
+        v.push(ls(cur));
         // packed (len<<32)|dst, tagged STR
-        v.push(lg(cur)); v.push(lg(dst)); v.push(Instruction::I64Sub); v.push(ls(nd));
-        v.push(lg(nd)); v.push(n(32)); v.push(Instruction::I64Shl);
-        v.push(lg(dst)); v.push(Instruction::I64Or);
+        v.push(lg(cur));
+        v.push(lg(dst));
+        v.push(Instruction::I64Sub);
+        v.push(ls(nd));
+        v.push(lg(nd));
+        v.push(n(32));
+        v.push(Instruction::I64Shl);
+        v.push(lg(dst));
+        v.push(Instruction::I64Or);
         v.extend(self.emit_tag_str());
         v
     }
@@ -365,7 +542,9 @@ impl WasmEmitter {
         v.push(Instruction::I64And);
         v.push(Instruction::I64Const(TAG_STR));
         v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Result(wasm_encoder::ValType::I64)));
+        v.push(Instruction::If(BlockType::Result(
+            wasm_encoder::ValType::I64,
+        )));
         // STR path: pass the tagged string through unchanged
         v.push(Instruction::LocalGet(val_i));
         v.push(Instruction::Else);
@@ -376,7 +555,9 @@ impl WasmEmitter {
         v.push(Instruction::I64And);
         v.push(Instruction::I64Const(TAG_ARRAY));
         v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Result(wasm_encoder::ValType::I64)));
+        v.push(Instruction::If(BlockType::Result(
+            wasm_encoder::ValType::I64,
+        )));
         v.push(Instruction::LocalGet(val_i));
         v.extend(self.array_to_str_code());
         v.push(Instruction::Else);
@@ -388,7 +569,9 @@ impl WasmEmitter {
         v.push(Instruction::I64And);
         v.push(Instruction::I64Const(TAG_NIL));
         v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Result(wasm_encoder::ValType::I64)));
+        v.push(Instruction::If(BlockType::Result(
+            wasm_encoder::ValType::I64,
+        )));
         let nil_off = self.alloc_data(b"nil") as i64;
         // (3 << 32 | nil_off) << 3 | TAG_STR — "nil" as a tagged str
         v.push(Instruction::I64Const(3));
@@ -408,14 +591,18 @@ impl WasmEmitter {
         v.push(Instruction::I64And);
         v.push(Instruction::I64Const(TAG_BOOL));
         v.push(Instruction::I64Eq);
-        v.push(Instruction::If(BlockType::Result(wasm_encoder::ValType::I64)));
+        v.push(Instruction::If(BlockType::Result(
+            wasm_encoder::ValType::I64,
+        )));
         let true_off = self.alloc_data(b"true") as i64;
         let false_off = self.alloc_data(b"false") as i64;
         v.push(Instruction::LocalGet(val_i));
         v.push(Instruction::I64Const(TAG_BITS));
         v.push(Instruction::I64ShrS); // payload 0/1
         v.push(Instruction::I32WrapI64); // If condition must be i32
-        v.push(Instruction::If(BlockType::Result(wasm_encoder::ValType::I64)));
+        v.push(Instruction::If(BlockType::Result(
+            wasm_encoder::ValType::I64,
+        )));
         // "true" → (4 << 32 | true_off) << 3 | TAG_STR
         v.push(Instruction::I64Const(4));
         v.push(Instruction::I64Const(32));

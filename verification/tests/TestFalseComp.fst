@@ -80,5 +80,5 @@ val t_ok : unit -> Lemma (run "42" = 42)
 let t_ok () = assert_norm (run "42" = 42)
 
 // FALSE — should fail
-val t_bad : unit -> Lemma (run "42" = 999)
+[@@ expect_failure]
 let t_bad () = assert_norm (run "42" = 999)

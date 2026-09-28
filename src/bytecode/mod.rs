@@ -121,10 +121,7 @@ fn split_internal_defines(forms: &[LispVal]) -> Option<(Vec<LispVal>, Vec<LispVa
     let mut idx = 0;
     while idx < forms.len() {
         if let Some((name, value)) = desugar_define(&forms[idx]) {
-            bindings.push(LispVal::List(vec![
-                LispVal::Sym(name),
-                value,
-            ]));
+            bindings.push(LispVal::List(vec![LispVal::Sym(name), value]));
             idx += 1;
         } else {
             break;
@@ -157,6 +154,17 @@ fn build_letrec_form(bindings: Vec<LispVal>, body: Vec<LispVal>) -> LispVal {
 }
 
 /// Expand a macro call at compile time.
+// Deposit extractor for promise ops: Num OR u128 decimal string (matches
+// the emitter's u128-str helper — real callers pass decimal strings, e.g.
+// projects/outlayer-oracle DEPOSIT).
+fn deposit_of(args: &[LispVal], i: usize) -> String {
+    match args.get(i) {
+        Some(LispVal::Str(s)) => s.clone(),
+        Some(LispVal::Num(n)) => n.to_string(),
+        _ => "0".to_string(),
+    }
+}
+
 pub fn expand_macro_call(
     macro_val: &LispVal,
     unevaluated_args: &[LispVal],
@@ -189,7 +197,10 @@ pub fn expand_macro_call(
                 macro_env.insert_mut(rest.clone(), LispVal::List(rest_args));
             }
             // Evaluate macro body in macro_env
-            let mut state = match state { Some(s) => s, None => &mut EvalState::new() };
+            let mut state = match state {
+                Some(s) => s,
+                None => &mut EvalState::new(),
+            };
             crate::program::run_program(&[body.as_ref().clone()], &mut macro_env, &mut state)
         }
         _ => Err("not a macro".into()),
@@ -215,7 +226,6 @@ pub fn expand_macro_call(
 
 /// Typed binary operation kind.
 #[derive(Clone, Debug)]
-
 
 /// Compilation context
 struct LoopCompiler {
@@ -882,7 +892,11 @@ impl LoopCompiler {
                                     if let LispVal::Sym(ref name) = form_list[0] {
                                         if let Some(macro_val) = outer_env.get(name) {
                                             if matches!(macro_val, LispVal::Macro { .. }) {
-                                                match expand_macro_call(&macro_val, &form_list[1..], None) {
+                                                match expand_macro_call(
+                                                    &macro_val,
+                                                    &form_list[1..],
+                                                    None,
+                                                ) {
                                                     Ok(expansion) => {
                                                         self.code.push(Op::PushLiteral(expansion));
                                                         self.last_result_i64 = false;
@@ -1094,9 +1108,7 @@ impl LoopCompiler {
                             } else {
                                 // recur with no enclosing loop — hard compile
                                 // error, never a silent fallback (GAPS t21)
-                                eprintln!(
-                                    "compile error: recur used outside of a loop"
-                                );
+                                eprintln!("compile error: recur used outside of a loop");
                                 false
                             }
                         }
@@ -1400,8 +1412,10 @@ impl LoopCompiler {
                                             {
                                                 // Save old value to a REGISTERED temp slot
                                                 let save_slot = self.slot_map.len();
-                                                self.slot_map
-                                                    .push(format!("%let-shadow-save-{}", save_slot));
+                                                self.slot_map.push(format!(
+                                                    "%let-shadow-save-{}",
+                                                    save_slot
+                                                ));
                                                 self.code.push(Op::LoadSlot(existing)); // push old value
                                                 self.code.push(Op::StoreSlot(save_slot)); // save it
                                                                                           // Now store the new value
@@ -2138,13 +2152,15 @@ impl LoopCompiler {
                                     for elem in list.iter() {
                                         match elem {
                                             LispVal::Sym(s) => {
-                                                self.code.push(Op::PushLiteral(LispVal::Sym(s.clone())));
+                                                self.code
+                                                    .push(Op::PushLiteral(LispVal::Sym(s.clone())));
                                             }
                                             LispVal::Num(n) => {
                                                 self.code.push(Op::PushI64(*n));
                                             }
                                             LispVal::Str(s) => {
-                                                self.code.push(Op::PushLiteral(LispVal::Str(s.clone())));
+                                                self.code
+                                                    .push(Op::PushLiteral(LispVal::Str(s.clone())));
                                             }
                                             LispVal::Bool(b) => {
                                                 self.code.push(Op::PushLiteral(LispVal::Bool(*b)));
@@ -2155,7 +2171,8 @@ impl LoopCompiler {
                                             }
                                         }
                                     }
-                                    self.code.push(Op::BuiltinCall("list".to_string(), list.len()));
+                                    self.code
+                                        .push(Op::BuiltinCall("list".to_string(), list.len()));
                                     return true;
                                 }
                                 // Unknown non-keyword head — hard error, with a
@@ -3476,10 +3493,7 @@ fn peephole_optimize(
         // the stack — fusing that pair into ReturnSlot(N) would drop the
         // pushed branch value and return slot N instead, which the stack
         // verifier rejects as a height mismatch at the join).
-        if i + 1 < code.len()
-            && !jump_targets.contains(&i)
-            && !jump_targets.contains(&(i + 1))
-        {
+        if i + 1 < code.len() && !jump_targets.contains(&i) && !jump_targets.contains(&(i + 1)) {
             if let (Op::LoadSlot(s), Op::Return) = (&code[i], &code[i + 1]) {
                 index_map.push(new_code.len());
                 new_code.push(Op::ReturnSlot(*s));
@@ -3753,25 +3767,49 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             Op::Lt => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(LispVal::Bool(num_cmp(&a, &b, "<", |x, y| x < y, |x, y| x < y)?));
+                stack.push(LispVal::Bool(num_cmp(
+                    &a,
+                    &b,
+                    "<",
+                    |x, y| x < y,
+                    |x, y| x < y,
+                )?));
                 pc += 1;
             }
             Op::Le => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(LispVal::Bool(num_cmp(&a, &b, "<=", |x, y| x <= y, |x, y| x <= y)?));
+                stack.push(LispVal::Bool(num_cmp(
+                    &a,
+                    &b,
+                    "<=",
+                    |x, y| x <= y,
+                    |x, y| x <= y,
+                )?));
                 pc += 1;
             }
             Op::Gt => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(LispVal::Bool(num_cmp(&a, &b, ">", |x, y| x > y, |x, y| x > y)?));
+                stack.push(LispVal::Bool(num_cmp(
+                    &a,
+                    &b,
+                    ">",
+                    |x, y| x > y,
+                    |x, y| x > y,
+                )?));
                 pc += 1;
             }
             Op::Ge => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(LispVal::Bool(num_cmp(&a, &b, ">=", |x, y| x >= y, |x, y| x >= y)?));
+                stack.push(LispVal::Bool(num_cmp(
+                    &a,
+                    &b,
+                    ">=",
+                    |x, y| x >= y,
+                    |x, y| x >= y,
+                )?));
                 pc += 1;
             }
             Op::Not => {
@@ -3795,26 +3833,38 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                         };
                         stack.push(match op {
                             BinOp::Add => LispVal::Num(
-                                i64::checked_add(av, bv).and_then(|r| check_num_range(r, "add").ok()).ok_or("integer overflow in add")?,
+                                i64::checked_add(av, bv)
+                                    .and_then(|r| check_num_range(r, "add").ok())
+                                    .ok_or("integer overflow in add")?,
                             ),
                             BinOp::Sub => LispVal::Num(
-                                i64::checked_sub(av, bv).and_then(|r| check_num_range(r, "sub").ok()).ok_or("integer overflow in sub")?,
+                                i64::checked_sub(av, bv)
+                                    .and_then(|r| check_num_range(r, "sub").ok())
+                                    .ok_or("integer overflow in sub")?,
                             ),
                             BinOp::Mul => LispVal::Num(
-                                i64::checked_mul(av, bv).and_then(|r| check_num_range(r, "mul").ok()).ok_or("integer overflow in mul")?,
+                                i64::checked_mul(av, bv)
+                                    .and_then(|r| check_num_range(r, "mul").ok())
+                                    .ok_or("integer overflow in mul")?,
                             ),
                             BinOp::Div => {
-                                if bv == 0 { return Err("division by zero".into()); }
+                                if bv == 0 {
+                                    return Err("division by zero".into());
+                                }
                                 LispVal::Num(
-                                    i64::checked_div(av, bv).and_then(|r| check_num_range(r, "div").ok()).ok_or("integer overflow in div")?,
+                                    i64::checked_div(av, bv)
+                                        .and_then(|r| check_num_range(r, "div").ok())
+                                        .ok_or("integer overflow in div")?,
                                 )
                             }
                             BinOp::Mod => {
-                                if bv == 0 { return Err("modulo by zero".into()); }
+                                if bv == 0 {
+                                    return Err("modulo by zero".into());
+                                }
                                 LispVal::Num(
                                     i64::checked_rem(av, bv).ok_or("integer overflow in mod")?,
                                 )
-                            },
+                            }
                             BinOp::Lt => LispVal::Bool(av < bv),
                             BinOp::Le => LispVal::Bool(av <= bv),
                             BinOp::Gt => LispVal::Bool(av > bv),
@@ -3860,13 +3910,17 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                             BinOp::Sub => LispVal::U64(av.wrapping_sub(bv)),
                             BinOp::Mul => LispVal::U64(av.wrapping_mul(bv)),
                             BinOp::Div => {
-                                if bv == 0 { return Err("division by zero".into()); }
+                                if bv == 0 {
+                                    return Err("division by zero".into());
+                                }
                                 LispVal::U64(av.wrapping_div(bv))
                             }
                             BinOp::Mod => {
-                                if bv == 0 { return Err("modulo by zero".into()); }
+                                if bv == 0 {
+                                    return Err("modulo by zero".into());
+                                }
                                 LispVal::U64(av.wrapping_rem(bv))
-                            },
+                            }
                             BinOp::Lt => LispVal::Bool(av < bv),
                             BinOp::Le => LispVal::Bool(av <= bv),
                             BinOp::Gt => LispVal::Bool(av > bv),
@@ -3945,7 +3999,9 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                 }
             }
             Op::SlotDivImm(s, imm) => {
-                if *imm == 0 { return Err("division by zero".into()); }
+                if *imm == 0 {
+                    return Err("division by zero".into());
+                }
                 let v = num_val_ref(safe_slot(&slots, *s));
                 match i64::checked_div(v, *imm).and_then(|r| check_num_range(r, "div").ok()) {
                     Some(result) => {
@@ -4032,8 +4088,8 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                     let new_accum = i64::checked_add(av, cv)
                         .and_then(|r| check_num_range(r, "add").ok())
                         .ok_or("integer overflow in add (payload range ±2^60)")?;
-                    let new_counter = i64::checked_add(cv, *step)
-                        .ok_or("integer overflow in add")?;
+                    let new_counter =
+                        i64::checked_add(cv, *step).ok_or("integer overflow in add")?;
                     slots[*accum] = LispVal::Num(new_accum);
                     slots[*counter] = LispVal::Num(new_counter);
                     pc = 0; // jump to loop start
@@ -4155,7 +4211,7 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
                     _ => stack.push(slots[*s].clone()),
                 }
                 pc += 1;
- }
+            }
             Op::CallCaptured(_, _)
             | Op::CallCapturedRef(_, _)
             | Op::PushSelf
@@ -4182,8 +4238,14 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             Op::U64MulHi => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
-                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                let av = match &a {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
+                let bv = match &b {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
                 let prod = (av as u128) * (bv as u128);
                 stack.push(LispVal::U64((prod >> 64) as u64));
                 pc += 1;
@@ -4191,32 +4253,56 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             Op::U64And => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
-                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                let av = match &a {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
+                let bv = match &b {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
                 stack.push(LispVal::U64(av & bv));
                 pc += 1;
             }
             Op::U64Or => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
-                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                let av = match &a {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
+                let bv = match &b {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
                 stack.push(LispVal::U64(av | bv));
                 pc += 1;
             }
             Op::U64Xor => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
-                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                let av = match &a {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
+                let bv = match &b {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
                 stack.push(LispVal::U64(av ^ bv));
                 pc += 1;
             }
             Op::U64Shr => {
                 let sh = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
-                let sv = match &sh { LispVal::Num(n) => *n, _ => 0 };
+                let av = match &a {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
+                let sv = match &sh {
+                    LispVal::Num(n) => *n,
+                    _ => 0,
+                };
                 if sv < 0 || sv >= 64 {
                     return Err("u64 shift amount out of range".into());
                 }
@@ -4226,8 +4312,14 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             Op::U64Shl => {
                 let sh = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
-                let sv = match &sh { LispVal::Num(n) => *n, _ => 0 };
+                let av = match &a {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
+                let sv = match &sh {
+                    LispVal::Num(n) => *n,
+                    _ => 0,
+                };
                 if sv < 0 || sv >= 64 {
                     return Err("u64 shift amount out of range".into());
                 }
@@ -4236,12 +4328,14 @@ fn run_compiled_loop(cl: &CompiledLoop) -> Result<LispVal, String> {
             }
             Op::U64Not => {
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let av = match &a {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
                 stack.push(LispVal::U64(!av));
                 pc += 1;
             }
-            Op::TracePush(_)
-            | Op::TracePop => {
+            Op::TracePush(_) | Op::TracePop => {
                 return Err(
                     "loop VM: CallCaptured/CallSelf/DictMutSet/GetDefaultSlot/ReturnSlot not supported in loop body".into(),
                 );
@@ -4823,7 +4917,9 @@ pub fn validate_recur_tails(body: &LispVal, loop_vars: usize) -> Result<(), Stri
 }
 
 fn validate_recur_tail_expr(e: &LispVal, arity: usize, tail: bool) -> Result<(), String> {
-    let LispVal::List(items) = e else { return Ok(()) };
+    let LispVal::List(items) = e else {
+        return Ok(());
+    };
     let Some(LispVal::Sym(head)) = items.first() else {
         for x in items {
             validate_recur_tail_expr(x, arity, false)?;
@@ -4931,7 +5027,8 @@ fn validate_recur_tail_expr(e: &LispVal, arity: usize, tail: bool) -> Result<(),
 }
 
 pub fn eval_near_builtin_match(name: &str) -> bool {
-    matches!(name,
+    matches!(
+        name,
         // ── Legacy bare names (pre-near/ namespace) ──
         "storage-write" | "storage_write"
         | "storage-read" | "storage_read"
@@ -4988,7 +5085,7 @@ pub fn eval_near_builtin_match(name: &str) -> bool {
         // ── near/* u128 storage helpers (interp stubs return 0) ──
         | "near/store_u128" | "near/load_u128" | "near/attached_deposit_u128"
         // ── near/* promises ──
-        | "near/call" | "near/transfer" | "near/transfer_u128" | "near/deploy_contract"
+        | "near/call" | "near/call-await" | "near/transfer" | "near/transfer_u128" | "near/deploy_contract"
         | "near/promise_create" | "near/promise_then" | "near/promise_and"
         | "near/promise_results_count" | "near/promise_result" | "near/promise_return"
         | "near/promise_succeeded"
@@ -5048,14 +5145,20 @@ fn eval_near_builtin(
         // ═══════════════════════════════════════════════════════════════
         "near/store" => {
             let key = key_of(args, 0);
-            if key.is_empty() { return Some(Err("near/store: need key".into())); }
+            if key.is_empty() {
+                return Some(Err("near/store: need key".into()));
+            }
             let val = args.get(1).cloned().unwrap_or(LispVal::Nil);
             state.near_storage.insert(key, val);
             Some(Ok(LispVal::Num(0)))
         }
         "near/load" => {
             let key = key_of(args, 0);
-            Some(Ok(state.near_storage.get(&key).cloned().unwrap_or(LispVal::Num(0))))
+            Some(Ok(state
+                .near_storage
+                .get(&key)
+                .cloned()
+                .unwrap_or(LispVal::Num(0))))
         }
         "near/remove" => {
             let key = key_of(args, 0);
@@ -5073,7 +5176,12 @@ fn eval_near_builtin(
             let key = match args.get(0) {
                 Some(LispVal::Str(s)) if !s.is_empty() => s.clone(),
                 Some(LispVal::Str(_)) => return Some(Err("near/storage_set: need key".into())),
-                Some(other) => return Some(Err(format!("near/storage_set: expected string key, got {}", other))),
+                Some(other) => {
+                    return Some(Err(format!(
+                        "near/storage_set: expected string key, got {}",
+                        other
+                    )))
+                }
                 None => return Some(Err("near/storage_set: missing key".into())),
             };
             match args.get(1) {
@@ -5081,14 +5189,22 @@ fn eval_near_builtin(
                     state.near_storage.insert(key, LispVal::Str(s.clone()));
                     Some(Ok(LispVal::Num(0)))
                 }
-                Some(other) => Some(Err(format!("near/storage_set: expected string value, got {}", other))),
+                Some(other) => Some(Err(format!(
+                    "near/storage_set: expected string value, got {}",
+                    other
+                ))),
                 None => Some(Err("near/storage_set: missing value".into())),
             }
         }
         "near/storage_get" | "near/storage_read" => {
             let key = match args.get(0) {
                 Some(LispVal::Str(s)) => s.clone(),
-                Some(other) => return Some(Err(format!("near/storage_get: expected string key, got {}", other))),
+                Some(other) => {
+                    return Some(Err(format!(
+                        "near/storage_get: expected string key, got {}",
+                        other
+                    )))
+                }
                 None => return Some(Err("near/storage_get: missing key".into())),
             };
             match state.near_storage.get(&key) {
@@ -5102,15 +5218,29 @@ fn eval_near_builtin(
         "near/storage_has" | "near/storage_has_key" => {
             let key = match args.get(0) {
                 Some(LispVal::Str(s)) => s.clone(),
-                Some(other) => return Some(Err(format!("near/storage_has: expected string key, got {}", other))),
+                Some(other) => {
+                    return Some(Err(format!(
+                        "near/storage_has: expected string key, got {}",
+                        other
+                    )))
+                }
                 None => return Some(Err("near/storage_has: missing key".into())),
             };
-            Some(Ok(LispVal::Num(if state.near_storage.contains_key(&key) { 1 } else { 0 })))
+            Some(Ok(LispVal::Num(if state.near_storage.contains_key(&key) {
+                1
+            } else {
+                0
+            })))
         }
         "near/storage_remove" => {
             let key = match args.get(0) {
                 Some(LispVal::Str(s)) => s.clone(),
-                Some(other) => return Some(Err(format!("near/storage_remove: expected string key, got {}", other))),
+                Some(other) => {
+                    return Some(Err(format!(
+                        "near/storage_remove: expected string key, got {}",
+                        other
+                    )))
+                }
                 None => return Some(Err("near/storage_remove: missing key".into())),
             };
             state.near_storage.remove(&key);
@@ -5118,7 +5248,11 @@ fn eval_near_builtin(
         }
         "near/has_key" | "near/storage_has_key" => {
             let key = key_of(args, 0);
-            Some(Ok(LispVal::Num(if state.near_storage.contains_key(&key) { 1 } else { 0 })))
+            Some(Ok(LispVal::Num(if state.near_storage.contains_key(&key) {
+                1
+            } else {
+                0
+            })))
         }
         "near/store_num" => {
             let key = key_of(args, 0);
@@ -5128,27 +5262,41 @@ fn eval_near_builtin(
         }
         "near/load_num" => {
             let key = key_of(args, 0);
-            Some(Ok(state.near_storage.get(&key).cloned().unwrap_or(LispVal::Num(0))))
+            Some(Ok(state
+                .near_storage
+                .get(&key)
+                .cloned()
+                .unwrap_or(LispVal::Num(0))))
         }
         "near/kv" => {
             // (near/kv val prefix part1 part2 ...) — composite key storage
             let val = args.get(0).cloned().unwrap_or(LispVal::Nil);
-            let parts: Vec<String> = args[1..].iter().map(|a| match a {
-                LispVal::Str(s) => s.clone(),
-                v => v.to_string(),
-            }).collect();
+            let parts: Vec<String> = args[1..]
+                .iter()
+                .map(|a| match a {
+                    LispVal::Str(s) => s.clone(),
+                    v => v.to_string(),
+                })
+                .collect();
             let key = parts.join("/");
             state.near_storage.insert(key, val);
             Some(Ok(LispVal::Num(0)))
         }
         "near/kv-get" => {
             // (near/kv-get prefix part1 part2 ...)
-            let parts: Vec<String> = args.iter().map(|a| match a {
-                LispVal::Str(s) => s.clone(),
-                v => v.to_string(),
-            }).collect();
+            let parts: Vec<String> = args
+                .iter()
+                .map(|a| match a {
+                    LispVal::Str(s) => s.clone(),
+                    v => v.to_string(),
+                })
+                .collect();
             let key = parts.join("/");
-            Some(Ok(state.near_storage.get(&key).cloned().unwrap_or(LispVal::Num(0))))
+            Some(Ok(state
+                .near_storage
+                .get(&key)
+                .cloned()
+                .unwrap_or(LispVal::Num(0))))
         }
 
         // ═══════════════════════════════════════════════════════════════
@@ -5162,7 +5310,11 @@ fn eval_near_builtin(
         }
         "storage-read" | "storage_read" => {
             let key = key_of(args, 0);
-            Some(Ok(state.near_storage.get(&key).cloned().unwrap_or(LispVal::Num(0))))
+            Some(Ok(state
+                .near_storage
+                .get(&key)
+                .cloned()
+                .unwrap_or(LispVal::Num(0))))
         }
         "storage-remove" | "storage_remove" => {
             let key = key_of(args, 0);
@@ -5171,84 +5323,119 @@ fn eval_near_builtin(
         }
         "storage-has-key" | "storage_has_key" => {
             let key = key_of(args, 0);
-            Some(Ok(LispVal::Num(if state.near_storage.contains_key(&key) { 1 } else { 0 })))
+            Some(Ok(LispVal::Num(if state.near_storage.contains_key(&key) {
+                1
+            } else {
+                0
+            })))
         }
 
         // ═══════════════════════════════════════════════════════════════
         //  CONTEXT
         // ═══════════════════════════════════════════════════════════════
-        "near/current_account_id" | "current-account-id" | "current_account_id"
-        | "near/account_id" => {
-            Some(Ok(ctx_get(state, "current_account_id", LispVal::Str("contract.near".into()))))
-        }
-        "near/predecessor_account_id" | "predecessor-account-id" | "predecessor_account_id"
-        | "near/predecessor" => {
-            Some(Ok(ctx_get(state, "predecessor_account_id", LispVal::Str("bob.near".into()))))
-        }
-        "near/signer_account_id" | "signer-account-id" | "signer_account_id" => {
-            Some(Ok(ctx_get(state, "signer_account_id", LispVal::Str("alice.near".into()))))
-        }
-        "near/signer_account_pk" | "near/signer_public_key" => {
-            Some(Ok(ctx_get(state, "signer_account_pk", LispVal::Str(String::new()))))
-        }
-        "near/input" => {
-            Some(Ok(ctx_get(state, "input", LispVal::Str(String::new()))))
-        }
+        "near/current_account_id"
+        | "current-account-id"
+        | "current_account_id"
+        | "near/account_id" => Some(Ok(ctx_get(
+            state,
+            "current_account_id",
+            LispVal::Str("contract.near".into()),
+        ))),
+        "near/predecessor_account_id"
+        | "predecessor-account-id"
+        | "predecessor_account_id"
+        | "near/predecessor" => Some(Ok(ctx_get(
+            state,
+            "predecessor_account_id",
+            LispVal::Str("bob.near".into()),
+        ))),
+        "near/signer_account_id" | "signer-account-id" | "signer_account_id" => Some(Ok(ctx_get(
+            state,
+            "signer_account_id",
+            LispVal::Str("alice.near".into()),
+        ))),
+        "near/signer_account_pk" | "near/signer_public_key" => Some(Ok(ctx_get(
+            state,
+            "signer_account_pk",
+            LispVal::Str(String::new()),
+        ))),
+        "near/input" => Some(Ok(ctx_get(state, "input", LispVal::Str(String::new())))),
         "near/block_index" | "near/block_height" | "block-height" | "block_height" => {
             Some(Ok(ctx_get(state, "block_index", LispVal::Num(42_000_000))))
         }
         "near/block_timestamp" | "block-timestamp" | "block_timestamp" => {
             // Option A: ns timestamps are decimal strings (2^60.4 > 61-bit payload)
-            Some(Ok(ctx_get(state, "block_timestamp", LispVal::Str(String::from("1714000000000000000")))))
+            Some(Ok(ctx_get(
+                state,
+                "block_timestamp",
+                LispVal::Str(String::from("1714000000000000000")),
+            )))
         }
-        "near/epoch_height" => {
-            Some(Ok(ctx_get(state, "epoch_height", LispVal::Num(100))))
-        }
-        "near/prepaid_gas" => {
-            Some(Ok(ctx_get(state, "prepaid_gas", LispVal::Num(300_000_000_000_000_i64))))
-        }
-        "near/used_gas" => {
-            Some(Ok(ctx_get(state, "used_gas", LispVal::Num(0))))
-        }
-        "near/attached_deposit" | "attached-deposit" | "attached_deposit"
+        "near/epoch_height" => Some(Ok(ctx_get(state, "epoch_height", LispVal::Num(100)))),
+        "near/prepaid_gas" => Some(Ok(ctx_get(
+            state,
+            "prepaid_gas",
+            LispVal::Num(300_000_000_000_000_i64),
+        ))),
+        "near/used_gas" => Some(Ok(ctx_get(state, "used_gas", LispVal::Num(0)))),
+        "near/attached_deposit"
+        | "attached-deposit"
+        | "attached_deposit"
         | "near/attached_deposit_high" => {
             Some(Ok(ctx_get(state, "attached_deposit", LispVal::Num(0))))
         }
         "near/deposit-gte" => {
             // (near/deposit-gte target_deposit_lo target_deposit_hi) → Num(1) or Num(0)
-            let threshold = args.get(0).and_then(|v| match v {
-                LispVal::Num(n) => Some(*n),
-                LispVal::Float(f) => Some(*f as i64),
-                _ => None,
-            }).unwrap_or(0);
-            let dep = state.near_context.get("attached_deposit").and_then(|v| match v {
-                LispVal::Num(n) => Some(*n),
-                _ => None,
-            }).unwrap_or(0);
+            let threshold = args
+                .get(0)
+                .and_then(|v| match v {
+                    LispVal::Num(n) => Some(*n),
+                    LispVal::Float(f) => Some(*f as i64),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            let dep = state
+                .near_context
+                .get("attached_deposit")
+                .and_then(|v| match v {
+                    LispVal::Num(n) => Some(*n),
+                    _ => None,
+                })
+                .unwrap_or(0);
             Some(Ok(LispVal::Num(if dep >= threshold { 1 } else { 0 })))
         }
         "near/account_balance" | "account-balance" | "account_balance" => {
             // WASM returns u128 low bits as i64
-            Some(Ok(ctx_get(state, "account_balance", LispVal::Num(1_000_000_000_000_000_000_i64))))
+            Some(Ok(ctx_get(
+                state,
+                "account_balance",
+                LispVal::Num(1_000_000_000_000_000_000_i64),
+            )))
         }
         "near/account_balance_high" => {
             Some(Ok(ctx_get(state, "account_balance_high", LispVal::Num(0))))
         }
-        "near/account_locked_balance" => {
-            Some(Ok(ctx_get(state, "account_locked_balance", LispVal::Num(0))))
-        }
-        "near/account_locked_balance_high" => {
-            Some(Ok(ctx_get(state, "account_locked_balance_high", LispVal::Num(0))))
-        }
-        "near/storage_usage" => {
-            Some(Ok(ctx_get(state, "storage_usage", LispVal::Num(0))))
-        }
-        "near/current_code_hash" => {
-            Some(Ok(ctx_get(state, "current_code_hash", LispVal::Str("mock_code_hash_32bytes".into()))))
-        }
-        "near/current_contract_code" => {
-            Some(Ok(ctx_get(state, "current_contract_code", LispVal::Str(String::new()))))
-        }
+        "near/account_locked_balance" => Some(Ok(ctx_get(
+            state,
+            "account_locked_balance",
+            LispVal::Num(0),
+        ))),
+        "near/account_locked_balance_high" => Some(Ok(ctx_get(
+            state,
+            "account_locked_balance_high",
+            LispVal::Num(0),
+        ))),
+        "near/storage_usage" => Some(Ok(ctx_get(state, "storage_usage", LispVal::Num(0)))),
+        "near/current_code_hash" => Some(Ok(ctx_get(
+            state,
+            "current_code_hash",
+            LispVal::Str("mock_code_hash_32bytes".into()),
+        ))),
+        "near/current_contract_code" => Some(Ok(ctx_get(
+            state,
+            "current_contract_code",
+            LispVal::Str(String::new()),
+        ))),
         "near/signer_to_buf" => {
             // Mock: return length of signer account id
             let signer = match state.near_context.get("signer_account_id") {
@@ -5261,9 +5448,7 @@ fn eval_near_builtin(
             // Mock: store amount, return Nil
             Some(Ok(LispVal::Nil))
         }
-        "near/validator_stake" => {
-            Some(Ok(ctx_get(state, "validator_stake", LispVal::Num(0))))
-        }
+        "near/validator_stake" => Some(Ok(ctx_get(state, "validator_stake", LispVal::Num(0)))),
         "near/validator_total_stake" => {
             Some(Ok(ctx_get(state, "validator_total_stake", LispVal::Num(0))))
         }
@@ -5309,7 +5494,9 @@ fn eval_near_builtin(
             let method = key_of(args, 1);
             let call_args = key_of(args, 2);
             let gas = extract_num(args, 3).unwrap_or(30_000_000_000_000);
-            let deposit = extract_num(args, 4).unwrap_or(0);
+            // deposit: Num OR u128 decimal str (matches the emitter's
+            // tag-branching deposit path, 2026-09-10 fix)
+            let deposit = deposit_of(args, 4);
             let idx = state.near_promise_idx;
             state.near_promise_idx += 1;
             let mut m = im::HashMap::new();
@@ -5319,17 +5506,21 @@ fn eval_near_builtin(
             m.insert("method".into(), LispVal::Str(method));
             m.insert("args".into(), LispVal::Str(call_args));
             m.insert("gas".into(), LispVal::Num(gas));
-            m.insert("deposit".into(), LispVal::Num(deposit));
+            m.insert("deposit".into(), LispVal::Str(deposit));
             state.near_promises.push(LispVal::Map(m));
             state.near_returned_promise = Some(idx);
             Some(Ok(LispVal::Num(idx)))
         }
         "near/promise_create" => {
+            // ABI (wasm reference, call_near_promise.rs:230): (target method
+            // args DEPOSIT GAS). The old interp read gas@3/deposit@4 —
+            // swapped vs the emitter; found by the promise differential
+            // harness 2026-09-10.
             let target = key_of(args, 0);
             let method = key_of(args, 1);
             let call_args = key_of(args, 2);
-            let gas = extract_num(args, 3).unwrap_or(30_000_000_000_000);
-            let deposit = extract_num(args, 4).unwrap_or(0);
+            let deposit = deposit_of(args, 3);
+            let gas = extract_num(args, 4).unwrap_or(30_000_000_000_000);
             let idx = state.near_promise_idx;
             state.near_promise_idx += 1;
             let mut m = im::HashMap::new();
@@ -5339,17 +5530,18 @@ fn eval_near_builtin(
             m.insert("method".into(), LispVal::Str(method));
             m.insert("args".into(), LispVal::Str(call_args));
             m.insert("gas".into(), LispVal::Num(gas));
-            m.insert("deposit".into(), LispVal::Num(deposit));
+            m.insert("deposit".into(), LispVal::Str(deposit));
             state.near_promises.push(LispVal::Map(m));
             Some(Ok(LispVal::Num(idx)))
         }
         "near/promise_then" => {
+            // ABI (wasm reference): (base target method args DEPOSIT GAS)
             let base_idx = extract_num(args, 0).unwrap_or(0);
             let target = key_of(args, 1);
             let method = key_of(args, 2);
             let call_args = key_of(args, 3);
-            let gas = extract_num(args, 4).unwrap_or(30_000_000_000_000);
-            let deposit = extract_num(args, 5).unwrap_or(0);
+            let deposit = deposit_of(args, 4);
+            let gas = extract_num(args, 5).unwrap_or(30_000_000_000_000);
             let idx = state.near_promise_idx;
             state.near_promise_idx += 1;
             let mut m = im::HashMap::new();
@@ -5360,19 +5552,29 @@ fn eval_near_builtin(
             m.insert("method".into(), LispVal::Str(method));
             m.insert("args".into(), LispVal::Str(call_args));
             m.insert("gas".into(), LispVal::Num(gas));
-            m.insert("deposit".into(), LispVal::Num(deposit));
+            m.insert("deposit".into(), LispVal::Str(deposit));
             state.near_promises.push(LispVal::Map(m));
 
             // If base promise has a result and target is registered, execute immediately
-            let base_result = state.near_promise_results.get(base_idx as usize).cloned().unwrap_or_default();
+            let base_result = state
+                .near_promise_results
+                .get(base_idx as usize)
+                .cloned()
+                .unwrap_or_default();
             // If base promise has a result and target is registered, execute immediately
-            let base_result = state.near_promise_results.get(base_idx as usize).cloned().unwrap_or_default();
+            let base_result = state
+                .near_promise_results
+                .get(base_idx as usize)
+                .cloned()
+                .unwrap_or_default();
             if !base_result.is_empty() {
                 let (entry, contract_storage) = {
                     let contract = state.near_contracts.get_mut(&target);
                     match contract {
                         Some(c) => (c.entry.clone(), std::mem::take(&mut c.storage)),
-                        None => { return Some(Ok(LispVal::Num(idx))); }
+                        None => {
+                            return Some(Ok(LispVal::Num(idx)));
+                        }
                     }
                 };
 
@@ -5380,11 +5582,19 @@ fn eval_near_builtin(
                 let caller_ctx = state.near_context.clone();
                 std::mem::swap(&mut state.near_storage, &mut contract_storage.clone());
 
-                let caller_acct = caller_ctx.get("current_account_id")
-                    .cloned().unwrap_or(LispVal::Str("unknown.near".into()));
-                state.near_context.insert("current_account_id".into(), LispVal::Str(target.clone()));
-                state.near_context.insert("predecessor_account_id".into(), caller_acct);
-                state.near_context.insert("input".into(), LispVal::Str(base_result));
+                let caller_acct = caller_ctx
+                    .get("current_account_id")
+                    .cloned()
+                    .unwrap_or(LispVal::Str("unknown.near".into()));
+                state
+                    .near_context
+                    .insert("current_account_id".into(), LispVal::Str(target.clone()));
+                state
+                    .near_context
+                    .insert("predecessor_account_id".into(), caller_acct);
+                state
+                    .near_context
+                    .insert("input".into(), LispVal::Str(base_result));
 
                 state.near_return_value = None;
                 let saved_promise_idx = state.near_promise_idx;
@@ -5395,7 +5605,10 @@ fn eval_near_builtin(
                 let result = vm_call_lambda(&entry, &[], &mut contract_env, state);
 
                 let final_contract_storage = std::mem::take(&mut state.near_storage);
-                state.near_contracts.get_mut(&target).map(|c| c.storage = final_contract_storage);
+                state
+                    .near_contracts
+                    .get_mut(&target)
+                    .map(|c| c.storage = final_contract_storage);
                 state.near_storage = caller_storage;
                 state.near_context = caller_ctx;
                 state.near_promises = saved_promises;
@@ -5420,7 +5633,9 @@ fn eval_near_builtin(
             // (near/promise_and p1 p2 ...) → returns new promise idx
             let mut indices = Vec::new();
             for a in args {
-                if let LispVal::Num(n) = a { indices.push(LispVal::Num(*n)); }
+                if let LispVal::Num(n) = a {
+                    indices.push(LispVal::Num(*n));
+                }
             }
             let idx = state.near_promise_idx;
             state.near_promise_idx += 1;
@@ -5445,7 +5660,11 @@ fn eval_near_builtin(
         }
         "near/promise_result" => {
             let idx = extract_num(args, 0).unwrap_or(0) as usize;
-            let result = state.near_promise_results.get(idx).cloned().unwrap_or_default();
+            let result = state
+                .near_promise_results
+                .get(idx)
+                .cloned()
+                .unwrap_or_default();
             Some(Ok(LispVal::Str(result)))
         }
         "near/promise_return" => {
@@ -5456,7 +5675,10 @@ fn eval_near_builtin(
         "near/promise_set_refund_to" => {
             let mut m = im::HashMap::new();
             m.insert("type".into(), LispVal::Str("set_refund".into()));
-            m.insert("promise_idx".into(), args.get(0).cloned().unwrap_or(LispVal::Num(0)));
+            m.insert(
+                "promise_idx".into(),
+                args.get(0).cloned().unwrap_or(LispVal::Num(0)),
+            );
             state.near_promises.push(LispVal::Map(m));
             Some(Ok(LispVal::Num(0)))
         }
@@ -5464,7 +5686,10 @@ fn eval_near_builtin(
             let mut m = im::HashMap::new();
             m.insert("type".into(), LispVal::Str("transfer".into()));
             m.insert("target".into(), LispVal::Str(key_of(args, 0)));
-            m.insert("amount".into(), args.get(1).cloned().unwrap_or(LispVal::Num(0)));
+            m.insert(
+                "amount".into(),
+                args.get(1).cloned().unwrap_or(LispVal::Num(0)),
+            );
             state.near_promises.push(LispVal::Map(m));
             let idx = state.near_promise_idx;
             state.near_promise_idx += 1;
@@ -5533,23 +5758,37 @@ fn eval_near_builtin(
             Some(Ok(LispVal::Num(idx)))
         }
         // Batch action helpers — log to near_batch_actions
-        "near/batch-call" | "near/promise_batch_action_function_call"
+        "near/batch-call"
+        | "near/promise_batch_action_function_call"
         | "near/promise_batch_action_function_call_weight" => {
+            // ABI (wasm reference + corpus usage, e.g. outlayer-oracle:
+            // (batch method args DEPOSIT GAS)): deposit BEFORE gas. Also
+            // record in near_promises so the global op ORDER survives (batch
+            // actions interleaved with promise creates/returns).
+            let batch = extract_num(args, 0).unwrap_or(0);
             let mut m = im::HashMap::new();
             m.insert("type".into(), LispVal::Str("batch_function_call".into()));
+            m.insert("batch".into(), LispVal::Num(batch));
             m.insert("target".into(), LispVal::Str(key_of(args, 0)));
             m.insert("method".into(), LispVal::Str(key_of(args, 1)));
             m.insert("args".into(), LispVal::Str(key_of(args, 2)));
-            m.insert("gas".into(), LispVal::Num(extract_num(args, 3).unwrap_or(30_000_000_000_000)));
-            m.insert("deposit".into(), LispVal::Num(extract_num(args, 4).unwrap_or(0)));
-            state.near_batch_actions.push(LispVal::Map(m));
+            m.insert("deposit".into(), LispVal::Str(deposit_of(args, 3)));
+            m.insert(
+                "gas".into(),
+                LispVal::Num(extract_num(args, 4).unwrap_or(30_000_000_000_000)),
+            );
+            state.near_batch_actions.push(LispVal::Map(m.clone()));
+            state.near_promises.push(LispVal::Map(m));
             Some(Ok(LispVal::Num(0)))
         }
         "near/batch-transfer" | "near/promise_batch_action_transfer" => {
             let mut m = im::HashMap::new();
             m.insert("type".into(), LispVal::Str("batch_transfer".into()));
             m.insert("target".into(), LispVal::Str(key_of(args, 0)));
-            m.insert("amount".into(), LispVal::Num(extract_num(args, 1).unwrap_or(0)));
+            m.insert(
+                "amount".into(),
+                LispVal::Num(extract_num(args, 1).unwrap_or(0)),
+            );
             state.near_batch_actions.push(LispVal::Map(m));
             Some(Ok(LispVal::Num(0)))
         }
@@ -5608,13 +5847,14 @@ fn eval_near_builtin(
             state.near_batch_actions.push(LispVal::Map(m));
             Some(Ok(LispVal::Num(0)))
         }
-        "near/set_state_init_data_entry" => {
-            Some(Ok(LispVal::Num(0)))
-        }
+        "near/set_state_init_data_entry" => Some(Ok(LispVal::Num(0))),
         // Yield
         "near/promise_yield_create" | "near/promise_yield_resume" => {
             let mut m = im::HashMap::new();
-            m.insert("type".into(), LispVal::Str(name.strip_prefix("near/").unwrap_or(name).into()));
+            m.insert(
+                "type".into(),
+                LispVal::Str(name.strip_prefix("near/").unwrap_or(name).into()),
+            );
             state.near_promises.push(LispVal::Map(m));
             Some(Ok(LispVal::Num(0)))
         }
@@ -5624,7 +5864,10 @@ fn eval_near_builtin(
         | "near/promise_batch_action_use_global_contract"
         | "near/promise_batch_action_use_global_contract_by_account_id" => {
             let mut m = im::HashMap::new();
-            m.insert("type".into(), LispVal::Str(name.strip_prefix("near/").unwrap_or(name).into()));
+            m.insert(
+                "type".into(),
+                LispVal::Str(name.strip_prefix("near/").unwrap_or(name).into()),
+            );
             state.near_batch_actions.push(LispVal::Map(m));
             Some(Ok(LispVal::Num(0)))
         }
@@ -5633,7 +5876,10 @@ fn eval_near_builtin(
         | "near/promise_batch_action_add_gas_key_with_full_access"
         | "near/promise_batch_action_add_gas_key_with_function_call" => {
             let mut m = im::HashMap::new();
-            m.insert("type".into(), LispVal::Str(name.strip_prefix("near/").unwrap_or(name).into()));
+            m.insert(
+                "type".into(),
+                LispVal::Str(name.strip_prefix("near/").unwrap_or(name).into()),
+            );
             state.near_batch_actions.push(LispVal::Map(m));
             Some(Ok(LispVal::Num(0)))
         }
@@ -5666,7 +5912,9 @@ fn eval_near_builtin(
         // ═══════════════════════════════════════════════════════════════
         "near/log" | "near/log-debug" | "near/debug" | "log-utf8" | "log_utf8" | "log" => {
             let msg = key_of(args, 0);
-            if !msg.is_empty() { eprintln!("[log] {}", msg); }
+            if !msg.is_empty() {
+                eprintln!("[log] {}", msg);
+            }
             Some(Ok(LispVal::Nil))
         }
         "near/log_num" => {
@@ -5676,7 +5924,9 @@ fn eval_near_builtin(
         }
         "near/log_utf16" => {
             let msg = key_of(args, 0);
-            if !msg.is_empty() { eprintln!("[log_utf16] {}", msg); }
+            if !msg.is_empty() {
+                eprintln!("[log_utf16] {}", msg);
+            }
             Some(Ok(LispVal::Nil))
         }
 
@@ -5684,35 +5934,41 @@ fn eval_near_builtin(
         //  CRYPTO — mock: deterministic hashes, signatures always valid
         // ═══════════════════════════════════════════════════════════════
         "near/sha256" | "near/keccak256" | "near/keccak512" | "near/ripemd160" => {
-            Some(Ok(LispVal::Str(format!("mock_{}", name.strip_prefix("near/").unwrap_or(name)))))
+            Some(Ok(LispVal::Str(format!(
+                "mock_{}",
+                name.strip_prefix("near/").unwrap_or(name)
+            ))))
         }
         "near/ed25519_verify" | "near/p256_verify" | "near/ecrecover" | "near/schnorr_verify" => {
             Some(Ok(LispVal::Num(1))) // mock: always valid
         }
-        "near/random_seed" => {
-            Some(Ok(ctx_get(state, "random_seed", LispVal::Num(42))))
-        }
+        "near/random_seed" => Some(Ok(ctx_get(state, "random_seed", LispVal::Num(42)))),
         // Alt BN128
         "near/alt_bn128_g1_multiexp" | "near/alt_bn128_g1_sum" | "near/alt_bn128_pairing_check" => {
             Some(Ok(LispVal::Num(0)))
         }
         // BLS12-381
-        "near/bls12381_p1_sum" | "near/bls12381_p2_sum"
-        | "near/bls12381_g1_multiexp" | "near/bls12381_g2_multiexp"
-        | "near/bls12381_map_fp_to_g1" | "near/bls12381_map_fp2_to_g2"
+        "near/bls12381_p1_sum"
+        | "near/bls12381_p2_sum"
+        | "near/bls12381_g1_multiexp"
+        | "near/bls12381_g2_multiexp"
+        | "near/bls12381_map_fp_to_g1"
+        | "near/bls12381_map_fp2_to_g2"
         | "near/bls12381_pairing_check"
-        | "near/bls12381_p1_decompress" | "near/bls12381_p2_decompress" => {
-            Some(Ok(LispVal::Num(0)))
-        }
+        | "near/bls12381_p1_decompress"
+        | "near/bls12381_p2_decompress" => Some(Ok(LispVal::Num(0))),
 
         // ═══════════════════════════════════════════════════════════════
         //  ITERATION
         // ═══════════════════════════════════════════════════════════════
         "near/iter_prefix" => {
             let prefix = key_of(args, 0);
-            let keys: Vec<String> = state.near_storage.keys()
+            let keys: Vec<String> = state
+                .near_storage
+                .keys()
                 .filter(|k| k.starts_with(&prefix))
-                .cloned().collect();
+                .cloned()
+                .collect();
             let id = state.near_iter_next_id;
             state.near_iter_next_id += 1;
             state.near_iter_prefixes.insert(id, keys);
@@ -5722,9 +5978,12 @@ fn eval_near_builtin(
         "near/iter_range" => {
             let start = key_of(args, 0);
             let end = key_of(args, 1);
-            let keys: Vec<String> = state.near_storage.keys()
+            let keys: Vec<String> = state
+                .near_storage
+                .keys()
                 .filter(|k| k.as_str() >= start.as_str() && k.as_str() < end.as_str())
-                .cloned().collect();
+                .cloned()
+                .collect();
             let id = state.near_iter_next_id;
             state.near_iter_next_id += 1;
             state.near_iter_prefixes.insert(id, keys);
@@ -5790,25 +6049,15 @@ fn eval_near_builtin(
         // ═══════════════════════════════════════════════════════════════
         //  JSON HELPERS
         // ═══════════════════════════════════════════════════════════════
-        "near/json_get_int" => {
-            Some(Ok(LispVal::Num(0)))
-        }
-        "near/json_get_str" => {
-            Some(Ok(LispVal::Str(String::new())))
-        }
-        "near/json_return_int" => {
-            Some(Ok(LispVal::Num(0)))
-        }
-        "near/json_return_str" => {
-            Some(Ok(LispVal::Num(0)))
-        }
+        "near/json_get_int" => Some(Ok(LispVal::Num(0))),
+        "near/json_get_str" => Some(Ok(LispVal::Str(String::new()))),
+        "near/json_return_int" => Some(Ok(LispVal::Num(0))),
+        "near/json_return_str" => Some(Ok(LispVal::Num(0))),
 
         // ═══════════════════════════════════════════════════════════════
         //  U128 HELPERS
         // ═══════════════════════════════════════════════════════════════
-        "near/store_u128" | "near/load_u128" => {
-            Some(Ok(LispVal::Num(0)))
-        }
+        "near/store_u128" | "near/load_u128" => Some(Ok(LispVal::Num(0))),
         "near/attached_deposit_u128" => {
             // no VM context in the interpreter — decimal-string zero keeps the
             // () → str signature honest (wasm renders the real u128)
@@ -5824,10 +6073,13 @@ fn eval_near_builtin(
                 // Special: populate promise results from a list of strings
                 if key == "promise_results" {
                     if let Some(LispVal::List(items)) = args.get(1) {
-                        state.near_promise_results = items.iter().map(|v| match v {
-                            LispVal::Str(s) => s.clone(),
-                            o => o.to_string(),
-                        }).collect();
+                        state.near_promise_results = items
+                            .iter()
+                            .map(|v| match v {
+                                LispVal::Str(s) => s.clone(),
+                                o => o.to_string(),
+                            })
+                            .collect();
                         return Some(Ok(LispVal::Num(items.len() as i64)));
                     }
                 }
@@ -5852,12 +6104,8 @@ fn eval_near_builtin(
             Some(Ok(LispVal::Num(0)))
         }
         // Test seam: inspect promise/batch state from tests
-        "near-promises" => {
-            Some(Ok(LispVal::List(state.near_promises.clone())))
-        }
-        "near-batch-actions" => {
-            Some(Ok(LispVal::List(state.near_batch_actions.clone())))
-        }
+        "near-promises" => Some(Ok(LispVal::List(state.near_promises.clone()))),
+        "near-batch-actions" => Some(Ok(LispVal::List(state.near_batch_actions.clone()))),
         "near-returned-promise" => {
             Some(Ok(LispVal::Num(state.near_returned_promise.unwrap_or(-1))))
         }
@@ -5877,7 +6125,9 @@ fn eval_near_builtin(
                 state.near_contracts.insert(acct, contract);
                 return Some(Ok(LispVal::Num(0)));
             }
-            Some(Err("near-register: expected (near-register account-id lambda)".into()))
+            Some(Err(
+                "near-register: expected (near-register account-id lambda)".into(),
+            ))
         }
         "near-register-source" => {
             // (near-register-source "account.near" "(near/store "x" 42) (near/return "ok")")
@@ -5895,7 +6145,9 @@ fn eval_near_builtin(
                             params: vec![],
                             rest_param: None,
                             body: Box::new(body_val),
-                            closed_env: std::sync::Arc::new(std::sync::RwLock::new(setup_env.snapshot())),
+                            closed_env: std::sync::Arc::new(std::sync::RwLock::new(
+                                setup_env.snapshot(),
+                            )),
                             compiled: None,
                             pure_type: None,
                             memo_cache: None,
@@ -5911,11 +6163,16 @@ fn eval_near_builtin(
                     Err(e) => return Some(Err(format!("near-register-source: {}", e))),
                 }
             }
-            Some(Err("near-register-source: expected (near-register-source account-id source-string)".into()))
+            Some(Err(
+                "near-register-source: expected (near-register-source account-id source-string)"
+                    .into(),
+            ))
         }
         "near-contracts" => {
             // Returns list of registered account IDs
-            let accts: Vec<LispVal> = state.near_contracts.keys()
+            let accts: Vec<LispVal> = state
+                .near_contracts
+                .keys()
                 .map(|k| LispVal::Str(k.clone()))
                 .collect();
             Some(Ok(LispVal::List(accts)))
@@ -5976,7 +6233,9 @@ pub fn eval_builtin(
             Some(LispVal::U64(a)) => Ok(LispVal::U64(!a)),
             other => Err(format!(
                 "u64-not: expected U64, got {:?}",
-                other.map(|v| format!("{:?}", v)).unwrap_or_else(|| "missing arg".into())
+                other
+                    .map(|v| format!("{:?}", v))
+                    .unwrap_or_else(|| "missing arg".into())
             )),
         },
         // ── Wrapping arithmetic + integer intrinsics ──
@@ -6293,15 +6552,17 @@ pub fn eval_builtin(
         // ── u128 builtins: decimal-string values, NEAR yocto scale ──
         // u128 values are STRINGS in lisp land (matches NEAR's JSON API).
         // All failures (bad parse, overflow, wrong type) are hard errors.
-        "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod"
-        | "u128/lt" | "u128/gt" | "u128/eq"
-        | "u128/from-i64" | "u128/to-i64" | "u128/is-zero" => {
+        "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod" | "u128/lt" | "u128/gt"
+        | "u128/eq" | "u128/from-i64" | "u128/to-i64" | "u128/is-zero" => {
             fn parse_u128_arg(builtin: &str, arg: Option<&LispVal>) -> Result<u128, String> {
                 match arg {
-                    Some(LispVal::Str(s)) => s.parse::<u128>().map_err(|_| {
-                        format!("{}: invalid u128 string '{}'", builtin, s)
-                    }),
-                    Some(other) => Err(format!("{}: expected string argument, got {}", builtin, other)),
+                    Some(LispVal::Str(s)) => s
+                        .parse::<u128>()
+                        .map_err(|_| format!("{}: invalid u128 string '{}'", builtin, s)),
+                    Some(other) => Err(format!(
+                        "{}: expected string argument, got {}",
+                        builtin, other
+                    )),
                     None => Err(format!("{}: missing argument", builtin)),
                 }
             }
@@ -6314,11 +6575,15 @@ pub fn eval_builtin(
                         "u128/sub" => a.checked_sub(b),
                         "u128/mul" => a.checked_mul(b),
                         "u128/div" => {
-                            if b == 0 { return Err(format!("{}: division by zero", name)); }
+                            if b == 0 {
+                                return Err(format!("{}: division by zero", name));
+                            }
                             Some(a / b)
                         }
                         "u128/mod" => {
-                            if b == 0 { return Err(format!("{}: division by zero", name)); }
+                            if b == 0 {
+                                return Err(format!("{}: division by zero", name));
+                            }
                             Some(a % b)
                         }
                         _ => unreachable!(),
@@ -6340,7 +6605,9 @@ pub fn eval_builtin(
                 }
                 "u128/from-i64" => match args.get(0) {
                     Some(LispVal::Num(n)) => Ok(LispVal::Str(n.to_string())),
-                    Some(other) => Err(format!("u128/from-i64: expected i64 number, got {}", other)),
+                    Some(other) => {
+                        Err(format!("u128/from-i64: expected i64 number, got {}", other))
+                    }
                     None => Err("u128/from-i64: missing argument".into()),
                 },
                 "u128/to-i64" => {
@@ -6355,36 +6622,55 @@ pub fn eval_builtin(
             }
         }
         // ── wallet-factory byte/string builtins (mirror wasm call_string.rs) ──
-        "str-len" | "str-contains-byte" | "str-repeat" | "hex-encode"
-        | "base64-decode" | "near/store-bytes" | "near/load-bytes" => {
+        "str-len" | "str-contains-byte" | "str-repeat" | "hex-encode" | "base64-decode"
+        | "near/store-bytes" | "near/load-bytes" => {
             fn str_arg(name: &str, args: &[LispVal], i: usize) -> Result<String, String> {
                 match args.get(i) {
                     Some(LispVal::Str(s)) => Ok(s.clone()),
-                    Some(other) => Err(format!("{}: expected string arg {}, got {}", name, i, other)),
+                    Some(other) => Err(format!(
+                        "{}: expected string arg {}, got {}",
+                        name, i, other
+                    )),
                     None => Err(format!("{}: missing arg {}", name, i)),
                 }
             }
             match name {
                 "str-len" => {
-                    if args.len() != 1 { return Err("str-len: expected 1 arg".into()); }
+                    if args.len() != 1 {
+                        return Err("str-len: expected 1 arg".into());
+                    }
                     Ok(LispVal::Num(str_arg(name, args, 0)?.len() as i64))
                 }
                 "str-contains-byte" => {
-                    if args.len() != 2 { return Err("str-contains-byte: expected 2 args".into()); }
+                    if args.len() != 2 {
+                        return Err("str-contains-byte: expected 2 args".into());
+                    }
                     let s = str_arg(name, args, 0)?;
                     let b = match args.get(1) {
                         Some(LispVal::Num(n)) if (0..=255).contains(n) => *n as u8,
-                        Some(other) => return Err(format!("str-contains-byte: expected byte 0-255, got {}", other)),
+                        Some(other) => {
+                            return Err(format!(
+                                "str-contains-byte: expected byte 0-255, got {}",
+                                other
+                            ))
+                        }
                         None => return Err("str-contains-byte: missing arg".into()),
                     };
                     Ok(LispVal::Bool(s.as_bytes().contains(&b)))
                 }
                 "str-repeat" => {
-                    if args.len() != 2 { return Err("str-repeat: expected 2 args".into()); }
+                    if args.len() != 2 {
+                        return Err("str-repeat: expected 2 args".into());
+                    }
                     let s = str_arg(name, args, 0)?;
                     let n = match args.get(1) {
                         Some(LispVal::Num(n)) if *n >= 0 => *n as usize,
-                        Some(other) => return Err(format!("str-repeat: expected non-negative count, got {}", other)),
+                        Some(other) => {
+                            return Err(format!(
+                                "str-repeat: expected non-negative count, got {}",
+                                other
+                            ))
+                        }
                         None => return Err("str-repeat: missing arg".into()),
                     };
                     if s.len().saturating_mul(n) > 1 << 20 {
@@ -6393,7 +6679,9 @@ pub fn eval_builtin(
                     Ok(LispVal::Str(s.repeat(n)))
                 }
                 "hex-encode" => {
-                    if args.len() != 1 { return Err("hex-encode: expected 1 arg".into()); }
+                    if args.len() != 1 {
+                        return Err("hex-encode: expected 1 arg".into());
+                    }
                     let s = str_arg(name, args, 0)?;
                     let mut out = String::with_capacity(s.len() * 2);
                     for b in s.as_bytes() {
@@ -6402,16 +6690,26 @@ pub fn eval_builtin(
                     Ok(LispVal::Str(out))
                 }
                 "base64-decode" => {
-                    if args.len() != 1 { return Err("base64-decode: expected 1 arg".into()); }
+                    if args.len() != 1 {
+                        return Err("base64-decode: expected 1 arg".into());
+                    }
                     let s = str_arg(name, args, 0)?;
                     // standard alphabet, '=' padding — mirrors the wasm table
-                    const TBL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                    const TBL: &[u8; 64] =
+                        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
                     let mut vals: Vec<u8> = Vec::with_capacity(s.len());
                     for ch in s.bytes() {
-                        if ch == b'=' { continue; }
+                        if ch == b'=' {
+                            continue;
+                        }
                         match TBL.iter().position(|&t| t == ch) {
                             Some(i) => vals.push(i as u8),
-                            None => return Err(format!("base64-decode: invalid character '{}'", ch as char)),
+                            None => {
+                                return Err(format!(
+                                    "base64-decode: invalid character '{}'",
+                                    ch as char
+                                ))
+                            }
                         }
                     }
                     let mut out: Vec<u8> = Vec::with_capacity(vals.len() * 3 / 4 + 3);
@@ -6432,19 +6730,31 @@ pub fn eval_builtin(
                     Ok(LispVal::Str(String::from_utf8_lossy(&out).into_owned()))
                 }
                 "near/store-bytes" => {
-                    if args.len() != 2 { return Err("near/store-bytes: expected 2 args".into()); }
+                    if args.len() != 2 {
+                        return Err("near/store-bytes: expected 2 args".into());
+                    }
                     let key = str_arg(name, args, 0)?;
-                    if key.is_empty() { return Err("near/store-bytes: need key".into()); }
+                    if key.is_empty() {
+                        return Err("near/store-bytes: need key".into());
+                    }
                     let val = str_arg(name, args, 1)?;
-                    let st = state.ok_or_else(|| "near/store-bytes: requires mutable state".to_string())?;
+                    let st = state
+                        .ok_or_else(|| "near/store-bytes: requires mutable state".to_string())?;
                     st.near_storage.insert(key, LispVal::Str(val));
                     Ok(LispVal::Nil)
                 }
                 "near/load-bytes" => {
-                    if args.len() != 1 { return Err("near/load-bytes: expected 1 args".into()); }
+                    if args.len() != 1 {
+                        return Err("near/load-bytes: expected 1 args".into());
+                    }
                     let key = str_arg(name, args, 0)?;
-                    let st = state.ok_or_else(|| "near/load-bytes: requires mutable state".to_string())?;
-                    Ok(st.near_storage.get(&key).cloned().unwrap_or(LispVal::Str(String::new())))
+                    let st = state
+                        .ok_or_else(|| "near/load-bytes: requires mutable state".to_string())?;
+                    Ok(st
+                        .near_storage
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or(LispVal::Str(String::new())))
                 }
                 _ => unreachable!(),
             }
@@ -6455,16 +6765,26 @@ pub fn eval_builtin(
         // same default as the emitted wasm module. OOB → hard error (wasm traps).
         // NOTE the ABI split (commit 4b1403e): arithmetic NAMES (add/sub/...)
         // are string-based above; only these non-colliding names are address ops.
-        "u128/store" | "u128/load" | "u128/load_high" | "u128/new"
-        | "u128/from_yocto" | "u128/to_str" | "u128/from_str"
-        | "u128/fit_i64" | "u128/checked_to_i64" | "u128/to_i64"
+        "u128/store"
+        | "u128/load"
+        | "u128/load_high"
+        | "u128/new"
+        | "u128/from_yocto"
+        | "u128/to_str"
+        | "u128/from_str"
+        | "u128/fit_i64"
+        | "u128/checked_to_i64"
+        | "u128/to_i64"
         | "u128/from_i64" => {
             const U128_MEM_CAP: usize = 64 * 64 * 1024; // 64 pages = 4 MiB
             let state = state.ok_or_else(|| format!("{}: requires mutable state", name))?;
             fn num_arg(name: &str, args: &[LispVal], i: usize) -> Result<i64, String> {
                 match args.get(i) {
                     Some(LispVal::Num(n)) => Ok(*n),
-                    Some(other) => Err(format!("{}: expected number arg {}, got {}", name, i, other)),
+                    Some(other) => Err(format!(
+                        "{}: expected number arg {}, got {}",
+                        name, i, other
+                    )),
                     None => Err(format!("{}: missing arg {}", name, i)),
                 }
             }
@@ -6481,7 +6801,12 @@ pub fn eval_builtin(
                 }
                 Ok(())
             }
-            fn write_u128(state: &mut EvalState, addr: usize, lo: u64, hi: u64) -> Result<(), String> {
+            fn write_u128(
+                state: &mut EvalState,
+                addr: usize,
+                lo: u64,
+                hi: u64,
+            ) -> Result<(), String> {
                 mem_grow(state, addr, 16)?;
                 state.u128_mem[addr..addr + 8].copy_from_slice(&lo.to_le_bytes());
                 state.u128_mem[addr + 8..addr + 16].copy_from_slice(&hi.to_le_bytes());
@@ -6490,12 +6815,15 @@ pub fn eval_builtin(
             fn read_u128(state: &mut EvalState, addr: usize) -> Result<(u64, u64), String> {
                 mem_grow(state, addr, 16)?;
                 let lo = u64::from_le_bytes(state.u128_mem[addr..addr + 8].try_into().unwrap());
-                let hi = u64::from_le_bytes(state.u128_mem[addr + 8..addr + 16].try_into().unwrap());
+                let hi =
+                    u64::from_le_bytes(state.u128_mem[addr + 8..addr + 16].try_into().unwrap());
                 Ok((lo, hi))
             }
             match name {
                 "u128/store" => {
-                    if args.len() != 3 { return Err("u128/store: need 3 args (addr, lo, hi)".into()); }
+                    if args.len() != 3 {
+                        return Err("u128/store: need 3 args (addr, lo, hi)".into());
+                    }
                     let addr = num_arg(name, args, 0)? as u64 as usize;
                     let lo = num_arg(name, args, 1)? as u64;
                     let hi = num_arg(name, args, 2)? as u64;
@@ -6503,7 +6831,9 @@ pub fn eval_builtin(
                     Ok(LispVal::Nil)
                 }
                 "u128/new" => {
-                    if args.len() != 3 { return Err("u128/new: expected (hi, lo, offset)".into()); }
+                    if args.len() != 3 {
+                        return Err("u128/new: expected (hi, lo, offset)".into());
+                    }
                     let hi = num_arg(name, args, 0)? as u64;
                     let lo = num_arg(name, args, 1)? as u64;
                     let off = num_arg(name, args, 2)? as u64 as usize;
@@ -6511,31 +6841,43 @@ pub fn eval_builtin(
                     Ok(LispVal::Num(off as i64))
                 }
                 "u128/load" => {
-                    if args.len() != 1 { return Err("u128/load: need 1 arg (addr)".into()); }
+                    if args.len() != 1 {
+                        return Err("u128/load: need 1 arg (addr)".into());
+                    }
                     let addr = num_arg(name, args, 0)? as u64 as usize;
                     let (lo, _) = read_u128(state, addr)?;
                     Ok(LispVal::Num(lo as i64))
                 }
                 "u128/load_high" => {
-                    if args.len() != 1 { return Err("u128/load_high: need 1 arg (addr)".into()); }
+                    if args.len() != 1 {
+                        return Err("u128/load_high: need 1 arg (addr)".into());
+                    }
                     let addr = num_arg(name, args, 0)? as u64 as usize;
                     let (_, hi) = read_u128(state, addr)?;
                     Ok(LispVal::Num(hi as i64))
                 }
                 "u128/from_yocto" => {
-                    if args.len() != 2 { return Err("u128/from_yocto: expected (\"amount\", offset)".into()); }
+                    if args.len() != 2 {
+                        return Err("u128/from_yocto: expected (\"amount\", offset)".into());
+                    }
                     let s = match args.get(0) {
                         Some(LispVal::Str(s)) => s.clone(),
-                        Some(other) => return Err(format!("u128/from_yocto: expected string, got {}", other)),
+                        Some(other) => {
+                            return Err(format!("u128/from_yocto: expected string, got {}", other))
+                        }
                         None => return Err("u128/from_yocto: missing arg".into()),
                     };
-                    let v: u128 = s.parse().map_err(|_| format!("u128/from_yocto: invalid u128 string '{}'", s))?;
+                    let v: u128 = s
+                        .parse()
+                        .map_err(|_| format!("u128/from_yocto: invalid u128 string '{}'", s))?;
                     let off = num_arg(name, args, 1)? as u64 as usize;
                     write_u128(state, off, v as u64, (v >> 64) as u64)?;
                     Ok(LispVal::Num(off as i64))
                 }
                 "u128/to_str" => {
-                    if args.len() != 2 { return Err("u128/to_str: expected (addr, buffer addr)".into()); }
+                    if args.len() != 2 {
+                        return Err("u128/to_str: expected (addr, buffer addr)".into());
+                    }
                     let addr = num_arg(name, args, 0)? as u64 as usize;
                     let buf = num_arg(name, args, 1)? as u64 as usize;
                     let (lo, hi) = read_u128(state, addr)?;
@@ -6544,28 +6886,38 @@ pub fn eval_builtin(
                     // window) and returns a pointer-string; the interpreter has
                     // no pointer strings — write the same window, return Str.
                     let bytes = digits.as_bytes();
-                    if bytes.len() > 40 { return Err("u128/to_str: >40 digits".into()); }
+                    if bytes.len() > 40 {
+                        return Err("u128/to_str: >40 digits".into());
+                    }
                     mem_grow(state, buf, 40)?;
                     let start = buf + 40 - bytes.len();
                     state.u128_mem[start..buf + 40].copy_from_slice(bytes);
                     Ok(LispVal::Str(digits))
                 }
                 "u128/from_str" => {
-                    if args.len() != 2 { return Err("u128/from_str: expected (str, dst offset)".into()); }
+                    if args.len() != 2 {
+                        return Err("u128/from_str: expected (str, dst offset)".into());
+                    }
                     // wasm takes a pointer-string in memory; interpreter takes
                     // a real string (documented deviation — no pointer strings).
                     let s = match args.get(0) {
                         Some(LispVal::Str(s)) => s.clone(),
-                        Some(other) => return Err(format!("u128/from_str: expected string, got {}", other)),
+                        Some(other) => {
+                            return Err(format!("u128/from_str: expected string, got {}", other))
+                        }
                         None => return Err("u128/from_str: missing arg".into()),
                     };
-                    let v: u128 = s.parse().map_err(|_| format!("u128/from_str: invalid u128 string '{}'", s))?;
+                    let v: u128 = s
+                        .parse()
+                        .map_err(|_| format!("u128/from_str: invalid u128 string '{}'", s))?;
                     let off = num_arg(name, args, 1)? as u64 as usize;
                     write_u128(state, off, v as u64, (v >> 64) as u64)?;
                     Ok(LispVal::Num(off as i64))
                 }
                 "u128/from_i64" => {
-                    if args.len() != 2 { return Err("u128/from_i64: expected (n, offset)".into()); }
+                    if args.len() != 2 {
+                        return Err("u128/from_i64: expected (n, offset)".into());
+                    }
                     let n = num_arg(name, args, 0)? as u64;
                     let off = num_arg(name, args, 1)? as u64 as usize;
                     write_u128(state, off, n, 0)?;
@@ -6573,19 +6925,25 @@ pub fn eval_builtin(
                 }
                 "u128/to_i64" => {
                     // Unchecked low 64 bits (mirrors wasm — use checked_to_i64 for safety)
-                    if args.len() != 1 { return Err("u128/to_i64: need 1 arg (addr)".into()); }
+                    if args.len() != 1 {
+                        return Err("u128/to_i64: need 1 arg (addr)".into());
+                    }
                     let addr = num_arg(name, args, 0)? as u64 as usize;
                     let (lo, _) = read_u128(state, addr)?;
                     Ok(LispVal::Num(lo as i64))
                 }
                 "u128/fit_i64" => {
-                    if args.len() != 1 { return Err("u128/fit_i64: need 1 arg (addr)".into()); }
+                    if args.len() != 1 {
+                        return Err("u128/fit_i64: need 1 arg (addr)".into());
+                    }
                     let addr = num_arg(name, args, 0)? as u64 as usize;
                     let (lo, hi) = read_u128(state, addr)?;
                     Ok(LispVal::Num(if hi == 0 && (lo >> 63) == 0 { 1 } else { 0 }))
                 }
                 "u128/checked_to_i64" => {
-                    if args.len() != 1 { return Err("u128/checked_to_i64: need 1 arg (addr)".into()); }
+                    if args.len() != 1 {
+                        return Err("u128/checked_to_i64: need 1 arg (addr)".into());
+                    }
                     let addr = num_arg(name, args, 0)? as u64 as usize;
                     let (lo, hi) = read_u128(state, addr)?;
                     if hi != 0 || (lo >> 63) != 0 {
@@ -6741,7 +7099,7 @@ pub fn eval_builtin(
             }
         }
         "json-quote" => match args.get(0) {
-        Some(LispVal::Str(s)) => {
+            Some(LispVal::Str(s)) => {
                 let mut out = String::with_capacity(s.len() + 2);
                 out.push('"');
                 for ch in s.chars() {
@@ -6759,9 +7117,11 @@ pub fn eval_builtin(
                 Ok(LispVal::Str(out))
             }
             Some(LispVal::Num(n)) => Ok(LispVal::Str(n.to_string())),
-            Some(LispVal::Bool(b)) => Ok(LispVal::Str((if *b { "true" } else { "false" }).to_string())),
+            Some(LispVal::Bool(b)) => Ok(LispVal::Str(
+                (if *b { "true" } else { "false" }).to_string(),
+            )),
             _ => Ok(LispVal::Str("null".to_string())),
-            },
+        },
         // (json-set json key encoded-value) — set/replace top-level key in a
         // JSON object string, returns the new JSON string. Semantics are
         // identical to the emitted __json_set wasm helper (see
@@ -6780,10 +7140,15 @@ pub fn eval_builtin(
                 _ => Err("json-set: json, key and encoded-value must all be strings".into()),
             }
         }
-        "to-string" => Ok(LispVal::Str(format!(
-            "{}",
-            args.get(0).unwrap_or(&LispVal::Nil)
-        ))),
+        // to-string: Str is IDENTITY (raw content, no quotes) — matches wasm
+        // __int_to_str TAG_STR passthrough + Clojure `str`. Old Display-based
+        // impl quoted strings ("abc" → "\"abc\"") — VM↔wasm divergence found
+        // by the deep-compare fuzzer 2026-09-10. Quoting is json-quote's job.
+        "to-string" => Ok(LispVal::Str(match args.get(0) {
+            Some(LispVal::Str(s)) => s.clone(),
+            Some(other) => format!("{}", other),
+            None => String::new(),
+        })),
         "str" => Ok(LispVal::Str(
             args.iter().map(|a| format!("{}", a)).collect(),
         )),
@@ -7913,7 +8278,7 @@ pub fn try_compile_lambda(
         captured: std::sync::RwLock::new(compiler.captured),
         closures: compiler.closures,
         runtime_captures: compiler.runtime_captures,
-            capture_cells: std::sync::RwLock::new(vec![]),
+        capture_cells: std::sync::RwLock::new(vec![]),
         rest_param_idx: None,
         num_fixed_params: param_names.len(),
     })
@@ -8162,7 +8527,10 @@ pub fn run_compiled_lambda(
         return Err("call depth exceeded".into());
     }
     if std::env::var("LISP_DUMP_OPS").is_ok() {
-        eprintln!("=== COMPILED LAMBDA OPS ({:?}, slots: {}) ===", cl.name, cl.total_slots);
+        eprintln!(
+            "=== COMPILED LAMBDA OPS ({:?}, slots: {}) ===",
+            cl.name, cl.total_slots
+        );
         for (idx, op) in cl.code.iter().enumerate() {
             eprintln!("  {:>4}: {:?}", idx, op);
         }
@@ -8290,7 +8658,13 @@ fn run_compiled_lambda_inner(
             }
             Op::LoadCaptured(idx) => {
                 // Check for a shared cell (runtime capture)
-                if let Some(cell) = cl.capture_cells.read().unwrap().get(*idx).and_then(|o| o.as_ref()) {
+                if let Some(cell) = cl
+                    .capture_cells
+                    .read()
+                    .unwrap()
+                    .get(*idx)
+                    .and_then(|o| o.as_ref())
+                {
                     stack.push(cell.read().unwrap().clone());
                 } else {
                     stack.push(cl.captured.read().unwrap()[*idx].1.clone());
@@ -8300,7 +8674,13 @@ fn run_compiled_lambda_inner(
             Op::StoreCaptured(idx) => {
                 let val = stack.pop().unwrap_or(LispVal::Nil);
                 // Check for a shared cell (runtime capture)
-                if let Some(cell) = cl.capture_cells.read().unwrap().get(*idx).and_then(|o| o.as_ref()) {
+                if let Some(cell) = cl
+                    .capture_cells
+                    .read()
+                    .unwrap()
+                    .get(*idx)
+                    .and_then(|o| o.as_ref())
+                {
                     *cell.write().unwrap() = val.clone();
                 } else {
                     cl.captured.write().unwrap()[*idx].1 = val.clone();
@@ -8502,25 +8882,49 @@ fn run_compiled_lambda_inner(
             Op::Lt => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(LispVal::Bool(num_cmp(&a, &b, "<", |x, y| x < y, |x, y| x < y)?));
+                stack.push(LispVal::Bool(num_cmp(
+                    &a,
+                    &b,
+                    "<",
+                    |x, y| x < y,
+                    |x, y| x < y,
+                )?));
                 pc += 1;
             }
             Op::Le => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(LispVal::Bool(num_cmp(&a, &b, "<=", |x, y| x <= y, |x, y| x <= y)?));
+                stack.push(LispVal::Bool(num_cmp(
+                    &a,
+                    &b,
+                    "<=",
+                    |x, y| x <= y,
+                    |x, y| x <= y,
+                )?));
                 pc += 1;
             }
             Op::Gt => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(LispVal::Bool(num_cmp(&a, &b, ">", |x, y| x > y, |x, y| x > y)?));
+                stack.push(LispVal::Bool(num_cmp(
+                    &a,
+                    &b,
+                    ">",
+                    |x, y| x > y,
+                    |x, y| x > y,
+                )?));
                 pc += 1;
             }
             Op::Ge => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                stack.push(LispVal::Bool(num_cmp(&a, &b, ">=", |x, y| x >= y, |x, y| x >= y)?));
+                stack.push(LispVal::Bool(num_cmp(
+                    &a,
+                    &b,
+                    ">=",
+                    |x, y| x >= y,
+                    |x, y| x >= y,
+                )?));
                 pc += 1;
             }
             Op::Not => {
@@ -8544,26 +8948,38 @@ fn run_compiled_lambda_inner(
                         };
                         stack.push(match op {
                             BinOp::Add => LispVal::Num(
-                                i64::checked_add(av, bv).and_then(|r| check_num_range(r, "add").ok()).ok_or("integer overflow in add")?,
+                                i64::checked_add(av, bv)
+                                    .and_then(|r| check_num_range(r, "add").ok())
+                                    .ok_or("integer overflow in add")?,
                             ),
                             BinOp::Sub => LispVal::Num(
-                                i64::checked_sub(av, bv).and_then(|r| check_num_range(r, "sub").ok()).ok_or("integer overflow in sub")?,
+                                i64::checked_sub(av, bv)
+                                    .and_then(|r| check_num_range(r, "sub").ok())
+                                    .ok_or("integer overflow in sub")?,
                             ),
                             BinOp::Mul => LispVal::Num(
-                                i64::checked_mul(av, bv).and_then(|r| check_num_range(r, "mul").ok()).ok_or("integer overflow in mul")?,
+                                i64::checked_mul(av, bv)
+                                    .and_then(|r| check_num_range(r, "mul").ok())
+                                    .ok_or("integer overflow in mul")?,
                             ),
                             BinOp::Div => {
-                                if bv == 0 { return Err("division by zero".into()); }
+                                if bv == 0 {
+                                    return Err("division by zero".into());
+                                }
                                 LispVal::Num(
-                                    i64::checked_div(av, bv).and_then(|r| check_num_range(r, "div").ok()).ok_or("integer overflow in div")?,
+                                    i64::checked_div(av, bv)
+                                        .and_then(|r| check_num_range(r, "div").ok())
+                                        .ok_or("integer overflow in div")?,
                                 )
                             }
                             BinOp::Mod => {
-                                if bv == 0 { return Err("modulo by zero".into()); }
+                                if bv == 0 {
+                                    return Err("modulo by zero".into());
+                                }
                                 LispVal::Num(
                                     i64::checked_rem(av, bv).ok_or("integer overflow in mod")?,
                                 )
-                            },
+                            }
                             BinOp::Lt => LispVal::Bool(av < bv),
                             BinOp::Le => LispVal::Bool(av <= bv),
                             BinOp::Gt => LispVal::Bool(av > bv),
@@ -8609,13 +9025,17 @@ fn run_compiled_lambda_inner(
                             BinOp::Sub => LispVal::U64(av.wrapping_sub(bv)),
                             BinOp::Mul => LispVal::U64(av.wrapping_mul(bv)),
                             BinOp::Div => {
-                                if bv == 0 { return Err("division by zero".into()); }
+                                if bv == 0 {
+                                    return Err("division by zero".into());
+                                }
                                 LispVal::U64(av.wrapping_div(bv))
                             }
                             BinOp::Mod => {
-                                if bv == 0 { return Err("modulo by zero".into()); }
+                                if bv == 0 {
+                                    return Err("modulo by zero".into());
+                                }
                                 LispVal::U64(av.wrapping_rem(bv))
-                            },
+                            }
                             BinOp::Lt => LispVal::Bool(av < bv),
                             BinOp::Le => LispVal::Bool(av <= bv),
                             BinOp::Gt => LispVal::Bool(av > bv),
@@ -8657,7 +9077,9 @@ fn run_compiled_lambda_inner(
                 }
             }
             Op::SlotDivImm(s, imm) => {
-                if *imm == 0 { return Err("division by zero".into()); }
+                if *imm == 0 {
+                    return Err("division by zero".into());
+                }
                 let v = num_val_ref(safe_slot(&slots, *s));
                 match i64::checked_div(v, *imm).and_then(|r| check_num_range(r, "div").ok()) {
                     Some(result) => {
@@ -8962,18 +9384,37 @@ fn run_compiled_lambda_inner(
                         }
                     };
                     let val_for_captured = cell.read().unwrap().clone();
-                    if inner_cloned.captured.read().unwrap().iter().all(|(n, _)| n != name) {
-                        inner_cloned.captured.write().unwrap().push((name.clone(), val_for_captured));
+                    if inner_cloned
+                        .captured
+                        .read()
+                        .unwrap()
+                        .iter()
+                        .all(|(n, _)| n != name)
+                    {
+                        inner_cloned
+                            .captured
+                            .write()
+                            .unwrap()
+                            .push((name.clone(), val_for_captured));
                     } else {
-                        if let Some(entry) =
-                            inner_cloned.captured.write().unwrap().iter_mut().find(|(n, _)| n == name)
+                        if let Some(entry) = inner_cloned
+                            .captured
+                            .write()
+                            .unwrap()
+                            .iter_mut()
+                            .find(|(n, _)| n == name)
                         {
                             entry.1 = val_for_captured;
                         }
                     }
                     // Store the cell in the child's capture_cells at the same captured index
-                    let captured_idx = inner_cloned.captured.read().unwrap()
-                        .iter().position(|(n, _)| n == name).unwrap();
+                    let captured_idx = inner_cloned
+                        .captured
+                        .read()
+                        .unwrap()
+                        .iter()
+                        .position(|(n, _)| n == name)
+                        .unwrap();
                     {
                         let mut child_cells = inner_cloned.capture_cells.write().unwrap();
                         while child_cells.len() <= captured_idx {
@@ -9402,8 +9843,14 @@ fn run_compiled_lambda_inner(
             Op::U64MulHi => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
-                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                let av = match &a {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
+                let bv = match &b {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
                 let prod = (av as u128) * (bv as u128);
                 stack.push(LispVal::U64((prod >> 64) as u64));
                 pc += 1;
@@ -9411,32 +9858,56 @@ fn run_compiled_lambda_inner(
             Op::U64And => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
-                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                let av = match &a {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
+                let bv = match &b {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
                 stack.push(LispVal::U64(av & bv));
                 pc += 1;
             }
             Op::U64Or => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
-                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                let av = match &a {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
+                let bv = match &b {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
                 stack.push(LispVal::U64(av | bv));
                 pc += 1;
             }
             Op::U64Xor => {
                 let b = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
-                let bv = match &b { LispVal::U64(n) => *n, _ => 0u64 };
+                let av = match &a {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
+                let bv = match &b {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
                 stack.push(LispVal::U64(av ^ bv));
                 pc += 1;
             }
             Op::U64Shr => {
                 let sh = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
-                let sv = match &sh { LispVal::Num(n) => *n, _ => 0 };
+                let av = match &a {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
+                let sv = match &sh {
+                    LispVal::Num(n) => *n,
+                    _ => 0,
+                };
                 if sv < 0 || sv >= 64 {
                     return Err("u64 shift amount out of range".into());
                 }
@@ -9446,8 +9917,14 @@ fn run_compiled_lambda_inner(
             Op::U64Shl => {
                 let sh = stack.pop().unwrap_or(LispVal::Nil);
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
-                let sv = match &sh { LispVal::Num(n) => *n, _ => 0 };
+                let av = match &a {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
+                let sv = match &sh {
+                    LispVal::Num(n) => *n,
+                    _ => 0,
+                };
                 if sv < 0 || sv >= 64 {
                     return Err("u64 shift amount out of range".into());
                 }
@@ -9456,7 +9933,10 @@ fn run_compiled_lambda_inner(
             }
             Op::U64Not => {
                 let a = stack.pop().unwrap_or(LispVal::Nil);
-                let av = match &a { LispVal::U64(n) => *n, _ => 0u64 };
+                let av = match &a {
+                    LispVal::U64(n) => *n,
+                    _ => 0u64,
+                };
                 stack.push(LispVal::U64(!av));
                 pc += 1;
             }

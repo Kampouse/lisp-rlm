@@ -125,5 +125,5 @@ let run_vm s =
 
 // FALSE CLAIM: 3 + 4 = 99 in tagged arithmetic
 // This MUST be rejected by F*
-val test_false : unit -> Lemma (run_vm "(+ 3 4)" = make_num 99)
+[@@ expect_failure]
 let test_false () = assert_norm (run_vm "(+ 3 4)" = make_num 99)

@@ -58,7 +58,10 @@ struct DriveResult {
 
 impl DriveResult {
     fn ret_i64(&self) -> Option<i64> {
-        self.ret.as_ref().and_then(|d| d[..].try_into().ok()).map(i64::from_le_bytes)
+        self.ret
+            .as_ref()
+            .and_then(|d| d[..].try_into().ok())
+            .map(i64::from_le_bytes)
     }
 }
 
@@ -79,8 +82,7 @@ fn hex(s: &str) -> Vec<u8> {
 fn compile_ts(ts: &str) -> Vec<u8> {
     let lisp = lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(ts)
         .unwrap_or_else(|e| panic!("TS lowering: {}", e));
-    lisp_rlm_wasm::wasm_emit::compile_near(&lisp)
-        .unwrap_or_else(|e| panic!("compile_near: {}", e))
+    lisp_rlm_wasm::wasm_emit::compile_near(&lisp).unwrap_or_else(|e| panic!("compile_near: {}", e))
 }
 
 fn read_mem(caller: &mut Caller<'_, Arc<Mutex<Mock>>>, ptr: usize, len: usize) -> Vec<u8> {
@@ -92,7 +94,12 @@ fn read_mem(caller: &mut Caller<'_, Arc<Mutex<Mock>>>, ptr: usize, len: usize) -
 }
 
 fn write_reg(caller: &mut Caller<'_, Arc<Mutex<Mock>>>, rid: u64, data: Vec<u8>) {
-    caller.data_mut().lock().unwrap().registers.insert(rid, data);
+    caller
+        .data_mut()
+        .lock()
+        .unwrap()
+        .registers
+        .insert(rid, data);
 }
 
 /// A contract driven with the full env host surface the compiler emits.
@@ -104,7 +111,10 @@ struct Contract {
 
 impl Contract {
     fn new(wasm: Vec<u8>) -> Contract {
-        Contract { wasm, mock: Arc::new(Mutex::new(Mock::default())) }
+        Contract {
+            wasm,
+            mock: Arc::new(Mutex::new(Mock::default())),
+        }
     }
 
     fn call(&self, method: &str, args_json: &str) -> DriveResult {
@@ -120,7 +130,12 @@ impl Contract {
                 "input",
                 move |mut caller: Caller<'_, Arc<Mutex<Mock>>>, rid: i64| {
                     let bytes = caller.data().lock().unwrap().input.clone();
-                    caller.data_mut().lock().unwrap().registers.insert(rid as u64, bytes);
+                    caller
+                        .data_mut()
+                        .lock()
+                        .unwrap()
+                        .registers
+                        .insert(rid as u64, bytes);
                 },
             )
             .unwrap();
@@ -129,8 +144,13 @@ impl Contract {
                 "env",
                 "read_register",
                 move |mut caller: Caller<'_, Arc<Mutex<Mock>>>, rid: i64, ptr: i64| {
-                    let data =
-                        caller.data().lock().unwrap().registers.get(&(rid as u64)).cloned();
+                    let data = caller
+                        .data()
+                        .lock()
+                        .unwrap()
+                        .registers
+                        .get(&(rid as u64))
+                        .cloned();
                     if let Some(d) = data {
                         let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
                         let md = mem.data_mut(&mut caller);
@@ -194,13 +214,22 @@ impl Contract {
             .func_wrap(
                 "env",
                 "storage_write",
-                move |mut caller: Caller<'_, Arc<Mutex<Mock>>>, kl: i64, kp: i64, vl: i64,
-                      vp: i64, _rid: i64|
+                move |mut caller: Caller<'_, Arc<Mutex<Mock>>>,
+                      kl: i64,
+                      kp: i64,
+                      vl: i64,
+                      vp: i64,
+                      _rid: i64|
                       -> i64 {
                     let k = read_mem(&mut caller, kp as usize, kl as usize);
                     let v = read_mem(&mut caller, vp as usize, vl as usize);
-                    let existed =
-                        caller.data_mut().lock().unwrap().storage.insert(k, v).is_some();
+                    let existed = caller
+                        .data_mut()
+                        .lock()
+                        .unwrap()
+                        .storage
+                        .insert(k, v)
+                        .is_some();
                     existed as i64
                 },
             )
@@ -209,7 +238,11 @@ impl Contract {
             .func_wrap(
                 "env",
                 "storage_read",
-                move |mut caller: Caller<'_, Arc<Mutex<Mock>>>, kl: i64, kp: i64, rid: i64| -> i64 {
+                move |mut caller: Caller<'_, Arc<Mutex<Mock>>>,
+                      kl: i64,
+                      kp: i64,
+                      rid: i64|
+                      -> i64 {
                     let k = read_mem(&mut caller, kp as usize, kl as usize);
                     let v = caller.data().lock().unwrap().storage.get(&k).cloned();
                     match v {
@@ -226,9 +259,19 @@ impl Contract {
             .func_wrap(
                 "env",
                 "storage_remove",
-                move |mut caller: Caller<'_, Arc<Mutex<Mock>>>, kl: i64, kp: i64, _rid: i64| -> i64 {
+                move |mut caller: Caller<'_, Arc<Mutex<Mock>>>,
+                      kl: i64,
+                      kp: i64,
+                      _rid: i64|
+                      -> i64 {
                     let k = read_mem(&mut caller, kp as usize, kl as usize);
-                    caller.data_mut().lock().unwrap().storage.remove(&k).is_some() as i64
+                    caller
+                        .data_mut()
+                        .lock()
+                        .unwrap()
+                        .storage
+                        .remove(&k)
+                        .is_some() as i64
                 },
             )
             .unwrap();
@@ -286,10 +329,16 @@ impl Contract {
             .unwrap();
         // promise stubs (not exercised in these tests)
         linker
-            .func_wrap("env", "promise_batch_create", |_a: i64, _b: i64| -> i64 { 0 })
+            .func_wrap("env", "promise_batch_create", |_a: i64, _b: i64| -> i64 {
+                0
+            })
             .unwrap();
         linker
-            .func_wrap("env", "promise_batch_action_transfer", |_a: i64, _b: i64| {})
+            .func_wrap(
+                "env",
+                "promise_batch_action_transfer",
+                |_a: i64, _b: i64| {},
+            )
             .unwrap();
         linker
             .func_wrap(
@@ -299,7 +348,9 @@ impl Contract {
             )
             .unwrap();
 
-        let instance = linker.instantiate(&mut store, &module).expect("instantiate");
+        let instance = linker
+            .instantiate(&mut store, &module)
+            .expect("instantiate");
         let f = instance
             .get_func(&mut store, method)
             .unwrap_or_else(|| panic!("export {} missing", method));
@@ -313,7 +364,11 @@ impl Contract {
         }
         let _ = f.call(&mut store, &[], &mut []);
         let st = mock.lock().unwrap();
-        DriveResult { logs: st.logs.clone(), trapped: st.trapped, ret: st.ret.clone() }
+        DriveResult {
+            logs: st.logs.clone(),
+            trapped: st.trapped,
+            ret: st.ret.clone(),
+        }
     }
 }
 
@@ -337,9 +392,17 @@ fn stitcher_bip340_vector0_valid() {
     let c = Contract::new(wasm);
     let r = c.call(
         "probe",
-        &format!(r#"{{"pk":"{}","sig":"{}","msg":"{}"}}"#, V0_PK, V0_SIG, V0_MSG),
+        &format!(
+            r#"{{"pk":"{}","sig":"{}","msg":"{}"}}"#,
+            V0_PK, V0_SIG, V0_MSG
+        ),
     );
-    assert_eq!(r.ret_i64(), Some(1), "vector 0 must verify: logs={:?}", r.logs);
+    assert_eq!(
+        r.ret_i64(),
+        Some(1),
+        "vector 0 must verify: logs={:?}",
+        r.logs
+    );
 }
 
 #[test]
@@ -355,7 +418,12 @@ fn stitcher_bip340_vector0_tampered_rejected() {
             V0_MSG
         ),
     );
-    assert_eq!(r.ret_i64(), Some(0), "tampered sig must fail: logs={:?}", r.logs);
+    assert_eq!(
+        r.ret_i64(),
+        Some(0),
+        "tampered sig must fail: logs={:?}",
+        r.logs
+    );
 }
 
 #[test]
@@ -366,7 +434,12 @@ fn stitcher_bip340_vector1_valid() {
         "probe",
         r#"{"pk":"DFF1D77F2A671C5F36183726DB2341BE58FEAE1DA2DECED843240F7B502BA659","sig":"6896BD60EEAE296DB48A229FF71DFE071BDE413E6D43F917DC8DCF8C78DE33418906D11AC976ABCCB20B091292BFF4EA897EFCB639EA871CFA95F6DE339E4B0A","msg":"243F6A8885A308D313198A2E03707344A4093822299F31D0082EFA98EC4E6C89"}"#,
     );
-    assert_eq!(r.ret_i64(), Some(1), "vector 1 must verify: logs={:?}", r.logs);
+    assert_eq!(
+        r.ret_i64(),
+        Some(1),
+        "vector 1 must verify: logs={:?}",
+        r.logs
+    );
 }
 
 // ── Layer 2: nostr-gov digest chain (the real regression) ──────────────

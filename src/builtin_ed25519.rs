@@ -25,9 +25,15 @@ pub fn builtin_ed25519_verify(args: &[LispVal]) -> Result<LispVal, String> {
     if sig.len() != 64 {
         return Err("ed25519-verify: sig must be 64 bytes".into());
     }
-    let pk_arr: [u8; 32] = pk.try_into().map_err(|_| "ed25519-verify: pk must be 32 bytes")?;
-    let sig_arr: [u8; 64] = sig.try_into().map_err(|_| "ed25519-verify: sig must be 64 bytes")?;
-    Ok(LispVal::Bool(ed25519_verify_impl(&pk_arr, &sig_arr, &msg) == 1))
+    let pk_arr: [u8; 32] = pk
+        .try_into()
+        .map_err(|_| "ed25519-verify: pk must be 32 bytes")?;
+    let sig_arr: [u8; 64] = sig
+        .try_into()
+        .map_err(|_| "ed25519-verify: sig must be 64 bytes")?;
+    Ok(LispVal::Bool(
+        ed25519_verify_impl(&pk_arr, &sig_arr, &msg) == 1,
+    ))
 }
 
 /// Verify an ed25519 signature. `sig` = 64 bytes (R || s), `pk` = 32 bytes.

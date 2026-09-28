@@ -17,6 +17,9 @@ assume val ff_eq_refl : x:ffloat -> Lemma (ff_eq x x)
 
 assume val ff_of_int : int -> Tot ffloat
 assume val ff_to_int : ffloat -> Tot int
+// int-lift decision axiom: makes div/mod-by-zero checks on Num-lifted floats
+// decidable for SMT (Rust compares f64s; the model needs the same power).
+assume val ff_of_int_eq : x:int -> y:int -> Lemma (ff_eq (ff_of_int x) (ff_of_int y) <==> x == y)
 assume val ff_add : ffloat -> ffloat -> Tot ffloat
 // Congruence: equal floats have equal sums (needed for Float-op proofs).
 assume val ff_add_cong : x:ffloat -> y:ffloat -> x':ffloat -> y':ffloat ->

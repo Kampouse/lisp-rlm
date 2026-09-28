@@ -16,8 +16,8 @@
 
 #![allow(dead_code)]
 
+use lisp_rlm_wasm::tagged_value::{decode, TaggedValue};
 use lisp_rlm_wasm::*;
-use lisp_rlm_wasm::tagged_value::{TaggedValue, decode};
 
 #[path = "borsh_harness.rs"]
 mod harness;
@@ -32,7 +32,8 @@ fn tv_to_lisp(memory: &[u8], tv: TaggedValue) -> LispVal {
         TaggedValue::Bool(b) => LispVal::Bool(b),
         TaggedValue::Nil => LispVal::Nil,
         TaggedValue::Str { ptr, len } => {
-            let s = String::from_utf8_lossy(&memory[ptr as usize..(ptr + len) as usize]).to_string();
+            let s =
+                String::from_utf8_lossy(&memory[ptr as usize..(ptr + len) as usize]).to_string();
             LispVal::Str(s)
         }
         TaggedValue::Array { ptr, count } => {
@@ -74,7 +75,9 @@ fn interp_run(src: &str) -> Result<LispVal, String> {
             let _ = run_program(&exprs, &mut env, &mut state)?;
             // call (main)
             run_program(
-                &[types::LispVal::List(vec![types::LispVal::Sym("main".into())])],
+                &[types::LispVal::List(vec![types::LispVal::Sym(
+                    "main".into(),
+                )])],
                 &mut env,
                 &mut state,
             )
@@ -151,7 +154,12 @@ enum Outcome {
     Divergence(String),
 }
 
-fn diff_one(label: &str, src: &str, i_result: Result<LispVal, String>, w_result: Result<LispVal, String>) -> Outcome {
+fn diff_one(
+    label: &str,
+    src: &str,
+    i_result: Result<LispVal, String>,
+    w_result: Result<LispVal, String>,
+) -> Outcome {
     match (&i_result, &w_result) {
         (Ok(a), Ok(b)) => {
             let (ca, cb) = (canon(a.clone()), canon(b.clone()));
@@ -160,14 +168,20 @@ fn diff_one(label: &str, src: &str, i_result: Result<LispVal, String>, w_result:
             } else {
                 Outcome::Divergence(format!(
                     "[{}] value mismatch\n  program: {}\n  interp: {:?}\n  wasm:   {:?}",
-                    label, src.trim(), ca, cb
+                    label,
+                    src.trim(),
+                    ca,
+                    cb
                 ))
             }
         }
         (Err(_), Err(_)) => Outcome::Match, // both reject = agreement
         (a, b) => Outcome::Divergence(format!(
             "[{}] one-sided failure\n  program: {}\n  interp: {:?}\n  wasm:   {:?}",
-            label, src.trim(), a, b
+            label,
+            src.trim(),
+            a,
+            b
         )),
     }
 }
@@ -208,7 +222,10 @@ fn differential_equiv_corpus() {
         }
         let src = match result_expr_of(&raw) {
             Ok(s) => s,
-            Err(_) => { skipped += 1; continue; }
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
         };
         // wasm compile gate: surface gaps skip
         if wasm_compile_gate(&src).is_err() {
@@ -227,7 +244,10 @@ fn differential_equiv_corpus() {
     }
     eprintln!(
         "equiv corpus: {} match, {} skip (surface gaps), {} DIVERGED of {} files",
-        matches, skipped, diverged, files.len()
+        matches,
+        skipped,
+        diverged,
+        files.len()
     );
     assert!(diverged == 0, "divergences:\n{}", failures.join("\n\n"));
 }
@@ -244,16 +264,27 @@ fn wasm_compile_gate(src: &str) -> Result<Vec<u8>, String> {
 /// mix bools with nums and `=` never mixes str with int (the checker
 /// correctly rejects those; we want RUNTIME divergence, not type noise).
 #[derive(Clone, Copy, PartialEq)]
-enum Ty { Num, Bool, Str }
+enum Ty {
+    Num,
+    Bool,
+    Str,
+}
 
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 16
     }
-    fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T { &xs[(self.next() % xs.len() as u64) as usize] }
-    fn n(&mut self, lo: i64, hi: i64) -> i64 { lo + (self.next() % ((hi - lo + 1) as u64)) as i64 }
+    fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
+        &xs[(self.next() % xs.len() as u64) as usize]
+    }
+    fn n(&mut self, lo: i64, hi: i64) -> i64 {
+        lo + (self.next() % ((hi - lo + 1) as u64)) as i64
+    }
 }
 
 fn gen(g: &mut Lcg, ty: Ty, depth: u32, vars: &mut Vec<(String, Ty)>) -> String {
@@ -261,7 +292,10 @@ fn gen(g: &mut Lcg, ty: Ty, depth: u32, vars: &mut Vec<(String, Ty)>) -> String 
         return match ty {
             Ty::Num => format!("{}", g.n(-40, 60)),
             Ty::Bool => (*g.pick(&["true", "false"])).to_string(),
-            Ty::Str => format!("\"{}\"", (*g.pick(&["s", "abc", "42", "zz", "ab12"])).to_string()),
+            Ty::Str => format!(
+                "\"{}\"",
+                (*g.pick(&["s", "abc", "42", "zz", "ab12"])).to_string()
+            ),
         };
     }
     // restore vars on unwind
@@ -269,11 +303,25 @@ fn gen(g: &mut Lcg, ty: Ty, depth: u32, vars: &mut Vec<(String, Ty)>) -> String 
     let out = match (ty, g.n(0, 11)) {
         (Ty::Num, 0..=3) => {
             let op = *g.pick(&["+", "-", "*"]);
-            format!("({} {} {})", op, gen(g, Ty::Num, depth - 1, vars), gen(g, Ty::Num, depth - 1, vars))
+            format!(
+                "({} {} {})",
+                op,
+                gen(g, Ty::Num, depth - 1, vars),
+                gen(g, Ty::Num, depth - 1, vars)
+            )
         }
         (Ty::Num, 4) => format!("(mod {} {})", gen(g, Ty::Num, depth - 1, vars), g.n(1, 9)),
-        (Ty::Num, 5) => format!("(min {} {})", gen(g, Ty::Num, depth - 1, vars), gen(g, Ty::Num, depth - 1, vars)),
-        (Ty::Num, 6) => format!("(if {} {} {})", gen(g, Ty::Bool, depth - 1, vars), gen(g, Ty::Num, depth - 1, vars), gen(g, Ty::Num, depth - 1, vars)),
+        (Ty::Num, 5) => format!(
+            "(min {} {})",
+            gen(g, Ty::Num, depth - 1, vars),
+            gen(g, Ty::Num, depth - 1, vars)
+        ),
+        (Ty::Num, 6) => format!(
+            "(if {} {} {})",
+            gen(g, Ty::Bool, depth - 1, vars),
+            gen(g, Ty::Num, depth - 1, vars),
+            gen(g, Ty::Num, depth - 1, vars)
+        ),
         (Ty::Num, 7) => {
             let v = format!("v{}", g.n(0, 999));
             vars.push((v.clone(), Ty::Num));
@@ -282,29 +330,81 @@ fn gen(g: &mut Lcg, ty: Ty, depth: u32, vars: &mut Vec<(String, Ty)>) -> String 
             format!("(let (({} {})) {})", v, init, body)
         }
         (Ty::Num, 8 | 9) => format!("(len {})", gen_str(g, depth - 1)),
-        (Ty::Num, 10) => format!("(len (str-concat {} {}))", gen_str(g, depth - 1), gen_str(g, depth - 1)),
-        (Ty::Num, _) => format!("(if (> {} 0) {} {})", gen(g, Ty::Num, depth - 1, vars), gen(g, Ty::Num, depth - 1, vars), g.n(1, 9)),
+        (Ty::Num, 10) => format!(
+            "(len (str-concat {} {}))",
+            gen_str(g, depth - 1),
+            gen_str(g, depth - 1)
+        ),
+        (Ty::Num, _) => format!(
+            "(if (> {} 0) {} {})",
+            gen(g, Ty::Num, depth - 1, vars),
+            gen(g, Ty::Num, depth - 1, vars),
+            g.n(1, 9)
+        ),
         (Ty::Bool, 0..=3) => {
             let op = *g.pick(&["<", ">", "=", "<=", ">="]);
-            format!("({} {} {})", op, gen(g, Ty::Num, depth - 1, vars), gen(g, Ty::Num, depth - 1, vars))
+            format!(
+                "({} {} {})",
+                op,
+                gen(g, Ty::Num, depth - 1, vars),
+                gen(g, Ty::Num, depth - 1, vars)
+            )
         }
         (Ty::Bool, 4) => {
             let op = *g.pick(&["and", "or"]);
-            format!("({} {} {})", op, gen(g, Ty::Bool, depth - 1, vars), gen(g, Ty::Bool, depth - 1, vars))
+            format!(
+                "({} {} {})",
+                op,
+                gen(g, Ty::Bool, depth - 1, vars),
+                gen(g, Ty::Bool, depth - 1, vars)
+            )
         }
         (Ty::Bool, 5) => format!("(not {})", gen(g, Ty::Bool, depth - 1, vars)),
         (Ty::Bool, 6) => {
             let op = *g.pick(&["str-contains", "str-starts-with", "str-ends-with"]);
-            format!("({} {} {})", op, gen_str(g, depth - 1), gen_str(g, depth - 1))
+            format!(
+                "({} {} {})",
+                op,
+                gen_str(g, depth - 1),
+                gen_str(g, depth - 1)
+            )
         }
         (Ty::Bool, 7) => format!("(= {} {})", gen_str(g, depth - 1), gen_str(g, depth - 1)),
-        (Ty::Bool, 8) => format!("(< (len {}) (len {}))", gen_str(g, depth - 1), gen_str(g, depth - 1)),
-        (Ty::Bool, _) => format!("(if {} {} {})", gen(g, Ty::Bool, depth - 1, vars), gen(g, Ty::Bool, depth - 1, vars), gen(g, Ty::Bool, depth - 1, vars)),
-        (Ty::Str, 0..=2) => format!("(str-concat {} {})", gen_str(g, depth - 1), gen_str(g, depth - 1)),
-        (Ty::Str, 3) => format!("(if {} {} {})", gen(g, Ty::Bool, depth - 1, vars), gen_str(g, depth - 1), gen_str(g, depth - 1)),
-        (Ty::Str, 4) => format!("(if (> (len {}) (len {})) {} {})", gen_str(g, depth - 1), gen_str(g, depth - 1), gen_str(g, depth - 1), gen_str(g, depth - 1)),
+        (Ty::Bool, 8) => format!(
+            "(< (len {}) (len {}))",
+            gen_str(g, depth - 1),
+            gen_str(g, depth - 1)
+        ),
+        (Ty::Bool, _) => format!(
+            "(if {} {} {})",
+            gen(g, Ty::Bool, depth - 1, vars),
+            gen(g, Ty::Bool, depth - 1, vars),
+            gen(g, Ty::Bool, depth - 1, vars)
+        ),
+        (Ty::Str, 0..=2) => format!(
+            "(str-concat {} {})",
+            gen_str(g, depth - 1),
+            gen_str(g, depth - 1)
+        ),
+        (Ty::Str, 3) => format!(
+            "(if {} {} {})",
+            gen(g, Ty::Bool, depth - 1, vars),
+            gen_str(g, depth - 1),
+            gen_str(g, depth - 1)
+        ),
+        (Ty::Str, 4) => format!(
+            "(if (> (len {}) (len {})) {} {})",
+            gen_str(g, depth - 1),
+            gen_str(g, depth - 1),
+            gen_str(g, depth - 1),
+            gen_str(g, depth - 1)
+        ),
         (Ty::Str, 5) => format!("(list->string {})", gen_str_list(g, depth - 1, vars)),
-        (Ty::Str, 6) => format!("(str-join {} {})", (*g.pick(&["\"", "-", "ab"])).to_string(), gen_str_list(g, depth - 1, vars)),
+        (Ty::Str, 6) => format!(
+            "(str-join {} {})",
+            (*g.pick(&["\"", "-", "ab"])).to_string(),
+            gen_str_list(g, depth - 1, vars)
+        ),
         (Ty::Str, 7) => {
             let v = format!("s{}", g.n(0, 99));
             vars.push((v.clone(), Ty::Str));
@@ -320,23 +420,44 @@ fn gen(g: &mut Lcg, ty: Ty, depth: u32, vars: &mut Vec<(String, Ty)>) -> String 
 
 fn gen_str(g: &mut Lcg, depth: u32) -> String {
     if depth == 0 || g.next() % 2 == 0 {
-        format!("\"{}\"", (0..g.n(1, 5)).map(|_| *g.pick(&["a", "b", "7", "xy", "q"])).collect::<String>())
+        format!(
+            "\"{}\"",
+            (0..g.n(1, 5))
+                .map(|_| *g.pick(&["a", "b", "7", "xy", "q"]))
+                .collect::<String>()
+        )
     } else {
-        format!("(str-concat {} {})", gen_str(g, depth - 1), gen_str(g, depth - 1))
+        format!(
+            "(str-concat {} {})",
+            gen_str(g, depth - 1),
+            gen_str(g, depth - 1)
+        )
     }
 }
 
 fn gen_list(g: &mut Lcg, depth: u32, vars: &mut Vec<(String, Ty)>) -> String {
     let k = g.n(0, 3);
-    let items: Vec<String> = (0..k).map(|_| gen(g, Ty::Num, depth.saturating_sub(1), vars)).collect();
-    if items.is_empty() { "(list)".to_string() } else { format!("(list {})", items.join(" ")) }
+    let items: Vec<String> = (0..k)
+        .map(|_| gen(g, Ty::Num, depth.saturating_sub(1), vars))
+        .collect();
+    if items.is_empty() {
+        "(list)".to_string()
+    } else {
+        format!("(list {})", items.join(" "))
+    }
 }
 
 fn gen_num_list(g: &mut Lcg, depth: u32, vars: &mut Vec<(String, Ty)>) -> String {
     let k = g.n(1, 4);
-    let items: Vec<String> = (0..k).map(|_| gen(g, Ty::Num, depth.saturating_sub(1), vars)).collect();
+    let items: Vec<String> = (0..k)
+        .map(|_| gen(g, Ty::Num, depth.saturating_sub(1), vars))
+        .collect();
     if g.next() % 2 == 0 {
-        format!("(map (lambda (x) (* x {})) (list {}))", g.n(1, 5), items.join(" "))
+        format!(
+            "(map (lambda (x) (* x {})) (list {}))",
+            g.n(1, 5),
+            items.join(" ")
+        )
     } else {
         format!("(list {})", items.join(" "))
     }
@@ -344,7 +465,9 @@ fn gen_num_list(g: &mut Lcg, depth: u32, vars: &mut Vec<(String, Ty)>) -> String
 
 fn gen_str_list(g: &mut Lcg, depth: u32, vars: &mut Vec<(String, Ty)>) -> String {
     let k = g.n(1, 3);
-    let items: Vec<String> = (0..k).map(|_| gen_str(g, depth.saturating_sub(1))).collect();
+    let items: Vec<String> = (0..k)
+        .map(|_| gen_str(g, depth.saturating_sub(1)))
+        .collect();
     format!("(list {})", items.join(" "))
 }
 
@@ -366,7 +489,11 @@ fn differential_fuzz_typed_300() {
         let w = wasm_run(&src);
         match (&i, &w) {
             (Ok(_), Ok(_)) | (Err(_), Err(_)) => {
-                if i.is_ok() { matches += 1 } else { both_err += 1 }
+                if i.is_ok() {
+                    matches += 1
+                } else {
+                    both_err += 1
+                }
             }
             _ => {
                 diverged += 1;
@@ -376,6 +503,9 @@ fn differential_fuzz_typed_300() {
             }
         }
     }
-    eprintln!("fuzz: {} match, {} both-err (agree), {} skip (gate), {} DIVERGED", matches, both_err, skipped, diverged);
+    eprintln!(
+        "fuzz: {} match, {} both-err (agree), {} skip (gate), {} DIVERGED",
+        matches, both_err, skipped, diverged
+    );
     assert!(diverged == 0, "divergences:\n{}", failures.join("\n\n"));
 }

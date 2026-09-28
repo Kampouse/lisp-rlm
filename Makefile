@@ -16,3 +16,9 @@ board:
 	./scripts/board.sh
 
 .PHONY: verify-erc20 verify-safe board
+
+# Regenerate the committed crypto artifact embedded by wasm_link
+# (schnorr_verify_bip340 + sha256_hash stitched into NEAR contracts).
+schnorr-wasm:
+	cd schnorr && cargo build --release --target wasm32-unknown-unknown
+	cp schnorr/target/wasm32-unknown-unknown/release/schnorr.wasm src/wasm_emit/schnorr.wasm

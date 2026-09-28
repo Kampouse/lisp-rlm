@@ -1,35 +1,59 @@
 [workspace]
-members = [".", "clojure-rlm", "crates/browser-compiler", "near-diff"]
+members = [".", "clojure-rlm", "crates/browser-compiler", "crates/near-compile"]
 # schnorr-wasm is a #![no_std] wasm-only crate (panic=abort only via own-root
 # profile); host workspace builds fail without -Zbuild-std. The stitcher uses
 # the standalone k256-schnorr-wasm/ project instead. Excluded like http-adapter.
-exclude = ["http-adapter", "wasm-test", "schnorr-wasm"]
+# schnorr-wasm was removed 2026-09-08: the crypto stitched into contracts
+# comes from schnorr/ via the committed src/wasm_emit/schnorr.wasm artifact
+# (regenerate with `make schnorr-wasm`). The old crate was consumed only by
+# the deleted build.rs (its SCHNORR_WASM_PATH output was read by nothing).
+exclude = ["http-adapter", "wasm-test", "schnorr"]
 
 [profile.wasm-release]
 inherits = "release"
 opt-level = "z"
 lto = true
 
+# Fast release edit-loop: incremental codegen for workspace crates only
+# (cargo keeps dependencies non-incremental, so sccache still caches them;
+# wasm-release overrides with LTO, which disables incremental as before).
+[profile.release]
+incremental = true
+
 [package]
 name = "lisp-rlm-wasm"
-version = "0.1.0"
+version = "0.1.20"
 edition = "2021"
-description = "Lisp runtime compiled to WASM"
+description = "Lisp/TS/Solidity → NEAR smart-contract compiler core (parser, typechecker, wasm emitter, crypto stitcher, wit bindings)"
+license = "MIT"
+repository = "https://github.com/Kampouse/lisp-rlm"
+readme = "README.md"
+keywords = ["lisp", "near", "blockchain", "wasm", "compiler"]
+categories = ["compilers"]
 autobins = false
+# ship only what builds the crate — the repo carries ~11k files of test/zk/corpus
+# data that bloated the package to 2.1MB and reliably killed the crates.io upload
+# (HTTP/2 stream resets / WAF 503s on large PUTs). Build needs src/ only:
+# no build.rs. Compile-time includes outside src/: wit/deps/** (wit_embed.rs,
+# wasi/mod.rs), skills/SKILL.md + example-scenario.json (near-mock bin),
+# src/wasm_emit/schnorr.wasm (inside src/).
+include = ["src/**", "README.md", "wit/deps/**", "skills/SKILL.md", "skills/example-scenario.json"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-k256 = { version = "0.13", default-features = false, features = ["ecdsa", "alloc"] }
-hex = "0.4"
 oxc_allocator = "0.147.0"
 oxc_parser = "0.147.0"
 oxc_syntax = "0.147.0"
 oxc_span = "0.147.0"
 oxc_ast = "0.147.0"
-wit-component = "0.248.0"
-wit-parser = "0.248.0"
+# VERSION-LOCKED to the runtime: wasmtime 45 pairs with wit-component 0.244
+# (see inlayer Cargo.lock). Encoding with 0.252 produced adapter shims whose
+# canon ABI mediation differs — the env/get helper/caller memory isolation
+# bug (97de3eb). Keep these in lockstep with inlayer's wasmtime.
+wit-component = "0.244.0"
+wit-parser = "0.244.0"
 base64 = "0.22"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
@@ -40,10 +64,23 @@ im = "15"
 sha2 = "0.10"
 sha3 = "0.10"
 ripemd = "0.1"
+# Real Keccak-512 for the near-mock keccak512 host (sha3 has no Keccak-512;
+# SHAKE128 stand-in replaced 2026-09-08 — nearcore uses real Keccak-512).
+tiny-keccak = { version = "2", features = ["keccak"] }
+# Real alt_bn128 (BN254) math for the near-mock precompile hosts — same
+# crate near-vm-runner uses (vendor/near-vm-runner/src/logic/alt_bn128.rs).
+# Real alt_bn128 (BN254) math for the near-mock precompile hosts — the exact
+# crate near-vm-runner uses (vendor pins zeropool-bn 0.5.11 as "bn"), so
+# multiexp/sum/pairing results are byte-identical to production.
+bn = { package = "zeropool-bn", version = "0.5.11", default-features = false }
+# Real secp256k1 ecrecover + NIST P-256 verify for the near-mock crypto hosts
+# (near-faithful: 65B recovered point, prehash verify, malformed input → 0).
+k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 wat = "1.0"
-wasm-encoder = "0.248.0"
-wasmparser = { version = "0.228.0", features = ["simd"] }
-wasmprinter = "0.248.0"
+wasm-encoder = { version = "0.252.0", features = ["wasmparser"] }
+wasmparser = { version = "0.252", features = ["simd"] }
+wasmprinter = "0.252.0"
 finite-wasm = "0.6"
 bincode = "1"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
@@ -87,10 +124,6 @@ name = "lisp-run"
 path = "src/bin/lisp_run.rs"
 
 [[bin]]
-name = "near-compile"
-path = "src/bin/near_compile.rs"
-
-[[bin]]
 name = "dump-wasm"
 path = "src/bin/dump_wasm.rs"
 
@@ -100,7 +133,7 @@ path = "src/bin/emit_wasm.rs"
 
 [[bin]]
 name = "near-mock"
-path = "src/bin/near_mock.rs"
+path = "src/bin/near_mock/mod.rs"
 
 [[bin]]
 name = "compile"
@@ -121,3 +154,7 @@ path = "src/bin/wrun.rs"
 [[bin]]
 name = "lisp-rlm"
 path = "src/bin/lisp_rl.rs"
+
+[[bin]]
+name = "dump-verify"
+path = "src/bin/dump_verify.rs"

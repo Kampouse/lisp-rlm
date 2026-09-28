@@ -8,10 +8,19 @@ A Lisp dialect that compiles to tiny WASM — NEAR smart contracts, WASI off-cha
 
 ## Quick Start
 
+Install the CLI (published on crates.io — no repo clone needed):
+
+```bash
+cargo install near-compile   # compiler + project tooling
+cargo install near-mock     # local contract runner (no node)
+```
+
+Or build from source:
+
 ```bash
 git clone https://github.com/Kampouse/lisp-rlm.git
 cd lisp-rlm
-cargo build --release
+cargo build --release       # one step — the crypto artifact is committed
 ```
 
 One binary: `near-compile`

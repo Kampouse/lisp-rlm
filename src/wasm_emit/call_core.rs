@@ -318,7 +318,11 @@ impl WasmEmitter {
                     for x in a[1..a.len() - 1].iter().rev() {
                         acc = LispVal::List(vec![LispVal::Sym("and".into()), x.clone(), acc]);
                     }
-                    return self.expr(&LispVal::List(vec![LispVal::Sym("and".into()), a[0].clone(), acc]));
+                    return self.expr(&LispVal::List(vec![
+                        LispVal::Sym("and".into()),
+                        a[0].clone(),
+                        acc,
+                    ]));
                 }
                 let tmp = self.local_idx("__and_val");
                 let mut v = self.expr(&a[0])?;
@@ -341,7 +345,11 @@ impl WasmEmitter {
                     for x in a[1..a.len() - 1].iter().rev() {
                         acc = LispVal::List(vec![LispVal::Sym("or".into()), x.clone(), acc]);
                     }
-                    return self.expr(&LispVal::List(vec![LispVal::Sym("or".into()), a[0].clone(), acc]));
+                    return self.expr(&LispVal::List(vec![
+                        LispVal::Sym("or".into()),
+                        a[0].clone(),
+                        acc,
+                    ]));
                 }
                 let tmp = self.local_idx("__or_val");
                 let mut v = self.expr(&a[0])?;
@@ -365,8 +373,74 @@ impl WasmEmitter {
                 Ok(v)
             }
             "if" => {
-                let mut v = self.expr(&a[0])?;
-                v.extend(self.emit_cond_branch());
+                let mut v = Vec::new();
+                // cond fast path (2026-09-14, gas): numeric comparison conds
+                // branch directly on the raw i32 — skip the Bool re-tag +
+                // truthiness dispatch (same rationale as the while fast path)
+                let cmp_op = match &a[0] {
+                    LispVal::List(items) if items.len() == 3 => match &items[0] {
+                        LispVal::Sym(s) => match s.as_str() {
+                            "<" => Some(Instruction::I64LtS),
+                            "<=" => Some(Instruction::I64LeS),
+                            ">" => Some(Instruction::I64GtS),
+                            ">=" => Some(Instruction::I64GeS),
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(op) = cmp_op {
+                    let LispVal::List(items) = &a[0] else {
+                        unreachable!()
+                    };
+                    v.extend(self.expr(&items[1])?);
+                    v.extend(self.emit_untag());
+                    v.extend(self.expr(&items[2])?);
+                    v.extend(self.emit_untag());
+                    v.push(op);
+                } else {
+                    // (= a b)/(!= a b) numeric: TAGGED-direct compare (see
+                    // while arm) — no untags, no __h_val_eq call
+                    let eq_direct = match &a[0] {
+                        LispVal::List(items) if items.len() == 3 => match &items[0] {
+                            LispVal::Sym(s) if s == "=" || s == "!=" => {
+                                if self.expr_is_numeric(&items[1])
+                                    && self.expr_is_numeric(&items[2])
+                                {
+                                    Some(if s == "=" {
+                                        Instruction::I64Eq
+                                    } else {
+                                        Instruction::I64Ne
+                                    })
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(op) = eq_direct {
+                        let LispVal::List(items) = &a[0] else {
+                            unreachable!()
+                        };
+                        v.extend(self.expr(&items[1])?);
+                        v.extend(self.expr(&items[2])?);
+                        v.push(op);
+                    } else {
+                        // bare strict-numeric cond: falsy == {tagged 0} —
+                        // i64.eqz + i32.eqz replaces the truthiness dispatch
+                        let cond_raw_safe = self.expr_is_raw_safe(&a[0]);
+                        v.extend(self.expr(&a[0])?);
+                        if cond_raw_safe {
+                            v.push(Instruction::I64Eqz);
+                            v.push(Instruction::I32Eqz);
+                        } else {
+                            v.extend(self.emit_cond_branch());
+                        }
+                    }
+                }
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 v.extend(self.expr(&a[1])?);
                 v.push(Instruction::Else);
@@ -543,11 +617,63 @@ impl WasmEmitter {
                 // the outer binding permanently — interp has proper lexical
                 // scope (e26 differential).
                 let mut saved: Vec<(String, Option<u32>)> = Vec::new();
+                // numeric-provenance shadow tracking (see numeric_locals)
+                let mut saved_num: Vec<(String, bool)> = Vec::new();
+                // limb-pair shadow tracking (see limb_locals.rs, 2026-09-15)
+                let mut saved_limb: Vec<(String, Option<(u32, u32)>)> = Vec::new();
                 if let LispVal::List(bs) = &a[0] {
                     for b in bs {
                         if let LispVal::List(p) = b {
                             if p.len() == 2 {
                                 if let LispVal::Sym(n) = &p[0] {
+                                    // u128 Level 1 limb locals: the binding is
+                                    // a (lo, hi) i64 pair when the pre-scan proved
+                                    // every store u128-pure. Init compiles in the
+                                    // OUTER scope first (let* semantics — the
+                                    // mapping inserts only after), and the name is
+                                    // NOT registered in `locals` (reads resolve
+                                    // through limb_slots in the Sym arm).
+                                    if self.limb_eligible.contains(n)
+                                        && !self.captured_map.contains_key(n)
+                                    {
+                                        // limb names are never numeric-provenance
+                                        // (function-wide store purity guarantees
+                                        // it; this is belt-and-braces — a numeric
+                                        // fast-path read of a limb local would
+                                        // mis-add the materialized TAG_STR)
+                                        self.numeric_locals.remove(n);
+                                        let lo = self.free_locals.pop().unwrap_or(self.next_local);
+                                        if lo == self.next_local {
+                                            self.next_local += 1;
+                                            self.local_type_map.push(ValType::I64);
+                                        }
+                                        let hi = self.free_locals.pop().unwrap_or(self.next_local);
+                                        if hi == self.next_local {
+                                            self.next_local += 1;
+                                            self.local_type_map.push(ValType::I64);
+                                        }
+                                        let init = self.emit_u128_val(&p[1], lo, hi)?;
+                                        let old = self.limb_slots.remove(n);
+                                        self.limb_slots.insert(n.clone(), (lo, hi));
+                                        saved_limb.push((n.clone(), old));
+                                        saved_num
+                                            .push((n.clone(), self.numeric_locals.contains(n)));
+                                        v.extend(init);
+                                        continue;
+                                    }
+                                    // INIT FIRST, then bind: let* inits evaluate in
+                                    // the OUTER scope — binding the name before
+                                    // compiling the init made (let* ((x (+ x 1))))
+                                    // read its own fresh zero-initialized slot
+                                    // (returned 1, not 2). Fix 2026-09-05.
+                                    let init_is_num = self.expr_is_numeric(&p[1]);
+                                    saved_num.push((n.clone(), self.numeric_locals.contains(n)));
+                                    if init_is_num {
+                                        self.numeric_locals.insert(n.clone());
+                                    } else {
+                                        self.numeric_locals.remove(n);
+                                    }
+                                    let init = self.expr(&p[1])?;
                                     let old = self.locals.get(n).copied();
                                     let i = self.free_locals.pop().unwrap_or(self.next_local);
                                     if i == self.next_local {
@@ -556,8 +682,12 @@ impl WasmEmitter {
                                     }
                                     self.locals.insert(n.clone(), i);
                                     saved.push((n.clone(), old));
-                                    v.extend(self.expr(&p[1])?);
+                                    v.extend(init);
                                     v.push(Instruction::LocalSet(i));
+                                    // fresh binding = fresh string value — any
+                                    // memoized u128 limbs for this name (an
+                                    // outer binding's, or a re-let) are stale
+                                    self.emit_parse_cache_invalidate(&mut v, n);
                                 }
                             }
                         }
@@ -576,11 +706,22 @@ impl WasmEmitter {
                         }
                     }
                 }
-                // restore outer scope mappings; release shadow slots
-                for (n, old) in saved.into_iter().rev() {
+                // restore outer scope mappings; release shadow slots; restore
+                // numeric-provenance flags for shadowed names; restore limb
+                // pair mappings (u128 Level 1). Parse-cache (L1.5): every
+                // name bound by THIS let leaves scope — drop its entry so an
+                // inner binding's cached limbs can never alias a same-named
+                // outer binding (the outer one re-parses once on next use).
+                for ((n, old), (_, was_num)) in
+                    saved.into_iter().rev().zip(saved_num.into_iter().rev())
+                {
+                    // names bound by THIS let leave scope — clear their memo
+                    // so an inner binding's limbs can never alias a
+                    // same-named outer binding (the outer one re-parses once)
+                    self.emit_parse_cache_invalidate(&mut v, &n);
                     match old {
                         Some(prev) => {
-                            self.locals.insert(n, prev);
+                            self.locals.insert(n.clone(), prev);
                         }
                         None => {
                             if let Some(slot) = self.locals.remove(&n) {
@@ -588,7 +729,13 @@ impl WasmEmitter {
                             }
                         }
                     }
+                    if was_num {
+                        self.numeric_locals.insert(n);
+                    } else {
+                        self.numeric_locals.remove(&n);
+                    }
                 }
+                self.limb_restore(saved_limb);
                 Ok(v)
             }
             "loop" => {
@@ -707,27 +854,122 @@ impl WasmEmitter {
                 // recur should have been replaced by replace_recur in loop desugar
                 // (or rejected by validate_recur_tails). If we get here, recur
                 // is used outside a loop / outside direct tail position.
-                Err("compile error: recur used outside of a loop (or not in direct tail position)".into())
+                Err(
+                    "compile error: recur used outside of a loop (or not in direct tail position)"
+                        .into(),
+                )
             }
             "while" => {
                 let id = self.while_id.get();
                 self.while_id.set(id + 1);
                 let mut v = Vec::new();
+                // LICM for loop-invariant cond reads (2026-09-14, gas):
+                // (while (< i (vec-length a)) …) re-evaluates the length
+                // CALL every iteration — the classic TS array-loop shape.
+                // If the operand is a local never set!-ed in the body, hoist
+                // the call into a temp before the loop. Only vec-length is
+                // hoisted (pure, non-trapping on arrays, result tagged-num).
+                let cond_licm = hoist_cond_reads(&a[0], &a[1..]);
+                if !cond_licm.hoists.is_empty() {
+                    for (i, (_, src)) in cond_licm.hoists.iter().enumerate() {
+                        let tmp = self.local_idx(&format!("__licm_{}", i));
+                        v.extend(self.expr(src)?);
+                        v.push(Instruction::LocalSet(tmp));
+                    }
+                }
+                let a0 = cond_licm.cond;
+                let mut a = a.to_vec();
+                a[0] = a0.clone();
+                let a: &[LispVal] = &a;
                 // block $exit (result i64)
                 v.push(Instruction::Block(BlockType::Result(ValType::I64)));
                 // loop $loop
                 v.push(Instruction::Loop(BlockType::Empty));
-                // cond — use tagged truthiness
-                v.extend(self.expr(&a[0])?);
-                v.extend(self.emit_is_truthy());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Eqz);
-                // if !cond → exit with tagged nil
-                v.push(Instruction::If(BlockType::Empty));
-                v.push(Instruction::I64Const(TAG_NIL));
-                v.push(Instruction::Br(2)); // br $exit with i64
-                v.push(Instruction::End); // if — no else needed
-                                          // body
+                // (= a b) / (!= a b) fast path (2026-09-14, gas): TAGGED-direct
+                // compare — no untags (tagged equality == numeric equality for
+                // the {Num, Nil} mixes numeric provenance permits). Was a CALL
+                // to the structural __h_val_eq helper + truthiness dispatch.
+                let eq_op_direct = match &a[0] {
+                    LispVal::List(items) if items.len() == 3 => match &items[0] {
+                        LispVal::Sym(s) if s == "=" || s == "!=" => {
+                            if self.expr_is_numeric(&items[1]) && self.expr_is_numeric(&items[2]) {
+                                Some(if s == "=" {
+                                    Instruction::I64Eq
+                                } else {
+                                    Instruction::I64Ne
+                                })
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(op) = eq_op_direct {
+                    let LispVal::List(items) = &a[0] else {
+                        unreachable!()
+                    };
+                    v.extend(self.expr(&items[1])?);
+                    v.extend(self.expr(&items[2])?);
+                    v.push(op);
+                    // exit when the comparison is FALSE
+                    v.push(Instruction::I32Eqz);
+                    v.push(Instruction::If(BlockType::Empty));
+                    v.push(Instruction::I64Const(TAG_NIL));
+                    v.push(Instruction::Br(2)); // br $exit with i64
+                    v.push(Instruction::End);
+                } else {
+                    let cmp_op = match &a[0] {
+                        LispVal::List(items) if items.len() == 3 => match &items[0] {
+                            LispVal::Sym(s) => match s.as_str() {
+                                "<" => Some(Instruction::I64LtS),
+                                "<=" => Some(Instruction::I64LeS),
+                                ">" => Some(Instruction::I64GtS),
+                                ">=" => Some(Instruction::I64GeS),
+                                _ => None,
+                            },
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(op) = cmp_op {
+                        let LispVal::List(items) = &a[0] else {
+                            unreachable!()
+                        };
+                        v.extend(self.expr(&items[1])?);
+                        v.extend(self.emit_untag());
+                        v.extend(self.expr(&items[2])?);
+                        v.extend(self.emit_untag());
+                        v.push(op);
+                        // exit when the comparison is FALSE
+                        v.push(Instruction::I32Eqz);
+                        v.push(Instruction::If(BlockType::Empty));
+                        v.push(Instruction::I64Const(TAG_NIL));
+                        v.push(Instruction::Br(2)); // br $exit with i64
+                        v.push(Instruction::End);
+                    } else {
+                        // cond — generic tagged truthiness. Bare-numeric fast
+                        // path (2026-09-14, gas): a strict-numeric cond's falsy
+                        // set is exactly {tagged 0} — i64.eqz replaces the
+                        // triple-tag dispatch (~11 instrs saved per iteration).
+                        let cond_raw_safe = self.expr_is_raw_safe(&a[0]);
+                        v.extend(self.expr(&a[0])?);
+                        if cond_raw_safe {
+                            v.push(Instruction::I64Eqz);
+                        } else {
+                            v.extend(self.emit_is_truthy());
+                            v.push(Instruction::I32WrapI64);
+                        }
+                        v.push(Instruction::I32Eqz);
+                        // if !cond → exit with tagged nil
+                        v.push(Instruction::If(BlockType::Empty));
+                        v.push(Instruction::I64Const(TAG_NIL));
+                        v.push(Instruction::Br(2)); // br $exit with i64
+                        v.push(Instruction::End); // if — no else needed
+                    }
+                } // end eq-direct / cmp / generic cond dispatch
+                  // body
                 for x in &a[1..] {
                     v.extend(self.expr(x)?);
                     v.push(Instruction::Drop);
@@ -744,6 +986,23 @@ impl WasmEmitter {
                 let LispVal::Sym(n) = &a[0] else {
                     return Err("set!: expected symbol".into());
                 };
+                // u128 Level 1 limb locals: set! to a limb-represented local
+                // stores the (lo, hi) pair directly (no stringify). The
+                // value must be u128-pure — guaranteed by the per-function
+                // eligibility pre-scan (any non-pure store demotes the name
+                // to a tagged slot everywhere in the function).
+                if let Some(&(lo, hi)) = self.limb_slots.get(n) {
+                    if self.captured_map.contains_key(n) {
+                        return Err(format!("internal: limb local '{}' captured by closure", n));
+                    }
+                    let mut v = self.emit_u128_val(&a[1], lo, hi)?;
+                    v.push(Instruction::I64Const(TAG_NIL));
+                    return Ok(v);
+                }
+                // numeric-provenance maintenance: the union of a local's
+                // assignments must be all-numeric for the fast path to be
+                // sound — a non-numeric assignment demotes it
+                let val_is_num = self.expr_is_numeric(&a[1]);
                 let mut v = self.expr(&a[1])?;
                 if let Some(&offset) = self.captured_map.get(n) {
                     // Captured variable — write back to closure heap slot
@@ -766,7 +1025,16 @@ impl WasmEmitter {
                 } else {
                     let idx = self.local_idx(n);
                     v.push(Instruction::LocalSet(idx));
+                    if val_is_num {
+                        self.numeric_locals.insert(n.clone());
+                    } else {
+                        self.numeric_locals.remove(n);
+                    }
                 }
+                // Level 1.5 parse-cache invalidation: the local's string
+                // value just changed — its memoized u128 limbs (if any) are
+                // stale. First u128-op use after this re-parses.
+                self.emit_parse_cache_invalidate(&mut v, n);
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
             }
@@ -780,6 +1048,8 @@ impl WasmEmitter {
                 };
                 let idx = self.local_idx(var);
                 let mut v = Vec::new();
+                // fresh binding — clear any memoized parse limbs
+                self.emit_parse_cache_invalidate(&mut v, var);
                 // init: var = start (untag for raw counter)
                 v.extend(self.expr(&a[1])?);
                 v.extend(self.emit_untag());
@@ -1230,5 +1500,87 @@ impl WasmEmitter {
             }
             _ => Err("__not_handled__".into()),
         }
+    }
+}
+
+// ── LICM: loop-invariant cond reads (2026-09-14) ──────────────────────────
+
+/// Collect every symbol that is `set!`-ed anywhere in these forms
+/// (recursively — nested begins/ifs/lets all count). Conservative: `let`
+/// bindings of the same name are treated as assignments too (shadowing
+/// changes the value the cond would read).
+fn collect_set_targets(forms: &[LispVal], out: &mut std::collections::HashSet<String>) {
+    for f in forms {
+        if let LispVal::List(items) = f {
+            if let Some(LispVal::Sym(head)) = items.first() {
+                match head.as_str() {
+                    "set!" | "=" => {
+                        if let Some(LispVal::Sym(n)) = items.get(1) {
+                            out.insert(n.clone());
+                        }
+                    }
+                    "let" | "let*" => {
+                        if let Some(LispVal::List(bs)) = items.get(1) {
+                            for b in bs {
+                                if let LispVal::List(p) = b {
+                                    if let Some(LispVal::Sym(n)) = p.first() {
+                                        out.insert(n.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            collect_set_targets(items, out);
+        }
+    }
+}
+
+struct CondHoist {
+    cond: LispVal,
+    /// (temp-name, original expr) pairs
+    hoists: Vec<(String, LispVal)>,
+}
+
+/// Rewrite `cond`, hoisting `(vec-length Y)` subforms into fresh temps
+/// when `Y` is a plain local never assigned in the loop body. Everything
+/// else (calls, host reads, non-sym operands) stays put — conservative.
+fn hoist_cond_reads(cond: &LispVal, body: &[LispVal]) -> CondHoist {
+    let mut assigned = std::collections::HashSet::new();
+    collect_set_targets(body, &mut assigned);
+    let mut hoists: Vec<(String, LispVal)> = Vec::new();
+
+    fn walk(
+        e: &LispVal,
+        assigned: &std::collections::HashSet<String>,
+        hoists: &mut Vec<(String, LispVal)>,
+    ) -> LispVal {
+        let LispVal::List(items) = e else {
+            return e.clone();
+        };
+        // hoistable shape: (vec-length Y) with Y an unassigned plain local
+        if items.len() == 2 {
+            if let (LispVal::Sym(h), LispVal::Sym(y)) = (&items[0], &items[1]) {
+                if h == "vec-length" && !assigned.contains(y) {
+                    let name = format!("__licm_{}", hoists.len());
+                    hoists.push((name.clone(), e.clone()));
+                    return LispVal::Sym(name);
+                }
+            }
+        }
+        // recurse into subforms
+        let mut out = Vec::with_capacity(items.len());
+        for it in items {
+            out.push(walk(it, assigned, hoists));
+        }
+        LispVal::List(out)
+    }
+
+    let cond2 = walk(cond, &assigned, &mut hoists);
+    CondHoist {
+        cond: cond2,
+        hoists,
     }
 }

@@ -5,23 +5,25 @@ package near:outlayer-combined@0.1.0;
 // Component IMPORTS wasi:http (for outgoing HTTP via HTTPLIB)
 // Component IMPORTS near:rpc/api, outlayer:api/host, etc. (host functions)
 world outlayer-http {
-    export wasi:cli/run@0.2.2;
+    export wasi:cli/run@0.2.12;
 
     import near:rpc/api@0.1.0;
+    import near:storage/api@0.1.0;
+    import wasi:cli/environment@0.2.12;
     import outlayer:api/host@0.1.0;
     import near:payment/api@0.1.0;
     import near:vrf/api@0.1.0;
     import outlayer:wallet/api@0.1.0;
-    import wasi:http/types@0.2.2;
-    import wasi:http/outgoing-handler@0.2.2;
-    import wasi:io/streams@0.2.2;
-    import wasi:io/poll@0.2.2;
-    import wasi:cli/stdin@0.2.2;
-    import wasi:cli/stdout@0.2.2;
-    import wasi:cli/stderr@0.2.2;
-    import wasi:cli/exit@0.2.2;
-    import wasi:clocks/monotonic-clock@0.2.2;
-    import wasi:filesystem/types@0.2.2;
-    import wasi:filesystem/preopens@0.2.2;
-    import wasi:random/random@0.2.2;
+    import wasi:http/types@0.2.12;
+    import wasi:http/outgoing-handler@0.2.12;
+    import wasi:io/streams@0.2.12;
+    import wasi:io/poll@0.2.12;
+    import wasi:cli/stdin@0.2.12;
+    import wasi:cli/stdout@0.2.12;
+    import wasi:cli/stderr@0.2.12;
+    import wasi:cli/exit@0.2.12;
+    import wasi:clocks/monotonic-clock@0.2.12;
+    import wasi:filesystem/types@0.2.12;
+    import wasi:filesystem/preopens@0.2.12;
+    import wasi:random/random@0.2.12;
 }

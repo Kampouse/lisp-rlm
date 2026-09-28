@@ -1,7 +1,7 @@
-/// <reference path="../../../ts/lisp-rlm.d.ts" />
-// nostr-gov Phase-1 — TypeScript port (differential twin of main.lisp)
 // CANONICAL TS HOME: github.com/Kampouse/nostr-gov → contract-ts/src/main.ts
 // (this copy is the differential oracle twin — behavioral changes land in BOTH)
+/// <reference path="../../../ts/lisp-rlm.d.ts" />
+// nostr-gov Phase-1 — TypeScript port (differential twin of main.lisp)
 // Scope: legacy (owner-key) auth path. Event-auth (`ev` param) paths stub out.
 // Helpers are internal; `export function` = contract method. `get_*` = view.
 
@@ -164,6 +164,18 @@ function nthField(s: string, k: number) {
 
 const EMPTY = "";
 
+// Sentinel protocol (2026-09-03): the host jsonGetStr copies raw bytes up
+// to the first quote, so arg values containing escaped quotes (tags JSON,
+// envelope content) arrive truncated/corrupted. Senders therefore replace
+// every double-quote in tags/ct with "~" (never present in event bytes)
+// and unsentinel() restores them byte-exact before verification.
+// NOTE: defined before first use — the TS frontend resolves calls
+// top-down and rejects forward references.
+function unquote(): string {
+  // jsonQuote wraps in literal quotes; slice one off as the quote char
+  return strSlice(jsonQuote(EMPTY), 0, 1);
+}
+
 function tagGet(tags: string, key: string): string {
   const nd = `["${key}","`;
   const i = strIndexOf(tags, nd);
@@ -174,7 +186,7 @@ function tagGet(tags: string, key: string): string {
   if (strLength(rest) === 0) {
     return EMPTY;
   }
-  return strSlice(rest, 0, strIndexOf(rest, "\""));
+  return strSlice(rest, 0, strIndexOf(rest, unquote()));
 }
 
 function tagAction(tags: string) {
@@ -188,6 +200,22 @@ function tagNonce(tags: string) {
 }
 function tagExpires(tags: string) {
   return tagGet(tags, "expires");
+}
+
+function unsentinel(s: string): string {
+  let out = "";
+  const n = strLength(s);
+  let i = 0;
+  while (i < n) {
+    const c = strSlice(s, i, i + 1);
+    if (c === "~") {
+      out = out + unquote();
+    } else {
+      out = out + c;
+    }
+    i = i + 1;
+  }
+  return out;
 }
 
 function eventSerialize(pk: string, cat: string, kind: string, tags: string, content: string) {
@@ -226,8 +254,8 @@ function walThr(name: string): string {
 function verifyOwnerEvent(actionStr: string) {
   const pk = near.jsonGetStr("pk") ?? "";
   const kind = near.jsonGetStr("kind") ?? "";
-  const tags = near.jsonGetStr("tags") ?? "";
-  const content = near.jsonGetStr("ct") ?? "";
+  const tags = unsentinel(near.jsonGetStr("tags") ?? "");
+  const content = unsentinel(near.jsonGetStr("ct") ?? "");
   const sig = near.jsonGetStr("sig") ?? "";
   const cat = near.jsonGetStr("cat") ?? "";
   if (strLength(pk) !== 64) {
@@ -272,8 +300,8 @@ function verifyOwnerEvent(actionStr: string) {
 function verifyGuardianEvent(actionStr: string) {
   const pk = near.jsonGetStr("pk") ?? "";
   const kind = near.jsonGetStr("kind") ?? "";
-  const tags = near.jsonGetStr("tags") ?? "";
-  const content = near.jsonGetStr("ct") ?? "";
+  const tags = unsentinel(near.jsonGetStr("tags") ?? "");
+  const content = unsentinel(near.jsonGetStr("ct") ?? "");
   const sig = near.jsonGetStr("sig") ?? "";
   const cat = near.jsonGetStr("cat") ?? "";
   if (strLength(pk) !== 64) {
@@ -419,7 +447,7 @@ export function propose() {
   walletLiveCheck(name0);
   // proposal id = the event NONCE (2026-09-02): unique, signed inside
   // the action tag, replay-protected — no pi:<name> counter write
-  const id0 = tagNonce(near.jsonGetStr("tags") ?? "");
+  const id0 = tagNonce(unsentinel(near.jsonGetStr("tags") ?? ""));
   if (strLength(id0) === 0) {
     die("ERR_EVENT_NONCE");
   }
@@ -436,7 +464,7 @@ export function propose() {
   const np = near.jsonGetStr("np") ?? "";
   const nt = near.jsonGetStr("nt") ?? "";
   const ts = near.blockTimestamp();
-  const id = tagNonce(near.jsonGetStr("tags") ?? "");
+  const id = tagNonce(unsentinel(near.jsonGetStr("tags") ?? ""));
   if (u128.lt(pexp, toStr(ts))) {
     die("ERR_EXPIRED");
   }
@@ -588,8 +616,8 @@ export function approve_with_event() {
   const pk = near.jsonGetStr("pk") ?? "";
   const sig = near.jsonGetStr("sig") ?? "";
   const kind = near.jsonGetStr("kind") ?? "";
-  const tags = near.jsonGetStr("tags") ?? "";
-  const ct = near.jsonGetStr("ct") ?? "";
+  const tags = unsentinel(near.jsonGetStr("tags") ?? "");
+  const ct = unsentinel(near.jsonGetStr("ct") ?? "");
   if (kind !== "37500") {
     die("ERR_EVENT_KIND");
   }
@@ -687,7 +715,7 @@ export function execute() {
 }
 
 export function get_proposal() {
-  return getStr(`p:${near.jsonGetStr("name") ?? ""}:${near.jsonGetStr("id") ?? ""}`);
+  near.jsonReturnStr(getStr(`p:${near.jsonGetStr("name") ?? ""}:${near.jsonGetStr("id") ?? ""}`));
 }
 
 // canonical approve message for (name,id,ix,exp) — signers build the
@@ -722,7 +750,7 @@ export function get_proposal_ids() {
 }
 
 export function get_approvers() {
-  return getStr(`a:${near.jsonGetStr("name") ?? ""}`);
+  near.jsonReturnStr(getStr(`a:${near.jsonGetStr("name") ?? ""}`));
 }
 
 // ── public self-test (port of lisp test_verify_nostr) ───────────────────

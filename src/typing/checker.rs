@@ -298,10 +298,7 @@ pub fn parse_type_list(elems: &[LispVal]) -> Result<TcType, String> {
             }
             "opt" | ":opt" | "option" | ":option" => {
                 if elems.len() != 2 {
-                    return Err(format!(
-                        "(opt T) expects 1 arg, got {}",
-                        elems.len() - 1
-                    ));
+                    return Err(format!("(opt T) expects 1 arg, got {}", elems.len() - 1));
                 }
                 let inner = parse_type_annotation(&elems[1])?;
                 return Ok(TcType::Con(TcCon::Opt(Box::new(inner))));
@@ -870,9 +867,7 @@ fn infer(
                     let inner = supply.fresh();
                     let t1 = infer(e1, env, supply, subst)?;
                     let s1 = unify(&t1, &TcType::Con(TcCon::Opt(Box::new(inner.clone()))))
-                        .map_err(|e| {
-                            format!("default: value is not maybe-nil — {}", e)
-                        })?;
+                        .map_err(|e| format!("default: value is not maybe-nil — {}", e))?;
                     *subst = s1.compose(subst.clone());
                     let t2 = infer(e2, env, supply, subst)?;
                     let inner_sub = subst.apply(&inner);
@@ -1017,21 +1012,17 @@ fn infer(
                     let su = match unify(&a1, &a2) {
                         Ok(su) => su,
                         Err(_) => {
-                            // mixed pair: OK if one side is bool (tagged-int
-                            // probe) — no substitution to record
-                            let a1_bool = unify(&a1, &TcType::Con(TcCon::Bool)).is_ok();
-                            let a2_bool = unify(&a2, &TcType::Con(TcCon::Bool)).is_ok();
-                            if (a1_bool || a2_bool)
-                                && (unify(&a1, &TcType::Con(TcCon::Num)).is_ok()
-                                    || unify(&a2, &TcType::Con(TcCon::Num)).is_ok())
-                            {
-                                Subst::new()
-                            } else {
-                                return Err(format!(
-                                    "in call ({} ...): type mismatch: {} ≠ {}",
-                                    s, a1, a2
-                                ));
-                            }
+                            // mixed pair: OK — `=` is TOTAL at runtime.
+                            // The emitter compiles = to __h_val_eq
+                            // (structural; tag mismatch → false, no trap)
+                            // or the raw-compare num fast path (exact
+                            // across {Num, Nil, Bool} tag words). Any
+                            // mixed base-type pair therefore types as
+                            // Bool with no substitution — TS `!x` relies
+                            // on this: it lowers to
+                            // (if (if x …) … (= x "")) where x may be
+                            // bool/num/str/array (2026-09-27).
+                            Subst::new()
                         }
                     };
                     *subst = su.compose(subst.clone());
@@ -1051,14 +1042,12 @@ fn infer(
                     }
                     infer(&folded, env, supply, subst)
                 }
-                LispVal::Sym(op) if op == "mod" && list.len() > 3 => {
-                    infer(
-                        &LispVal::List(vec![list[0].clone(), list[1].clone(), list[2].clone()]),
-                        env,
-                        supply,
-                        subst,
-                    )
-                }
+                LispVal::Sym(op) if op == "mod" && list.len() > 3 => infer(
+                    &LispVal::List(vec![list[0].clone(), list[1].clone(), list[2].clone()]),
+                    env,
+                    supply,
+                    subst,
+                ),
                 LispVal::Sym(s) if s == "dict" => {
                     // Variadic key-val pairs: infer each arg but don't enforce arity
                     for arg in &list[1..] {
@@ -1205,8 +1194,25 @@ fn infer_if(
     if let Some(else_expr) = else_branch {
         let else_type = infer(else_expr, env, supply, subst)?;
         // Unify branches
-        let s = unify(&then_type, &else_type)
-            .map_err(|e| format!("if: branch types disagree — {}", e))?;
+        let s = unify(&then_type, &else_type).map_err(|e| {
+            // Render both branches (truncated) so the offending source is
+            // identifiable in a large module without a source map.
+            let trunc = |v: &LispVal| -> String {
+                let s = v.to_string();
+                if s.chars().count() > 120 {
+                    let t: String = s.chars().take(120).collect();
+                    format!("{t}…")
+                } else {
+                    s
+                }
+            };
+            format!(
+                "if: branch types disagree — {} (then: {}, else: {})",
+                e,
+                trunc(then_branch),
+                trunc(else_expr)
+            )
+        })?;
         *subst = s.compose(subst.clone());
     }
 
@@ -1483,6 +1489,20 @@ fn infer_application(
             }
             return Ok(TcType::Con(TcCon::Str));
         }
+        // json-extract-input / json-extract: variadic (1..=8 str keys →
+        // array of raw span strings; the emitter enforces the 8-key cap)
+        if name == "json-extract-input" || name == "json-extract" {
+            if args.is_empty() {
+                return Err(format!("in call ({name} ...): needs at least 1 key"));
+            }
+            for arg in args.iter().skip(if name == "json-extract" { 1 } else { 0 }) {
+                let t = infer(arg, env, supply, subst)?;
+                if unify(&t, &TcType::Con(TcCon::Str)).is_err() {
+                    return Err(format!("in call ({name} ...): keys must be str"));
+                }
+            }
+            return Ok(TcType::Con(TcCon::List(Box::new(TcType::Con(TcCon::Any)))));
+        }
         // len: POLYMORPHIC — interp accepts BOTH str and list (and any
         // array-ish value); the env carried two conflicting registrations
         // (list→int generic at types.rs:800, str-narrow at 1512) so
@@ -1498,7 +1518,10 @@ fn infer_application(
             let is_list = unify(&t, &list_t).is_ok();
             let is_str = unify(&t, &TcType::Con(TcCon::Str)).is_ok();
             if !is_list && !is_str {
-                return Err(format!("in call (len ...): type mismatch: {} ≠ str/list", t));
+                return Err(format!(
+                    "in call (len ...): type mismatch: {} ≠ str/list",
+                    t
+                ));
             }
             return Ok(TcType::Con(TcCon::Int));
         }
@@ -1563,9 +1586,7 @@ fn infer_application(
             // CONCRETE str only: an unbound type var unifies with Str, which
             // made `(+ (f) 1)` on a not-yet-bound fn return Str and broke
             // near/store's num param (test_near_counter regression 2026-09-01).
-            let is_concrete_str = |t: &TcType| {
-                matches!(subst.apply(t), TcType::Con(TcCon::Str))
-            };
+            let is_concrete_str = |t: &TcType| matches!(subst.apply(t), TcType::Con(TcCon::Str));
             let l_str = is_concrete_str(&tl);
             let r_str = is_concrete_str(&tr);
             if l_str || r_str {
@@ -1592,7 +1613,11 @@ fn infer_application(
             let tr = infer(&args[1], env, supply, subst)?;
             let tl = subst.apply(&tl);
             let tr = subst.apply(&tr);
-            for t in [&TcType::Con(TcCon::Num), &TcType::Con(TcCon::Str), &TcType::Con(TcCon::Bool)] {
+            for t in [
+                &TcType::Con(TcCon::Num),
+                &TcType::Con(TcCon::Str),
+                &TcType::Con(TcCon::Bool),
+            ] {
                 if unify(&tl, t).is_ok() && unify(&tr, t).is_ok() {
                     return Ok(TcType::Con(TcCon::Bool));
                 }
@@ -1674,6 +1699,10 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
     // polymorphic placeholder so forward references (mutual recursion like
     // even?/odd?) type-check. The ordered pass below re-registers each name
     // with its precise inferred type, shadowing the placeholder.
+    // Value defines (define name value) get the same treatment — a const
+    // referenced by a function defined ABOVE it previously failed with
+    // "undefined variable" (found compiling the PLONK verifier, where
+    // ZERO_BE_HEX sits below its first consumer after function reordering).
     for expr in exprs {
         if let LispVal::List(items) = expr {
             if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") {
@@ -1687,6 +1716,16 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
                             },
                         );
                     }
+                }
+                // Value define: (define NAME value) — NAME is a Sym at [1]
+                if let Some(LispVal::Sym(name)) = items.get(1) {
+                    env.insert(
+                        name.clone(),
+                        Scheme {
+                            vars: vec![0],
+                            ty: TcType::Var(0),
+                        },
+                    );
                 }
             }
         }
@@ -1747,9 +1786,9 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
                             let (ann_parts, body_items) =
                                 crate::helpers::split_define_annotation(&list[2..]);
                             let annotated_type = match &ann_parts {
-                                Some(parts) => Some(parse_type_annotation(&LispVal::List(
-                                    parts.clone(),
-                                ))?),
+                                Some(parts) => {
+                                    Some(parse_type_annotation(&LispVal::List(parts.clone()))?)
+                                }
                                 None => None,
                             };
                             let body = if body_items.len() > 1 {
@@ -1835,9 +1874,8 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
                             if let Some(TcType::Arrow(_, ann_ret)) = &annotated_type {
                                 let inferred_ret = subst.apply(&_body_type);
                                 let declared_ret = subst.apply(ann_ret);
-                                unify(&inferred_ret, &declared_ret).map_err(|e| {
-                                    format!("define {}: type error — {}", name, e)
-                                })?;
+                                unify(&inferred_ret, &declared_ret)
+                                    .map_err(|e| format!("define {}: type error — {}", name, e))?;
                             }
 
                             // Register inferred type for later defines
@@ -1960,7 +1998,9 @@ pub fn check_storage_schema(exprs: &[LispVal]) {
                                 .or_insert_with(|| "written".into());
                             string_keys.insert(key, ());
                         }
-                    } else if (op == "near/storage_read" || op == "near/storage_get") && list.len() >= 2 {
+                    } else if (op == "near/storage_read" || op == "near/storage_get")
+                        && list.len() >= 2
+                    {
                         if let Some(key) = extract_str_key(&list[1]) {
                             if !schema.contains_key(&key) {
                                 eprintln!(

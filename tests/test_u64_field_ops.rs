@@ -60,10 +60,7 @@ fn u64_wrapping_add() {
 #[test]
 fn u64_wrapping_add_overflow() {
     // u64::MAX + 1 = 0 (wrapping)
-    assert_eq!(
-        eval_u64("(+ 0xFFFFFFFFFFFFFFFFu64 1u64)"),
-        0
-    );
+    assert_eq!(eval_u64("(+ 0xFFFFFFFFFFFFFFFFu64 1u64)"), 0);
 }
 
 #[test]
@@ -85,10 +82,7 @@ fn u64_wrapping_mul() {
 #[test]
 fn u64_wrapping_mul_overflow() {
     // (u64::MAX) * 2 = u64::MAX - 1 (wrapping)
-    assert_eq!(
-        eval_u64("(* 0xFFFFFFFFFFFFFFFFu64 2u64)"),
-        u64::MAX - 1
-    );
+    assert_eq!(eval_u64("(* 0xFFFFFFFFFFFFFFFFu64 2u64)"), u64::MAX - 1);
 }
 
 #[test]
@@ -203,24 +197,28 @@ fn u64_let_binding() {
 #[test]
 fn u64_loop_accumulate() {
     // Sum 1..5 using loop/recur with u64
-    let result = eval_u64(r#"
+    let result = eval_u64(
+        r#"
         (let loop ((i 0u64) (acc 0u64))
           (if (= i 5u64)
             acc
             (recur (+ i 1u64) (+ acc i))))
-    "#);
+    "#,
+    );
     assert_eq!(result, 10); // 0+1+2+3+4
 }
 
 #[test]
 fn u64_loop_with_mul() {
     // Factorial of 5 = 120
-    let result = eval_u64(r#"
+    let result = eval_u64(
+        r#"
         (let loop ((i 1u64) (acc 1u64))
           (if (= i 6u64)
             acc
             (recur (+ i 1u64) (* acc i))))
-    "#);
+    "#,
+    );
     assert_eq!(result, 120);
 }
 
@@ -230,12 +228,14 @@ fn u64_loop_with_mul() {
 fn u64_typed_binop_fusion_in_loop() {
     // Both operands come from slots → peephole should fuse to TypedBinOp(_, U64)
     // Test with n=3 for easy trace: fib sequence a=1,b=1 → after 3 iters: a=3
-    let result = eval_u64(r#"
+    let result = eval_u64(
+        r#"
         (let loop ((a 1u64) (b 1u64) (n 10u64))
           (if (= n 0u64)
             a
             (recur (+ a b) a (- n 1u64))))
-    "#);
+    "#,
+    );
     // 10 iterations of fib: 1,1→2,1→3,2→5,3→8,5→13,8→21,13→34,21→55,34→89,55→144
     assert_eq!(result, 144);
 }
@@ -260,7 +260,10 @@ fn u64_bip340_p_x_coordinate_limb3() {
     // Most significant limb of P's x-coordinate
     let big = 0xFFFFFFFFFFFFFFFFu64;
     // Bitwise ops on large values
-    assert_eq!(eval_u64("(u64-and 0xFFFFFFFFFFFFFFFFu64 0xFFFFFFFFFFFFFFFFu64)"), big);
+    assert_eq!(
+        eval_u64("(u64-and 0xFFFFFFFFFFFFFFFFu64 0xFFFFFFFFFFFFFFFFu64)"),
+        big
+    );
     assert_eq!(eval_u64("(u64-or 0u64 0xFFFFFFFFFFFFFFFFu64)"), big);
 }
 
@@ -274,7 +277,8 @@ fn u64_multilimb_add_with_carry() {
     //   sum_low = 0xFFFFFFFFFFFFFFFF + 1 = 0 (wrapping)
     //   carry = 1 (detected via u64-shr of XOR)
     //   sum_high = 0 + 0 + 1 = 1
-    let result = eval(r#"
+    let result = eval(
+        r#"
         (let* ((a_lo 0xFFFFFFFFFFFFFFFFu64)
                (a_hi 0u64)
                (b_lo 1u64)
@@ -283,7 +287,8 @@ fn u64_multilimb_add_with_carry() {
                (sum_hi (+ a_hi b_hi))
                (carry (u64-shr (u64-or (u64-xor sum_lo a_lo) (u64-xor sum_lo b_lo)) 63u64)))
           (list sum_lo (+ sum_hi carry)))
-    "#);
+    "#,
+    );
     match result {
         LispVal::List(items) => {
             assert_eq!(items.len(), 2);

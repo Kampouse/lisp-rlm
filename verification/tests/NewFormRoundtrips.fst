@@ -1,6 +1,6 @@
 module NewFormRoundtrips
 
-#set-options "--z3rlimit 500"
+#set-options "--z3rlimit 500 --fuel 32 --ifuel 8"
 
 open Lisp.Types
 open Lisp.Values

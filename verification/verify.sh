@@ -2,7 +2,7 @@
 # Verify all F* modules for lisp-rlm in dependency order
 set -e
 FSTAR=/Users/asil/.opam/fstar/bin/fstar.exe
-FSTAR_FLAGS="-c --include semantics/lisp --include semantics/lisp_ir --include tests"
+FSTAR_FLAGS="-c --include semantics/lisp --include semantics/lisp_ir --include tests --split_queries always"
 FSTAR_FLAGS_SPLIT="-c --include semantics/lisp --include semantics/lisp_ir --include tests --fuel 16 --ifuel 4 --split_queries always"
 
 PASS=0
@@ -13,7 +13,7 @@ verify() {
     local f=$1
     local name=$(basename $f .fst)
     printf "  [%02d] %-40s ... " "$((PASS+FAIL+1))" "$name"
-    OUTPUT=$($FSTAR $FSTAR_FLAGS $f 2>&1)
+    OUTPUT=$($FSTAR $FSTAR_FLAGS $f 2>&1) || true
     if echo "$OUTPUT" | grep -q "All verification conditions discharged successfully"; then
         echo "OK"
         PASS=$((PASS+1))
@@ -29,7 +29,7 @@ verify_split() {
     local f=$1
     local name=$(basename $f .fst)
     printf "  [%02d] %-40s ... " "$((PASS+FAIL+1))" "$name"
-    OUTPUT=$($FSTAR $FSTAR_FLAGS_SPLIT $f 2>&1)
+    OUTPUT=$($FSTAR $FSTAR_FLAGS_SPLIT $f 2>&1) || true
     if echo "$OUTPUT" | grep -q "All verification conditions discharged successfully"; then
         echo "OK"
         PASS=$((PASS+1))
@@ -93,4 +93,5 @@ echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ $FAIL -gt 0 ]; then
     echo "Failed modules:"
     echo -e "$ERRORS"
+    exit 1
 fi

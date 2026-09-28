@@ -407,9 +407,8 @@ fn gap_d2_promise_result_0arg_emitter_1arg_tc() {
     let src_0args = r#"(memory 1)
 (define (result) (near/promise_result))
 (export "result" result true)"#;
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        compile_typed(src_0args)
-    }));
+    let outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compile_typed(src_0args)));
     match outcome {
         // Panicked compile = the bug. Fail with a pointed message.
         Err(_) => panic!(

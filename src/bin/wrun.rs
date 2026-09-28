@@ -8,14 +8,25 @@ fn main() -> anyhow::Result<()> {
     let mut store = Store::new(&engine, ());
     let mut linker = Linker::new(&engine);
 
-    linker.func_wrap("env", "read_register", |_: Caller<'_, ()>, _: i64, _: i64| {})?;
+    linker.func_wrap(
+        "env",
+        "read_register",
+        |_: Caller<'_, ()>, _: i64, _: i64| {},
+    )?;
     linker.func_wrap("env", "register_len", |_: i64| -> i64 { 0 })?;
     linker.func_wrap("env", "input", |_: Caller<'_, ()>, _: i64| {})?;
-    linker.func_wrap("env", "value_return", |_: Caller<'_, ()>, _: i64, _: i64| {})?;
+    linker.func_wrap(
+        "env",
+        "value_return",
+        |_: Caller<'_, ()>, _: i64, _: i64| {},
+    )?;
     // any other env imports the module needs get zero-arity stubs by name
     for imp in module.imports() {
         if imp.module() == "env"
-            && !matches!(imp.name(), "read_register" | "register_len" | "input" | "value_return")
+            && !matches!(
+                imp.name(),
+                "read_register" | "register_len" | "input" | "value_return"
+            )
         {
             let name = imp.name().to_string();
             let f = Func::new(

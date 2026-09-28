@@ -22,10 +22,24 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
         "str-contains" => Ok(Some(LispVal::Bool(
             as_str(&args[0])?.contains(&as_str(&args[1])?),
         ))),
-        "to-string" => Ok(Some(LispVal::Str(args[0].to_string()))),
+        // to-string: value → string. Str is IDENTITY (raw content, no quotes)
+        // — matches wasm __int_to_str (TAG_STR passthrough, wasm_emit/helpers.rs
+        // "TAG_STR(5) -> pass through") and Clojure `str`. Found as a VM↔wasm
+        // divergence by the deep-compare fuzzer (2026-09-10): the old Display-
+        // based impl returned "\"abc\"" (quoted) while wasm returned "abc".
+        // Quoting is json-quote's job, not to-string's.
+        "to-string" => Ok(Some(match args.first() {
+            Some(LispVal::Str(s)) => LispVal::Str(s.clone()),
+            Some(other) => LispVal::Str(other.to_string()),
+            None => LispVal::Str(String::new()),
+        })),
         "str-length" => {
+            // Byte length (2026-09-14, t13 alignment): the wasm surface and
+            // the inline interp table both count BYTES ("héllo" → 6); the
+            // dispatch chars() count was a divergent outlier — same class as
+            // str-substring's byte-index decision (2026-08-27).
             let s = as_str(&args[0])?;
-            Ok(Some(LispVal::Num(s.chars().count() as i64)))
+            Ok(Some(LispVal::Num(s.len() as i64)))
         }
         "str-substring" => {
             // Byte-indexed (UTF-8 decision, 2026-08-27): indices are BYTE
@@ -52,8 +66,10 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let parts: Vec<LispVal> = if delim.is_empty() {
                 s.chars().map(|c| LispVal::Str(c.to_string())).collect()
             } else {
+                // Keep empty parts (2026-09-14, t13 alignment): wasm and
+                // the inline table keep them ("a,,b" → 3 parts; "" → 1);
+                // filtering here diverged from both.
                 s.split(&delim)
-                    .filter(|p| !p.is_empty())
                     .map(|p| LispVal::Str(p.to_string()))
                     .collect()
             };
@@ -90,7 +106,10 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
             let needle = as_str(args.get(1).ok_or("str-index-of: need needle")?)?;
             // BYTE offset (UTF-8 decision, 2026-08-27) — consistent with
             // byte-indexed str-substring and the wasm scan.
-            let idx = haystack.find(&needle).map(|byte_pos| byte_pos as i64).unwrap_or(-1);
+            let idx = haystack
+                .find(&needle)
+                .map(|byte_pos| byte_pos as i64)
+                .unwrap_or(-1);
             Ok(Some(LispVal::Num(idx)))
         }
         // ASCII-only case mapping (UTF-8 decision, 2026-08-27): the wasm
@@ -99,13 +118,25 @@ pub fn handle(name: &str, args: &[LispVal]) -> Result<Option<LispVal>, String> {
         "str-upcase" => Ok(Some(LispVal::Str(
             as_str(&args[0])?
                 .chars()
-                .map(|c| if c.is_ascii_lowercase() { c.to_ascii_uppercase() } else { c })
+                .map(|c| {
+                    if c.is_ascii_lowercase() {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c
+                    }
+                })
                 .collect(),
         ))),
         "str-downcase" => Ok(Some(LispVal::Str(
             as_str(&args[0])?
                 .chars()
-                .map(|c| if c.is_ascii_uppercase() { c.to_ascii_lowercase() } else { c })
+                .map(|c| {
+                    if c.is_ascii_uppercase() {
+                        c.to_ascii_lowercase()
+                    } else {
+                        c
+                    }
+                })
                 .collect(),
         ))),
         "str-starts-with" => {

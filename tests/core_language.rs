@@ -887,7 +887,12 @@ fn test_to_string_nil() {
 }
 #[test]
 fn test_to_string_string() {
-    assert_eq!(eval_str("(to-string \"hello\")"), "\"\"hello\"\"");
+    // 2026-09-10: to-string of a string is IDENTITY (raw content, no quotes)
+    // — aligned with wasm __int_to_str (TAG_STR passthrough) per the
+    // wasm-reference anchor. Old behavior quoted: (to-string "hello") →
+    // "\"hello\"" (VM↔wasm divergence found by the deep-compare fuzzer).
+    // Quoting is json-quote's job.
+    assert_eq!(eval_str("(to-string \"hello\")"), "\"hello\"");
 }
 #[test]
 fn test_try_catch_division_by_zero() {
