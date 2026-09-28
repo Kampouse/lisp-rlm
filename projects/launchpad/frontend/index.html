@@ -306,7 +306,13 @@ async function sendTx(receiverId, actions){
     }
     toast("tx sent ✓","ok"); return res;
   }
-  return devSend(receiverId, actions);
+  try { return await devSend(receiverId, actions); }
+  catch(e){
+    const w = connectorWallet;
+    const caps = w ? ["txn","tx1"].map(k=>k+":"+(typeof (k==="txn"?w.signAndSendTransactions:w.signAndSendTransaction)==="function"?"y":"n")).join(" ") : "";
+    toast("tx failed ["+signer.accountId+"] "+(e?.message||e).toString().slice(0,200)+(caps?" · "+caps:""),"bad");
+    throw e;
+  }
 }
 window.sendTx = sendTx;
 
@@ -628,7 +634,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b13";
+const BUILD = "b14";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
