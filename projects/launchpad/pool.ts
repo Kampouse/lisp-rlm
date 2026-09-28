@@ -667,6 +667,7 @@ export function buy(): string {
   const attached = near.attachedDepositU128();
   const gkPk = gasCallerPk();
   const tid = traderId(gkPk);
+  const toPadFlag = (near.jsonGetStr("to_pad") ?? "") != "";
   let nearIn = attached;
   if (u128IsZero(attached)) {
     const padKey = nbKey(tid);
@@ -701,7 +702,12 @@ export function buy(): string {
     const feeNow = near.storageGet(feeKey) ?? "0";
     near.storageSet(feeKey, u128Add(feeNow, fee));
   }
-  if (true) {
+  if (toPadFlag) {
+    // v3.5 fast lane: settle tokens to the pad inventory (popup-free
+    // trading — buy{to_pad} + sell{} both run on restricted keys)
+    const ik = invKey(token, tid);
+    near.storageSet(ik, u128Add(near.storageGet(ik) ?? "0", net));
+  } else {
     // v3.3: EVERY buy pays out REAL tokens — internal ledger buys are gone
     // (JP: users must SEE their tokens). Receiver: the wallet REGISTERED
     // for pool-hosted gas keys (own:<hex>), else the calling account.

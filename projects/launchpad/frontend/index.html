@@ -51,8 +51,10 @@
   <div id="acct-bar" style="display:none;position:sticky;top:8px;z-index:50;margin:14px 0;padding:10px 14px;border:1px solid #2e7d32;background:#0d1f10;border-radius:10px;backdrop-filter:blur(8px)">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center">
       <b id="ab-acct" style="font-size:14px"></b>
+      <button id="fast-btn" class="ghost" style="font-size:12px;padding:4px 10px" onclick="fastGet()&&confirm('disable fast mode?')?fastOff():fastEnable()">⚡ enable fast mode</button>
       <span id="ab-wallet" class="dim" style="font-size:11px"></span>
     </div>
+    <div id="fast-hint" class="dim" style="font-size:11px;margin-top:2px">one popup to authorize a restricted trading key, then instant pad trading</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px;margin-top:6px">
       <div><div class="dim" style="font-size:11px">NEAR · wallet</div><b id="ab-near" style="font-size:15px">—</b></div>
       <div><div class="dim" style="font-size:11px">NEAR · pad (pool)</div><b id="ab-pad" style="font-size:15px">—</b></div>
@@ -86,7 +88,7 @@
       <div style="margin-top:10px">
         <div class="row"><span class="dim">wallet tokens</span><b id="m-tok">—</b></div>
         <div class="row"><span class="dim">NEAR pad</span><b id="m-pad">—</b></div>
-        <div class="row"><span class="dim">parked (MM float)</span><b id="m-inv">—</b></div>
+        <div class="row"><span class="dim">parked tokens</span><b id="m-inv">—</b> <button class="ghost" style="font-size:11px;padding:2px 8px" onclick="unparkAll()">→ wallet</button></div>
       </div>
       <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
         <input id="pad-top" placeholder="NEAR" style="width:80px" value="0.05">
@@ -216,7 +218,10 @@ async function viewRaw(accountId, methodName, args) {
   return Buffer_from(j.result.result);   // RAW text — never JSON.parse big numbers
 }
 async function view(accountId, methodName, args) {
-  return JSON.parse(await viewRaw(accountId, methodName, args));
+  let j = JSON.parse(await viewRaw(accountId, methodName, args));
+  if (typeof j === "string") j = JSON.parse(j);           // JSON-string returns are double-encoded
+  if (j && typeof j.result === "string") j = JSON.parse(j.result);  // and wrapped in {result:"…"}
+  return j;
 }
 async function nearBal(accountId){
   const r = await fetch(CFG.rpc,{method:"POST",body:JSON.stringify({jsonrpc:"2.0",id:"ui",
@@ -281,6 +286,13 @@ ensureConnector().catch(e=>{
   document.querySelector("details").open = true;
 });
 async function sendTx(receiverId, actions){
+  const f = fastGet();
+  if (f && signer && signer.accountId === f.accountId){
+    // ⚡ restricted key signs raw — no wallet popup (0-deposit calls only)
+    const save = signer; signer = {kind:"dev", secret:f.secret, accountId:f.accountId};
+    try { return await devSend(receiverId, actions); }
+    finally { signer = save; }
+  }
   if (!signer){ toast("connect a wallet first (top right)","bad"); throw new Error("no signer"); }
   if (signer.kind === "connect"){
     const w = connectorWallet ?? await connector.wallet();
@@ -326,6 +338,29 @@ async function devSend(receiverId, actions){
   return out;
 }
 
+/* ── ⚡ fast mode: one-time restricted trading key, popup-free pad trading ── */
+function fastGet(){ try{ return JSON.parse(localStorage.getItem("gk-fast")||"null"); }catch{ return null; } }
+window.fastEnable = async function(){
+  if (!signer || signer.kind!=="connect") return toast("connect your wallet first","bad");
+  const na = await loadNaj();
+  const kp = na.KeyPair.fromRandom("ed25519");
+  const acct = signer.accountId;
+  toast("confirm the trading key in your wallet — one time only","warn");
+  await sendTx(acct, [{type:"AddKey",params:{publicKey:kp.getPublicKey().toString(),
+    accessKey:{nonce:0, permission:{FunctionCall:{receiverId:CFG.pool, methodNames:["buy","sell","withdraw_tokens"], allowance:"1000000000000000000000000"}}}}}]);
+  localStorage.setItem("gk-fast", JSON.stringify({secret:kp.toString(), accountId:acct}));
+  toast("⚡ fast mode ON — trades sign instantly from your pad","ok");
+  loadAccount(true); paintFast();
+};
+window.fastOff = function(){ localStorage.removeItem("gk-fast"); toast("fast mode off","warn"); paintFast(); };
+function paintFast(){
+  const f = fastGet();
+  const btn = document.getElementById("fast-btn"); if(!btn) return;
+  btn.textContent = f ? "⚡ fast ON — disable" : "⚡ enable fast mode";
+  document.getElementById("fast-hint").textContent = f
+    ? "buys settle to pad · sells pull from pad · zero wallet popups"
+    : "one popup to authorize a restricted trading key, then instant pad trading";
+}
 window.setDevSigner = function(){
   const k = document.getElementById("dev-key").value.trim();
   const acct = document.getElementById("dev-acct").value.trim();
@@ -419,7 +454,10 @@ const YOCTO="1";
 window.doBuy = async function(){
   const t = token(); const amt = parseNear(document.getElementById("buy-in").value).toString();
   const min = document.getElementById("buy-min").value.trim();
-  await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"buy",args:{token:t, ...(min&&Number(min)>0?{min_tokens_out:parseTok(min,DEC).toString()}:{})},gas:"150000000000000",deposit:amt}}]);
+  const fast = fastGet() && signer && signer.accountId===fastGet().accountId;
+  const args = {token:t, ...(min&&Number(min)>0?{min_tokens_out:parseTok(min,DEC).toString()}:{})};
+  if (fast){ args.near_in = amt; args.to_pad = "1"; }
+  await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"buy",args,gas:"150000000000000",deposit:fast?"0":amt}}]);
   await refreshAfter();
 };
 window.doBuyKey = async function(){
@@ -430,8 +468,18 @@ window.doBuyKey = async function(){
 window.doSell = async function(){
   const t = token(); const amt = parseTok(document.getElementById("sell-in").value,DEC).toString();
   const min = document.getElementById("sell-min").value.trim();
-  const msg = "sell" + (min&&Number(min)>0 ? ":"+parseNear(min).toString() : "");
-  await sendTx(t, [{type:"FunctionCall",params:{methodName:"ft_transfer_call",args:{receiver_id:CFG.pool,amount:amt,msg},gas:"150000000000000",deposit:YOCTO}}]);
+  const fast = fastGet() && signer && signer.accountId===fastGet().accountId;
+  if (fast){
+    await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:t,tokens_in:amt,...(min&&Number(min)>0?{min_near_out:parseNear(min).toString()}:{})},gas:"150000000000000",deposit:"0"}}]);
+  } else {
+    const msg = "sell" + (min&&Number(min)>0 ? ":"+parseNear(min).toString() : "");
+    await sendTx(t, [{type:"FunctionCall",params:{methodName:"ft_transfer_call",args:{receiver_id:CFG.pool,amount:amt,msg},gas:"150000000000000",deposit:YOCTO}}]);
+  }
+  await refreshAfter();
+};
+window.unparkAll = async function(){
+  const t = token();
+  await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"withdraw_tokens",args:{token:t},gas:"100000000000000",deposit:"0"}}]);
   await refreshAfter();
 };
 window.doSellPark = async function(){
@@ -580,7 +628,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b10";
+const BUILD = "b11";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
@@ -592,6 +640,7 @@ window.uiConnect = async function(){
   try { await origConnect(); } finally { window.__connState = "done"; }
 };
 
+paintFast();
 loadAll();
 setInterval(loadFeed, 30000);
 </script>
