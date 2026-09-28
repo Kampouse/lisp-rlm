@@ -203,12 +203,12 @@ window.view = view;
 
 /* ── fmt ────────────────────────────────────────────────── */
 const D18 = 10n**18n;
-function fmtNear(yoctoStr){ const y=BigInt(yoctoStr||"0"); const n=y/D18n, fr=(y%D18n).toString().padStart(18,"0").slice(0,4);
+function fmtNear(yoctoStr){ const y=BigInt(yoctoStr||"0"); const n=y/D18, fr=(y%D18).toString().padStart(18,"0").slice(0,4);
   return `${n}.${fr} NEAR`; }
 function fmtTok(rawStr,dec){ const d=10n**BigInt(dec||18); const v=BigInt(String(rawStr||"0")); const n=v/d, fr=(v%d).toString().padStart((dec||18),"0").slice(0,2);
   return `${n}.${fr}`; }
 function parseNear(v){ const [a,b=""]=String(v).trim().split("."); const fr=(b+"0".repeat(18)).slice(0,18);
-  return BigInt(a||"0")*D18n + BigInt(fr||"0"); }
+  return BigInt(a||"0")*D18 + BigInt(fr||"0"); }
 function parseTok(v,dec){ const [a,b=""]=String(v).trim().split("."); const d=Number(dec||18);
   const fr=(b+"0".repeat(d)).slice(0,d); return BigInt(a||"0")*10n**BigInt(d) + BigInt(fr||"0"); }
 window.fmtNear=fmtNear; window.fmtTok=fmtTok; window.parseNear=parseNear; window.parseTok=parseTok;
@@ -529,7 +529,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b5";
+const BUILD = "b6";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
