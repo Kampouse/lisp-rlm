@@ -225,6 +225,7 @@ let DEC = 18, SYM = "TKN";
 /* ── signer: near-connect wallets or dev key ────────────── */
 let signer = null, connector = null, connectorWallet = null;
 async function ensureConnector(){
+  if (connector === false) throw new Error("connector unavailable");
   if (connector) return connector;
   const mod = await import("https://cdn.jsdelivr.net/gh/azbang/near-connect@main/cdn/hot-connect.es.js");
   connector = new mod.NearConnector();
@@ -243,9 +244,16 @@ window.uiConnect = async function(){
     const c = await ensureConnector();
     await c.connect();   // wallet picker (HOT, Meteor, Intear, MyNear, Nightly, OKX, …)
   }catch(e){
-    toast("wallet connect cancelled/unavailable — use dev signer below if testing","warn");
+    toast("wallet connect failed: "+(e?.message||e)+" — dev signer opened below","bad");
+    document.querySelector("details").open = true;
   }
 };
+// preload at startup so the failure (if any) is known before the user clicks
+ensureConnector().catch(e=>{
+  connector = false;
+  toast("wallet connector unavailable ("+(e?.message||"import failed")+") — use dev signer","bad");
+  document.querySelector("details").open = true;
+});
 async function sendTx(receiverId, actions){
   if (!signer){ toast("connect a wallet first (top right)","bad"); throw new Error("no signer"); }
   if (signer.kind === "connect"){
@@ -519,6 +527,19 @@ async function loadFeed(){
   }catch(e){ document.getElementById("feed").innerHTML='<div class="dim">feed unavailable</div>'; }
 }
 window.loadFeed = loadFeed;
+
+/* ── diagnostics: every failure visible, build always identifiable ── */
+const BUILD = "b4";
+document.getElementById("head-sub").textContent += " · " + BUILD;
+window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
+window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
+window.__connState = "idle";
+const origConnect = window.uiConnect;
+window.uiConnect = async function(){
+  window.__connState = "loading";
+  toast("loading wallet connector…");
+  try { await origConnect(); } finally { window.__connState = "done"; }
+};
 
 loadAll();
 setInterval(loadFeed, 30000);
