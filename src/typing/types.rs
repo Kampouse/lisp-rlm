@@ -49,6 +49,11 @@ fn is_builtin_wildcard(name: &str) -> bool {
                 | "storage-set-if-equals"
                 | "storage-list-keys"
                 | "storage-clear-all"
+                // storage-iter-* — key enumeration over host fns 36/38
+                | "storage-iter-prefix"
+                | "storage_iter_prefix"
+                | "storage-iter-next"
+                | "storage_iter_next"
                 // P1 context functions (OutLayer env)
                 | "env/signer"
                 | "env/predecessor"
@@ -78,6 +83,8 @@ const KNOWN_NEAR_FUNCS: &[&str] = &[
     "iter_prefix",
     "iter_range",
     "iter_next",
+    "storage_iter_prefix",
+    "storage_iter_next",
     "block_index", "block_height", "block_timestamp",
     "ed25519_verify", "p256_verify",
     "sha256", "keccak256", "keccak512",
@@ -1281,6 +1288,16 @@ impl TcEnv {
         env.insert_mono(
             "near/iter_next".into(),
             TcType::Arrow(vec![int_ty.clone()], Box::new(any_ty.clone())),
+        );
+        // near/storage_iter_prefix : str → num (iterator id, host fn 36)
+        env.insert_mono(
+            "near/storage_iter_prefix".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(num_ty.clone())),
+        );
+        // near/storage_iter_next : num → str | nil (next live key, nil when exhausted)
+        env.insert_mono(
+            "near/storage_iter_next".into(),
+            TcType::Arrow(vec![num_ty.clone()], Box::new(any_ty.clone())),
         );
         // near/attached_deposit_high : () → int (high 64 bits of u128 deposit)
         env.insert_mono(

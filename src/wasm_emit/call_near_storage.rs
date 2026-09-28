@@ -1111,6 +1111,83 @@ match op {
                 v.push(Instruction::End);
                 Ok(v)
             }
+            // ═══════════════════════════════════════════════════════════════
+            //  STORAGE ITERATION — host fns 36 / 38
+            //  storage_iter_prefix(len, ptr) → u64 iterator id;
+            //  storage_iter_next(id, key_reg=1, val_reg=2) → 1|0.
+            //  Interp twin: bytecode near/storage_iter_* — sorted snapshot,
+            //  skip-deleted. Read-only for contract storage, so the
+            //  storage-read memo cache stays valid (no flush needed).
+            // ═══════════════════════════════════════════════════════════════
+            "near/storage_iter_prefix" | "storage-iter-prefix" | "storage_iter_prefix" => {
+                if a.len() != 1 {
+                    return Err("near/storage_iter_prefix: need exactly 1 arg (prefix)".into());
+                }
+                self.need_host(36); // storage_iter_prefix
+                let p = self.expr(&a[0])?;
+                let p_l = self.local_idx("__sip_p");
+                let mut v = Vec::new();
+                v.extend(p);
+                v.push(Instruction::LocalSet(p_l));
+                // Runtime tag guard: prefix must be Str (same rule as the
+                // storage_set/get/has/remove arms — the erc20 hazard class).
+                Self::emit_assert_tag_str(&mut v, p_l);
+                // storage_iter_prefix(prefix_len, prefix_ptr) → iterator id
+                v.push(Instruction::LocalGet(p_l));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalGet(p_l));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Self::host_call(36));
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            "near/storage_iter_next" | "storage-iter-next" | "storage_iter_next" => {
+                if a.len() != 1 {
+                    return Err("near/storage_iter_next: need exactly 1 arg (iterator id)".into());
+                }
+                self.need_host(38); // storage_iter_next
+                self.need_host(1);  // register_len
+                self.need_host(0);  // read_register
+                let id = self.expr(&a[0])?;
+                let id_l = self.local_idx("__sin_id");
+                let len_l = self.local_idx("__sin_len");
+                let buf_l = self.local_idx("__sin_buf");
+                let mut v = Vec::new();
+                v.extend(id);
+                v.push(Instruction::LocalSet(id_l));
+                // storage_iter_next(id, key_register=1, value_register=2) → 1|0
+                v.push(Instruction::LocalGet(id_l));
+                v.extend(self.emit_untag());
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64Const(2));
+                v.push(Self::host_call(38));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(TAG_NIL)); // exhausted
+                v.push(Instruction::Else);
+                // len = register_len(1)
+                v.push(Instruction::I64Const(1));
+                v.push(Self::host_call(1));
+                v.push(Instruction::LocalSet(len_l));
+                // bump-allocate len bytes (8-aligned) from RUNTIME_HEAP_PTR —
+                // the near/storage_read miss-path pattern (addr 56)
+                v.extend(self.emit_rtheap_alloc(buf_l, len_l));
+                // read_register(1, buf) — the key bytes
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::LocalGet(buf_l));
+                v.push(Self::host_call(0));
+                // packed = buf | len<<32, tagged Str
+                v.push(Instruction::LocalGet(len_l));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(buf_l));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                v.push(Instruction::End);
+                Ok(v)
+            }
             _ => Err("__not_handled__".into()),
         }
     }

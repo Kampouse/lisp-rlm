@@ -4937,6 +4937,8 @@ pub fn eval_near_builtin_match(name: &str) -> bool {
         | "storage-read" | "storage_read"
         | "storage-remove" | "storage_remove"
         | "storage-has-key" | "storage_has_key"
+        | "storage-iter-prefix" | "storage_iter_prefix"
+        | "storage-iter-next" | "storage_iter_next"
         | "block-height" | "block_height"
         | "block-timestamp" | "block_timestamp"
         | "signer-account-id" | "signer_account_id"
@@ -4962,6 +4964,7 @@ pub fn eval_near_builtin_match(name: &str) -> bool {
         | "near/storage_write" | "near/storage_read" | "near/storage_remove"
         | "near/storage_has_key" | "near/storage_set" | "near/storage_get"
         | "near/storage_has"
+        | "near/storage_iter_prefix" | "near/storage_iter_next"
         // ── near/* context / account ──
         | "near/current_account_id" | "near/predecessor_account_id"
         | "near/signer_account_id" | "near/signer_account_pk" | "near/signer_public_key"
@@ -5739,6 +5742,46 @@ fn eval_near_builtin(
                 } else {
                     Some(Ok(LispVal::Nil))
                 }
+            } else {
+                Some(Ok(LispVal::Nil))
+            }
+        }
+
+        // ── storage-iter-* (host fns 36/38): key enumeration over the
+        // string-safe storage map. Unlike near/iter_*, the snapshot is
+        // SORTED (deterministic across runs — HashMap order is unstable)
+        // and iter-next SKIPS keys deleted since the snapshot, so the
+        // cleaner loop (next → remove → next …) drains storage exactly.
+        "near/storage_iter_prefix"
+        | "storage-iter-prefix"
+        | "storage_iter_prefix" => {
+            let prefix = key_of(args, 0);
+            let mut keys: Vec<String> = state.near_storage.keys()
+                .filter(|k| k.starts_with(&prefix))
+                .cloned().collect();
+            keys.sort();
+            let id = state.near_iter_next_id;
+            state.near_iter_next_id += 1;
+            state.near_iter_prefixes.insert(id, keys);
+            state.near_iter_cursors.insert(id, 0);
+            Some(Ok(LispVal::Num(id)))
+        }
+        "near/storage_iter_next"
+        | "storage-iter-next"
+        | "storage_iter_next" => {
+            let id = extract_num(args, 0).unwrap_or(-1);
+            if let Some(keys) = state.near_iter_prefixes.get(&id) {
+                let cursor = state.near_iter_cursors.entry(id).or_insert(0);
+                // Advance past deleted keys — removal during iteration must
+                // work (the snapshot stays stable, liveness is re-checked).
+                while *cursor < keys.len() as i64 {
+                    let key = keys[*cursor as usize].clone();
+                    *cursor += 1;
+                    if state.near_storage.contains_key(&key) {
+                        return Some(Ok(LispVal::Str(key)));
+                    }
+                }
+                Some(Ok(LispVal::Nil))
             } else {
                 Some(Ok(LispVal::Nil))
             }
