@@ -71,7 +71,7 @@ function tbKey(t: string, trader: string): string { return "tb:" + t + ":" + tra
 // The pk bytes are opaque and round-trip unchanged into
 // promise_batch_action_transfer_to_gas_key.
       // est. 1 mNEAR gas/trade (measured 0.37 → 2.7x margin)
-const GK_REFUEL_AT = "900000000000000"; // 9e14 gas units = 0.9 NEAR of real burn   // gauge: est. 0.9 NEAR burnt since last refuel
+const GK_REFUEL_AT = "500000000000000000000000"; // est-balance floor (yocto): refuel when est key balance < 0.5 NEAR
 const GK_REFUEL_AMT = "2000000000000000000000"; // refuel shot: 2 NEAR ≈ 5,400 trades
 
 // gas-key identity is HEX(signer pk) — the raw 33-byte borsh pk can't ride
@@ -89,6 +89,8 @@ function traderId(pk: string): string {
 }
 
 function gkGaugeKey(pk: string): string { return "gk:" + pk; }
+function gfKey(pk: string): string { return "gf:" + pk; } // total ever funded into the key (yocto)
+function gcKey(pk: string): string { return "gc:" + pk; } // cumulative real burn (gas units)
 function gkCfg(k: string, def: string): string { return near.storageGet("gkcfg:" + k) ?? def; }
 
 // owner-only tuning of the refuel gauge (defaults in autoRefuel)
@@ -114,17 +116,26 @@ function autoRefuel(tid: string, pk: string): void {
   // gauge and refuel_at are in GAS UNITS (1 gas = 1e9 yocto); the tick is
   // this tx's REAL burn via used_gas() — tracks true depletion, aborted
   // trades (reverted writes) stay uncounted, margin lives in refuel_at
-  const refuelAt = gkCfg("refuel_at", GK_REFUEL_AT);
+  const refuelAt = gkCfg("refuel_at", GK_REFUEL_AT); // est-balance floor (yocto)
   const refuelAmt = gkCfg("refuel_amt", GK_REFUEL_AMT);
-  const gk = gkGaugeKey(pk);
-  const spent = u128Add(near.storageGet(gk) ?? "0", u128FromNum(near.usedGas()));
-  near.storageSet(gk, spent);
-  if (u128Lt(spent, refuelAt)) { return; }
+  // cumulative real burn, never reset — est key balance is derived:
+  //   est = funded_yocto − NET_DRAIN_FRAC × burn_gas × 1e9
+  // live-calibrated 2026-09-28: net drain ≈ 19% of used_gas (refunds
+  // return ~81%; txs are uniform buy/sell shapes so the ratio is stable).
+  // Overestimating drain → early refuels (safe); underestimating is only
+  // possible if refunds shrink, which the floor margin absorbs.
+  const gk = gcKey(pk);
+  const burn = u128Add(near.storageGet(gk) ?? "0", u128FromNum(near.usedGas()));
+  near.storageSet(gk, burn);
+  const drain = u128Mul(burn, "190000000"); // gas→yocto × 0.19 net-drain factor
+  const funded = near.storageGet(gfKey(pk)) ?? "0";
+  const low = u128Lt(funded, drain) ? 1 : (u128Lt(u128Sub(funded, drain), refuelAt) ? 1 : 0);
+  if (low == 0) { return; }
   const nk = nbKey(tid);
   const pad = near.storageGet(nk) ?? "0";
   if (u128Lt(pad, refuelAmt)) { return; }
   near.storageSet(nk, u128Sub(pad, refuelAmt));
-  near.storageSet(gk, "0");
+  near.storageSet(gfKey(pk), u128Add(funded, refuelAmt)); // refuel raises est
   const idx = near.promiseBatchCreate(near.currentAccountId());
   // host fn wants the RAW 33-byte borsh key at public_key_ptr — pk is our
   // hex identity form, decode back to bytes at the boundary
@@ -446,6 +457,34 @@ export function deposit(): number {
   near.storageSet(k, u128Add(cur, attached));
   near.log(`deposit:${near.predecessorAccountId()}:${attached}${pkArg != "" ? ":pk:" + pkArg : ""}`);
   return 0;
+}
+
+// fund a gas key DIRECTLY through the pool: attaches NEAR, promises it to
+// the key, and records it in the funded ledger the est-balance trigger
+// uses. Route initial funding through here (not client-side key top-ups)
+// so the contract knows the true baseline — off-chain funding it can't see
+// would silently disable refuels.
+export function fund_gas(): number {
+  const attached = near.attachedDepositU128();
+  if (u128IsZero(attached)) { near.abort("ERR_ZERO"); return 0; }
+  const pk = near.jsonGetStr("pk") ?? "";
+  if (pk == "") { near.abort("ERR_PK"); return 0; }
+  const k = gfKey(pk);
+  near.storageSet(k, u128Add(near.storageGet(k) ?? "0", attached));
+  const idx = near.promiseBatchCreate(near.currentAccountId());
+  near.promiseBatchActionTransferToGasKey(idx, near.hexDecode(pk), attached);
+  near.log(`fund_gas:${pk}:${attached}`);
+  return 0;
+}
+
+// view: gas-key status for dashboards/bots — {funded, burn_gas, est}
+export function get_gas_status(): string {
+  const pk = near.jsonGetStr("pk") ?? "";
+  const funded = near.storageGet(gfKey(pk)) ?? "0";
+  const burn = near.storageGet(gcKey(pk)) ?? "0";
+  const drain = u128Mul(burn, "190000000");
+  const est = u128Lt(funded, drain) ? "0" : u128Sub(funded, drain);
+  return "{\"funded\":\"" + funded + "\",\"burn_gas\":\"" + burn + "\",\"est\":\"" + est + "\"}";
 }
 
 // drain the pad back to the trader. The 1-yoctoNEAR gate is the second
