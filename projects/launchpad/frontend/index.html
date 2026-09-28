@@ -158,7 +158,7 @@
   </div>
 
   <p class="dim" style="font-size:12px;margin-top:18px">
-    Signers: Bitte / Meteor wallet if installed, else dev key (testnet only). Contract:
+    Signers: any NEAR wallet via <a href="https://github.com/azbang/near-connect">near-connect</a> (HOT · Meteor · Intear · MyNearWallet · Nightly · OKX · …), or dev key (testnet only). Contract:
     <span class="kv" id="head-pool"></span>
   </p>
 </div>
@@ -212,18 +212,29 @@ window.toast=toast;
 window.token = () => document.getElementById("in-token").value.trim();
 let DEC = 18, SYM = "TKN";
 
-/* ── signer: wallet or dev key ──────────────────────────── */
-let signer = null;
-function detectWallet(){
-  if (window.bitte?.wallet) return {kind:"bitte", w:window.bitte.wallet, accountId: window.bitte.wallet.getAccountId?.() || prompt("Bitte connected account id:")};
-  if (window.meteorWallet) return {kind:"meteor", w:window.meteorWallet, accountId: window.meteorWallet.getAccount?.()?.accountId || prompt("Meteor connected account id:")};
-  return null;
+/* ── signer: near-connect wallets or dev key ────────────── */
+let signer = null, connector = null, connectorWallet = null;
+async function ensureConnector(){
+  if (connector) return connector;
+  const mod = await import("https://cdn.jsdelivr.net/gh/azbang/near-connect@main/cdn/hot-connect.es.js");
+  connector = new mod.NearConnector();
+  connector.on("wallet:signIn", async (t)=>{
+    connectorWallet = await connector.wallet();
+    signer = { kind:"connect", accountId: t.accounts[0].accountId };
+    document.getElementById("in-acct").value = t.accounts[0].accountId;
+    toast(`wallet connected · ${t.accounts[0].accountId}`,"ok");
+    loadAccount();
+  });
+  connector.on("wallet:signOut", ()=>{ signer=null; connectorWallet=null; toast("wallet disconnected","warn"); });
+  return connector;
 }
 window.uiConnect = async function(){
-  const w = detectWallet();
-  if (w){ signer=w; document.getElementById("in-acct").value=w.accountId;
-    toast(`wallet connected: ${w.kind} · ${w.accountId}`,"ok"); loadAccount(); return; }
-  const k = prompt("No wallet detected. Paste a DEV key (ed25519:…) — testnet only:");
+  try{
+    const c = await ensureConnector();
+    await c.connect();   // wallet picker (HOT, Meteor, Intear, MyNear, Nightly, OKX, …)
+    return;
+  }catch(e){ /* fall through to dev mode */ }
+  const k = prompt("Wallet connect failed/unavailable. Paste a DEV key (ed25519:…) — testnet only:");
   if(!k) return;
   const acct = prompt("Account id for this key:");
   signer = {kind:"dev", secret:k, accountId:acct};
@@ -231,10 +242,13 @@ window.uiConnect = async function(){
   toast("dev signer set (testnet)","warn"); loadAccount();
 };
 async function sendTx(receiverId, actions){
-  if (!signer){ toast("connect a signer first (top right)","bad"); throw new Error("no signer"); }
-  if (signer.kind === "dev") return devSend(receiverId, actions);
-  const res = await signer.w.signAndSendTransaction({receiverId, actions});
-  toast("tx sent ✓","ok"); return res;
+  if (!signer){ toast("connect a wallet first (top right)","bad"); throw new Error("no signer"); }
+  if (signer.kind === "connect"){
+    const w = connectorWallet ?? await connector.wallet();
+    const res = await w.signAndSendTransaction({ receiverId, actions });  // selector-format actions accepted natively
+    toast("tx sent ✓","ok"); return res;
+  }
+  return devSend(receiverId, actions);
 }
 window.sendTx = sendTx;
 
