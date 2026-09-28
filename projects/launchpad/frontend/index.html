@@ -88,6 +88,12 @@
         <div class="row"><span class="dim">NEAR pad</span><b id="m-pad">—</b></div>
         <div class="row"><span class="dim">parked (MM float)</span><b id="m-inv">—</b></div>
       </div>
+      <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <input id="pad-top" placeholder="NEAR" style="width:80px" value="0.05">
+        <button class="ghost" onclick="padTopUp()">top up pad</button>
+        <button class="ghost" onclick="padWithdraw()">withdraw pad</button>
+      </div>
+      <p class="dim" style="font-size:11px;margin-top:6px">pad = your NEAR float inside the pool — trades draw from it (cheaper gas), withdraw anytime</p>
     </div>
 
     <!-- TRADE -->
@@ -109,7 +115,7 @@
         </div>
         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
           <button onclick="doBuy()">Buy with wallet</button>
-          <button class="ghost" onclick="doBuyKey()">Buy from pad (no popup)</button>
+          <button class="ghost" onclick="doBuyKey()">Buy from pad</button>
           <span class="dim" style="align-self:center;font-size:12px">pad buy draws from your deposited NEAR — FA or gas-key identity</span>
         </div>
       </div>
@@ -140,12 +146,12 @@
           <label>key owner wallet (receives payouts)</label>
           <input id="key-owner" spellcheck="false" placeholder="you.testnet">
           <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-            <button class="sk" onclick="keyAdd()">1· authorize key</button>
             <input id="fund-amt" placeholder="NEAR" style="width:80px" value="0.15">
-            <button class="sk" onclick="keyFundGas()">2· fund gas</button>
+            <button class="sk" onclick="keyFundGas()">fund gas</button>
             <input id="pad-amt" placeholder="NEAR" style="width:80px" value="0.05">
-            <button class="sk" onclick="keyDeposit()">3· pad deposit</button>
+            <button class="sk" onclick="keyDeposit()">pad deposit</button>
           </div>
+          <p class="dim" style="font-size:11px;margin-top:6px">gas keys are registered on the pool by the operator (bot keys) — paste an already-registered pk. Wallet users: just use the pad above.</p>
           <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
             <input id="park-amt" placeholder="tokens to park" style="width:150px">
             <button class="sk" onclick="keyPark()">park</button>
@@ -472,12 +478,16 @@ function b58OfHex(hex){
   while(n>0n){ out=ALPHA[Number(n%58n)]+out; n/=58n; }
   return out;
 }
-window.keyAdd = async function(){
-  const pk = pkVal(); if(!pk) return;
-  const pub = "ed25519:"+b58OfHex(pk.slice(2));
-  await sendTx(signer.accountId, [{type:"AddKey",params:{publicKey:pub,
-    accessKey:{nonce:0, permission:{FunctionCall:{receiverId:CFG.pool, methodNames:["buy","sell","withdraw_tokens"], allowance:"1000000000000000000000000"}}}}}]);
-  toast("gas key authorized ✓","ok");
+window.padTopUp = async function(){
+  const amt = document.getElementById("pad-top").value; if(!amt) return;
+  await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"deposit",args:{},
+    gas:"30000000000000",deposit:parseNear(amt).toString()}}]);
+  await refreshAfter();
+};
+window.padWithdraw = async function(){
+  await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"withdraw",args:{},
+    gas:"30000000000000",deposit:YOCTO}}]);
+  await refreshAfter();
 };
 window.keyFundGas = async function(){
   const pk=pkVal(); if(!pk) return;
@@ -570,7 +580,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b9";
+const BUILD = "b10";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
