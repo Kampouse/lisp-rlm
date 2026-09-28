@@ -49,3 +49,47 @@ export function checkCmpNeg(): string {
   if (!isA) { return "NOT-A"; }
   return "A";
 }
+
+export function notEmpty(): string {
+  // !"" must be TRUE (JS falsy set includes the empty string)
+  return !"" ? "TRUE" : "FALSE";
+}
+
+export function notLetterA(): string {
+  // !"a" must be FALSE
+  return !"a" ? "TRUE" : "FALSE";
+}
+
+export function notZero(): string {
+  // !0 must be TRUE (Num 0 falsy)
+  return !0 ? "TRUE" : "FALSE";
+}
+
+export function notFive(): string {
+  // !5 must be FALSE — guard: naive strLength-based lowering would be
+  // true here (5 >> 32 == 0 with no type check)
+  return !5 ? "TRUE" : "FALSE";
+}
+
+export function notNull(): string {
+  // !null must be TRUE (Nil falsy)
+  return !null ? "TRUE" : "FALSE";
+}
+
+export function notTrue(): string {
+  // !true must be FALSE
+  return !true ? "TRUE" : "FALSE";
+}
+
+export function notIdentEmpty(): string {
+  // the real-world shape: identifier holding "" negated
+  const s = near.jsonGetStr("s") ?? "";
+  return !s ? "TRUE" : "FALSE";
+}
+
+export function notDoubleNeg(): string {
+  // nested !! on the same name — let-shadowing must keep this at JS truth
+  const s = near.jsonGetStr("s") ?? "";
+  return !!s ? "NONEMPTY" : "EMPTY";
+}
+

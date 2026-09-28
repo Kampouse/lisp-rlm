@@ -1,7 +1,7 @@
 {
   "name": "repro-charset",
   "state": "/tmp/repro_charset_state.bin",
-  "manifest": "repro.test.near=/tmp/charsetrepro/charsetrepro.wasm",
+  "manifest": "repro.test.near=/Users/asil/dev/lisp-rlm/projects/launchpad/charsetrepro.wasm",
   "steps": [
     { "method": "checkSym", "args": "{\"symbol\":\"meta\"}" },
     { "method": "checkSym", "args": "{\"symbol\":\"CLAWT\"}" },
@@ -15,6 +15,16 @@
     { "method": "checkLocalNum", "args": "{\"n\":\"0\"}" },
     { "method": "checkLocalNum", "args": "{\"n\":\"5\"}" },
     { "method": "checkCmpNeg", "args": "{\"c\":\"a\"}" },
-    { "method": "checkCmpNeg", "args": "{\"c\":\"Q\"}" }
+    { "method": "checkCmpNeg", "args": "{\"c\":\"Q\"}" },
+    { "method": "notEmpty", "args": "{}" },
+    { "method": "notLetterA", "args": "{}" },
+    { "method": "notZero", "args": "{}" },
+    { "method": "notFive", "args": "{}" },
+    { "method": "notNull", "args": "{}" },
+    { "method": "notTrue", "args": "{}" },
+    { "method": "notIdentEmpty", "args": "{\"s\":\"\"}" },
+    { "method": "notIdentEmpty", "args": "{\"s\":\"x\"}" },
+    { "method": "notDoubleNeg", "args": "{\"s\":\"\"}" },
+    { "method": "notDoubleNeg", "args": "{\"s\":\"x\"}" }
   ]
 }

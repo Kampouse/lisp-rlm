@@ -1012,21 +1012,17 @@ fn infer(
                     let su = match unify(&a1, &a2) {
                         Ok(su) => su,
                         Err(_) => {
-                            // mixed pair: OK if one side is bool (tagged-int
-                            // probe) — no substitution to record
-                            let a1_bool = unify(&a1, &TcType::Con(TcCon::Bool)).is_ok();
-                            let a2_bool = unify(&a2, &TcType::Con(TcCon::Bool)).is_ok();
-                            if (a1_bool || a2_bool)
-                                && (unify(&a1, &TcType::Con(TcCon::Num)).is_ok()
-                                    || unify(&a2, &TcType::Con(TcCon::Num)).is_ok())
-                            {
-                                Subst::new()
-                            } else {
-                                return Err(format!(
-                                    "in call ({} ...): type mismatch: {} ≠ {}",
-                                    s, a1, a2
-                                ));
-                            }
+                            // mixed pair: OK — `=` is TOTAL at runtime.
+                            // The emitter compiles = to __h_val_eq
+                            // (structural; tag mismatch → false, no trap)
+                            // or the raw-compare num fast path (exact
+                            // across {Num, Nil, Bool} tag words). Any
+                            // mixed base-type pair therefore types as
+                            // Bool with no substitution — TS `!x` relies
+                            // on this: it lowers to
+                            // (if (if x …) … (= x "")) where x may be
+                            // bool/num/str/array (2026-09-27).
+                            Subst::new()
                         }
                     };
                     *subst = su.compose(subst.clone());

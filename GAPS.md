@@ -1104,3 +1104,25 @@ emit Groth16 over BN254 (our hosts) died 2 years ago. bb's default
 NEAR's MPC network doesn't support BN254 threshold decryption. The path
 is PLONK (universal setup) + Honk port (stitched wasm Grumpkin) — but
 both are multi-day projects, not weekend spikes.
+
+## 2026-09-27 — TS `!` FIXED, bare-truthiness `if (s)` still JS-divergent (OPEN, deliberate)
+
+`!x` now matches JS for all four falsy shapes: lowered to a temp-bound
+tag-falsy check OR empty-string compare (ts_frontend.rs LogicalNot arm,
+`__not_tmp`; checker's mixed-pair `=` widened because runtime `=` is a
+total structural compare — no trap, false on tag mismatch). Verified
+23/23 in projects/launchpad (charsetrepro): `!""`=true, `!"a"`=false,
+`!0`=true, `!5`=false, `!null`=true, `!true`=false, `!!"x"`=NONEMPTY,
+plus `const s = jsonGetStr(k) ?? ""; if (!s)` identifier shape.
+
+REMAINING DIVERGENCE (accepted tradeoff, revisit only if a contract
+needs it): a BARE condition `if (s)` / `while (s)` with `s=""` still
+takes the then-branch — wasm `if` truthiness is tag-aware with falsy =
+{Bool false, Nil, Num 0}; "" keeps its STR tag so it's truthy. JS would
+not take the branch. Wrapping every condition with the empty-string
+check would tax gas + code size on EVERY branch of EVERY contract for a
+rare pattern — deliberately skipped (same reasoning as the pre-!-fix
+era). Central fix spot if ever wanted: to_bool/truthy in ts_frontend.rs
+(~4655) — all if/while/ternary conditions flow through it. Workaround
+today: `if (strLength(s) > 0)` when s is statically a string; `!s` is
+now exact in all cases.

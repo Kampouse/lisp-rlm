@@ -4103,18 +4103,45 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
         }
         Expression::UnaryExpression(u) => match u.operator {
             UnaryOperator::LogicalNot => {
-                // ALWAYS flip via tag-aware `if` (falsy = {Bool false, Nil,
-                // Num 0}). The old non-bool path emitted `(= x 0)` — a NUMERIC
-                // compare that is always false when x holds a tagged bool,
-                // so `const isLetter = c == "a"; if (!isLetter)` silently
-                // never fired (launchpad charset check let CLAWT/cl@w pass,
-                // 2026-09-27). Same for user-defined bool-returning calls.
-                // Semantics for numerics are unchanged (Num 0 falsy).
+                // JS parity (2026-09-27): falsy = {Bool false, Nil, Num 0, ""}.
+                // Tag-aware `if` alone misses "" — a string (even empty) is
+                // STR-tagged → truthy, so `if (!name)` with name === "" never
+                // fired. The naive `!"" → (strLength x) == 0` alternative is
+                // WRONG for numbers: str-len is an untagged `>> 32` with no
+                // type check, and a num's payload is its value, so
+                // strLength(5) = 0 → !5 would be true.
+                //
+                // Lowering: bind the operand once (side effects must run
+                // exactly once — nested !!x shadowing via let is safe, same
+                // mechanism as __wl_* loop locals), then
+                //   not(x) = if (if x false true) true (= x "")
+                // The inner tag-aware if handles {false, Nil, Num 0}; the
+                // outer arm catches exactly "". `(= x "")` is safe on ANY
+                // operand: = compiles to __h_val_eq (structural), which
+                // returns false on tag mismatch WITHOUT trapping
+                // (const_fold.rs eq(): numeric fast-path raw i64.eq is
+                // equally exact across {Num, Nil, Bool} tag words; helper
+                // path tag-mismatch → 0). So (= 5 "") → false → !5 → false,
+                // matching JS.
+                //
+                // Known leftover (deliberate): `if (s)` with s === "" still
+                // takes the then-branch — wrapping every condition would add
+                // the empty-string test to all branches of all contracts
+                // (gas + code size) for a rare pattern. See GAPS.md.
                 Ok(list(vec![
-                    Sym("if"),
-                    lower_expr(&u.argument)?,
-                    list(vec![Sym("="), Num(1), Num(0)]),
-                    list(vec![Sym("="), Num(1), Num(1)]),
+                    Sym("let"),
+                    list(vec![list(vec![Sym("__not_tmp"), lower_expr(&u.argument)?])]),
+                    list(vec![
+                        Sym("if"),
+                        list(vec![
+                            Sym("if"),
+                            Sym("__not_tmp"),
+                            list(vec![Sym("="), Num(1), Num(0)]),
+                            list(vec![Sym("="), Num(1), Num(1)]),
+                        ]),
+                        list(vec![Sym("="), Num(1), Num(1)]),
+                        list(vec![Sym("="), Sym("__not_tmp"), Str(String::new())]),
+                    ]),
                 ]))
             }
             UnaryOperator::UnaryNegation => {
