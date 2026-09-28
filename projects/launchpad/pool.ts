@@ -5,6 +5,8 @@
 // token's full supply in via ft_transfer_call(msg="seed"). After that:
 //   buy  — @payable, NEAR in → tokens out (ftTransfer to buyer)
 //   sell — token.ft_transfer_call(receiver=pool, msg="sell"[:min_near_out])
+//   park — token.ft_transfer_call(msg="park"[:pk-hex]) → sell/withdraw_tokens
+//   (v3.4 market-maker leg: parked REAL inventory, gas-key sell, unpark)
 //          → NEAR out (net of fee, guarded by optional min)
 //
 // v2 (2026-09-27, prod hardening):
@@ -63,6 +65,7 @@ function migKey(t: string): string { return "migrated:" + t; }
 // curve) + per-token internal token ledger (gas-key trading)
 function nbKey(trader: string): string { return "nb:" + trader; }
 function tbKey(t: string, trader: string): string { return "tb:" + t + ":" + trader; }
+function invKey(t: string, trader: string): string { return "inv:" + t + ":" + trader; } // parked (real) token inventory
 
 // ── gas-key identity + auto-refuel (v3.2) ─────────────────────────────
 // A tx signed by a gas key ON this contract has predecessor == self for
@@ -547,15 +550,86 @@ export function sell_internal(): string {
   return `{"gross":${jsonQuote(gross)},"fee":${jsonQuote(fee)},"net":${jsonQuote(net)}}`;
 }
 
+// v3.4: sell from PARKED (real) inventory → xyk NEAR out, real transfer.
+// args: { token, tokens_in, min_near_out?, to_pad? } — the gas-key hot
+// path for market makers. NEAR goes to the registered wallet (or caller);
+// to_pad:"1" recycles proceeds into the trading pad instead.
+export function sell(): string {
+  const token = near.jsonGetStr("token") ?? "";
+  const gkPk = gasCallerPk();
+  const trader = traderId(gkPk);
+  const pt = near.storageGet(ptKey(token)) ?? "";
+  if (pt == "") { near.abort("ERR_NO_POOL"); return ""; }
+  if (tradingHalt(token) == 1) { return ""; }
+  const amount = near.jsonGetStr("tokens_in") ?? "0";
+  if (u128IsZero(amount)) { near.abort("ERR_ZERO"); return ""; }
+  const ik = invKey(token, trader);
+  const held = near.storageGet(ik) ?? "0";
+  if (u128Lt(held, amount)) { near.abort("ERR_BALANCE"); return ""; }
+  if (u128Gt(amount, pt)) { near.abort("ERR_LIQUIDITY"); return ""; }
+  const pn = near.storageGet(pnKey(token)) ?? "0";
+  if (u128IsZero(pn)) { near.abort("ERR_EMPTY"); return ""; }
+  const gross = xykOut(pn, pt, amount);
+  const fee = feeOn(gross);
+  const net = u128Sub(gross, fee);
+  if (u128IsZero(net)) { near.abort("ERR_DUST"); return ""; }
+  const minOut = near.jsonGetStr("min_near_out") ?? "0";
+  if (!u128IsZero(minOut) && u128Lt(net, minOut)) { near.abort("ERR_SLIPPAGE"); return ""; }
+  near.storageSet(ik, u128Sub(held, amount));
+  near.storageSet(ptKey(token), u128Add(pt, amount));
+  near.storageSet(pnKey(token), u128Sub(pn, gross));
+  if (!u128IsZero(fee)) {
+    accrueNearFee(token, fee);
+  }
+  const toPad = near.jsonGetStr("to_pad") == "1";
+  const own = gkPk != "" ? (near.storageGet(ownKey(gkPk)) ?? "") : "";
+  const rcpt = own != "" ? own : near.predecessorAccountId();
+  if (toPad) {
+    const nk = nbKey(trader);
+    near.storageSet(nk, u128Add(near.storageGet(nk) ?? "0", net));
+  } else {
+    near.transferU128(rcpt, net);
+  }
+  autoRefuel(trader, gkPk);
+  tradeEvent(token, "sell", trader, net, amount, fee);
+  near.log(`sell:${trader}:${amount}:${net}${toPad ? ":pad" : ":" + rcpt}`);
+  return `{"gross":${jsonQuote(gross)},"fee":${jsonQuote(fee)},"net":${jsonQuote(net)}}`;
+}
+
+// v3.4: unpark — parked inventory back to the registered wallet/caller.
+// args: { token, tokens_in? } (omitted tokens_in = all).
+// Callable by the gas key itself (tid=pk) or FA (tid=own account only) —
+// nobody can move inventory they don't control.
+export function withdraw_tokens(): string {
+  const token = near.jsonGetStr("token") ?? "";
+  const gkPk = gasCallerPk();
+  const trader = traderId(gkPk);
+  const ik = invKey(token, trader);
+  const held = near.storageGet(ik) ?? "0";
+  if (u128IsZero(held)) { near.abort("ERR_EMPTY_INV"); return ""; }
+  const want = near.jsonGetStr("tokens_in") ?? held;
+  if (u128Lt(held, want)) { near.abort("ERR_BALANCE"); return ""; }
+  near.storageSet(ik, u128Sub(held, want));
+  const own = gkPk != "" ? (near.storageGet(ownKey(gkPk)) ?? "") : "";
+  const rcpt = own != "" ? own : near.predecessorAccountId();
+  near.call(near.storageGet(tokKey(token)) ?? "", "ftTransfer",
+    `{"receiver_id":${jsonQuote(rcpt)},"amount":${jsonQuote(want)}}`,
+    30000000000000, "0");
+  near.log(`unpark:${trader}:${token}:${want}:${rcpt}`);
+  return `{"unparked":${jsonQuote(want)},"to":${jsonQuote(rcpt)}}`;
+}
+
 // v3 view: the trader's internal ledgers (token ledger only when ?token=)
 export function get_balance(): string {
   const trader = near.jsonGetStr("account") ?? near.predecessorAccountId();
   const token = near.jsonGetStr("token") ?? "";
   let tok = "\"0\"";
+  let inv = "\"0\"";
   if (strLength(token) > 0) {
     tok = jsonQuote(near.storageGet(tbKey(token, trader)) ?? "0");
+    inv = jsonQuote(near.storageGet(invKey(token, trader)) ?? "0");
   }
-  return `{"near":${jsonQuote(near.storageGet(nbKey(trader)) ?? "0")},"tokens":${tok}}`;
+  return `{"near":${jsonQuote(near.storageGet(nbKey(trader)) ?? "0")},"tokens":${tok},"parked":${inv}}`;
 }
 
 // ── trading ────────────────────────────────────────────────────────
@@ -651,9 +725,21 @@ export function ft_on_transfer(): string {
   const msg = near.jsonGetStr("msg") ?? "";
   const pt = near.storageGet(ptKey(token)) ?? "";
   if (pt == "") { near.abort("ERR_NO_POOL"); return "0"; }
-  // sell intent? "sell" or "sell:<min>" (anything else = donation/seed)
+  // intent? "sell" / "sell:<min>" / "park" / "park:<pk-hex>" (else donation/seed)
   const ci = strIndexOf(msg, ":");
   const head = ci >= 0 ? strSlice(msg, 0, ci) : msg;
+  if (head == "park") {
+    // v3.4: park REAL tokens as trading inventory for a gas key (or the
+    // sender's account) — market-maker float. Tokens sit escrowed in the
+    // pool (real balance already includes them); sell()/withdraw_tokens()
+    // debit this ledger. Never touches curve reserves.
+    const parg = ci >= 0 ? strSlice(msg, ci + 1, strLength(msg)) : "";
+    const tid = parg != "" ? "pk:" + parg : sender;
+    const ik = invKey(token, tid);
+    near.storageSet(ik, u128Add(near.storageGet(ik) ?? "0", amount));
+    near.log(`park:${tid}:${token}:${amount}`);
+    return "0";
+  }
   if (head == "sell") {
     if (tradingHalt(token) == 1) { return "0"; }
     if (u128Gt(amount, pt)) { near.abort("ERR_LIQUIDITY"); return "0"; }
