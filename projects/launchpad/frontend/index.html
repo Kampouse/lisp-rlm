@@ -126,9 +126,11 @@
           <input id="key-pk" spellcheck="false" placeholder="0020…  (66 hex chars, 0x00-prefixed uncompressed)">
           <label>key owner wallet (receives payouts)</label>
           <input id="key-owner" spellcheck="false" placeholder="you.testnet">
-          <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
+          <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
             <button class="sk" onclick="keyAdd()">1· authorize key</button>
+            <input id="fund-amt" placeholder="NEAR" style="width:80px" value="0.15">
             <button class="sk" onclick="keyFundGas()">2· fund gas</button>
+            <input id="pad-amt" placeholder="NEAR" style="width:80px" value="0.05">
             <button class="sk" onclick="keyDeposit()">3· pad deposit</button>
           </div>
           <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
@@ -158,9 +160,17 @@
   </div>
 
   <p class="dim" style="font-size:12px;margin-top:18px">
-    Signers: any NEAR wallet via <a href="https://github.com/azbang/near-connect">near-connect</a> (HOT · Meteor · Intear · MyNearWallet · Nightly · OKX · …), or dev key (testnet only). Contract:
+    Signers: any NEAR wallet via <a href="https://github.com/azbang/near-connect">near-connect</a> (HOT · Meteor · Intear · MyNearWallet · Nightly · OKX · …). Contract:
     <span class="kv" id="head-pool"></span>
   </p>
+  <details style="margin-top:8px">
+    <summary class="dim" style="font-size:12px;cursor:pointer">dev signer (testnet testing only)</summary>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+      <input id="dev-acct" placeholder="account id" style="flex:1;min-width:160px" spellcheck="false">
+      <input id="dev-key" placeholder="ed25519:…" style="flex:2;min-width:200px" spellcheck="false">
+      <button class="ghost" onclick="setDevSigner()">use dev signer</button>
+    </div>
+  </details>
 </div>
 <div class="toast" id="toast"></div>
 
@@ -232,14 +242,9 @@ window.uiConnect = async function(){
   try{
     const c = await ensureConnector();
     await c.connect();   // wallet picker (HOT, Meteor, Intear, MyNear, Nightly, OKX, …)
-    return;
-  }catch(e){ /* fall through to dev mode */ }
-  const k = prompt("Wallet connect failed/unavailable. Paste a DEV key (ed25519:…) — testnet only:");
-  if(!k) return;
-  const acct = prompt("Account id for this key:");
-  signer = {kind:"dev", secret:k, accountId:acct};
-  document.getElementById("in-acct").value=acct;
-  toast("dev signer set (testnet)","warn"); loadAccount();
+  }catch(e){
+    toast("wallet connect cancelled/unavailable — use dev signer below if testing","warn");
+  }
 };
 async function sendTx(receiverId, actions){
   if (!signer){ toast("connect a wallet first (top right)","bad"); throw new Error("no signer"); }
@@ -278,6 +283,16 @@ async function devSend(receiverId, actions){
   })});
   return out;
 }
+
+window.setDevSigner = function(){
+  const k = document.getElementById("dev-key").value.trim();
+  const acct = document.getElementById("dev-acct").value.trim();
+  if(!k || !acct) return toast("dev signer needs account id + key","bad");
+  signer = {kind:"dev", secret:k, accountId:acct};
+  document.getElementById("in-acct").value = acct;
+  toast("dev signer set (testnet): "+acct,"warn");
+  loadAccount();
+};
 
 /* ── data loading ───────────────────────────────────────── */
 window.loadAll = async function(){
@@ -417,14 +432,14 @@ window.keyAdd = async function(){
 };
 window.keyFundGas = async function(){
   const pk=pkVal(); if(!pk) return;
-  const amt = prompt("NEAR to fund gas with:","0.15"); if(!amt) return;
+  const amt = document.getElementById("fund-amt").value || "0.15";
   await sendTx(CFG.pool,[{type:"FunctionCall",params:{methodName:"fund_gas",
     args:{pk, owner:ownerVal()||undefined},gas:"60000000000000",deposit:parseNear(amt).toString()}}]);
   await refreshAfter();
 };
 window.keyDeposit = async function(){
   const pk=pkVal(); if(!pk) return;
-  const amt = prompt("NEAR pad deposit:","0.05"); if(!amt) return;
+  const amt = document.getElementById("pad-amt").value || "0.05";
   await sendTx(CFG.pool,[{type:"FunctionCall",params:{methodName:"deposit",
     args:{pk, owner:ownerVal()||undefined},gas:"30000000000000",deposit:parseNear(amt).toString()}}]);
   await refreshAfter();
