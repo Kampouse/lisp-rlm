@@ -501,7 +501,13 @@ export function register_gas_key(): number {
   const k = gfKey(pk);
   near.storageSet(k, u128Add(near.storageGet(k) ?? "0", attached));
   const idx = near.promiseBatchCreate(near.currentAccountId());
-  near.promiseBatchActionAddGasKeyWithFunctionCall(idx, near.hexDecode(pk), 8, "0", near.currentAccountId(), "buy,sell,withdraw_tokens");   // methods = comma-joined string (nearcore splits on ",")
+  // idempotent: re-registering an existing pk must NOT re-fire AddKey (a
+  // duplicate AddKey kills the whole promise → the float top-up is lost and
+  // the ledger lies). First registration marks rg:<pk>; retries top up only.
+  if (near.storageGet("rg:"+pk) !== "1") {
+    near.storageSet("rg:"+pk, "1");
+    near.promiseBatchActionAddGasKeyWithFunctionCall(idx, near.hexDecode(pk), 8, "0", near.currentAccountId(), "buy,sell,withdraw_tokens");   // methods = comma-joined string (nearcore splits on ",")
+  }
   near.promiseBatchActionTransferToGasKey(idx, near.hexDecode(pk), attached);
   near.log(`register_gas_key:${pk}:${attached}:${own}`);
   return 0;

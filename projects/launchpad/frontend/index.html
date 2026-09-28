@@ -484,13 +484,20 @@ window.heroBuy = async function(){
     const fund = parseNear(document.getElementById("h-add").value || "0.05").toString();
     const setup = parseNear("0.25").toString();
     toast("first trade — confirm once in your wallet (this sets up instant trading)","warn");
-    await sendTx(CFG.pool, [
-      {type:"FunctionCall",params:{methodName:"register_gas_key",args:{pk:pkHex,owner:acct},gas:"100000000000000",deposit:setup}},
-      {type:"FunctionCall",params:{methodName:"deposit",args:{pk:pkHex,owner:acct},gas:"30000000000000",deposit:fund}},
-      {type:"FunctionCall",params:{methodName:"buy",args:buyArgs,gas:"50000000000000",deposit:"0"}},
-    ]);
+    // persist FIRST: a rejected popup or failed tx must never lose the key —
+    // re-running setup with the same pk is safe (contract register is idempotent)
     localStorage.setItem("gk-fast", JSON.stringify({secret:kp.toString(), accountId:acct, pk:pkHex}));
-    toast("⚡ instant mode on — future trades need no wallet","ok");
+    try {
+      await sendTx(CFG.pool, [
+        {type:"FunctionCall",params:{methodName:"register_gas_key",args:{pk:pkHex,owner:acct},gas:"100000000000000",deposit:setup}},
+        {type:"FunctionCall",params:{methodName:"deposit",args:{pk:pkHex,owner:acct},gas:"30000000000000",deposit:fund}},
+        {type:"FunctionCall",params:{methodName:"buy",args:buyArgs,gas:"50000000000000",deposit:"0"}},
+      ]);
+      toast("⚡ instant mode on — future trades need no wallet","ok");
+    } catch(e) {
+      // key is saved; next BUY auto-completes setup (idempotent) — no fresh popup spam
+      throw e;
+    }
   }
   await heroPaint(); await refreshAfter();
 };
@@ -548,6 +555,13 @@ function paintFast(){
     ? "buys settle to pad · sells pull from pad · zero wallet popups"
     : "one popup to authorize a restricted trading key, then instant pad trading";
 }
+function gkSyncAccount(){
+  const g = fastGet();
+  if (g && signer && signer.accountId && g.accountId !== signer.accountId){
+    localStorage.removeItem("gk-fast");
+    toast("cleared trading key from another account","warn");
+  }
+}
 window.setDevSigner = function(){
   const k = document.getElementById("dev-key").value.trim();
   const acct = document.getElementById("dev-acct").value.trim();
@@ -592,6 +606,7 @@ async function loadPool(){
   } catch(e){ toast("pool load: "+e.message,"bad"); }
 }
 window.loadAccount = async function(silent){
+  gkSyncAccount();
   const a = document.getElementById("in-acct").value.trim(); if(!a){ if(!silent) toast("enter account id","bad"); return; }
   const t = token();
   try{
@@ -821,7 +836,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b23";
+const BUILD = "b24";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
