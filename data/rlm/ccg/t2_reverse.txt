@@ -2,4 +2,4 @@
 - FAIL it1: (begin (define (rev s) (reverse (str-split s ~~QT~~ ~~QT~~))) (define s ~~QT~~stressed~~QT~~) (set! s (str-rep → ERROR: ~~QT~~read-all: parse error: missing closing `)` at l
 - FAIL it3: (begin (define (rev s) (reverse (str-split s ~~QT~~ ~~QT~~))) (define s ~~QT~~stressed~~QT~~) (set! s (str-joi → ERROR: decompose-rejected — this step MUST delegate via (sub
 - FAIL it4: (begin (define (rev s) (reverse (str-split s ~~QT~~ ~~QT~~))) (define s ~~QT~~stressed~~QT~~) (set! s (rev s)) → ERROR: decompose-rejected — this step MUST delegate via (sub
-- SOLVED ONCE WITH (complete): (begin (define (rev s) (reverse (str-split s ~~QT~~~~QT~~))) (define s ~~QT~~stressed~~QT~~) (rlm-set answer (str-join ~~QT~~~~QT~~ (rev s))) (final true))
+- SOLVED ONCE WITH (complete): (begin (define (rev s) (str-join ~~QT~~~~QT~~ (reverse (str-split s ~~QT~~~~QT~~)))) (define s ~~QT~~stressed~~QT~~) (rlm-set answer (rev s)) (final true))

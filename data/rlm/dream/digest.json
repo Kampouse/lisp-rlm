@@ -1,5 +1,5 @@
 {
- "worlds": 1508,
+ "worlds": 1697,
  "policies": {
   "p3-grammar-shapes": {
    "n": 2,
@@ -27,9 +27,9 @@
    "avg_iters": 4.33
   },
   "p5-8x0-91b-g3": {
-   "n": 664,
-   "completed": 259,
-   "avg_iters": 1.44
+   "n": 853,
+   "completed": 380,
+   "avg_iters": 1.37
   },
   "p5-8x0-91b-g3l": {
    "n": 127,

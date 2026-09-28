@@ -1,0 +1,7 @@
+# auto — mined from own completed worlds
+(define (prime? n) (if (< n 2) nil (begin (define ok true) (dotimes (i (- n 2)) (if (zero? (mod n (+ i 2))) (set! ok nil))) ok)))
+(define (sum-primes lst) (reduce + 0 (filter prime? lst)))
+(let ((primes (filter prime? (list 2 3 4 5 6 7 8 9))))
+  (let ((s (sum-primes primes)))
+    (rlm-set answer (* 3 s))
+    (rlm-set Final true)))

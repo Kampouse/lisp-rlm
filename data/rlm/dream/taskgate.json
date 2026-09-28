@@ -431,6 +431,28 @@
    "installed",
    "ta_prime_sum",
    "2026-09-26 15:35:22"
+  ],
+  [
+   "expired",
+   "td_primesum.lisp"
+  ],
+  [
+   "installed",
+   "td_primeproduct",
+   "2026-09-27 12:54:23"
+  ],
+  [
+   "expired",
+   "ta_prime_sum.lisp"
+  ],
+  [
+   "installed",
+   "ta_prime_sum",
+   "2026-09-27 18:17:05"
+  ],
+  [
+   "expired",
+   "td_primeprod.lisp"
   ]
  ]
 }

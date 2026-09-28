@@ -1,2 +1,6 @@
-t5_vowels: 6/6 solved, 2.0 avg iters
-ta_prime_sum: 0/74 solved, 1.0 avg iters
+t1_sumsq: 4/4 solved, 1.0 avg iters
+t2_reverse: 8/8 solved, 1.0 avg iters
+t3_fib: 2/2 solved, 1.0 avg iters
+t4_pow: 7/7 solved, 1.0 avg iters
+t5_vowels: 10/10 solved, 2.0 avg iters
+ta_prime_sum: 0/49 solved, 1.0 avg iters

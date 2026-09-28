@@ -1315,3 +1315,420 @@
 {"event": "ccg", "ts": 1790459532.097478, "nodes": 3285, "edges": 866, "new_nodes": 2, "new_edges": 0}
 {"event": "qlearn", "ts": 1790460458.2642229, "states": 188, "episodes_seen": 1521}
 {"event": "ccg", "ts": 1790460464.652591, "nodes": 3286, "edges": 866, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790462190.553102, "event": "evolve", "gen": 112, "channel": "tactics", "fitness": 0.1}
+{"ts": 1790462190.571977, "event": "evolve", "gen": 112, "channel": "tactics", "fitness": 0.1, "note": "reverted to champion"}
+{"event": "qlearn", "ts": 1790462194.584279, "states": 188, "episodes_seen": 1523}
+{"event": "ccg", "ts": 1790462202.3036091, "nodes": 3289, "edges": 866, "new_nodes": 3, "new_edges": 0}
+{"event": "qlearn", "ts": 1790463728.414443, "states": 188, "episodes_seen": 1525}
+{"event": "ccg", "ts": 1790463729.855701, "nodes": 3292, "edges": 866, "new_nodes": 3, "new_edges": 0}
+{"event": "qlearn", "ts": 1790465342.20369, "states": 193, "episodes_seen": 1527}
+{"event": "ccg", "ts": 1790465355.379776, "nodes": 3300, "edges": 872, "new_nodes": 8, "new_edges": 6}
+{"event": "qlearn", "ts": 1790466307.6583989, "states": 193, "episodes_seen": 1528}
+{"event": "ccg", "ts": 1790466309.771693, "nodes": 3301, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790467010.961378, "states": 193, "episodes_seen": 1530}
+{"event": "ccg", "ts": 1790467012.577006, "nodes": 3303, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790467748.3540878, "states": 193, "episodes_seen": 1532}
+{"event": "ccg", "ts": 1790467754.790467, "nodes": 3305, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790468412.411247, "states": 193, "episodes_seen": 1533}
+{"event": "ccg", "ts": 1790468413.144289, "nodes": 3306, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790469161.8052878, "states": 193, "episodes_seen": 1535}
+{"event": "ccg", "ts": 1790469165.118825, "nodes": 3308, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790469935.127933, "states": 193, "episodes_seen": 1537}
+{"event": "ccg", "ts": 1790469935.719008, "nodes": 3310, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"ts": 1790470581.973561, "event": "intention", "intent": "ta_prime_sum", "status": "achieved", "rate": 0.9}
+{"event": "qlearn", "ts": 1790470631.889997, "states": 193, "episodes_seen": 1538}
+{"event": "ccg", "ts": 1790470633.310934, "nodes": 3311, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790470718.394549, "event": "ab_reject", "rate_on": 0.354, "rate_off": 0.355}
+{"ts": 1790471368.856554, "event": "evolve", "gen": 113, "channel": "actions", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790471369.201948, "states": 193, "episodes_seen": 1539}
+{"event": "ccg", "ts": 1790471369.8046331, "nodes": 3312, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790471432.322207, "event": "ab_install", "action": ";; dream-proposed 1790470018.1249980927\n(rlm-register-action \"microexample\" (lam"}
+{"ts": 1790471979.852881, "event": "evolve", "gen": 114, "channel": "actions", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790471980.1822999, "states": 193, "episodes_seen": 1539}
+{"event": "ccg", "ts": 1790471980.786378, "nodes": 3312, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790472749.5263731, "states": 193, "episodes_seen": 1540}
+{"event": "ccg", "ts": 1790472751.1618078, "nodes": 3313, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790473428.0686562, "states": 193, "episodes_seen": 1540}
+{"event": "ccg", "ts": 1790473428.519659, "nodes": 3313, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790474153.8498938, "states": 193, "episodes_seen": 1541}
+{"event": "ccg", "ts": 1790474154.431566, "nodes": 3314, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790474839.265603, "states": 193, "episodes_seen": 1541}
+{"event": "ccg", "ts": 1790474840.8486788, "nodes": 3314, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790475555.3088, "states": 193, "episodes_seen": 1542}
+{"event": "ccg", "ts": 1790475556.043308, "nodes": 3315, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790476285.77162, "states": 193, "episodes_seen": 1542}
+{"event": "ccg", "ts": 1790476291.1603572, "nodes": 3315, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790477195.7233331, "states": 193, "episodes_seen": 1543}
+{"event": "ccg", "ts": 1790477196.1991491, "nodes": 3316, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790478050.5040839, "event": "evolve", "gen": 115, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790478050.872124, "states": 193, "episodes_seen": 1544}
+{"event": "ccg", "ts": 1790478051.402, "nodes": 3317, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790479049.9613209, "states": 193, "episodes_seen": 1545}
+{"event": "ccg", "ts": 1790479054.575833, "nodes": 3318, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790480903.542926, "event": "evolve", "gen": 116, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790480909.670581, "states": 193, "episodes_seen": 1545}
+{"event": "ccg", "ts": 1790480917.9877288, "nodes": 3318, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790483994.396529, "states": 193, "episodes_seen": 1545}
+{"event": "ccg", "ts": 1790483995.228791, "nodes": 3318, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"ts": 1790484054.154797, "event": "ab_reject", "rate_on": 0.367, "rate_off": 0.4}
+{"ts": 1790484889.225821, "event": "evolve", "gen": 117, "channel": "actions", "fitness": 1.0}
+{"ts": 1790484889.2293818, "event": "evolve", "gen": 118, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790484892.671548, "states": 193, "episodes_seen": 1546}
+{"event": "ccg", "ts": 1790484909.0411782, "nodes": 3319, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790484974.6866088, "event": "ab_install", "action": ";; dream-proposed 1790478105.9111609459\n(rlm-register-action \"micro_guide\" (lamb"}
+{"ts": 1790485644.4149508, "event": "evolve", "gen": 119, "channel": "actions", "fitness": 1.0}
+{"ts": 1790485644.4152498, "event": "evolve", "gen": 120, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790485645.307621, "states": 193, "episodes_seen": 1547}
+{"event": "ccg", "ts": 1790485646.680346, "nodes": 3320, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790486268.127903, "event": "evolve", "gen": 121, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790486269.315944, "states": 193, "episodes_seen": 1548}
+{"event": "ccg", "ts": 1790486270.8398771, "nodes": 3321, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790487221.764809, "states": 193, "episodes_seen": 1549}
+{"event": "ccg", "ts": 1790487224.521893, "nodes": 3322, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790487921.6169012, "states": 193, "episodes_seen": 1550}
+{"event": "ccg", "ts": 1790487922.097877, "nodes": 3323, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790488676.6293461, "states": 193, "episodes_seen": 1551}
+{"event": "ccg", "ts": 1790488677.793033, "nodes": 3324, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790489444.193304, "states": 193, "episodes_seen": 1552}
+{"event": "ccg", "ts": 1790489444.850934, "nodes": 3325, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790490205.1217558, "states": 193, "episodes_seen": 1552}
+{"event": "ccg", "ts": 1790490206.317569, "nodes": 3325, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790490928.943383, "states": 193, "episodes_seen": 1553}
+{"event": "ccg", "ts": 1790490929.481209, "nodes": 3326, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790491602.709134, "states": 193, "episodes_seen": 1553}
+{"event": "ccg", "ts": 1790491603.354197, "nodes": 3326, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790492314.871176, "states": 193, "episodes_seen": 1554}
+{"event": "ccg", "ts": 1790492316.0231, "nodes": 3327, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790493023.837464, "states": 193, "episodes_seen": 1554}
+{"event": "ccg", "ts": 1790493024.432012, "nodes": 3327, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790493734.265992, "states": 193, "episodes_seen": 1555}
+{"event": "ccg", "ts": 1790493735.98754, "nodes": 3328, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790493817.492388, "event": "ab_reject", "rate_on": 0.412, "rate_off": 0.413}
+{"ts": 1790494513.221676, "event": "evolve", "gen": 122, "channel": "actions", "fitness": 1.0}
+{"ts": 1790494513.2219362, "event": "evolve", "gen": 123, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790494513.568861, "states": 193, "episodes_seen": 1555}
+{"event": "ccg", "ts": 1790494514.2726321, "nodes": 3328, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"ts": 1790494612.63154, "event": "ab_install", "action": ";; dream-proposed 1790490281.8815529346\n(rlm-register-action \"microexample\" (lam"}
+{"ts": 1790495333.883221, "event": "evolve", "gen": 124, "channel": "actions", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790495334.7162292, "states": 193, "episodes_seen": 1556}
+{"event": "ccg", "ts": 1790495336.133024, "nodes": 3329, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790496134.283076, "states": 193, "episodes_seen": 1557}
+{"event": "ccg", "ts": 1790496135.5783339, "nodes": 3332, "edges": 872, "new_nodes": 3, "new_edges": 0}
+{"ts": 1790497089.165142, "event": "evolve", "gen": 125, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790497091.433532, "states": 193, "episodes_seen": 1558}
+{"event": "ccg", "ts": 1790497095.495014, "nodes": 3334, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790497871.32201, "states": 193, "episodes_seen": 1558}
+{"event": "ccg", "ts": 1790497871.885222, "nodes": 3334, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790498602.272835, "states": 193, "episodes_seen": 1559}
+{"event": "ccg", "ts": 1790498603.329103, "nodes": 3335, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790499302.523901, "states": 193, "episodes_seen": 1559}
+{"event": "ccg", "ts": 1790499303.055906, "nodes": 3335, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790499967.349372, "states": 193, "episodes_seen": 1560}
+{"event": "ccg", "ts": 1790499967.809939, "nodes": 3336, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790500709.630646, "states": 193, "episodes_seen": 1560}
+{"event": "ccg", "ts": 1790500710.620219, "nodes": 3336, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790501457.42818, "states": 193, "episodes_seen": 1561}
+{"event": "ccg", "ts": 1790501458.040888, "nodes": 3337, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790502083.560687, "states": 193, "episodes_seen": 1562}
+{"event": "ccg", "ts": 1790502084.20222, "nodes": 3338, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790502946.820092, "states": 193, "episodes_seen": 1563}
+{"event": "ccg", "ts": 1790502947.2231958, "nodes": 3339, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790503643.909885, "states": 193, "episodes_seen": 1563}
+{"event": "ccg", "ts": 1790503645.43328, "nodes": 3339, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"ts": 1790503790.732865, "event": "ab_reject", "rate_on": 0.418, "rate_off": 0.418}
+{"ts": 1790504439.308727, "event": "evolve", "gen": 126, "channel": "actions", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790504440.202843, "states": 193, "episodes_seen": 1564}
+{"event": "ccg", "ts": 1790504440.777625, "nodes": 3340, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790504505.888021, "event": "ab_install", "action": ";; dream-proposed 1790500765.7855620384\n(rlm-register-action \"microguide\" (lambd"}
+{"ts": 1790505083.340914, "event": "evolve", "gen": 127, "channel": "actions", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790505083.813452, "states": 193, "episodes_seen": 1564}
+{"event": "ccg", "ts": 1790505084.361204, "nodes": 3340, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790505799.996573, "states": 193, "episodes_seen": 1565}
+{"event": "ccg", "ts": 1790505802.452943, "nodes": 3341, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790506532.2379, "states": 193, "episodes_seen": 1565}
+{"event": "ccg", "ts": 1790506532.831658, "nodes": 3341, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790507368.649996, "states": 193, "episodes_seen": 1566}
+{"event": "ccg", "ts": 1790507369.325019, "nodes": 3342, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790508236.705564, "states": 193, "episodes_seen": 1567}
+{"event": "ccg", "ts": 1790508239.376529, "nodes": 3343, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790508927.2724109, "states": 193, "episodes_seen": 1567}
+{"event": "ccg", "ts": 1790508927.7490969, "nodes": 3343, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790509583.3572018, "states": 193, "episodes_seen": 1568}
+{"event": "ccg", "ts": 1790509584.025441, "nodes": 3344, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790510378.643309, "states": 193, "episodes_seen": 1568}
+{"event": "ccg", "ts": 1790510379.30312, "nodes": 3345, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790511556.472515, "states": 193, "episodes_seen": 1569}
+{"event": "ccg", "ts": 1790511557.2325602, "nodes": 3346, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790512607.83632, "states": 193, "episodes_seen": 1570}
+{"event": "ccg", "ts": 1790512608.2340858, "nodes": 3347, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790514090.758977, "states": 193, "episodes_seen": 1571}
+{"event": "ccg", "ts": 1790514091.494129, "nodes": 3349, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"ts": 1790515044.101695, "event": "evolve", "gen": 128, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790515047.879383, "states": 193, "episodes_seen": 1572}
+{"event": "ccg", "ts": 1790515051.567917, "nodes": 3351, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"ts": 1790515102.048222, "event": "ab_reject", "rate_on": 0.426, "rate_off": 0.427}
+{"ts": 1790515846.6452758, "event": "evolve", "gen": 129, "channel": "actions", "fitness": 1.0}
+{"ts": 1790515846.645514, "event": "evolve", "gen": 130, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790515847.405771, "states": 193, "episodes_seen": 1573}
+{"event": "ccg", "ts": 1790515848.199321, "nodes": 3352, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790515908.687179, "event": "ab_install", "action": ";; dream-proposed 1790515908.4866709709\n(rlm-register-action \"microguide\" (lambd"}
+{"ts": 1790516644.9310029, "event": "evolve", "gen": 131, "channel": "actions", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790516649.3587358, "states": 193, "episodes_seen": 1573}
+{"event": "ccg", "ts": 1790516654.547702, "nodes": 3352, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790517339.9321868, "states": 193, "episodes_seen": 1574}
+{"event": "ccg", "ts": 1790517340.896511, "nodes": 3353, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790518042.092981, "event": "evolve", "gen": 132, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790518052.380513, "states": 193, "episodes_seen": 1574}
+{"event": "ccg", "ts": 1790518061.590795, "nodes": 3353, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790518884.457824, "states": 193, "episodes_seen": 1575}
+{"event": "ccg", "ts": 1790518884.915443, "nodes": 3354, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790519644.296819, "event": "evolve", "gen": 133, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790519645.874153, "states": 193, "episodes_seen": 1576}
+{"event": "ccg", "ts": 1790519647.599689, "nodes": 3355, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790520412.127199, "event": "evolve", "gen": 134, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790520412.455811, "states": 193, "episodes_seen": 1577}
+{"event": "ccg", "ts": 1790520412.98772, "nodes": 3356, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790521203.6681678, "event": "evolve", "gen": 135, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790521206.099684, "states": 193, "episodes_seen": 1578}
+{"event": "ccg", "ts": 1790521213.961899, "nodes": 3357, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790522091.786575, "event": "evolve", "gen": 136, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790522093.341969, "states": 193, "episodes_seen": 1579}
+{"event": "ccg", "ts": 1790522099.5688431, "nodes": 3358, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790523005.6071491, "event": "evolve", "gen": 137, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790523007.134803, "states": 193, "episodes_seen": 1580}
+{"event": "ccg", "ts": 1790523010.022963, "nodes": 3360, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790524068.3309891, "states": 193, "episodes_seen": 1581}
+{"event": "ccg", "ts": 1790524072.874218, "nodes": 3361, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790526131.0937479, "event": "evolve", "gen": 138, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790526141.9252942, "states": 193, "episodes_seen": 1581}
+{"event": "ccg", "ts": 1790526161.55216, "nodes": 3361, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790527055.4142349, "states": 193, "episodes_seen": 1582}
+{"event": "ccg", "ts": 1790527061.166728, "nodes": 3362, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790527101.4534998, "event": "ab_reject", "rate_on": 0.433, "rate_off": 0.433}
+{"ts": 1790527896.545273, "event": "evolve", "gen": 139, "channel": "actions", "fitness": 1.0}
+{"ts": 1790527896.545855, "event": "evolve", "gen": 140, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790527897.0317109, "states": 193, "episodes_seen": 1583}
+{"event": "ccg", "ts": 1790527898.402261, "nodes": 3363, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790527961.205672, "event": "ab_install", "action": ";; dream-proposed 1790527100.8142669201\n(rlm-register-action \"structured_approac"}
+{"ts": 1790528888.491658, "event": "evolve", "gen": 141, "channel": "actions", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790528891.244399, "states": 194, "episodes_seen": 1585}
+{"event": "ccg", "ts": 1790528902.4591029, "nodes": 3366, "edges": 872, "new_nodes": 3, "new_edges": 0}
+{"event": "qlearn", "ts": 1790529724.259843, "states": 194, "episodes_seen": 1586}
+{"event": "ccg", "ts": 1790529725.5069811, "nodes": 3368, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790530674.5101519, "states": 194, "episodes_seen": 1587}
+{"event": "ccg", "ts": 1790530675.2225459, "nodes": 3370, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"ts": 1790531662.373451, "event": "evolve", "gen": 142, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790531666.292375, "states": 194, "episodes_seen": 1588}
+{"event": "ccg", "ts": 1790531682.334985, "nodes": 3372, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790532384.181542, "states": 194, "episodes_seen": 1588}
+{"event": "ccg", "ts": 1790532387.2197912, "nodes": 3372, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790533245.3354461, "states": 194, "episodes_seen": 1589}
+{"event": "ccg", "ts": 1790533249.7094898, "nodes": 3373, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790534121.6255941, "states": 194, "episodes_seen": 1590}
+{"event": "ccg", "ts": 1790534126.639881, "nodes": 3374, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790535828.884531, "states": 194, "episodes_seen": 1590}
+{"event": "ccg", "ts": 1790535829.536148, "nodes": 3374, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790537657.0261602, "states": 194, "episodes_seen": 1591}
+{"event": "ccg", "ts": 1790537660.7017028, "nodes": 3375, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790540297.592387, "states": 194, "episodes_seen": 1592}
+{"event": "ccg", "ts": 1790540298.187042, "nodes": 3377, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790541084.683232, "states": 194, "episodes_seen": 1592}
+{"event": "ccg", "ts": 1790541085.9102778, "nodes": 3377, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"event": "qlearn", "ts": 1790542005.8381162, "states": 194, "episodes_seen": 1593}
+{"event": "ccg", "ts": 1790542008.153585, "nodes": 3378, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790542082.477967, "event": "ab_reject", "rate_on": 0.422, "rate_off": 0.418}
+{"ts": 1790543471.784671, "event": "evolve", "gen": 143, "channel": "actions", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790543473.914866, "states": 194, "episodes_seen": 1594}
+{"event": "ccg", "ts": 1790543476.069644, "nodes": 3379, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790543527.539922, "event": "ab_install", "action": ";; dream-proposed 1790541137.8874049187\n(rlm-register-action \"pattern_hint\" (lam"}
+{"ts": 1790544365.281366, "event": "evolve", "gen": 144, "channel": "actions", "fitness": 1.0}
+{"event": "qlearn", "ts": 1790544368.358489, "states": 194, "episodes_seen": 1595}
+{"event": "ccg", "ts": 1790544370.914241, "nodes": 3380, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790545117.12185, "states": 194, "episodes_seen": 1596}
+{"event": "ccg", "ts": 1790545117.986804, "nodes": 3382, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790545816.14716, "states": 194, "episodes_seen": 1597}
+{"event": "ccg", "ts": 1790545817.888012, "nodes": 3383, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790546575.769536, "states": 194, "episodes_seen": 1598}
+{"event": "ccg", "ts": 1790546576.300599, "nodes": 3384, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790547255.492037, "states": 194, "episodes_seen": 1599}
+{"event": "ccg", "ts": 1790547259.4821398, "nodes": 3385, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790547972.1892328, "states": 194, "episodes_seen": 1600}
+{"event": "ccg", "ts": 1790547972.702388, "nodes": 3395, "edges": 872, "new_nodes": 10, "new_edges": 0}
+{"event": "qlearn", "ts": 1790548689.995007, "states": 194, "episodes_seen": 1601}
+{"event": "ccg", "ts": 1790548690.6222029, "nodes": 3396, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790549387.1712792, "states": 194, "episodes_seen": 1602}
+{"event": "ccg", "ts": 1790549388.646028, "nodes": 3397, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790550177.780807, "states": 194, "episodes_seen": 1604}
+{"event": "ccg", "ts": 1790550178.179569, "nodes": 3399, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"ts": 1790552350.0309188, "event": "evolve", "gen": 145, "channel": "tactics", "fitness": 0.6}
+{"event": "qlearn", "ts": 1790552350.165799, "states": 194, "episodes_seen": 1605}
+{"event": "ccg", "ts": 1790552350.382525, "nodes": 3400, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790553032.427945, "states": 194, "episodes_seen": 1607}
+{"event": "ccg", "ts": 1790553033.115317, "nodes": 3402, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790553689.848619, "states": 194, "episodes_seen": 1608}
+{"event": "ccg", "ts": 1790553690.419672, "nodes": 3403, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790553760.567816, "event": "ab_reject", "rate_on": 0.383, "rate_off": 0.379}
+{"ts": 1790554423.502143, "event": "evolve", "gen": 146, "channel": "actions", "fitness": 0.3}
+{"event": "qlearn", "ts": 1790554424.1495838, "states": 194, "episodes_seen": 1610}
+{"event": "ccg", "ts": 1790554425.306935, "nodes": 3405, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"ts": 1790554493.5029519, "event": "ab_install", "action": ";; dream-proposed 1790553760.4195039272\n(rlm-register-action \"decompose_approach"}
+{"ts": 1790555117.857557, "event": "evolve", "gen": 147, "channel": "actions", "fitness": 0.2}
+{"event": "qlearn", "ts": 1790555118.0007849, "states": 194, "episodes_seen": 1612}
+{"event": "ccg", "ts": 1790555118.224083, "nodes": 3407, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790555797.21035, "states": 194, "episodes_seen": 1613}
+{"event": "ccg", "ts": 1790555797.982, "nodes": 3408, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790556548.829632, "states": 194, "episodes_seen": 1615}
+{"event": "ccg", "ts": 1790556549.6626759, "nodes": 3410, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790557220.020659, "states": 194, "episodes_seen": 1617}
+{"event": "ccg", "ts": 1790557220.3601868, "nodes": 3412, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"ts": 1790557962.548821, "event": "evolve", "gen": 148, "channel": "tactics", "fitness": 0.0}
+{"ts": 1790557962.5496802, "event": "evolve", "gen": 148, "channel": "tactics", "fitness": 0.0, "note": "reverted to champion"}
+{"event": "qlearn", "ts": 1790557962.6968992, "states": 194, "episodes_seen": 1619}
+{"event": "ccg", "ts": 1790557962.934578, "nodes": 3415, "edges": 872, "new_nodes": 3, "new_edges": 0}
+{"event": "qlearn", "ts": 1790558652.0391512, "states": 195, "episodes_seen": 1621}
+{"event": "ccg", "ts": 1790558652.239519, "nodes": 3417, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790559322.210324, "states": 195, "episodes_seen": 1623}
+{"event": "ccg", "ts": 1790559322.599665, "nodes": 3419, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790559990.600746, "states": 195, "episodes_seen": 1624}
+{"event": "ccg", "ts": 1790559991.416285, "nodes": 3420, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790561262.242133, "states": 195, "episodes_seen": 1625}
+{"event": "ccg", "ts": 1790561263.902581, "nodes": 3421, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790561941.657408, "states": 195, "episodes_seen": 1627}
+{"event": "ccg", "ts": 1790561942.490658, "nodes": 3423, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790563248.31007, "states": 195, "episodes_seen": 1628}
+{"event": "ccg", "ts": 1790563248.506156, "nodes": 3424, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790564557.700429, "states": 195, "episodes_seen": 1628}
+{"event": "ccg", "ts": 1790564558.1527622, "nodes": 3424, "edges": 872, "new_nodes": 0, "new_edges": 0}
+{"ts": 1790564616.756881, "event": "ab_reject", "rate_on": 0.385, "rate_off": 0.379}
+{"ts": 1790565864.661545, "event": "evolve", "gen": 149, "channel": "actions", "fitness": 0.0}
+{"event": "qlearn", "ts": 1790565866.187504, "states": 195, "episodes_seen": 1629}
+{"event": "ccg", "ts": 1790565868.6805062, "nodes": 3425, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790565930.474936, "event": "ab_install", "action": ";; dream-proposed 1790565930.1537940502\n(rlm-register-action \"microstep\" (lambda"}
+{"ts": 1790567144.96089, "event": "evolve", "gen": 150, "channel": "actions", "fitness": 0.0}
+{"event": "qlearn", "ts": 1790567145.0967839, "states": 195, "episodes_seen": 1631}
+{"event": "ccg", "ts": 1790567145.305386, "nodes": 3427, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"ts": 1790568345.348345, "event": "evolve", "gen": 151, "channel": "tactics", "fitness": 0.0}
+{"event": "qlearn", "ts": 1790568345.499022, "states": 195, "episodes_seen": 1632}
+{"event": "ccg", "ts": 1790568345.785064, "nodes": 3428, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790569400.008259, "states": 195, "episodes_seen": 1634}
+{"event": "ccg", "ts": 1790569400.1938958, "nodes": 3431, "edges": 872, "new_nodes": 3, "new_edges": 0}
+{"event": "qlearn", "ts": 1790570070.345359, "states": 195, "episodes_seen": 1635}
+{"event": "ccg", "ts": 1790570070.535025, "nodes": 3432, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790570754.869815, "states": 195, "episodes_seen": 1637}
+{"event": "ccg", "ts": 1790570755.089876, "nodes": 3434, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790571463.7174568, "states": 195, "episodes_seen": 1639}
+{"event": "ccg", "ts": 1790571463.932141, "nodes": 3436, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790572152.802434, "states": 195, "episodes_seen": 1640}
+{"event": "ccg", "ts": 1790572152.989055, "nodes": 3437, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790572853.34934, "states": 195, "episodes_seen": 1642}
+{"event": "ccg", "ts": 1790572853.570262, "nodes": 3439, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790573542.252661, "states": 195, "episodes_seen": 1644}
+{"event": "ccg", "ts": 1790573542.766935, "nodes": 3441, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"ts": 1790574226.298025, "event": "evolve", "gen": 152, "channel": "tactics", "fitness": 0.1}
+{"ts": 1790574226.298432, "event": "evolve", "gen": 152, "channel": "tactics", "fitness": 0.1, "note": "reverted to champion"}
+{"event": "qlearn", "ts": 1790574226.420139, "states": 195, "episodes_seen": 1645}
+{"event": "ccg", "ts": 1790574226.6082308, "nodes": 3442, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790574931.466551, "states": 195, "episodes_seen": 1647}
+{"event": "ccg", "ts": 1790574931.6904478, "nodes": 3444, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790575681.2736719, "states": 195, "episodes_seen": 1649}
+{"event": "ccg", "ts": 1790575681.536597, "nodes": 3446, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"ts": 1790575753.168726, "event": "ab_reject", "rate_on": 0.437, "rate_off": 0.438}
+{"ts": 1790576322.580412, "event": "evolve", "gen": 153, "channel": "actions", "fitness": 0.0}
+{"event": "qlearn", "ts": 1790576322.699185, "states": 195, "episodes_seen": 1650}
+{"event": "ccg", "ts": 1790576322.886747, "nodes": 3447, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790576394.584149, "event": "ab_install", "action": ";; dream-proposed 1790575000.0492169857\n(rlm-register-action \"microexample\" (lam"}
+{"ts": 1790577025.418164, "event": "evolve", "gen": 154, "channel": "actions", "fitness": 0.0}
+{"event": "qlearn", "ts": 1790577025.555291, "states": 195, "episodes_seen": 1652}
+{"event": "ccg", "ts": 1790577025.777544, "nodes": 3449, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790577791.173852, "states": 195, "episodes_seen": 1654}
+{"event": "ccg", "ts": 1790577791.380472, "nodes": 3451, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790578539.101428, "states": 195, "episodes_seen": 1656}
+{"event": "ccg", "ts": 1790578539.332698, "nodes": 3454, "edges": 872, "new_nodes": 3, "new_edges": 0}
+{"event": "qlearn", "ts": 1790579201.910997, "states": 195, "episodes_seen": 1657}
+{"event": "ccg", "ts": 1790579202.115926, "nodes": 3455, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790579918.424047, "states": 195, "episodes_seen": 1659}
+{"event": "ccg", "ts": 1790579918.632339, "nodes": 3457, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790580667.1973708, "states": 195, "episodes_seen": 1661}
+{"event": "ccg", "ts": 1790580667.432416, "nodes": 3460, "edges": 872, "new_nodes": 3, "new_edges": 0}
+{"event": "qlearn", "ts": 1790581368.136061, "states": 195, "episodes_seen": 1662}
+{"event": "ccg", "ts": 1790581368.332534, "nodes": 3461, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790582050.144005, "states": 195, "episodes_seen": 1664}
+{"event": "ccg", "ts": 1790582050.344786, "nodes": 3463, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790582775.100765, "states": 195, "episodes_seen": 1666}
+{"event": "ccg", "ts": 1790582775.3714108, "nodes": 3466, "edges": 872, "new_nodes": 3, "new_edges": 0}
+{"event": "qlearn", "ts": 1790583486.988228, "states": 195, "episodes_seen": 1667}
+{"event": "ccg", "ts": 1790583487.178584, "nodes": 3467, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790584148.9935942, "states": 195, "episodes_seen": 1669}
+{"event": "ccg", "ts": 1790584149.19913, "nodes": 3469, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790584886.0672262, "states": 195, "episodes_seen": 1671}
+{"event": "ccg", "ts": 1790584886.295083, "nodes": 3471, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"ts": 1790584950.7195709, "event": "ab_reject", "rate_on": 0.441, "rate_off": 0.44}
+{"ts": 1790585574.600805, "event": "evolve", "gen": 155, "channel": "actions", "fitness": 0.0}
+{"event": "qlearn", "ts": 1790585574.7196312, "states": 195, "episodes_seen": 1672}
+{"event": "ccg", "ts": 1790585574.9097779, "nodes": 3472, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790585652.5498612, "event": "ab_install", "action": ";; dream-proposed 1790585652.4413859844\n(rlm-register-action \"microexample\" (lam"}
+{"ts": 1790586262.642973, "event": "evolve", "gen": 156, "channel": "actions", "fitness": 0.0}
+{"ts": 1790586262.643069, "event": "evolve", "gen": 157, "channel": "tactics", "fitness": 0.0}
+{"event": "qlearn", "ts": 1790586262.764312, "states": 195, "episodes_seen": 1674}
+{"event": "ccg", "ts": 1790586262.96222, "nodes": 3474, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"ts": 1790586855.290934, "event": "evolve", "gen": 158, "channel": "tactics", "fitness": 0.0}
+{"ts": 1790586855.2915242, "event": "evolve", "gen": 158, "channel": "tactics", "fitness": 0.0, "note": "reverted to champion"}
+{"event": "qlearn", "ts": 1790586855.413734, "states": 195, "episodes_seen": 1675}
+{"event": "ccg", "ts": 1790586855.607844, "nodes": 3475, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790587608.947776, "event": "evolve", "gen": 159, "channel": "tactics", "fitness": 0.0}
+{"event": "qlearn", "ts": 1790587609.081234, "states": 195, "episodes_seen": 1676}
+{"event": "ccg", "ts": 1790587609.28943, "nodes": 3476, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790588315.9691892, "event": "evolve", "gen": 160, "channel": "tactics", "fitness": 0.0}
+{"ts": 1790588315.96961, "event": "evolve", "gen": 160, "channel": "tactics", "fitness": 0.0, "note": "reverted to champion"}
+{"event": "qlearn", "ts": 1790588316.091102, "states": 195, "episodes_seen": 1678}
+{"event": "ccg", "ts": 1790588316.289165, "nodes": 3478, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790589092.636993, "states": 195, "episodes_seen": 1680}
+{"event": "ccg", "ts": 1790589092.8738902, "nodes": 3481, "edges": 872, "new_nodes": 3, "new_edges": 0}
+{"ts": 1790589796.368923, "event": "evolve", "gen": 161, "channel": "tactics", "fitness": 0.0}
+{"event": "qlearn", "ts": 1790589796.488609, "states": 195, "episodes_seen": 1681}
+{"event": "ccg", "ts": 1790589796.6844668, "nodes": 3482, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"ts": 1790590541.361804, "event": "evolve", "gen": 162, "channel": "tactics", "fitness": 0.0}
+{"ts": 1790590541.3623848, "event": "evolve", "gen": 162, "channel": "tactics", "fitness": 0.0, "note": "reverted to champion"}
+{"event": "qlearn", "ts": 1790590541.495552, "states": 195, "episodes_seen": 1683}
+{"event": "ccg", "ts": 1790590541.7129111, "nodes": 3484, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790591261.051392, "states": 195, "episodes_seen": 1685}
+{"event": "ccg", "ts": 1790591261.281176, "nodes": 3486, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"ts": 1790592021.2415848, "event": "evolve", "gen": 163, "channel": "tactics", "fitness": 0.0}
+{"event": "qlearn", "ts": 1790592021.624994, "states": 195, "episodes_seen": 1687}
+{"event": "ccg", "ts": 1790592022.329987, "nodes": 3489, "edges": 872, "new_nodes": 3, "new_edges": 0}
+{"event": "qlearn", "ts": 1790592737.3804119, "states": 195, "episodes_seen": 1688}
+{"event": "ccg", "ts": 1790592737.5834439, "nodes": 3490, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790593447.1238241, "states": 195, "episodes_seen": 1690}
+{"event": "ccg", "ts": 1790593447.32713, "nodes": 3492, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790594159.586257, "states": 195, "episodes_seen": 1692}
+{"event": "ccg", "ts": 1790594159.809918, "nodes": 3494, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"ts": 1790594234.241685, "event": "ab_reject", "rate_on": 0.448, "rate_off": 0.448}
+{"ts": 1790594933.507265, "event": "evolve", "gen": 164, "channel": "actions", "fitness": 0.0}
+{"event": "qlearn", "ts": 1790594933.726995, "states": 195, "episodes_seen": 1694}
+{"event": "ccg", "ts": 1790594934.052095, "nodes": 3497, "edges": 872, "new_nodes": 3, "new_edges": 0}
+{"ts": 1790594994.926302, "event": "ab_install", "action": ";; dream-proposed 1790594994.7506289482\n(rlm-register-action \"microguide\" (lambd"}
+{"ts": 1790595777.54256, "event": "evolve", "gen": 165, "channel": "actions", "fitness": 0.0}
+{"event": "qlearn", "ts": 1790595778.101335, "states": 195, "episodes_seen": 1696}
+{"event": "ccg", "ts": 1790595778.882373, "nodes": 3500, "edges": 872, "new_nodes": 3, "new_edges": 0}
+{"ts": 1790596443.9082072, "event": "evolve", "gen": 166, "channel": "tactics", "fitness": 0.0}
+{"ts": 1790596443.908681, "event": "evolve", "gen": 166, "channel": "tactics", "fitness": 0.0, "note": "reverted to champion"}
+{"event": "qlearn", "ts": 1790596444.1183722, "states": 195, "episodes_seen": 1697}
+{"event": "ccg", "ts": 1790596444.382773, "nodes": 3501, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790597152.012856, "states": 195, "episodes_seen": 1699}
+{"event": "ccg", "ts": 1790597152.455998, "nodes": 3503, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790597900.799211, "states": 195, "episodes_seen": 1701}
+{"event": "ccg", "ts": 1790597901.248899, "nodes": 3505, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790598764.218435, "states": 195, "episodes_seen": 1703}
+{"event": "ccg", "ts": 1790598764.482774, "nodes": 3508, "edges": 872, "new_nodes": 3, "new_edges": 0}
+{"event": "qlearn", "ts": 1790599472.9914858, "states": 195, "episodes_seen": 1704}
+{"event": "ccg", "ts": 1790599473.1838331, "nodes": 3509, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790600154.140251, "states": 195, "episodes_seen": 1706}
+{"event": "ccg", "ts": 1790600154.362422, "nodes": 3511, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790600907.601578, "states": 195, "episodes_seen": 1708}
+{"event": "ccg", "ts": 1790600907.818864, "nodes": 3513, "edges": 872, "new_nodes": 2, "new_edges": 0}
+{"event": "qlearn", "ts": 1790601650.145525, "states": 195, "episodes_seen": 1710}
+{"event": "ccg", "ts": 1790601650.40044, "nodes": 3516, "edges": 872, "new_nodes": 3, "new_edges": 0}
+{"event": "qlearn", "ts": 1790602391.824019, "states": 195, "episodes_seen": 1711}
+{"event": "ccg", "ts": 1790602392.088972, "nodes": 3517, "edges": 872, "new_nodes": 1, "new_edges": 0}
+{"event": "qlearn", "ts": 1790603165.44994, "states": 195, "episodes_seen": 1712}
+{"event": "ccg", "ts": 1790603165.6517398, "nodes": 3518, "edges": 872, "new_nodes": 1, "new_edges": 0}

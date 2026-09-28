@@ -1,6 +1,7 @@
-# tactics gen · brain verified-seed ·8
-- Fix t5_vowels: (len (filter (lambda (c) (some (lambda (v) (equal? c v)) (list "e" "a" "u" "i" "o"))) (str-split "precaution" "")))
-- Fix ta_prime_sum: (define (prime? n) (if (< n 2) nil (begin (define ok true) (dotimes (i (- n 2)) (if (zero? (mod n (+ i 2))) (set! ok nil))) ok))) then (* 3 (reduce + 0 (filter prime? (list 2 3 4 5 6 7 8 9))))
-- Fix ta_primeprod: same prime? helper, then (reduce * 1 (filter prime? lst))
-- Fix td_revlist: (reverse lst) — LISTS only; strings need (str-join "" (reverse (str-split s "")))
-- NEVER use char-downcase (phantom) — the real builtin is str-downcase; reverse on a string returns nil, split first
+# tactics gen · brain brain:glm-4.5-flash ·7
+- For ta_prime_sum: Create helper function (prime? n) that checks if n is prime
+- For ta_prime_sum: In (prime? n), handle edge cases: n≤1 (false), n=2 (true), even numbers >2 (false)
+- For ta_prime_sum: For (prime? n), check divisibility by testing (mod n i) for odd i from 3 to (sqrt n)
+- For ta_prime_sum: Use (filter prime? lst) to get primes from input list
+- For ta_prime_sum: Sum primes with (+ a b ...) or use (reduce + 0 (filter prime? lst))
+- For ta_prime_sum: Return 0 for empty input list
