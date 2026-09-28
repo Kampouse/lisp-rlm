@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gas Key Launchpad</title>
+<style>
+  :root{--bg:#0b0e14;--card:#141925;--line:#232b3d;--tx:#e8ecf4;--dim:#8b95ab;--acc:#4f8cff;--ok:#34d399;--warn:#fbbf24;--bad:#f87171;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  .wrap{max-width:1060px;margin:0 auto;padding:20px 16px 60px}
+  header{display:flex;flex-wrap:wrap;gap:10px;align-items:baseline;justify-content:space-between;margin-bottom:18px}
+  h1{font-size:20px;margin:0}
+  h1 span{color:var(--acc)}
+  .sub{color:var(--dim);font-size:13px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin:0 0 12px}
+  .row{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px dashed #1c2434;font-size:14px}
+  .row:last-child{border-bottom:0}
+  .row b{font-family:var(--mono);font-weight:600}
+  .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.dim{color:var(--dim)}
+  input,select,button{font:inherit;border-radius:8px;border:1px solid var(--line);background:#0e1320;color:var(--tx);padding:8px 10px}
+  input{width:100%}
+  button{cursor:pointer;background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+  button:hover{filter:brightness(1.1)}
+  button.ghost{background:transparent;color:var(--tx);border:1px solid var(--line)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  label{display:block;font-size:12px;color:var(--dim);margin:10px 0 4px}
+  .tabs{display:flex;gap:6px;margin-bottom:12px}
+  .tabs button{background:transparent;border:1px solid var(--line);color:var(--dim);padding:6px 14px}
+  .tabs button.on{color:#fff;border-color:var(--acc);background:#16233f}
+  .quote{font-family:var(--mono);font-size:13px;background:#0e1320;border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:10px;min-height:20px;color:var(--dim)}
+  .feed{max-height:300px;overflow-y:auto;font-size:13px}
+  .feed .t{display:flex;gap:8px;padding:6px 0;border-bottom:1px dashed #1c2434;font-family:var(--mono)}
+  .badge{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;border:1px solid var(--line);color:var(--dim)}
+  .toast{position:fixed;bottom:18px;right:18px;background:#1b2333;border:1px solid var(--acc);border-radius:10px;padding:10px 14px;max-width:420px;font-size:13px;box-shadow:0 8px 30px #000a;display:none}
+  a{color:var(--acc)}
+  .kv{font-family:var(--mono);font-size:12px;word-break:break-all}
+  .sk{background:transparent;border:1px solid var(--line);color:var(--tx)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>🔑 Gas Key <span>Launchpad</span></h1>
+    <div class="sub" id="head-sub">…</div>
+    <button class="ghost" style="margin-top:8px" onclick="uiConnect()">connect signer</button>
+  </header>
+
+  <div class="grid">
+    <!-- POOL -->
+    <div class="card">
+      <h2>Pool</h2>
+      <div class="row"><span class="dim">token</span><b id="p-sym">—</b></div>
+      <div class="row"><span class="dim">NEAR reserve</span><b id="p-near">—</b></div>
+      <div class="row"><span class="dim">token reserve</span><b id="p-tok">—</b></div>
+      <div class="row"><span class="dim">price</span><b id="p-price">—</b></div>
+      <div class="row"><span class="dim">fee</span><b id="p-fee">—</b></div>
+      <div class="row"><span class="dim">graduated</span><b id="p-grad">—</b></div>
+      <div class="row"><span class="dim">fees accrued</span><b id="p-fees">—</b></div>
+      <label>token account</label>
+      <input id="in-token" spellcheck="false">
+      <button class="ghost" style="margin-top:8px" onclick="loadAll()">refresh</button>
+    </div>
+
+    <!-- MY ACCOUNT -->
+    <div class="card">
+      <h2>My account</h2>
+      <label>account id</label>
+      <input id="in-acct" spellcheck="false" placeholder="you.testnet">
+      <button class="ghost" style="margin-top:8px" onclick="loadAccount()">show my balances</button>
+      <div style="margin-top:10px">
+        <div class="row"><span class="dim">wallet tokens</span><b id="m-tok">—</b></div>
+        <div class="row"><span class="dim">NEAR pad</span><b id="m-pad">—</b></div>
+        <div class="row"><span class="dim">parked (MM float)</span><b id="m-inv">—</b></div>
+      </div>
+    </div>
+
+    <!-- TRADE -->
+    <div class="card" style="grid-column:1/-1">
+      <h2>Trade</h2>
+      <div class="tabs">
+        <button id="tab-buy" class="on" onclick="setTab('buy')">Buy (NEAR → tokens)</button>
+        <button id="tab-sell" onclick="setTab('sell')">Sell (tokens → NEAR)</button>
+      </div>
+      <div id="pane-buy">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+          <div>
+            <label>NEAR in</label>
+            <input id="buy-in" type="number" step="0.001" min="0.001" value="0.01" oninput="quote()">
+            <label>min tokens out (slippage guard, 0 = off)</label>
+            <input id="buy-min" placeholder="0" oninput="quote()">
+          </div>
+          <div class="quote" id="buy-quote">quote appears here…</div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <button onclick="doBuy()">Buy with wallet</button>
+          <button class="ghost" onclick="doBuyKey()">Buy from pad (no popup)</button>
+          <span class="dim" style="align-self:center;font-size:12px">pad buy draws from your deposited NEAR — FA or gas-key identity</span>
+        </div>
+      </div>
+      <div id="pane-sell" style="display:none">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+          <div>
+            <label>tokens in</label>
+            <input id="sell-in" placeholder="1000" oninput="quote()">
+            <label>min NEAR out (0 = off)</label>
+            <input id="sell-min" placeholder="0" oninput="quote()">
+          </div>
+          <div class="quote" id="sell-quote">quote appears here…</div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <button onclick="doSell()">Sell from wallet</button>
+          <button class="ghost" onclick="doSellPark()">Sell parked</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- GAS KEY CONSOLE -->
+    <div class="card" style="grid-column:1/-1">
+      <h2>Gas key console <span class="badge">bots / market makers</span></h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+        <div>
+          <label>gas key (hex) — <a href="#" onclick="genKey();return false">generate new</a> · <a href="#" onclick="loadKeyUI();return false">load saved</a></label>
+          <input id="key-pk" spellcheck="false" placeholder="0020…  (66 hex chars, 0x00-prefixed uncompressed)">
+          <label>key owner wallet (receives payouts)</label>
+          <input id="key-owner" spellcheck="false" placeholder="you.testnet">
+          <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
+            <button class="sk" onclick="keyAdd()">1· authorize key</button>
+            <button class="sk" onclick="keyFundGas()">2· fund gas</button>
+            <button class="sk" onclick="keyDeposit()">3· pad deposit</button>
+          </div>
+          <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+            <input id="park-amt" placeholder="tokens to park" style="width:150px">
+            <button class="sk" onclick="keyPark()">park</button>
+            <button class="sk" onclick="keyUnpark()">unpark all</button>
+            <button class="sk" onclick="keyWithdrawPad()">withdraw pad</button>
+          </div>
+        </div>
+        <div>
+          <div class="row"><span class="dim">funded</span><b id="g-funded">—</b></div>
+          <div class="row"><span class="dim">est. remaining</span><b id="g-est">—</b></div>
+          <div class="row"><span class="dim">refuel</span><b id="g-ref">—</b></div>
+          <div class="row"><span class="dim">pad</span><b id="g-pad">—</b></div>
+          <div class="row"><span class="dim">parked</span><b id="g-inv">—</b></div>
+          <button class="ghost" style="margin-top:8px" onclick="loadKeyStatus()">refresh key status</button>
+          <div class="kv dim" style="margin-top:8px">key trade hot path: buy · sell · withdraw_tokens — auto-refuel keeps the key alive from your pad</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- FEED -->
+    <div class="card" style="grid-column:1/-1">
+      <h2>Live activity</h2>
+      <div class="feed" id="feed">loading…</div>
+    </div>
+  </div>
+
+  <p class="dim" style="font-size:12px;margin-top:18px">
+    Signers: Bitte / Meteor wallet if installed, else dev key (testnet only). Contract:
+    <span class="kv" id="head-pool"></span>
+  </p>
+</div>
+<div class="toast" id="toast"></div>
+
+<script type="module">
+/* ── config ─────────────────────────────────────────────── */
+const CFG = {
+  pool: "nostrgove2e.testnet",          // pool contract
+  token: "gktoken-a7a236.testnet",      // default token
+  rpc: "https://rpc.testnet.fastnear.com",
+  fastnearApi: "https://api.fastnear.com",
+  network: "testnet",
+};
+window.CFG = CFG;
+
+/* ── rpc ────────────────────────────────────────────────── */
+function Buffer_from(arr){ let s=""; for (const b of arr) s+=String.fromCharCode(b); return s; }
+async function viewRaw(accountId, methodName, args) {
+  const r = await fetch(CFG.rpc, {method:"POST",headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({jsonrpc:"2.0",id:"ui",method:"query",params:{
+      request_type:"call_function",finality:"final",account_id:accountId,
+      method_name:methodName,args_base64:btoa(JSON.stringify(args||{}))}})});
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.data?.error_message || JSON.stringify(j.error).slice(0,120));
+  return Buffer_from(j.result.result);   // RAW text — never JSON.parse big numbers
+}
+async function view(accountId, methodName, args) {
+  return JSON.parse(await viewRaw(accountId, methodName, args));
+}
+window.view = view;
+
+/* ── fmt ────────────────────────────────────────────────── */
+const D18 = 10n**18n;
+function fmtNear(yoctoStr){ const y=BigInt(yoctoStr||"0"); const n=y/D18n, fr=(y%D18n).toString().padStart(18,"0").slice(0,4);
+  return `${n}.${fr} NEAR`; }
+function fmtTok(rawStr,dec){ const d=10n**BigInt(dec||18); const v=BigInt(String(rawStr||"0")); const n=v/d, fr=(v%d).toString().padStart((dec||18),"0").slice(0,2);
+  return `${n}.${fr}`; }
+function parseNear(v){ const [a,b=""]=String(v).trim().split("."); const fr=(b+"0".repeat(18)).slice(0,18);
+  return BigInt(a||"0")*D18n + BigInt(fr||"0"); }
+function parseTok(v,dec){ const [a,b=""]=String(v).trim().split("."); const d=Number(dec||18);
+  const fr=(b+"0".repeat(d)).slice(0,d); return BigInt(a||"0")*10n**BigInt(d) + BigInt(fr||"0"); }
+window.fmtNear=fmtNear; window.fmtTok=fmtTok; window.parseNear=parseNear; window.parseTok=parseTok;
+
+/* ── toast / misc ───────────────────────────────────────── */
+let toastT;
+function toast(msg,kind){ const t=document.getElementById("toast");
+  t.textContent=msg; t.style.display="block"; t.style.borderColor=kind==="bad"?"var(--bad)":kind==="ok"?"var(--ok)":"var(--acc)";
+  clearTimeout(toastT); toastT=setTimeout(()=>t.style.display="none",7000); }
+window.toast=toast;
+window.token = () => document.getElementById("in-token").value.trim();
+let DEC = 18, SYM = "TKN";
+
+/* ── signer: wallet or dev key ──────────────────────────── */
+let signer = null;
+function detectWallet(){
+  if (window.bitte?.wallet) return {kind:"bitte", w:window.bitte.wallet, accountId: window.bitte.wallet.getAccountId?.() || prompt("Bitte connected account id:")};
+  if (window.meteorWallet) return {kind:"meteor", w:window.meteorWallet, accountId: window.meteorWallet.getAccount?.()?.accountId || prompt("Meteor connected account id:")};
+  return null;
+}
+window.uiConnect = async function(){
+  const w = detectWallet();
+  if (w){ signer=w; document.getElementById("in-acct").value=w.accountId;
+    toast(`wallet connected: ${w.kind} · ${w.accountId}`,"ok"); loadAccount(); return; }
+  const k = prompt("No wallet detected. Paste a DEV key (ed25519:…) — testnet only:");
+  if(!k) return;
+  const acct = prompt("Account id for this key:");
+  signer = {kind:"dev", secret:k, accountId:acct};
+  document.getElementById("in-acct").value=acct;
+  toast("dev signer set (testnet)","warn"); loadAccount();
+};
+async function sendTx(receiverId, actions){
+  if (!signer){ toast("connect a signer first (top right)","bad"); throw new Error("no signer"); }
+  if (signer.kind === "dev") return devSend(receiverId, actions);
+  const res = await signer.w.signAndSendTransaction({receiverId, actions});
+  toast("tx sent ✓","ok"); return res;
+}
+window.sendTx = sendTx;
+
+/* dev-mode raw tx via near-api-js */
+let nearAPI = null;
+async function loadNaj(){ nearAPI ||= await import("https://esm.run/near-api-js@5.0.0"); return nearAPI; }
+window.loadNaj = loadNaj;
+async function devSend(receiverId, actions){
+  const na = await loadNaj();
+  const keyPair = na.KeyPair.fromString(signer.secret);
+  const ks = new na.keyStores.InMemoryKeyStore();
+  await ks.setKey(CFG.network, signer.accountId, keyPair);
+  const connection = {
+    networkId: CFG.network,
+    provider: new na.providers.JsonRpcProvider({ url: CFG.rpc }),
+    signer: new na.InMemorySigner(ks),
+    jsvmAccountId: "jsvm.testnet",
+  };
+  const acc = new na.Account(connection, signer.accountId);
+  const out = await acc.signAndSendTransaction({receiverId, actions: actions.map(a=>{
+    if (a.type==="FunctionCall") return na.transactions.functionCall(a.params.methodName, a.params.args, BigInt(a.params.gas), BigInt(a.params.deposit||"0"));
+    if (a.type==="AddKey") return na.transactions.addKey(
+      na.utils.PublicKey.fromString(a.params.publicKey),
+      na.transactions.functionCallAccessKey(a.params.accessKey.receiverId, a.params.accessKey.methodNames, BigInt(a.params.accessKey.allowance)));
+    if (a.type==="Transfer") return na.transactions.transfer(BigInt(a.params.deposit));
+    throw new Error("action not supported: "+a.type);
+  })});
+  return out;
+}
+
+/* ── data loading ───────────────────────────────────────── */
+window.loadAll = async function(){
+  document.getElementById("in-token").value = CFG.token;
+  document.getElementById("head-pool").textContent = CFG.pool;
+  document.getElementById("head-sub").textContent = `${CFG.network} · ${CFG.pool}`;
+  await loadPool(); loadFeed(); loadKeyStatus();
+};
+async function loadPool(){
+  const t = token();
+  try {
+    const [meta, pool, fee] = await Promise.all([
+      view(t,"ft_metadata",{}),
+      view(CFG.pool,"get_pool",{token:t}),
+      view(CFG.pool,"get_fee",{}),
+    ]);
+    DEC = Number(meta.decimals ?? 18); SYM = meta.symbol ?? "TKN";
+    document.getElementById("p-sym").textContent = `${meta.name} (${SYM})`;
+    document.getElementById("p-near").textContent = fmtNear(pool.near);
+    document.getElementById("p-tok").textContent = fmtTok(pool.tokens,DEC)+" "+SYM;
+    const pn=BigInt(pool.near), pt=BigInt(pool.tokens);
+    if (pn>0n && pt>0n){
+      document.getElementById("p-price").textContent =
+        `1 NEAR ≈ ${fmtTok((pt*10n**18n/pn).toString(),18)} ${SYM} · 1 ${SYM} ≈ ${(Number(pn*10n**12n/pt)/1e12).toFixed(9)} NEAR`;
+    }
+    document.getElementById("p-fee").textContent = (Number(fee.bps)/100)+"%";
+    document.getElementById("p-grad").textContent = pool.graduated==="true" ? "✅ yes" : "no";
+    document.getElementById("p-fees").textContent = fmtNear(fee.fees_near);
+  } catch(e){ toast("pool load: "+e.message,"bad"); }
+}
+window.loadAccount = async function(){
+  const a = document.getElementById("in-acct").value.trim(); if(!a) return toast("enter account id","bad");
+  const t = token();
+  try{
+    const [tokBal, led] = await Promise.all([
+      viewRaw(t,"ft_balance_of",{account_id:a}),
+      view(CFG.pool,"get_balance",{account:a, token:t}),
+    ]);
+    document.getElementById("m-tok").textContent = fmtTok(tokBal,DEC)+" "+SYM+" ✓ in wallet";
+    document.getElementById("m-pad").textContent = fmtNear(led.near);
+    document.getElementById("m-inv").textContent = fmtTok(led.parked,DEC)+" "+SYM;
+    toast("balances loaded","ok");
+  }catch(e){ toast("account load: "+e.message,"bad"); }
+};
+
+/* ── trade ──────────────────────────────────────────────── */
+window.setTab = function(t){
+  for (const x of ["buy","sell"]){ document.getElementById("tab-"+x).classList.toggle("on",x===t);
+    document.getElementById("pane-"+x).style.display = x===t?"":"none"; }
+};
+window.quote = async function(){
+  try{
+    const t = token();
+    const bi = document.getElementById("buy-in").value;
+    if (bi && Number(bi)>0){
+      const q = await view(CFG.pool,"quote_buy",{token:t, near_in:parseNear(bi).toString()});
+      document.getElementById("buy-quote").innerHTML =
+        `in <b>${bi} NEAR</b> → out <b class="ok">${fmtTok(q.net,DEC)} ${SYM}</b><br>gross ${fmtTok(q.gross,DEC)} · fee ${fmtTok(q.fee,DEC)}`;
+    }
+    const si = document.getElementById("sell-in").value;
+    if (si && Number(si)>0){
+      const q = await view(CFG.pool,"quote_sell",{token:t, tokens_in:parseTok(si,DEC).toString()});
+      document.getElementById("sell-quote").innerHTML =
+        `in <b>${si} ${SYM}</b> → out <b class="ok">${fmtNear(q.net)}</b><br>gross ${fmtNear(q.gross)} · fee ${fmtNear(q.fee)}`;
+    }
+  }catch(e){}
+};
+const YOCTO="1";
+window.doBuy = async function(){
+  const t = token(); const amt = parseNear(document.getElementById("buy-in").value).toString();
+  const min = document.getElementById("buy-min").value.trim();
+  await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"buy",args:{token:t, ...(min&&Number(min)>0?{min_tokens_out:parseTok(min,DEC).toString()}:{})},gas:"150000000000000",deposit:amt}}]);
+  await refreshAfter();
+};
+window.doBuyKey = async function(){
+  const t = token(); const amt = parseNear(document.getElementById("buy-in").value).toString();
+  await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"buy",args:{token:t,near_in:amt},gas:"150000000000000",deposit:"0"}}]);
+  await refreshAfter();
+};
+window.doSell = async function(){
+  const t = token(); const amt = parseTok(document.getElementById("sell-in").value,DEC).toString();
+  const min = document.getElementById("sell-min").value.trim();
+  const msg = "sell" + (min&&Number(min)>0 ? ":"+parseNear(min).toString() : "");
+  await sendTx(t, [{type:"FunctionCall",params:{methodName:"ft_transfer_call",args:{receiver_id:CFG.pool,amount:amt,msg},gas:"150000000000000",deposit:YOCTO}}]);
+  await refreshAfter();
+};
+window.doSellPark = async function(){
+  const t = token(); const amt = parseTok(document.getElementById("sell-in").value,DEC).toString();
+  const min = document.getElementById("sell-min").value.trim();
+  const minArg = min&&Number(min)>0?{min_near_out:parseNear(min).toString()}:{};
+  const saved = localStorage.getItem("gk-pub");
+  if (saved && pkHexOf(saved)===pkVal()){
+    await keyTx("sell",{token:t,tokens_in:amt,...minArg});   // true gas-key call (pk identity)
+  } else {
+    await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:t,tokens_in:amt,...minArg},gas:"150000000000000",deposit:"0"}}]);
+  }
+  await refreshAfter();
+};
+async function refreshAfter(){ await new Promise(r=>setTimeout(r,1800));
+  await loadPool(); await loadAccount(); loadKeyStatus(); loadFeed(); }
+
+/* ── gas key console ────────────────────────────────────── */
+function pkVal(){ return document.getElementById("key-pk").value.trim().toLowerCase().replace(/^0x/,""); }
+function ownerVal(){ return document.getElementById("key-owner").value.trim(); }
+function pkHexOf(pkStr){
+  // "ed25519:<b58>" → hex 0x00-prefixed uncompressed (what the pool uses)
+  const ALPHA="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  let n=0n; for(const c of pkStr.split(":")[1]) n=n*58n+BigInt(ALPHA.indexOf(c));
+  return "00"+n.toString(16).padStart(64,"0");
+}
+window.genKey = async function(){
+  const na = await loadNaj();
+  const pair = na.KeyPair.fromRandom("ed25519");
+  localStorage.setItem("gk-key", pair.toString());
+  localStorage.setItem("gk-pub", pair.getPublicKey().toString());
+  document.getElementById("key-pk").value = pkHexOf(pair.getPublicKey().toString());
+  toast("key generated & saved in this browser (testnet) — back it up!","warn");
+};
+window.loadKeyUI = function(){
+  const k = localStorage.getItem("gk-key"), p = localStorage.getItem("gk-pub");
+  if(!k) return toast("no saved key","bad");
+  document.getElementById("key-pk").value = pkHexOf(p);
+  toast("saved key loaded","ok");
+};
+function b58OfHex(hex){
+  const ALPHA="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  let n=BigInt("0x"+hex), out="";
+  while(n>0n){ out=ALPHA[Number(n%58n)]+out; n/=58n; }
+  return out;
+}
+window.keyAdd = async function(){
+  const pk = pkVal(); if(!pk) return;
+  const pub = "ed25519:"+b58OfHex(pk.slice(2));
+  await sendTx(signer.accountId, [{type:"AddKey",params:{publicKey:pub,
+    accessKey:{receiverId:CFG.pool, methodNames:["buy","sell","withdraw_tokens"], allowance:"1000000000000000000000000"}}}]);
+  toast("gas key authorized ✓","ok");
+};
+window.keyFundGas = async function(){
+  const pk=pkVal(); if(!pk) return;
+  const amt = prompt("NEAR to fund gas with:","0.15"); if(!amt) return;
+  await sendTx(CFG.pool,[{type:"FunctionCall",params:{methodName:"fund_gas",
+    args:{pk, owner:ownerVal()||undefined},gas:"60000000000000",deposit:parseNear(amt).toString()}}]);
+  await refreshAfter();
+};
+window.keyDeposit = async function(){
+  const pk=pkVal(); if(!pk) return;
+  const amt = prompt("NEAR pad deposit:","0.05"); if(!amt) return;
+  await sendTx(CFG.pool,[{type:"FunctionCall",params:{methodName:"deposit",
+    args:{pk, owner:ownerVal()||undefined},gas:"30000000000000",deposit:parseNear(amt).toString()}}]);
+  await refreshAfter();
+};
+window.keyPark = async function(){
+  const pk=pkVal(); if(!pk) return;
+  const amt = parseTok(document.getElementById("park-amt").value,DEC).toString();
+  if(amt==="0") return toast("enter tokens to park","bad");
+  await sendTx(token(),[{type:"FunctionCall",params:{methodName:"ft_transfer_call",
+    args:{receiver_id:CFG.pool, amount:amt, msg:"park:"+pk},gas:"120000000000000",deposit:YOCTO}}]);
+  await refreshAfter();
+};
+window.keyUnpark = async function(){
+  const pk=pkVal(); if(!pk) return;
+  const saved = localStorage.getItem("gk-key");
+  if (!saved || pkHexOf(localStorage.getItem("gk-pub"))!==pk) return toast("unpark runs via the gas key itself (browser must hold it)","bad");
+  await keyTx("withdraw_tokens",{token:token()});
+  await refreshAfter();
+};
+window.keyWithdrawPad = async function(){
+  await sendTx(CFG.pool,[{type:"FunctionCall",params:{methodName:"withdraw",args:{},gas:"30000000000000",deposit:YOCTO}}]);
+  await refreshAfter();
+};
+async function keyTx(method,args){
+  const saved = localStorage.getItem("gk-key"); if(!saved) return toast("no local key","bad");
+  const na = await loadNaj();
+  const pair = na.KeyPair.fromString(saved);
+  const ks = new na.keyStores.InMemoryKeyStore(); await ks.setKey(CFG.network, CFG.pool, pair);
+  const connection = {
+    networkId: CFG.network,
+    provider: new na.providers.JsonRpcProvider({ url: CFG.rpc }),
+    signer: new na.InMemorySigner(ks),
+    jsvmAccountId: "jsvm.testnet",
+  };
+  const acc = new na.Account(connection, CFG.pool);
+  const res = await acc.signAndSendTransaction({receiverId:CFG.pool,
+    actions:[na.transactions.functionCall(method,args,180000000000000n,0n)]});
+  toast(method+" ✓","ok"); return res;
+}
+window.loadKeyStatus = async function(){
+  const pk=pkVal(); if(!pk){ return; }
+  try{
+    const [st, led, cfgv] = await Promise.all([
+      view(CFG.pool,"get_gas_status",{pk}),
+      view(CFG.pool,"get_balance",{account:"pk:"+pk, token:token()}),
+      view(CFG.pool,"get_gk_config",{}).catch(()=>null),
+    ]);
+    document.getElementById("g-funded").textContent = fmtNear(st.funded);
+    document.getElementById("g-est").textContent = fmtNear(st.est);
+    document.getElementById("g-ref").textContent = cfgv ? `at ${fmtNear(cfgv.refuel_at)} → +${fmtNear(cfgv.refuel_amt)}` : "auto";
+    document.getElementById("g-pad").textContent = fmtNear(led.near);
+    document.getElementById("g-inv").textContent = fmtTok(led.parked,DEC)+" "+SYM;
+  }catch(e){}
+};
+
+/* ── live feed ──────────────────────────────────────────── */
+async function loadFeed(){
+  try{
+    const r = await fetch(`${CFG.fastnearApi}/v3/account/${CFG.pool}/txns?limit=12`);
+    const j = await r.json();
+    const el = document.getElementById("feed"); el.innerHTML="";
+    for (const txn of (j.txns||[])){
+      const logs = [
+        ...((txn.transaction_outcome?.outcome?.logs)||[]),
+        ...((txn.receipts_outcome||[]).flatMap(x=>x.outcome?.logs||[])),
+      ].filter(l=>/^(buy:|sell:|selli:|park:|unpark:|refuel:|deposit:)/.test(l));
+      if(!logs.length) continue;
+      const d = new Date(Number(txn.block_timestamp)/1e6);
+      for (const l of logs){
+        const tag = l.split(":")[0];
+        const color = tag==="buy"?"ok":tag==="sell"?"warn":"dim";
+        el.insertAdjacentHTML("beforeend",
+          `<div class="t"><span class="dim">${d.toLocaleTimeString()}</span><span class="${color}" style="min-width:52px">${tag}</span><span>${l.slice(0,110)}</span></div>`);
+      }
+    }
+    if(!el.innerHTML) el.innerHTML='<div class="dim">no recent trades</div>';
+  }catch(e){ document.getElementById("feed").innerHTML='<div class="dim">feed unavailable</div>'; }
+}
+window.loadFeed = loadFeed;
+
+loadAll();
+setInterval(loadFeed, 30000);
+</script>
+</body>
+</html>
