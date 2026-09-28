@@ -27,7 +27,7 @@
 //   deposit()    — credit the trader's global NEAR pad (nb:<trader>)
 //   buy()        — attached > 0 = classic path (unchanged); attached = 0 =
 //                  debit the pad, credit the internal token ledger
-//                  (tb:<token>:<trader>) — no outbound ftTransfer promise,
+//                  (v3.3: REMOVED — every buy pays REAL tokens out;
 //                  so the hot path is a few storage writes
 //   sell_internal() — ledger tokens → xyk NEAR → credited to the pad
 //   withdraw()   — pad → trader, requires exactly 1 yoctoNEAR attached;
@@ -72,7 +72,7 @@ function tbKey(t: string, trader: string): string { return "tb:" + t + ":" + tra
 // promise_batch_action_transfer_to_gas_key.
       // est. 1 mNEAR gas/trade (measured 0.37 → 2.7x margin)
 const GK_REFUEL_AT = "500000000000000000000000"; // est-balance floor (yocto): refuel when est key balance < 0.5 NEAR
-const GK_REFUEL_AMT = "2000000000000000000000"; // refuel shot: 2 NEAR ≈ 5,400 trades
+const GK_REFUEL_AMT = "2000000000000000000000000"; // refuel shot: 2 NEAR (2e24) ≈ 4,500 trades net
 
 // gas-key identity is HEX(signer pk) — the raw 33-byte borsh pk can't ride
 // JSON args (codepoint re-encoding mangles bytes >= 0x80), so both the
@@ -90,6 +90,7 @@ function traderId(pk: string): string {
 
 function gkGaugeKey(pk: string): string { return "gk:" + pk; }
 function gfKey(pk: string): string { return "gf:" + pk; } // total ever funded into the key (yocto)
+function ownKey(pk: string): string { return "own:" + pk; } // registered wallet for pool-hosted keys
 function gcKey(pk: string): string { return "gc:" + pk; } // cumulative real burn (gas units)
 function gkCfg(k: string, def: string): string { return near.storageGet("gkcfg:" + k) ?? def; }
 
@@ -452,6 +453,10 @@ export function deposit(): number {
   const attached = near.attachedDepositU128();
   if (u128IsZero(attached)) { near.abort("ERR_ZERO"); return 0; }
   const pkArg = near.jsonGetStr("pk") ?? "";
+  if (pkArg != "") {
+    const own = near.jsonGetStr("owner") ?? "";
+    if (own != "") { near.storageSet(ownKey(pkArg), own); }
+  }
   const k = pkArg != "" ? nbKey("pk:" + pkArg) : nbKey(near.predecessorAccountId());
   const cur = near.storageGet(k) ?? "0";
   near.storageSet(k, u128Add(cur, attached));
@@ -469,6 +474,8 @@ export function fund_gas(): number {
   if (u128IsZero(attached)) { near.abort("ERR_ZERO"); return 0; }
   const pk = near.jsonGetStr("pk") ?? "";
   if (pk == "") { near.abort("ERR_PK"); return 0; }
+  const own = near.jsonGetStr("owner") ?? "";
+  if (own != "") { near.storageSet(ownKey(pk), own); }
   const k = gfKey(pk);
   near.storageSet(k, u128Add(near.storageGet(k) ?? "0", attached));
   const idx = near.promiseBatchCreate(near.currentAccountId());
@@ -613,10 +620,6 @@ export function buy(): string {
     const padNow = near.storageGet(nk) ?? "0";
     const padAfter = u128Sub(padNow, nearIn);
     near.storageSet(nk, padAfter);
-    const tk = tbKey(token, tid);
-    const held = near.storageGet(tk) ?? "0";
-    const heldAfter = u128Add(held, net);
-    near.storageSet(tk, heldAfter);
     autoRefuel(tid, gkPk);
   }
   if (!u128IsZero(fee)) {
@@ -624,10 +627,15 @@ export function buy(): string {
     const feeNow = near.storageGet(feeKey) ?? "0";
     near.storageSet(feeKey, u128Add(feeNow, fee));
   }
-  if (!u128IsZero(attached)) {
+  if (true) {
+    // v3.3: EVERY buy pays out REAL tokens — internal ledger buys are gone
+    // (JP: users must SEE their tokens). Receiver: the wallet REGISTERED
+    // for pool-hosted gas keys (own:<hex>), else the calling account.
+    const own = gkPk != "" ? (near.storageGet(ownKey(gkPk)) ?? "") : "";
+    const rcpt = own != "" ? own : trader;
     const tokAcct = near.storageGet(tokKey(token)) ?? "";
     near.call(tokAcct, "ftTransfer",
-      `{"receiver_id":${jsonQuote(trader)},"amount":${jsonQuote(net)}}`,
+      `{"receiver_id":${jsonQuote(rcpt)},"amount":${jsonQuote(net)}}`,
       30000000000000, "0");
   }
   tradeEvent(token, "buy", trader, nearIn, net, fee);

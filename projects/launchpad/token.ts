@@ -125,6 +125,11 @@ export function ft_resolve_transfer(): number {
 
 // ── storage registration (standard views; LENIENT model, see header) ──
 
+export function ft_balance_of(): string {
+  const a = near.jsonGetStr("account_id") ?? "";
+  return near.storageGet(balKey(a)) ?? "0";
+}
+
 export function storageDeposit(): number {
   const who = near.jsonGetStr("account_id") ?? near.predecessorAccountId();
   if ((near.storageGet(balKey(who)) ?? "") == "") { near.storageSet(balKey(who), "0"); }
