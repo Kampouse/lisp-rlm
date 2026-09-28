@@ -551,6 +551,7 @@ impl WasmEmitter {
                 let key = self.expr(&a[0])?;
                 let k = self.local_idx("__ssh_k");
                 let mut v = Vec::new();
+                self.need_host(20); // storage_has_key
                 v.extend(key);
                 v.push(Instruction::LocalSet(k));
                 Self::emit_assert_tag_str(&mut v, k);
@@ -575,6 +576,7 @@ impl WasmEmitter {
                 let key = self.expr(&a[0])?;
                 let k = self.local_idx("__ssr_k");
                 let mut v = Vec::new();
+                self.need_host(19); // storage_remove — host_call(19) below needs the import registered
                 v.extend(key);
                 v.push(Instruction::LocalSet(k));
                 Self::emit_assert_tag_str(&mut v, k);
