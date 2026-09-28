@@ -262,9 +262,11 @@ async function ensureConnector(){
   connector = new mod.NearConnector({ network: CFG.network });   // testnet pool!
   connector.on("wallet:signIn", async (t)=>{
     connectorWallet = await connector.wallet();
+    const wn = connectorWallet?.manifest?.name ?? connectorWallet?.manifest?.id ?? "wallet";
+    localStorage.setItem("gk-wallet-name", wn);
     signer = { kind:"connect", accountId: t.accounts[0].accountId };
     document.getElementById("in-acct").value = t.accounts[0].accountId;
-    toast(`wallet connected · ${t.accounts[0].accountId}`,"ok");
+    toast(`wallet connected · ${t.accounts[0].accountId} · via ${wn}`,"ok");
     loadAccount(true);
   });
   connector.on("wallet:signOut", ()=>{ signer=null; connectorWallet=null; toast("wallet disconnected","warn"); });
@@ -428,7 +430,8 @@ window.loadAccount = async function(silent){
     document.getElementById("ab-park").textContent = fmtTok(led.parked,DEC);
     document.getElementById("ab-sym").textContent = SYM+" · wallet";
     document.getElementById("ab-sym2").textContent = SYM+" · parked";
-    document.getElementById("ab-wallet").textContent = signer ? (signer.kind==="connect" ? "💳 wallet connected" : "🔧 dev signer") : "view-only (connect to trade)";
+    const wn = localStorage.getItem("gk-wallet-name");
+    document.getElementById("ab-wallet").textContent = signer ? (signer.kind==="connect" ? `💳 ${wn||"wallet"}` : "🔧 dev signer") : "view-only (connect to trade)";
     if(!silent) toast("balances loaded","ok");
   }catch(e){ if(!silent) toast("account load: "+e.message,"bad"); }
 };
@@ -634,7 +637,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b14";
+const BUILD = "b15";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
