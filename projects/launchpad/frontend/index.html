@@ -328,11 +328,13 @@ ensureConnector().catch(e=>{
 });
 async function sendTx(receiverId, actions){
   const f = fastGet();
-  if (f && signer && signer.accountId === f.accountId){
+  const GK_OK = ["buy","sell","withdraw_tokens"];   // gas-key ACL on the pool
+  const keyCanSign = f && signer && signer.accountId === f.accountId
+    && (!receiverId || receiverId === CFG.pool)
+    && actions.every(a => a.type==="FunctionCall" && a.params.deposit==="0" && GK_OK.includes(a.params.methodName));
+  if (keyCanSign){
     // ⚡ gas key signs a V1 tx as the POOL — no wallet popup, gas on the key float
-    const fActs = actions.map(a=>a.type==="FunctionCall"
-      ? {type:"FunctionCall", methodName:a.params.methodName, args:a.params.args, gas:a.params.gas, deposit:a.params.deposit}
-      : a);
+    const fActs = actions.map(a=>({type:"FunctionCall", methodName:a.params.methodName, args:a.params.args, gas:a.params.gas, deposit:a.params.deposit}));
     return await gasSend(fActs, receiverId);
   }
   if (!signer){ toast("connect a wallet first (top right)","bad"); throw new Error("no signer"); }
@@ -798,7 +800,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b20";
+const BUILD = "b21";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
