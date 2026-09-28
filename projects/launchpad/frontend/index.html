@@ -296,14 +296,13 @@ async function sendTx(receiverId, actions){
   if (!signer){ toast("connect a wallet first (top right)","bad"); throw new Error("no signer"); }
   if (signer.kind === "connect"){
     const w = connectorWallet ?? await connector.wallet();
+    // PLURAL-FIRST: every wallet implements the batch form; several
+    // (MyNearWallet…) reject the singular one outright
     let res;
-    try {
-      res = await w.signAndSendTransaction({ receiverId, actions });  // selector-format actions accepted natively
-    } catch(e){
-      // some wallets only implement the batch form — retry as batch-of-one
-      if (/not supported/i.test(e?.message||"")) {
-        res = await w.signAndSendTransactions({ transactions:[{ receiverId, actions }] });
-      } else throw e;
+    if (typeof w.signAndSendTransactions === "function") {
+      res = await w.signAndSendTransactions({ transactions:[{ receiverId, actions }] });
+    } else {
+      res = await w.signAndSendTransaction({ receiverId, actions });
     }
     toast("tx sent ✓","ok"); return res;
   }
@@ -629,7 +628,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b12";
+const BUILD = "b13";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
