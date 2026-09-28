@@ -311,9 +311,9 @@ async function devSend(receiverId, actions){
   const acc = new na.Account(connection, signer.accountId);
   const out = await acc.signAndSendTransaction({receiverId, actions: actions.map(a=>{
     if (a.type==="FunctionCall") return na.transactions.functionCall(a.params.methodName, a.params.args, BigInt(a.params.gas), BigInt(a.params.deposit||"0"));
-    if (a.type==="AddKey") return na.transactions.addKey(
+    if (a.type==="AddKey"){ const fc=a.params.accessKey.permission.FunctionCall; return na.transactions.addKey(
       na.utils.PublicKey.fromString(a.params.publicKey),
-      na.transactions.functionCallAccessKey(a.params.accessKey.receiverId, a.params.accessKey.methodNames, BigInt(a.params.accessKey.allowance)));
+      na.transactions.functionCallAccessKey(fc.receiverId, fc.methodNames, BigInt(fc.allowance))); }
     if (a.type==="Transfer") return na.transactions.transfer(BigInt(a.params.deposit));
     throw new Error("action not supported: "+a.type);
   })});
@@ -476,7 +476,7 @@ window.keyAdd = async function(){
   const pk = pkVal(); if(!pk) return;
   const pub = "ed25519:"+b58OfHex(pk.slice(2));
   await sendTx(signer.accountId, [{type:"AddKey",params:{publicKey:pub,
-    accessKey:{receiverId:CFG.pool, methodNames:["buy","sell","withdraw_tokens"], allowance:"1000000000000000000000000"}}}]);
+    accessKey:{nonce:0, permission:{FunctionCall:{receiverId:CFG.pool, methodNames:["buy","sell","withdraw_tokens"], allowance:"1000000000000000000000000"}}}}}]);
   toast("gas key authorized ✓","ok");
 };
 window.keyFundGas = async function(){
@@ -570,7 +570,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b8";
+const BUILD = "b9";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
