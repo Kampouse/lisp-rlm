@@ -1564,6 +1564,11 @@ impl WasmEmitter {
                 let nonces = self.expr(&a[2])?;
                 let allow = self.expr(&a[3])?;
                 let recv = self.expr(&a[4])?;
+                // methods: SINGLE comma-joined string ("buy,sell,…" — nearcore
+                // splits the method_names buffer on commas). Passing a Lisp
+                // ARRAY here emits the array tag as len/ptr → host reads
+                // wild memory → on-chain "Accessed memory outside the bounds"
+                // (2026-09-28, register_gas_key probe).
                 let methods = self.expr(&a[5])?;
                 let mut v = Vec::new();
                 // BATCH-IDX FIX (2026-09-27): the promise idx arrives TAGGED in
@@ -1576,6 +1581,17 @@ impl WasmEmitter {
                 v.extend(self.expr(&a[0])?);
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(batch_idx_l));
+                // allow: decimal-str u128 → 16B LE at TEMP_MEM, host takes the
+                // POINTER (same machinery as function_call's deposit; raw
+                // tagged-string pass was garbage on chain)
+                let h = self.ensure_u128_str_helpers();
+                let allow_l = self.local_idx("__gk_allow");
+                v.extend(allow);
+                v.push(Instruction::LocalSet(allow_l));
+                v.push(Instruction::LocalGet(allow_l));
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::call_user(h.parse));
+                v.push(Instruction::Drop);
                 v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(pk.clone());
                 v.extend(self.emit_untag());
@@ -1586,7 +1602,8 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.extend(nonces);
-                v.extend(allow);
+                // allow as TEMP_MEM pointer (16B LE u128)
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
                 v.extend(recv.clone());
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));

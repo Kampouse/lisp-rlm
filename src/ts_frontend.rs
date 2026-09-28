@@ -3259,6 +3259,8 @@ fn member_fn_returns_non_string(obj: &str, prop: &str) -> bool {
                 | "promiseBatchActionFunctionCall"
                 | "promiseBatchActionCreateAccount"
                 | "promiseBatchActionTransferToGasKey"
+                | "promiseBatchActionAddGasKeyWithFullAccess"
+                | "promiseBatchActionAddGasKeyWithFunctionCall"
                 | "promiseReturn"
                 | "signerAccountPk"
                 | "currentAccountId"
