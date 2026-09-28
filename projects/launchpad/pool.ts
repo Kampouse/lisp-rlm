@@ -19,6 +19,25 @@
 //   - trade events: EVENT_JSON standard intear_launch event "trade"
 //   - buy()/quote_buy()/quote_sell() return JSON: {"gross","fee","net"}
 //
+// v3 (2026-09-28, internal balances — NEP-611 gas-key trading):
+//   A scoped gas key (GasKeyFunctionCall) can NEVER attach a deposit —
+//   nearcore verify_function_call_permission rejects deposit > 0 for
+//   restricted keys, gas or classical alike (source-verified 2026-09-28).
+//   Gas-key trading therefore runs on contract-side ledgers:
+//   deposit()    — credit the trader's global NEAR pad (nb:<trader>)
+//   buy()        — attached > 0 = classic path (unchanged); attached = 0 =
+//                  debit the pad, credit the internal token ledger
+//                  (tb:<token>:<trader>) — no outbound ftTransfer promise,
+//                  so the hot path is a few storage writes
+//   sell_internal() — ledger tokens → xyk NEAR → credited to the pad
+//   withdraw()   — pad → trader, requires exactly 1 yoctoNEAR attached;
+//                  restricted keys structurally cannot attach it, so a
+//                  mis-whitelisted gas key still cannot drain the pad
+//   get_balance  — view of both ledgers
+//   (Settlement in/out of the internal token ledger happens with a full
+//   key via the token contract; the gas key only ever touches buy /
+//   sell_internal — Hyperliquid-style session-key trading.)
+//
 // xyk needs (reserve_a * amount) / (reserve_b + amount) — the numerator is
 // ~170 bits and overflows u128, so bigMul/bigDiv do exact base-10 schoolbook
 // on decimal strings (digit ops in i64, running remainder in u128).
@@ -31,6 +50,11 @@ function feeTokKey(t: string): string { return "fees_tok:" + t; }
 function gradThKey(t: string): string { return "grad_th:" + t; }
 function gradKey(t: string): string { return "grad:" + t; }
 function migKey(t: string): string { return "migrated:" + t; }
+
+// v3 internal ledgers: global NEAR pad (one per trader, crosses every token
+// curve) + per-token internal token ledger (gas-key trading)
+function nbKey(trader: string): string { return "nb:" + trader; }
+function tbKey(t: string, trader: string): string { return "tb:" + t + ":" + trader; }
 
 function isOwner(): number {
   if (near.predecessorAccountId() == (near.storageGet("owner") ?? "")) { return 1; }
@@ -290,6 +314,83 @@ export function migrate(): number {
   return 0;
 }
 
+// ── v3 internal balances (NEP-611 gas-key trading) ────────────────
+
+// fund the trader's internal NEAR pad (full key; restricted keys can
+// never attach a deposit, so gas keys cannot call this)
+export function deposit(): number {
+  const attached = near.attachedDepositU128();
+  if (u128IsZero(attached)) { near.abort("ERR_ZERO"); return 0; }
+  const k = nbKey(near.predecessorAccountId());
+  const cur = near.storageGet(k) ?? "0";
+  near.storageSet(k, u128Add(cur, attached));
+  near.log(`deposit:${near.predecessorAccountId()}:${attached}`);
+  return 0;
+}
+
+// drain the pad back to the trader. The 1-yoctoNEAR gate is the second
+// lock: restricted keys (gas or classical FAK) can never attach a
+// deposit, so even a mis-whitelisted gas key fails here.
+export function withdraw(): number {
+  const attached = near.attachedDepositU128();
+  if (attached != "1") { near.abort("ERR_YOCTO"); return 0; }
+  const k = nbKey(near.predecessorAccountId());
+  const bal = near.storageGet(k) ?? "0";
+  if (u128IsZero(bal)) { near.abort("ERR_EMPTY_PAD"); return 0; }
+  near.storageSet(k, "0");
+  near.transferU128(near.predecessorAccountId(), bal);
+  near.log(`withdraw:${near.predecessorAccountId()}:${bal}`);
+  return 0;
+}
+
+// sell from the internal token ledger → xyk NEAR credited to the pad.
+// args: { token, tokens_in, min_near_out? } — no outbound transfer, so
+// the gas-key hot path is exactly buy() + sell_internal().
+export function sell_internal(): string {
+  const token = near.jsonGetStr("token") ?? "";
+  const trader = near.predecessorAccountId();
+  const pt = near.storageGet(ptKey(token)) ?? "";
+  if (pt == "") { near.abort("ERR_NO_POOL"); return ""; }
+  if (tradingHalt(token) == 1) { return ""; }
+  const amount = near.jsonGetStr("tokens_in") ?? "0";
+  if (u128IsZero(amount)) { near.abort("ERR_ZERO"); return ""; }
+  const tk = tbKey(token, trader);
+  const held = near.storageGet(tk) ?? "0";
+  if (u128Lt(held, amount)) { near.abort("ERR_BALANCE"); return ""; }
+  const pn = near.storageGet(pnKey(token)) ?? "0";
+  if (u128IsZero(pn)) { near.abort("ERR_EMPTY"); return ""; }
+  const gross = xykOut(pn, pt, amount);
+  const fee = feeOn(gross);
+  const net = u128Sub(gross, fee);
+  if (u128IsZero(net)) { near.abort("ERR_DUST"); return ""; }
+  const minOut = near.jsonGetStr("min_near_out") ?? "0";
+  if (!u128IsZero(minOut) && u128Lt(net, minOut)) { near.abort("ERR_SLIPPAGE"); return ""; }
+  near.storageSet(tk, u128Sub(held, amount));
+  near.storageSet(ptKey(token), u128Add(pt, amount));
+  near.storageSet(pnKey(token), u128Sub(pn, gross));
+  if (!u128IsZero(fee)) {
+    const feesNow = near.storageGet("fees_near") ?? "0";
+    near.storageSet("fees_near", u128Add(feesNow, fee));
+  }
+  const nk = nbKey(trader);
+  const padNow = near.storageGet(nk) ?? "0";
+  near.storageSet(nk, u128Add(padNow, net));
+  tradeEvent(token, "sell", trader, net, amount, fee);
+  near.log(`selli:${trader}:${amount}:${net}`);
+  return `{"gross":${jsonQuote(gross)},"fee":${jsonQuote(fee)},"net":${jsonQuote(net)}}`;
+}
+
+// v3 view: the trader's internal ledgers (token ledger only when ?token=)
+export function get_balance(): string {
+  const trader = near.jsonGetStr("account") ?? near.predecessorAccountId();
+  const token = near.jsonGetStr("token") ?? "";
+  let tok = "\"0\"";
+  if (strLength(token) > 0) {
+    tok = jsonQuote(near.storageGet(tbKey(token, trader)) ?? "0");
+  }
+  return `{"near":${jsonQuote(near.storageGet(nbKey(trader)) ?? "0")},"tokens":${tok}}`;
+}
+
 // ── trading ────────────────────────────────────────────────────────
 
 function tradingHalt(token: string): number {
@@ -323,34 +424,56 @@ export function buy(): string {
   if (pn == "") { near.abort("ERR_NO_POOL"); return ""; }
   if (tradingHalt(token) == 1) { return ""; }
   const attached = near.attachedDepositU128();
-  if (u128IsZero(attached)) { near.abort("ERR_ZERO"); return ""; }
+  let nearIn = attached;
+  if (u128IsZero(attached)) {
+    const trader0 = near.predecessorAccountId();
+    const padKey = nbKey(trader0);
+    const pad = near.storageGet(padKey) ?? "0";
+    const want = near.jsonGetStr("near_in") ?? "0";
+    if (u128IsZero(want)) { near.abort("ERR_ZERO"); return ""; }
+    if (u128Lt(pad, want)) { near.abort("ERR_BALANCE"); return ""; }
+    nearIn = want;
+  }
   const pt = near.storageGet(ptKey(token)) ?? "0";
   if (u128IsZero(pt)) { near.abort("ERR_NO_TOKENS"); return ""; }
-  const gross = xykOut(pt, pn, attached);
+  const trader = near.predecessorAccountId();
+  const gross = xykOut(pt, pn, nearIn);
   const fee = feeOn(gross);
   const net = u128Sub(gross, fee);
   if (u128IsZero(net)) { near.abort("ERR_DUST"); return ""; }
   const minOut = near.jsonGetStr("min_tokens_out") ?? "0";
   if (!u128IsZero(minOut) && u128Lt(net, minOut)) { near.abort("ERR_SLIPPAGE"); return ""; }
-  near.storageSet(ptKey(token), u128Sub(pt, gross));
-  near.storageSet(pnKey(token), u128Add(pn, attached));
-  if (!u128IsZero(fee)) {
-    near.storageSet(feeTokKey(token), u128Add(near.storageGet(feeTokKey(token)) ?? "0", fee));
+  const newPt = u128Sub(pt, gross);
+  const newPn = u128Add(pn, nearIn);
+  near.storageSet(ptKey(token), newPt);
+  near.storageSet(pnKey(token), newPn);
+  if (u128IsZero(attached)) {
+    const nk = nbKey(trader);
+    const padNow = near.storageGet(nk) ?? "0";
+    const padAfter = u128Sub(padNow, nearIn);
+    near.storageSet(nk, padAfter);
+    const tk = tbKey(token, trader);
+    const held = near.storageGet(tk) ?? "0";
+    const heldAfter = u128Add(held, net);
+    near.storageSet(tk, heldAfter);
   }
-  near.call(near.storageGet(tokKey(token)) ?? "", "ftTransfer",
-    `{"receiver_id":${jsonQuote(near.predecessorAccountId())},"amount":${jsonQuote(net)}}`,
-    30000000000000, "0");
-  tradeEvent(token, "buy", near.predecessorAccountId(), attached, net, fee);
-  near.log(`buy:${near.predecessorAccountId()}:${attached}:${net}`);
-  checkGrad(token, u128Add(pn, attached));
+  if (!u128IsZero(fee)) {
+    const feeKey = feeTokKey(token);
+    const feeNow = near.storageGet(feeKey) ?? "0";
+    near.storageSet(feeKey, u128Add(feeNow, fee));
+  }
+  if (!u128IsZero(attached)) {
+    const tokAcct = near.storageGet(tokKey(token)) ?? "";
+    near.call(tokAcct, "ftTransfer",
+      `{"receiver_id":${jsonQuote(trader)},"amount":${jsonQuote(net)}}`,
+      30000000000000, "0");
+  }
+  tradeEvent(token, "buy", trader, nearIn, net, fee);
+  near.log(`buy:${trader}:${nearIn}:${net}`);
+  checkGrad(token, newPn);
   return `{"gross":${jsonQuote(gross)},"fee":${jsonQuote(fee)},"net":${jsonQuote(net)}}`;
 }
 
-// NEP-141 receiver — the only way tokens enter the pool.
-// msg="sell" or "sell:<min_near_out>" → tokens in, xyk NEAR out net of fee
-// other msg   → tokens join the reserve (factory seed or plain donation)
-// Returns "0" = used the full amount (NEP-141 U128 refund convention).
-// Any abort traps → the token's resolve refunds the full escrow.
 export function ft_on_transfer(): string {
   const token = near.predecessorAccountId();
   const sender = near.jsonGetStr("sender_id") ?? "";
