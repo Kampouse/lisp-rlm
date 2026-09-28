@@ -238,10 +238,8 @@ mod tests {
             sum_in.extend_from_slice(&g_ser);
         }
         let sum_out = g1_sum(
-            crate::bn254::split_elements::<
-                { crate::bn254::G1_SUM_ELEMENT_SIZE },
-            >(&sum_in)
-            .expect("65B-aligned sum input"),
+            crate::bn254::split_elements::<{ crate::bn254::G1_SUM_ELEMENT_SIZE }>(&sum_in)
+                .expect("65B-aligned sum input"),
         )
         .expect("valid points sum");
 
@@ -250,10 +248,8 @@ mod tests {
         mx_in.extend_from_slice(&g_ser);
         mx_in.extend_from_slice(&encode_u256_pub(bn::arith::U256([2, 0])));
         let mx_out = g1_multiexp(
-            crate::bn254::split_elements::<
-                { crate::bn254::G1_MULTIEXP_ELEMENT_SIZE },
-            >(&mx_in)
-            .expect("96B-aligned multiexp input"),
+            crate::bn254::split_elements::<{ crate::bn254::G1_MULTIEXP_ELEMENT_SIZE }>(&mx_in)
+                .expect("96B-aligned multiexp input"),
         )
         .expect("valid multiexp");
 
@@ -318,17 +314,15 @@ mod tests {
         let mut gate = Vec::new();
         gate.extend_from_slice(&g1_wire(&g1));
         gate.extend_from_slice(&g2_wire(&g2));
-        let elems =
-            split_elements::<{ crate::bn254::PAIRING_CHECK_ELEMENT_SIZE }>(&gate)
-                .expect("192B-aligned gate");
+        let elems = split_elements::<{ crate::bn254::PAIRING_CHECK_ELEMENT_SIZE }>(&gate)
+            .expect("192B-aligned gate");
         assert!(!pairing_check(elems).expect("valid points"));
 
         // two pairs: e(G1,G2)·e(G1,−G2) == 1 → true (the verify shape)
         gate.extend_from_slice(&g1_wire(&g1));
         gate.extend_from_slice(&g2_wire(&neg_g2));
-        let elems =
-            split_elements::<{ crate::bn254::PAIRING_CHECK_ELEMENT_SIZE }>(&gate)
-                .expect("384B-aligned gate");
+        let elems = split_elements::<{ crate::bn254::PAIRING_CHECK_ELEMENT_SIZE }>(&gate)
+            .expect("384B-aligned gate");
         assert!(pairing_check(elems).expect("valid points"));
 
         // empty input is vacuously true (matches nearcore/EVM)

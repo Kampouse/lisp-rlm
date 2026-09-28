@@ -22,9 +22,7 @@
 //! - Function-entry/exit charge/release of (frame + operand stack) against
 //!   the stack budget global → mainnet's max_stack_height enforcement.
 
-use crate::{
-    LINEAR_OP_BASE_COST, LINEAR_OP_UNIT_COST, MAX_STACK_HEIGHT, REGULAR_OP_COST,
-};
+use crate::{LINEAR_OP_BASE_COST, LINEAR_OP_UNIT_COST, MAX_STACK_HEIGHT, REGULAR_OP_COST};
 use finite_wasm::gas::InstrumentationKind;
 use finite_wasm::{AnalysisOutcome, Fee};
 use wasm_encoder::reencode::{Error as ReencodeError, Reencode};

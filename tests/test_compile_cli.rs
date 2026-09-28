@@ -42,10 +42,18 @@ fn o_flag_writes_wasm_and_map_source_untouched() {
         .arg(&out)
         .output()
         .expect("spawn compile");
-    assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stderr)
+    );
 
     // the source must be byte-identical
-    assert_eq!(std::fs::read_to_string(&src).unwrap(), SRC, "SOURCE CLOBBERED");
+    assert_eq!(
+        std::fs::read_to_string(&src).unwrap(),
+        SRC,
+        "SOURCE CLOBBERED"
+    );
     // wasm exists at the -o path, map beside it
     assert!(out.exists(), "wasm not written to -o path");
     let map = d.join("out.wasm.map");
@@ -63,11 +71,25 @@ fn default_output_swaps_extension_not_source() {
     std::fs::write(&src, SRC).unwrap();
 
     let status = bin().arg(&src).output().expect("spawn compile");
-    assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stderr)
+    );
 
-    assert_eq!(std::fs::read_to_string(&src).unwrap(), SRC, "SOURCE CLOBBERED");
-    assert!(d.join("victim.wasm").exists(), "default output must be victim.wasm");
-    assert!(d.join("victim.wasm.map").exists(), "map beside default output");
+    assert_eq!(
+        std::fs::read_to_string(&src).unwrap(),
+        SRC,
+        "SOURCE CLOBBERED"
+    );
+    assert!(
+        d.join("victim.wasm").exists(),
+        "default output must be victim.wasm"
+    );
+    assert!(
+        d.join("victim.wasm.map").exists(),
+        "map beside default output"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -89,6 +111,10 @@ fn explicit_output_onto_source_refuses() {
     );
     let err = String::from_utf8_lossy(&status.stderr);
     assert!(err.contains("refusing"), "guard message: {err}");
-    assert_eq!(std::fs::read_to_string(&src).unwrap(), SRC, "SOURCE CLOBBERED");
+    assert_eq!(
+        std::fs::read_to_string(&src).unwrap(),
+        SRC,
+        "SOURCE CLOBBERED"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }

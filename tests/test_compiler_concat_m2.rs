@@ -1,4 +1,3 @@
-
 //! Compiler regression tests for the two g16v-verifier bugs (2026-09-12):
 //!
 //! 1. `+` concat dispatch missed string-valued identifiers:
@@ -97,7 +96,10 @@ fn m2_impure_declaration_guarded_after_return() {
     let r = call(M2_SRC, st, "repro", r#"{"a":-5}"#);
     assert!(r.contains("EARLY"), "early: {r}");
     let r = call(M2_SRC, st, "checkSE", "{}");
-    assert!(r.contains("never"), "side effect must not run after return: {r}");
+    assert!(
+        r.contains("never"),
+        "side effect must not run after return: {r}"
+    );
 
     // normal path: the write runs
     let st2 = "/tmp/cmpfix-m2b.bin";
@@ -105,5 +107,8 @@ fn m2_impure_declaration_guarded_after_return() {
     let r = call(M2_SRC, st2, "repro", r#"{"a":5}"#);
     assert!(r.contains("LATE:10"), "normal: {r}");
     let r = call(M2_SRC, st2, "checkSE", "{}");
-    assert!(r.contains("5"), "side effect must run on the normal path: {r}");
+    assert!(
+        r.contains("5"),
+        "side effect must run on the normal path: {r}"
+    );
 }

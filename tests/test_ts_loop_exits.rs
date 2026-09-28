@@ -147,13 +147,25 @@ fn run(method: &str, input: &str) -> String {
 #[test]
 fn break_post_loop_returns_match_not_nil() {
     // match at j=0 — the exact charMatches shape that returned nil.
-    assert_eq!(run_num("scan_match", r#"{"target":"a","set":"abc","m":3}"#), "1");
+    assert_eq!(
+        run_num("scan_match", r#"{"target":"a","set":"abc","m":3}"#),
+        "1"
+    );
     // match mid-string
-    assert_eq!(run_num("scan_match", r#"{"target":"b","set":"abc","m":3}"#), "1");
+    assert_eq!(
+        run_num("scan_match", r#"{"target":"b","set":"abc","m":3}"#),
+        "1"
+    );
     // match at last position
-    assert_eq!(run_num("scan_match", r#"{"target":"c","set":"abc","m":3}"#), "1");
+    assert_eq!(
+        run_num("scan_match", r#"{"target":"c","set":"abc","m":3}"#),
+        "1"
+    );
     // no match — fall-through r=0 (was already correct pre-fix)
-    assert_eq!(run_num("scan_match", r#"{"target":"z","set":"abc","m":3}"#), "0");
+    assert_eq!(
+        run_num("scan_match", r#"{"target":"z","set":"abc","m":3}"#),
+        "0"
+    );
 }
 
 #[test]

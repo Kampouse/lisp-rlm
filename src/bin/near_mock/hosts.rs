@@ -127,9 +127,12 @@ pub(crate) fn build_env_linker(
         move |mut caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
             // PV155 composite: read_memory + utf8_decoding + log
-            let cost = mock_cfg().gas.log_base + mock_cfg().gas.log_byte * len as u64
-                + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * len as u64
-                + crate::UTF8_DECODING_BASE_GAS + crate::UTF8_DECODING_BYTE_GAS * len as u64;
+            let cost = mock_cfg().gas.log_base
+                + mock_cfg().gas.log_byte * len as u64
+                + crate::READ_MEMORY_BASE_GAS
+                + crate::READ_MEMORY_BYTE_GAS * len as u64
+                + crate::UTF8_DECODING_BASE_GAS
+                + crate::UTF8_DECODING_BYTE_GAS * len as u64;
             charge_gas(&mut caller, cost)?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data(&caller);
@@ -306,8 +309,10 @@ pub(crate) fn build_env_linker(
                     let cost = gas.storage_write_base
                         + gas.storage_write_key_byte * kl as u64
                         + gas.storage_write_value_byte * vl as u64
-                        + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * kl as u64
-                        + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * vl as u64;
+                        + crate::READ_MEMORY_BASE_GAS
+                        + crate::READ_MEMORY_BYTE_GAS * kl as u64
+                        + crate::READ_MEMORY_BASE_GAS
+                        + crate::READ_MEMORY_BYTE_GAS * vl as u64;
                     charge_gas(&mut caller, cost)?;
                     let mut st = s6.lock().unwrap();
                     let trie = trie_charge_write(&mut st, &key);
@@ -399,7 +404,8 @@ pub(crate) fn build_env_linker(
                         + gas.storage_read_key_byte * kl as u64
                         + gas.storage_read_value_byte * val.len() as u64
                         + trie
-                        + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * kl as u64
+                        + crate::READ_MEMORY_BASE_GAS
+                        + crate::READ_MEMORY_BYTE_GAS * kl as u64
                         + crate::WRITE_REGISTER_BASE_GAS
                         + crate::WRITE_REGISTER_BYTE_GAS * val.len() as u64;
                     drop(st);
@@ -423,11 +429,14 @@ pub(crate) fn build_env_linker(
                             let gas = &mock_cfg().gas;
                             let cost = gas.storage_read_base
                                 + gas.storage_read_key_byte * kl as u64
-                                + gas.storage_read_value_byte * v.as_ref().map(|x| x.len()).unwrap_or(0) as u64
+                                + gas.storage_read_value_byte
+                                    * v.as_ref().map(|x| x.len()).unwrap_or(0) as u64
                                 + trie
-                                + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * kl as u64
+                                + crate::READ_MEMORY_BASE_GAS
+                                + crate::READ_MEMORY_BYTE_GAS * kl as u64
                                 + crate::WRITE_REGISTER_BASE_GAS
-                                + crate::WRITE_REGISTER_BYTE_GAS * v.as_ref().map(|x| x.len()).unwrap_or(0) as u64;
+                                + crate::WRITE_REGISTER_BYTE_GAS
+                                    * v.as_ref().map(|x| x.len()).unwrap_or(0) as u64;
                             drop(st);
                             charge_gas(&mut caller, cost)?;
                             v
@@ -450,8 +459,10 @@ pub(crate) fn build_env_linker(
                     // miss; guest key was still read → read_memory too
                     let gas = &mock_cfg().gas;
                     let trie = trie_charge(&mut st, key);
-                    let cost = gas.storage_read_base + gas.storage_read_key_byte * kl as u64
-                        + trie + crate::READ_MEMORY_BASE_GAS
+                    let cost = gas.storage_read_base
+                        + gas.storage_read_key_byte * kl as u64
+                        + trie
+                        + crate::READ_MEMORY_BASE_GAS
                         + crate::READ_MEMORY_BYTE_GAS * kl as u64;
                     drop(st);
                     charge_gas(&mut caller, cost)?;
@@ -499,7 +510,8 @@ pub(crate) fn build_env_linker(
                         let cost = gas.storage_remove_base
                             + gas.storage_remove_key_byte * kl as u64
                             + trie
-                            + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * kl as u64
+                            + crate::READ_MEMORY_BASE_GAS
+                            + crate::READ_MEMORY_BYTE_GAS * kl as u64
                             + crate::WRITE_REGISTER_BASE_GAS
                             + crate::WRITE_REGISTER_BYTE_GAS * val.len() as u64;
                         // Storage staking: refund the removed bytes
@@ -607,8 +619,7 @@ pub(crate) fn build_env_linker(
             };
             charge_gas(
                 &mut caller,
-                crate::WRITE_REGISTER_BASE_GAS
-                    + crate::WRITE_REGISTER_BYTE_GAS * acct.len() as u64,
+                crate::WRITE_REGISTER_BASE_GAS + crate::WRITE_REGISTER_BYTE_GAS * acct.len() as u64,
             )?;
             s_ca.lock()
                 .unwrap()
@@ -663,8 +674,7 @@ pub(crate) fn build_env_linker(
             };
             charge_gas(
                 &mut caller,
-                crate::WRITE_REGISTER_BASE_GAS
-                    + crate::WRITE_REGISTER_BYTE_GAS * pred.len() as u64,
+                crate::WRITE_REGISTER_BASE_GAS + crate::WRITE_REGISTER_BYTE_GAS * pred.len() as u64,
             )?;
             s_pa.lock()
                 .unwrap()
@@ -828,8 +838,10 @@ pub(crate) fn build_env_linker(
             // Indicative legacy fees
             let cost = crate::SHA256_BASE_GAS
                 + crate::SHA256_BYTE_GAS * len as u64
-                + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * len as u64
-                + crate::WRITE_REGISTER_BASE_GAS + crate::WRITE_REGISTER_BYTE_GAS * 32;
+                + crate::READ_MEMORY_BASE_GAS
+                + crate::READ_MEMORY_BYTE_GAS * len as u64
+                + crate::WRITE_REGISTER_BASE_GAS
+                + crate::WRITE_REGISTER_BYTE_GAS * 32;
             charge_gas(&mut caller, cost)?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let md = mem.data(&caller);
@@ -858,8 +870,10 @@ pub(crate) fn build_env_linker(
             // PV155 (protocol-86)
             let cost = crate::KECCAK256_BASE_GAS
                 + crate::KECCAK256_BYTE_GAS * len as u64
-                + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * len as u64
-                + crate::WRITE_REGISTER_BASE_GAS + crate::WRITE_REGISTER_BYTE_GAS * 32;
+                + crate::READ_MEMORY_BASE_GAS
+                + crate::READ_MEMORY_BYTE_GAS * len as u64
+                + crate::WRITE_REGISTER_BASE_GAS
+                + crate::WRITE_REGISTER_BYTE_GAS * 32;
             charge_gas(&mut caller, cost)?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let md = mem.data(&caller);
@@ -888,8 +902,10 @@ pub(crate) fn build_env_linker(
             // Indicative legacy fees
             let cost = crate::KECCAK512_BASE_GAS
                 + crate::KECCAK512_BYTE_GAS * len as u64
-                + crate::READ_MEMORY_BASE_GAS + crate::READ_MEMORY_BYTE_GAS * len as u64
-                + crate::WRITE_REGISTER_BASE_GAS + crate::WRITE_REGISTER_BYTE_GAS * 64;
+                + crate::READ_MEMORY_BASE_GAS
+                + crate::READ_MEMORY_BYTE_GAS * len as u64
+                + crate::WRITE_REGISTER_BASE_GAS
+                + crate::WRITE_REGISTER_BYTE_GAS * 64;
             charge_gas(&mut caller, cost)?;
             if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let md = mem.data(&caller);

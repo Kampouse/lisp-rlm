@@ -137,7 +137,10 @@ fn cios_zero() {
     let _ = std::fs::remove_file(st);
     let args = r#"{"a":"0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0","b":"9062,47063,22385,32787,30842,46399,46914,63968,25388,21263,2905,48010,65058,31722,1894,11073"}"#;
     let r = call(st, "mulmod", &args);
-    assert!(r.contains("📄 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"), "zero: {r}");
+    assert!(
+        r.contains("📄 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"),
+        "zero: {r}"
+    );
     // storage-regression guard: compute-only mul must stay far below 1 Tgas
     if let Some(line) = r.lines().find(|l| l.contains("⛽")) {
         let burnt: f64 = line

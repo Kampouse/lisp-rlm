@@ -1594,7 +1594,9 @@ impl WasmEmitter {
                 // Implemented on top of (env/get ...) — same sentinel-150
                 // wasi:cli/environment path.
                 if a.is_empty() {
-                    return Err("context: requires a key string (signer_id | predecessor_id)".into());
+                    return Err(
+                        "context: requires a key string (signer_id | predecessor_id)".into(),
+                    );
                 }
                 let key_val = match &a[0] {
                     LispVal::Str(s) => s.clone(),

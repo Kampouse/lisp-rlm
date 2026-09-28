@@ -474,12 +474,19 @@ mod tests {
     }
 
     fn hex(s: &str) -> Vec<u8> {
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i+2], 16).unwrap()).collect()
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     #[test]
     fn g1_sum_zero_plus_zero() {
-        let zero = { let mut z = vec![0u8; 96]; z[0] |= 0x40; z };
+        let zero = {
+            let mut z = vec![0u8; 96];
+            z[0] |= 0x40;
+            z
+        };
         let input = [vec![0u8], zero.clone(), vec![0u8], zero.clone()].concat();
         match eval(kind::P1_SUM, &input) {
             Ok(Some(bytes)) => assert_eq!(bytes, zero, "0 + 0 should be 0"),
@@ -496,7 +503,11 @@ mod tests {
         let input = [vec![0u8], g.clone(), vec![1u8], g.clone()].concat();
         match eval(kind::P1_SUM, &input) {
             Ok(Some(bytes)) => {
-                let zero = { let mut z = vec![0u8; 96]; z[0] |= 0x40; z };
+                let zero = {
+                    let mut z = vec![0u8; 96];
+                    z[0] |= 0x40;
+                    z
+                };
                 assert_eq!(bytes, zero, "P + (-P) should be 0");
             }
             Ok(None) => panic!("P+(-P) returned failure"),
@@ -515,7 +526,10 @@ mod bls_corner_cases {
     use super::*;
 
     fn hex(s: &str) -> Vec<u8> {
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i+2], 16).unwrap()).collect()
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     /// (0, ±2) — on curve E(Fp) but NOT in the G1 subgroup.
@@ -526,7 +540,7 @@ mod bls_corner_cases {
     fn p1_sum_accepts_x0_point_with_fix() {
         let mut x0 = vec![0u8; 96];
         x0[95] = 2; // y = 2, x = 0
-        // x0 + x0 should succeed (not return None) with the fix enabled
+                    // x0 + x0 should succeed (not return None) with the fix enabled
         let input = [vec![0u8], x0.clone(), vec![0u8], x0.clone()].concat();
         match eval(kind::P1_SUM, &input) {
             Ok(Some(_)) => {} // accepted — correct with not_in_group_fix

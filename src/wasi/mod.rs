@@ -737,8 +737,7 @@ pub fn compile_outlayer_p2_from_exprs(exprs: &[crate::types::LispVal]) -> Result
 /// so P2 uses the same. Extra NEAR host builtins in scope only make the
 /// check more permissive, never less.
 fn type_check_p2(exprs: &[crate::types::LispVal]) -> Result<(), String> {
-    crate::typing::type_check_program(exprs, true)
-        .map_err(|e| format!("P2 type check failed: {e}"))
+    crate::typing::type_check_program(exprs, true).map_err(|e| format!("P2 type check failed: {e}"))
 }
 /// The runtime-heap ceiling guard (emit_rtheap_alloc) bakes in
 /// `memory_pages`, but every P2 memory section is built with
@@ -750,7 +749,6 @@ fn type_check_p2(exprs: &[crate::types::LispVal]) -> Result<(), String> {
 fn sync_p2_memory_pages(em: &mut WasmEmitter) {
     em.memory_pages = em.memory_pages.max(2048);
 }
-
 
 pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
     // 1. Compile the core P1 module first
@@ -1748,7 +1746,8 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     nti += 1;
     // type: () -> i32 — wasi:cli/environment get-environment (sentinel 150)
     types.ty().function([], [ValType::I32]);
-    let _ = nti; nti += 1;
+    let _ = nti;
+    nti += 1;
     // type: (i32) -> () — get-environment retptr form (sentinel 150)
     types.ty().function([ValType::I32], []);
     let env_getenv_retptr_type = nti;
@@ -1779,31 +1778,31 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     // Canonical ABI types: type 7=(i32)->(), type 8=(i32*3)->(), type 9=(i32*5)->(), type 10=(i32*7)->(),
     //   type 11=(i32*9)->(), type 12=(i32*11)->(), type 13=(i32*17)->(), type 14=(i32,i32,i64,i32)->(), type 15=(i32*2)->i32, type 16=(i32*6)->()
     let ol_type_map_full: Vec<u32> = vec![
-        11, // 0: view — 9 i32 -> ()
-        13, // 1: call — 17 i32 -> ()
-        12, // 2: transfer — 11 i32 -> ()
-        8,  // 3: http-get — 3 i32 -> ()
-        10, // 4: http-post — 7 i32 -> ()
-        9,  // 5: set — 5 i32 -> ()
-        8,  // 6: get — 3 i32 -> ()
-        15, // 7: has — (i32,i32) -> i32
-        15, // 8: delete — (i32,i32) -> i32
-        9,  // 9: increment — 5 i32 -> ()
-        9,  // 10: decrement — 5 i32 -> ()
-        9,  // 11: set-if-absent — 5 i32 -> ()
-        9,  // 12: set-if-equals — 5 i32 -> ()
-        8,  // 13: list-keys — 3 i32 -> ()
-        7,  // 14: clear-all — 1 i32 -> ()
-        9,  // 15: set-worker — 5 i32 -> ()
-        8,  // 16: get-worker — 3 i32 -> ()
-        10, // 17: raw — 4 i32 -> i32 (canonical: ret_area)
-        8,  // 18: env-var — 3 i32 -> ()
-        7,  // 19: sleep-ms — 2 i32 -> ()
-        9,  // 20: send-telegram — 5 i32 -> ()
-        10, // 21: http-post-dynamic — 7 i32 -> ()
-        8,  // 22: web-search — 3 i32 -> ()
-        8,  // 23: ai-chat — 3 i32 -> ()
-        10, // 24: rpc-call — 5 i32 -> ()
+        11,                      // 0: view — 9 i32 -> ()
+        13,                      // 1: call — 17 i32 -> ()
+        12,                      // 2: transfer — 11 i32 -> ()
+        8,                       // 3: http-get — 3 i32 -> ()
+        10,                      // 4: http-post — 7 i32 -> ()
+        9,                       // 5: set — 5 i32 -> ()
+        8,                       // 6: get — 3 i32 -> ()
+        15,                      // 7: has — (i32,i32) -> i32
+        15,                      // 8: delete — (i32,i32) -> i32
+        9,                       // 9: increment — 5 i32 -> ()
+        9,                       // 10: decrement — 5 i32 -> ()
+        9,                       // 11: set-if-absent — 5 i32 -> ()
+        9,                       // 12: set-if-equals — 5 i32 -> ()
+        8,                       // 13: list-keys — 3 i32 -> ()
+        7,                       // 14: clear-all — 1 i32 -> ()
+        9,                       // 15: set-worker — 5 i32 -> ()
+        8,                       // 16: get-worker — 3 i32 -> ()
+        10,                      // 17: raw — 4 i32 -> i32 (canonical: ret_area)
+        8,                       // 18: env-var — 3 i32 -> ()
+        7,                       // 19: sleep-ms — 2 i32 -> ()
+        9,                       // 20: send-telegram — 5 i32 -> ()
+        10,                      // 21: http-post-dynamic — 7 i32 -> ()
+        8,                       // 22: web-search — 3 i32 -> ()
+        8,                       // 23: ai-chat — 3 i32 -> ()
+        10,                      // 24: rpc-call — 5 i32 -> ()
         env_getenv_ret_i32_type, // 25: get-environment — () -> i32
     ];
     // Emit only filtered outlayer imports
@@ -2682,7 +2681,6 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     // like every other outlayer import — no separate import, no index shift)
     let env_getenv_import_idx = *ol_sentinel_map.get(&150).unwrap_or(&0);
 
-
     // Type layout
     let user_type_count = 17u32;
     let user_type_base = HTTP_TYPE_COUNT; // 10
@@ -3376,9 +3374,9 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         realloc.instruction(&Instruction::I32Const(950004));
         realloc.instruction(&Instruction::I32Add); // abs addr = 950004 + bump
         realloc.instruction(&Instruction::LocalSet(4)); // 4 = returned addr
-        // Advance bump by new_len aligned up to 4 (global survives the
-        // canon window; a linear-memory counter does not — see GLOBAL 24
-        // note in the globals section).
+                                                        // Advance bump by new_len aligned up to 4 (global survives the
+                                                        // canon window; a linear-memory counter does not — see GLOBAL 24
+                                                        // note in the globals section).
         realloc.instruction(&Instruction::GlobalGet(24));
         realloc.instruction(&Instruction::LocalGet(3)); // new_len
         realloc.instruction(&Instruction::I32Add);
@@ -3451,28 +3449,80 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         bridge.instruction(&Instruction::End);
         codes.function(&bridge);
     }
-        // ── env lookup helper at env_lookup_fn_idx ──
+    // ── env lookup helper at env_lookup_fn_idx ──
     // (key_area) -> (): sentinel-150 env lookup via canon get-environment.
     // Key in GLOBALS 10/11; result length in GLOBAL 1 (-1 = not found);
     // value copied to key_area+128 (2KB scratch, 64KB region is clear of
     // the interpreter heap at 200000).
     //   +24..+112 match scratch (80 bytes, >= longest env key)
     if uses_env_lookup {
-        let o0 = MemArg { offset: 0, align: 2, memory_index: 0 };
-        let o4 = MemArg { offset: 4, align: 2, memory_index: 0 };
-        let o8 = MemArg { offset: 8, align: 2, memory_index: 0 };
-        let o12 = MemArg { offset: 12, align: 2, memory_index: 0 };
-        let o16 = MemArg { offset: 16, align: 2, memory_index: 0 };
-        let o20 = MemArg { offset: 20, align: 2, memory_index: 0 };
-        let o40 = MemArg { offset: 40, align: 2, memory_index: 0 };
-        let o44 = MemArg { offset: 44, align: 2, memory_index: 0 };
-        let o48 = MemArg { offset: 48, align: 2, memory_index: 0 };
-        let o24 = MemArg { offset: 24, align: 2, memory_index: 0 };
-        let o28 = MemArg { offset: 28, align: 2, memory_index: 0 };
-        let o52 = MemArg { offset: 52, align: 2, memory_index: 0 };
-        let oB = MemArg { offset: 0, align: 0, memory_index: 0 }; // byte ops: natural align 1
+        let o0 = MemArg {
+            offset: 0,
+            align: 2,
+            memory_index: 0,
+        };
+        let o4 = MemArg {
+            offset: 4,
+            align: 2,
+            memory_index: 0,
+        };
+        let o8 = MemArg {
+            offset: 8,
+            align: 2,
+            memory_index: 0,
+        };
+        let o12 = MemArg {
+            offset: 12,
+            align: 2,
+            memory_index: 0,
+        };
+        let o16 = MemArg {
+            offset: 16,
+            align: 2,
+            memory_index: 0,
+        };
+        let o20 = MemArg {
+            offset: 20,
+            align: 2,
+            memory_index: 0,
+        };
+        let o40 = MemArg {
+            offset: 40,
+            align: 2,
+            memory_index: 0,
+        };
+        let o44 = MemArg {
+            offset: 44,
+            align: 2,
+            memory_index: 0,
+        };
+        let o48 = MemArg {
+            offset: 48,
+            align: 2,
+            memory_index: 0,
+        };
+        let o24 = MemArg {
+            offset: 24,
+            align: 2,
+            memory_index: 0,
+        };
+        let o28 = MemArg {
+            offset: 28,
+            align: 2,
+            memory_index: 0,
+        };
+        let o52 = MemArg {
+            offset: 52,
+            align: 2,
+            memory_index: 0,
+        };
+        let oB = MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        }; // byte ops: natural align 1
         let mut fb = Function::new([
-            (1u32, ValType::I32), // 0: key_area
+            (1u32, ValType::I32),  // 0: key_area
             (12u32, ValType::I32), // 1..12 scratch locals
         ]);
         // get-environment(retptr = key_area+16): the host lowers the full env
@@ -3518,8 +3568,16 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         //   load32(ka+16) = list ptr (entries base, 16-byte records:
         //   kptr@0 klen@4 vptr@8 vlen@12), load32(ka+20) = pair count.
         // Proven live (async parity run): list=950260, count=4.
-        let l32 = |off: u64| MemArg { offset: off, align: 2, memory_index: 0 };
-        let oB = MemArg { offset: 0, align: 0, memory_index: 0 };
+        let l32 = |off: u64| MemArg {
+            offset: off,
+            align: 2,
+            memory_index: 0,
+        };
+        let oB = MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
         // 1 = entries base
         fb.instruction(&Instruction::LocalGet(0));
         fb.instruction(&Instruction::I32Load(l32(16)));
@@ -3539,7 +3597,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         fb.instruction(&Instruction::LocalGet(2));
         fb.instruction(&Instruction::I32GeU);
         fb.instruction(&Instruction::BrIf(1)); // break A
-        // 3 = ent = base + i*16
+                                               // 3 = ent = base + i*16
         fb.instruction(&Instruction::LocalGet(1));
         fb.instruction(&Instruction::LocalGet(4));
         fb.instruction(&Instruction::I32Const(4));
@@ -3578,7 +3636,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         fb.instruction(&Instruction::LocalGet(5));
         fb.instruction(&Instruction::I32Eq);
         fb.instruction(&Instruction::BrIf(1)); // break E
-        // kptr[k] vs user key[k]
+                                               // kptr[k] vs user key[k]
         fb.instruction(&Instruction::LocalGet(12));
         fb.instruction(&Instruction::LocalGet(7));
         fb.instruction(&Instruction::I32Add);
@@ -3600,7 +3658,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         fb.instruction(&Instruction::Br(0)); // continue F
         fb.instruction(&Instruction::End); // Loop F
         fb.instruction(&Instruction::End); // Block E
-        // match == 0 -> next pair
+                                           // match == 0 -> next pair
         fb.instruction(&Instruction::LocalGet(11));
         fb.instruction(&Instruction::I32Eqz);
         fb.instruction(&Instruction::If(BlockType::Empty));
@@ -3625,14 +3683,12 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         fb.instruction(&Instruction::Return);
         fb.instruction(&Instruction::End); // Loop B
         fb.instruction(&Instruction::End); // Block A
-        // NOT FOUND: g1 = -1
+                                           // NOT FOUND: g1 = -1
         fb.instruction(&Instruction::I32Const(-1));
         fb.instruction(&Instruction::GlobalSet(1));
         fb.instruction(&Instruction::End); // end of function body
         codes.function(&fb);
     }
-
-
 
     module.section(&codes);
     // ── Emit data segments ──
