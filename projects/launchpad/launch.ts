@@ -100,6 +100,7 @@ export function launchToken(): number {
   const refund = u128Sub(attached, cost);
   const poolAcct = near.storageGet("pool:acct") ?? "";
   if (strLength(poolAcct) == 0) { near.abort("ERR_NO_POOL_ACCT"); return 0; }
+  if ((near.storageGet("paused") ?? "") == "1") { near.abort("ERR_PAUSED"); return 0; }
   const ftHash = near.storageGet("ft:global") ?? "";
   if (strLength(ftHash) == 0) {
     near.abort("ERR_NO_FT_GLOBAL");
@@ -189,7 +190,7 @@ export function launchToken(): number {
   const p2 = near.promiseBatchThen(p1, poolAcct);
   near.promiseBatchActionFunctionCall(
     p2, "seed_pool",
-    `{"token":"${tokenAcct}"}`,
+    `{"token":"${tokenAcct}","grad_th":"${near.storageGet("grad:th") ?? "0"}"}`,
     "1000000000000000000000000", 40000000000000);
 
   const p3 = near.promiseBatchThen(p2, tokenAcct);
@@ -215,6 +216,12 @@ export function editToken(): number {
   const by = near.storageGet("lb:" + token) ?? "";
   if (strLength(by) == 0) { near.abort("ERR_NO_TOKEN"); return 0; }
   if (by != near.predecessorAccountId()) { near.abort("ERR_NOT_CREATOR"); return 0; }
+  // edit window: 7 days after launch — after that the metadata is frozen
+  // (post-takeoff social swaps are the classic meme rug vector)
+  const li0 = near.storageGet("li:" + token) ?? "{}";
+  const launchedAt = near.jsonGetStr("launched_at", li0) ?? "0";
+  const ageNs = u128Sub(near.blockTimestamp(), launchedAt);
+  if (u128Gt(ageNs, "604800000000000000")) { near.abort("ERR_WINDOW"); return 0; }
   // Partial-edit safe (2026-09-27): omitted args keep their stored value
   // (explicit "" still clears). Previously omitting a field WIPED it —
   // editing just telegram nuked website/description (found in e2e replay).
@@ -290,7 +297,64 @@ export function setPoolAccount(): number {
   return 0;
 }
 
+// owner: default graduation threshold (yoctoNEAR of pool NEAR reserve);
+// passed to pool.seed_pool as grad_th on every launch ("0" = never)
+export function setGradThreshold(): number {
+  if (near.predecessorAccountId() != near.currentAccountId()) {
+    near.abort("ERR_OWNER_ONLY");
+    return 0;
+  }
+  const th = near.jsonGetStr("th") ?? "";
+  if (strLength(th) == 0) { near.abort("ERR_TH"); return 0; }
+  near.storageSet("grad:th", th);
+  near.log(`grad_th_set:${th}`);
+  return 0;
+}
+
+// owner: pause new launches (existing pools pause at the pool contract)
+export function setLaunchPaused(): number {
+  if (near.predecessorAccountId() != near.currentAccountId()) {
+    near.abort("ERR_OWNER_ONLY");
+    return 0;
+  }
+  const on = near.jsonGetStr("on") ?? "0";
+  let flag = "0";
+  if (on == "1") { flag = "1"; }
+  near.storageSet("paused", flag);
+  near.log(`launch_paused:${flag}`);
+  return 0;
+}
+
+// two-step ownership handover of the factory
+export function transferFactoryOwnership(): number {
+  if (near.predecessorAccountId() != near.currentAccountId()) {
+    near.abort("ERR_OWNER_ONLY");
+    return 0;
+  }
+  const nxt = near.jsonGetStr("new_owner") ?? "";
+  if (strLength(nxt) == 0) { near.abort("ERR_ACCT"); return 0; }
+  near.storageSet("pending:owner", nxt);
+  near.log(`factory_ownership_pending:${nxt}`);
+  return 0;
+}
+
+export function acceptFactoryOwnership(): number {
+  const pending = near.storageGet("pending:owner") ?? "";
+  if (strLength(pending) == 0) { near.abort("ERR_NO_PENDING"); return 0; }
+  if (near.predecessorAccountId() != pending) { near.abort("ERR_NOT_PENDING"); return 0; }
+  near.storageSet("owner", pending);
+  near.storageRemove("pending:owner");
+  near.log(`factory_ownership_accepted:${pending}`);
+  return 0;
+}
+
 // ── views ──────────────────────────────────────────────────────────
+export function getFactoryConfig(): string {
+  let paused = "false";
+  if ((near.storageGet("paused") ?? "") == "1") { paused = "true"; }
+  const owner = near.storageGet("owner") ?? near.currentAccountId();
+  return `{"owner":${jsonQuote(owner)},"grad_th":${jsonQuote(near.storageGet("grad:th") ?? "0")},"paused":${paused},"pending_owner":${jsonQuote(near.storageGet("pending:owner") ?? "")}}`;
+}
 export function getToken(): string {
   return near.storageGet("li:" + (near.jsonGetStr("token") ?? "")) ?? "{}";
 }

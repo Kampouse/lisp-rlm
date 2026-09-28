@@ -1,0 +1,277 @@
+{
+ "name": "prod-e2e",
+ "state": "/tmp/prod_state.bin",
+ "manifest": "factory.test.near=/tmp/launch.wasm,pool.test.near=/tmp/pool.wasm,prod.factory.test.near=/tmp/token.wasm",
+ "steps": [
+  {
+   "contract": "pool.test.near",
+   "method": "new",
+   "args": "{}",
+   "as": "factory.test.near"
+  },
+  {
+   "contract": "factory.test.near",
+   "method": "setFtGlobal",
+   "args": "{\"hash\": \"392252f51c3dd1c94d0c7400251040b6ddae367fc6f025cb57db484407803d21\"}",
+   "as": "factory.test.near"
+  },
+  {
+   "contract": "factory.test.near",
+   "method": "setPoolAccount",
+   "args": "{\"account\": \"pool.test.near\"}",
+   "as": "factory.test.near"
+  },
+  {
+   "contract": "factory.test.near",
+   "method": "setGradThreshold",
+   "args": "{\"th\": \"3000000000000000000000000\"}",
+   "as": "factory.test.near"
+  },
+  {
+   "contract": "factory.test.near",
+   "view": true,
+   "method": "getFactoryConfig",
+   "args": "{}",
+   "expect": "3000000000000000000000000"
+  },
+  {
+   "contract": "factory.test.near",
+   "method": "launchToken",
+   "args": "{\"name\": \"Prod Coin\", \"symbol\": \"prod\", \"total_supply\": \"1000000000000000000000000000\"}",
+   "as": "creator.test.near",
+   "attach": "2500000000000000000000000",
+   "gas": 150,
+   "expect": "ok"
+  },
+  {
+   "contract": "pool.test.near",
+   "view": true,
+   "method": "get_pool",
+   "args": "{\"token\": \"prod.factory.test.near\"}",
+   "contains": "\\\"near\\\":\\\"1000000000000000000000000\\\""
+  },
+  {
+   "contract": "pool.test.near",
+   "view": true,
+   "method": "quote_buy",
+   "args": "{\"token\": \"prod.factory.test.near\", \"near_in\": \"1000000000000000000000000\"}",
+   "expect": "\"495000000000000000000000000\""
+  },
+  {
+   "contract": "pool.test.near",
+   "method": "buy",
+   "args": "{\"token\": \"prod.factory.test.near\"}",
+   "as": "buyer.test.near",
+   "attach": "1000000000000000000000000",
+   "gas": 120,
+   "expect": "ok"
+  },
+  {
+   "contract": "prod.factory.test.near",
+   "view": true,
+   "method": "ftBalanceOf",
+   "args": "{\"account_id\": \"buyer.test.near\"}",
+   "expect": "495000000000000000000000000"
+  },
+  {
+   "contract": "pool.test.near",
+   "method": "buy",
+   "args": "{\"token\": \"prod.factory.test.near\"}",
+   "as": "buyer.test.near",
+   "attach": "1000000000000000000000000",
+   "gas": 120,
+   "expect": "ok"
+  },
+  {
+   "contract": "pool.test.near",
+   "view": true,
+   "method": "get_pool",
+   "args": "{\"token\": \"prod.factory.test.near\"}",
+   "contains": "\\\"graduated\\\":true"
+  },
+  {
+   "contract": "pool.test.near",
+   "method": "buy",
+   "args": "{\"token\": \"prod.factory.test.near\", \"min_tokens_out\": \"1000000000000000000000000000\"}",
+   "as": "buyer.test.near",
+   "attach": "1000000000000000000000000",
+   "gas": 120,
+   "expect": "trap"
+  },
+  {
+   "contract": "pool.test.near",
+   "view": true,
+   "method": "quote_sell",
+   "args": "{\"token\": \"prod.factory.test.near\", \"tokens_in\": \"50000000000000000000000000\"}",
+   "expect": "\"387391304347826086956522\""
+  },
+  {
+   "contract": "prod.factory.test.near",
+   "method": "ft_transfer_call",
+   "args": "{\"receiver_id\": \"pool.test.near\", \"amount\": \"50000000000000000000000000\", \"msg\": \"sell:1000000000000000000000000\"}",
+   "as": "buyer.test.near",
+   "gas": 150,
+   "expect": "ok"
+  },
+  {
+   "contract": "prod.factory.test.near",
+   "view": true,
+   "method": "ftBalanceOf",
+   "args": "{\"account_id\": \"buyer.test.near\"}",
+   "expect": "660000000000000000000000000"
+  },
+  {
+   "contract": "prod.factory.test.near",
+   "method": "ft_transfer_call",
+   "args": "{\"receiver_id\": \"pool.test.near\", \"amount\": \"50000000000000000000000000\", \"msg\": \"sell\"}",
+   "as": "buyer.test.near",
+   "gas": 150,
+   "expect": "ok"
+  },
+  {
+   "contract": "prod.factory.test.near",
+   "view": true,
+   "method": "ftBalanceOf",
+   "args": "{\"account_id\": \"buyer.test.near\"}",
+   "expect": "610000000000000000000000000"
+  },
+  {
+   "contract": "pool.test.near",
+   "view": true,
+   "method": "get_fee",
+   "args": "{}",
+   "contains": "3913043478260869565217"
+  },
+  {
+   "contract": "pool.test.near",
+   "method": "claim_fees",
+   "args": "{\"token\": \"prod.factory.test.near\"}",
+   "as": "factory.test.near",
+   "gas": 90,
+   "expect": "ok"
+  },
+  {
+   "contract": "pool.test.near",
+   "view": true,
+   "method": "get_fee",
+   "args": "{}",
+   "contains": "\\\"fees_near\\\":\\\"0\\\""
+  },
+  {
+   "contract": "pool.test.near",
+   "method": "set_paused",
+   "args": "{\"on\": \"1\"}",
+   "as": "factory.test.near",
+   "gas": 30
+  },
+  {
+   "contract": "pool.test.near",
+   "method": "buy",
+   "args": "{\"token\": \"prod.factory.test.near\"}",
+   "as": "buyer.test.near",
+   "attach": "1000000000000000000000000",
+   "gas": 120,
+   "expect": "trap"
+  },
+  {
+   "contract": "pool.test.near",
+   "method": "set_paused",
+   "args": "{\"on\": \"0\"}",
+   "as": "factory.test.near",
+   "gas": 30
+  },
+  {
+   "contract": "pool.test.near",
+   "method": "set_ref_acct",
+   "args": "{\"account\": \"ref.test.near\"}",
+   "as": "factory.test.near",
+   "gas": 30
+  },
+  {
+   "contract": "pool.test.near",
+   "method": "migrate",
+   "args": "{\"token\": \"prod.factory.test.near\"}",
+   "as": "factory.test.near",
+   "gas": 90,
+   "expect": "ok"
+  },
+  {
+   "contract": "pool.test.near",
+   "view": true,
+   "method": "get_pool",
+   "args": "{\"token\": \"prod.factory.test.near\"}",
+   "contains": "\\\"migrated\\\":true"
+  },
+  {
+   "contract": "pool.test.near",
+   "method": "buy",
+   "args": "{\"token\": \"prod.factory.test.near\"}",
+   "as": "buyer.test.near",
+   "attach": "1000000000000000000000000",
+   "gas": 120,
+   "expect": "trap"
+  },
+  {
+   "contract": "pool.test.near",
+   "method": "set_fee",
+   "args": "{\"bps\": \"500\"}",
+   "as": "buyer.test.near",
+   "gas": 30,
+   "expect": "trap"
+  },
+  {
+   "contract": "pool.test.near",
+   "method": "set_fee",
+   "args": "{\"bps\": \"500\"}",
+   "as": "factory.test.near",
+   "gas": 30,
+   "expect": "ok"
+  },
+  {
+   "contract": "pool.test.near",
+   "method": "set_fee",
+   "args": "{\"bps\": \"5000\"}",
+   "as": "factory.test.near",
+   "gas": 30,
+   "expect": "trap"
+  },
+  {
+   "contract": "pool.test.near",
+   "method": "transfer_ownership",
+   "args": "{\"new_owner\": \"newowner.test.near\"}",
+   "as": "factory.test.near",
+   "gas": 30
+  },
+  {
+   "contract": "pool.test.near",
+   "method": "accept_ownership",
+   "args": "{}",
+   "as": "buyer.test.near",
+   "gas": 30,
+   "expect": "trap"
+  },
+  {
+   "contract": "pool.test.near",
+   "method": "accept_ownership",
+   "args": "{}",
+   "as": "newowner.test.near",
+   "gas": 30,
+   "expect": "ok"
+  },
+  {
+   "contract": "factory.test.near",
+   "method": "editToken",
+   "args": "{\"token\": \"prod.factory.test.near\", \"telegram\": \"https://t.me/prodcoin\"}",
+   "as": "creator.test.near",
+   "gas": 30,
+   "expect": "ok"
+  },
+  {
+   "contract": "factory.test.near",
+   "view": true,
+   "method": "getLaunchData",
+   "args": "{\"token\": \"prod.factory.test.near\"}",
+   "contains": "t.me/prodcoin"
+  }
+ ]
+}

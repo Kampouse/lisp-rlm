@@ -3,8 +3,29 @@
 // Deployed ONCE as a global contract; launches adopt it via
 // use_global_contract, then initialize with new_().
 // Storage: u128 money ledger (near/storage), plain strings.
+//
+// v2 (2026-09-27, prod hardening):
+//   - NEP-141 events: EVENT_JSON standard "nep141" ft_transfer on plain
+//     transfers AND on ft_transfer_call resolution (net amount, one event)
+//   - storage API: storage_balance_of / storage_deposit (attach-backed
+//     ledger s:acct) + storage_minimum_balance — wallets/indexers expect
+//     them; NOTE registration is LENIENT (balance auto-appears on first
+//     receipt, no hard gate) because the launch promise chain transfers
+//     the full supply to the pool without a separate registration hop.
+//     storage_deposit exists so wallets can pre-register the standard way.
+//   - "0"-amount transfers still abort; resolve refunds stay fail-closed.
 
 function balKey(a: string): string { return "b:" + a; }
+function storKey(a: string): string { return "s:" + a; }
+
+const STORAGE_MIN: string = "100000000000000000000000"; // 0.01 N (display only)
+
+// nep141 standard transfer event (flat JSON hand-built — json-set values
+// are always strings here; memo is emitted as null per the standard)
+function transferEvent(oldOwner: string, newOwner: string, amount: string): number {
+  near.log("EVENT_JSON:" + `{"standard":"nep141","version":"1.0.0","event":"ft_transfer","data":{"old_owner_id":${jsonQuote(oldOwner)},"new_owner_id":${jsonQuote(newOwner)},"amount":${jsonQuote(amount)},"memo":null}}`);
+  return 0;
+}
 
 // init: mints total_supply to owner; stores NEP-148 metadata fields
 // (name/symbol/icon/decimals arrive flat from the launchpad's new call)
@@ -43,8 +64,10 @@ export function ftTransfer(): number {
   const from = near.predecessorAccountId();
   const fromBal = near.storageGet(balKey(from)) ?? "0";
   if (u128Lt(fromBal, amount)) { near.abort("ERR_INSUFFICIENT"); return 0; }
+  if (u128IsZero(amount)) { near.abort("ERR_ZERO"); return 0; }
   near.storageSet(balKey(from), u128Sub(fromBal, amount));
   near.storageSet(balKey(to), u128Add(near.storageGet(balKey(to)) ?? "0", amount));
+  transferEvent(from, to, amount);
   return 0;
 }
 
@@ -73,8 +96,6 @@ export function ft_transfer_call(): number {
   return 0;
 }
 
-// resolve: callee returned the UNUSED amount as a U128 string ("0" = used
-// fully, empty string = the call failed → refund everything).
 export function ft_resolve_transfer(): number {
   const sender = near.jsonGetStr("sender_id") ?? "";
   const receiver = near.jsonGetStr("receiver_id") ?? "";
@@ -97,16 +118,58 @@ export function ft_resolve_transfer(): number {
   if (!u128IsZero(refund)) {
     near.storageSet(balKey(sender), u128Add(near.storageGet(balKey(sender)) ?? "0", refund));
   }
+  if (!u128IsZero(used)) { transferEvent(sender, receiver, used); }
   near.log(`resolve:${receiver}:${used}:${refund}`);
   return 0;
 }
 
+// ── storage registration (standard views; LENIENT model, see header) ──
+
 export function storageDeposit(): number {
   const who = near.jsonGetStr("account_id") ?? near.predecessorAccountId();
   if ((near.storageGet(balKey(who)) ?? "") == "") { near.storageSet(balKey(who), "0"); }
+  const attached = near.attachedDepositU128();
+  if (!u128IsZero(attached)) {
+    near.storageSet(storKey(who), u128Add(near.storageGet(storKey(who)) ?? "0", attached));
+  }
   return 0;
 }
 
+export function storageWithdraw(): number {
+  const who = near.predecessorAccountId();
+  const amount = near.jsonGetStr("amount") ?? STORAGE_MIN;
+  const st = near.storageGet(storKey(who)) ?? "0";
+  if (u128Gt(amount, st)) { near.abort("ERR_STORAGE"); return 0; }
+  near.storageSet(storKey(who), u128Sub(st, amount));
+  near.transferU128(who, amount);
+  return 0;
+}
+
+export function storageBalanceOf(): string {
+  const who = near.jsonGetStr("account_id") ?? "";
+  return near.storageGet(storKey(who)) ?? "0";
+}
+
+export function storageMinimumBalance(): string { return STORAGE_MIN; }
+
+export function storage_unregister(): number {
+  const who = near.predecessorAccountId();
+  const bal = near.storageGet(balKey(who)) ?? "0";
+  if (!u128IsZero(bal)) {
+    const force = near.jsonGetStr("force") ?? "0";
+    if (force != "1") { near.abort("ERR_BALANCE"); return 0; }
+    // burn the leftover supply so total stays consistent
+    near.storageSet("supply", u128Sub(near.storageGet("supply") ?? "0", bal));
+  }
+  near.storageRemove(balKey(who));
+  const st = near.storageGet(storKey(who)) ?? "0";
+  if (!u128IsZero(st)) { near.transferU128(who, st); }
+  near.storageRemove(storKey(who));
+  near.log(`unregistered:${who}`);
+  return 0;
+}
+
+// ── views ──────────────────────────────────────────────────────────
 export function ftBalanceOf(): string {
   return near.storageGet(balKey(near.jsonGetStr("account_id") ?? "")) ?? "0";
 }
