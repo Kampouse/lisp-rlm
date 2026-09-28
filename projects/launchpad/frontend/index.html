@@ -326,10 +326,10 @@ ensureConnector().catch(e=>{
   toast("wallet connector unavailable ("+(e?.message||"import failed")+") — use dev signer","bad");
   document.querySelector("details").open = true;
 });
-async function sendTx(receiverId, actions){
+async function sendTx(receiverId, actions, opts={}){
   const f = fastGet();
   const GK_OK = ["buy","sell","withdraw_tokens"];   // gas-key ACL on the pool
-  const keyCanSign = f && signer && signer.accountId === f.accountId
+  const keyCanSign = !opts?.forceWallet && f && signer && signer.accountId === f.accountId
     && (!receiverId || receiverId === CFG.pool)
     && actions.every(a => a.type==="FunctionCall" && a.params.deposit==="0" && GK_OK.includes(a.params.methodName));
   if (keyCanSign){
@@ -496,10 +496,18 @@ window.heroBuy = async function(){
 };
 window.heroSell = async function(frac){
   const g = await heroPaint(true);
-  const parked = g?.parked;
-  if (!parked || BigInt(parked)<=0n) return toast("nothing parked yet — buy first","warn");
-  const amt = (BigInt(parked) * BigInt(Math.round(frac*100)) / 100n).toString();
-  await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:token(),tokens_in:amt},gas:"50000000000000",deposit:"0"}}]);
+  const pkP = BigInt(g?.parked || 0), walP = BigInt(g?.walParked || 0);
+  if (pkP<=0n && walP<=0n) return toast("nothing parked yet — buy first","warn");
+  const q = BigInt(Math.round(frac*100));
+  if (pkP>0n){   // instant lane: gas-key identity
+    const amt = (pkP * q / 100n).toString();
+    await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:token(),tokens_in:amt},gas:"50000000000000",deposit:"0"}}]);
+  }
+  if (walP>0n){  // setup-time buys parked under the wallet identity — one wallet confirm
+    const amt = (walP * q / 100n).toString();
+    toast(frac<1 ? "selling your first (setup) batch — confirm once" : "cashing out your first (setup) batch — confirm once","warn");
+    await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:token(),tokens_in:amt},gas:"50000000000000",deposit:"0"}}], {forceWallet:true});
+  }
   await heroPaint(); await refreshAfter();
 };
 window.addNear = async function(){
@@ -514,17 +522,20 @@ window.heroPaint = async function(returnOnly){
   try{
     const g = fastGet();
     if (!signer || !g) { if(!returnOnly){ document.getElementById("h-setup").textContent = signer ? "first BUY sets everything up (one popup)" : ""; } return; }
-    const [led, st] = await Promise.all([
+    const [led, st, wal] = await Promise.all([
       view(CFG.pool,"get_balance",{account:"pk:"+g.pk, token:token()}),
       view(CFG.pool,"get_gas_status",{pk:g.pk}).catch(()=>null),
+      view(CFG.pool,"get_balance",{account:signer.accountId, token:token()}).catch(()=>null),
     ]);
+    const walParked = wal?.parked ?? "0";
     if (!returnOnly){
       document.getElementById("h-pad").textContent = fmtNear(led.near);
       document.getElementById("h-key").textContent = st ? fmtNear(st.est) : "—";
       window.__gkEst = st?.est;
-      document.getElementById("h-park").textContent = fmtTok(led.parked,DEC)+" parked";
+      const tot = BigInt(led.parked) + BigInt(walParked);
+      document.getElementById("h-park").textContent = fmtTok(tot.toString(),DEC)+" parked";
     }
-    return {parked:led.parked, pad:led.near, est:st?.est};
+    return {parked:led.parked, walParked, pad:led.near, est:st?.est};
   }catch(e){}
 };
 
@@ -810,7 +821,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b22";
+const BUILD = "b23";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
