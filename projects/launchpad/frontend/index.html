@@ -272,13 +272,15 @@ async function nearBal(accountId){
 window.view = view;
 
 /* ── fmt ────────────────────────────────────────────────── */
-const D18 = 10n**18n;
-function fmtNear(yoctoStr){ const y=BigInt(yoctoStr||"0"); const n=y/D18, fr=(y%D18).toString().padStart(18,"0").slice(0,4);
+const D18 = 10n**18n;      // tokens (GKT, 18 dec)
+const D24 = 10n**24n;      // NEAR — 24 decimals. The old code divided/parsed NEAR
+                           // with D18 → every NEAR amount was 10^6× off (2026-09-28)
+function fmtNear(yoctoStr){ const y=BigInt(yoctoStr||"0"); const n=y/D24, fr=(y%D24).toString().padStart(24,"0").slice(0,4);
   return `${n}.${fr} NEAR`; }
 function fmtTok(rawStr,dec){ const d=10n**BigInt(dec||18); const v=BigInt(String(rawStr||"0")); const n=v/d, fr=(v%d).toString().padStart((dec||18),"0").slice(0,2);
   return `${n}.${fr}`; }
-function parseNear(v){ const [a,b=""]=String(v).trim().split("."); const fr=(b+"0".repeat(18)).slice(0,18);
-  return BigInt(a||"0")*D18 + BigInt(fr||"0"); }
+function parseNear(v){ const [a,b=""]=String(v).trim().split("."); const fr=(b+"0".repeat(24)).slice(0,24);
+  return BigInt(a||"0")*D24 + BigInt(fr||"0"); }
 function parseTok(v,dec){ const [a,b=""]=String(v).trim().split("."); const d=Number(dec||18);
   const fr=(b+"0".repeat(d)).slice(0,d); return BigInt(a||"0")*10n**BigInt(d) + BigInt(fr||"0"); }
 window.fmtNear=fmtNear; window.fmtTok=fmtTok; window.parseNear=parseNear; window.parseTok=parseTok;
@@ -483,21 +485,23 @@ window.heroBuy = async function(){
     const acct = signer.accountId;
     const fund = parseNear(document.getElementById("h-add").value || "0.05").toString();
     const setup = parseNear("0.25").toString();
-    toast("first trade — confirm once in your wallet (this sets up instant trading)","warn");
-    // persist FIRST: a rejected popup or failed tx must never lose the key —
-    // re-running setup with the same pk is safe (contract register is idempotent)
+    // RELAY SETUP (testnet): the pool's backend registers the key + funds it —
+    // no wallet popup at all, then this buy rides the gas key like every other
     localStorage.setItem("gk-fast", JSON.stringify({secret:kp.toString(), accountId:acct, pk:pkHex}));
-    try {
-      await sendTx(CFG.pool, [
-        {type:"FunctionCall",params:{methodName:"register_gas_key",args:{pk:pkHex,owner:acct},gas:"100000000000000",deposit:setup}},
-        {type:"FunctionCall",params:{methodName:"deposit",args:{pk:pkHex,owner:acct},gas:"30000000000000",deposit:fund}},
-        {type:"FunctionCall",params:{methodName:"buy",args:buyArgs,gas:"50000000000000",deposit:"0"}},
-      ]);
-      toast("⚡ instant mode on — future trades need no wallet","ok");
-    } catch(e) {
-      // key is saved; next BUY auto-completes setup (idempotent) — no fresh popup spam
-      throw e;
+    toast("setting up instant trading…","");
+    const rr = await fetch("/api/relay",{method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({pk:pkHex,owner:acct})}).then(r=>r.json()).catch(e=>({error:"relay unreachable: "+e}));
+    if (rr.error) { localStorage.removeItem("gk-fast"); throw new Error("setup: "+rr.error); }
+    // wait for the key to appear on-chain (relay tx commit → propagation)
+    for (let i=0;i<10;i++){
+      const st=await view(CFG.pool,"get_gas_status",{pk:pkHex}).catch(()=>null);
+      if (st && BigInt(st.funded||0)>0n) break;
+      await new Promise(r=>setTimeout(r,800));
     }
+    try {
+      await gasSend([{type:"FunctionCall", methodName:"buy", args:buyArgs, gas:"50000000000000", deposit:"0"}]);
+    } catch(e){ throw new Error("[after-relay buy] "+(e&&e.message||e)); }
+    toast("⚡ instant mode on — no wallet needed, ever","ok");
   }
   await heroPaint(); await refreshAfter();
 };
@@ -836,7 +840,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b24";
+const BUILD = "b27";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
