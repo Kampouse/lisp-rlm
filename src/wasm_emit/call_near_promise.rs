@@ -1509,7 +1509,18 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
-                v.extend(amt);
+                // amount_ptr: parse decimal amt-str to 16B LE at TEMP_MEM
+                // (nearcore imports.rs: promise_index, public_key_len,
+                //  public_key_ptr, amount_ptr — NOT an inline value)
+                let h = self.ensure_u128_str_helpers();
+                let amt_local = self.local_idx("__gk_amt");
+                v.extend(amt.clone());
+                v.push(Instruction::LocalSet(amt_local));
+                v.push(Instruction::LocalGet(amt_local));
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::call_user(h.parse));
+                v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
                 v.push(Self::host_call(79));
                 v.push(Instruction::I64Const(0));
                 Ok(v)

@@ -1285,6 +1285,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 Ok(v)
             }
+            "near/current_account_id" => self.read_to_register(3, a),
             "near/signer_account_id" => self.read_to_register(4, a),
             "near/signer_account_pk" => self.read_to_register(5, a),
             "near/log_utf16" => {

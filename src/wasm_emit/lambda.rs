@@ -488,6 +488,11 @@ impl WasmEmitter {
             }
             "near/ed25519_verify" => self.need_host(24),
             "near/p256_verify" => self.need_host(55),
+            "near/current_account_id" => {
+                self.need_host(3);
+                self.need_host(0);
+                self.need_host(1);
+            }
             "near/signer_account_pk" => {
                 self.need_host(5);
                 self.need_host(0);

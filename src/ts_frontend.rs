@@ -3258,7 +3258,10 @@ fn member_fn_returns_non_string(obj: &str, prop: &str) -> bool {
                 | "promiseBatchActionTransfer"
                 | "promiseBatchActionFunctionCall"
                 | "promiseBatchActionCreateAccount"
+                | "promiseBatchActionTransferToGasKey"
                 | "promiseReturn"
+                | "signerAccountPk"
+                | "currentAccountId"
         ),
         "u128" => matches!(prop, "lt" | "gt" | "eq" | "isZero" | "toI64"),
         "storage" => matches!(prop, "has" | "hasKey" | "set" | "write" | "del" | "remove"),
@@ -4803,6 +4806,7 @@ fn map_member_fn(obj: &str, prop: &str) -> String {
             "jsonExtract" => Some("json-extract-input"),
             "sha256Hash" => Some("sha256-hash"),
             "hexDecode" => Some("hex-decode"),
+            "hexEncode" => Some("hex-encode"),
             "schnorrVerify" => Some("schnorr-verify"),
             "ed25519Verify" => Some("ed25519-verify"),
             _ => None,
@@ -4831,6 +4835,7 @@ fn map_builtin_call(name: &str) -> String {
         "jsonExtract" => "json-extract-input",
         "strSplit" => "str-split",
         "hexDecode" => "hex-decode",
+        "hexEncode" => "hex-encode",
         "sha256Hash" => "sha256-hash",
         "schnorrVerify" => "schnorr-verify",
         "ed25519Verify" => "ed25519-verify",
