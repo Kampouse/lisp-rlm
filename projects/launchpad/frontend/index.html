@@ -228,7 +228,7 @@ async function ensureConnector(){
   if (connector === false) throw new Error("connector unavailable");
   if (connector) return connector;
   const mod = await import("https://cdn.jsdelivr.net/gh/azbang/near-connect@main/cdn/hot-connect.es.js");
-  connector = new mod.NearConnector();
+  connector = new mod.NearConnector({ network: CFG.network });   // testnet pool!
   connector.on("wallet:signIn", async (t)=>{
     connectorWallet = await connector.wallet();
     signer = { kind:"connect", accountId: t.accounts[0].accountId };
@@ -529,7 +529,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b4";
+const BUILD = "b5";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
