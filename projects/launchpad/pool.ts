@@ -70,8 +70,8 @@ function tbKey(t: string, trader: string): string { return "tb:" + t + ":" + tra
 // identified by their signing pubkey instead: "pk:" + signer_account_pk.
 // The pk bytes are opaque and round-trip unchanged into
 // promise_batch_action_transfer_to_gas_key.
-const GK_BURN_EST = "1000000000000000000";      // est. 1 mNEAR gas/trade (measured 0.37 → 2.7x margin)
-const GK_REFUEL_AT = "900000000000000000000";   // gauge: est. 0.9 NEAR burnt since last refuel
+      // est. 1 mNEAR gas/trade (measured 0.37 → 2.7x margin)
+const GK_REFUEL_AT = "900000000000000"; // 9e14 gas units = 0.9 NEAR of real burn   // gauge: est. 0.9 NEAR burnt since last refuel
 const GK_REFUEL_AMT = "2000000000000000000000"; // refuel shot: 2 NEAR ≈ 5,400 trades
 
 // gas-key identity is HEX(signer pk) — the raw 33-byte borsh pk can't ride
@@ -111,11 +111,13 @@ export function set_gk_config(): number {
 // value (the trade receipt JSON) is unaffected.
 function autoRefuel(tid: string, pk: string): void {
   if (pk == "") { return; }
-  const burnEst = gkCfg("burn_est", GK_BURN_EST);
+  // gauge and refuel_at are in GAS UNITS (1 gas = 1e9 yocto); the tick is
+  // this tx's REAL burn via used_gas() — tracks true depletion, aborted
+  // trades (reverted writes) stay uncounted, margin lives in refuel_at
   const refuelAt = gkCfg("refuel_at", GK_REFUEL_AT);
   const refuelAmt = gkCfg("refuel_amt", GK_REFUEL_AMT);
   const gk = gkGaugeKey(pk);
-  const spent = u128Add(near.storageGet(gk) ?? "0", burnEst);
+  const spent = u128Add(near.storageGet(gk) ?? "0", u128FromNum(near.usedGas()));
   near.storageSet(gk, spent);
   if (u128Lt(spent, refuelAt)) { return; }
   const nk = nbKey(tid);
