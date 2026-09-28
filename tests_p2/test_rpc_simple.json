@@ -1,5 +1,0 @@
-{
-  "name": "test_rpc_simple",
-  "src": "test_rpc_simple.lisp",
-  "target": "outlayer"
-}

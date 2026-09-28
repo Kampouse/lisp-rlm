@@ -1,6 +1,0 @@
-{
-  "name": "positions",
-  "src": "burrow_positions_v6.lisp",
-  "target": "outlayer-p2",
-  "output": "positions.wasm"
-}

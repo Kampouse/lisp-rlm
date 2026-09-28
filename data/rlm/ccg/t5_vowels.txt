@@ -1,5 +1,0 @@
-### PAST ATTEMPTS ON t5_vowels (agent memory — do NOT repeat these failures)
-- FAIL it2: (define (vowel? c) (or (equal? c ~~QT~~a~~QT~~) (equal? c ~~QT~~e~~QT~~) (equal? c ~~QT~~i~~QT~~) (equal? c ~~ → ERROR: ~~QT~~expected number, got ~~QT~~e~~QT~~~~NL~~    (fn
-- FAIL it0: (define (vowel? c) (member c (list ~~QT~~a~~QT~~ ~~QT~~e~~QT~~ ~~QT~~i~~QT~~ ~~QT~~o~~QT~~ ~~QT~~u~~QT~~)))~~N → ERROR: ~~QT~~expected number, got ~~QT~~e~~QT~~~~NL~~    (fn
-- FAIL it3: (define (vowel? c) (member c (list a e i o u)))~~NL~~(define (count-vowels s)~~NL~~  (let* ((chars (str-split  → ERROR: decompose-rejected — this step MUST delegate via (sub
-- SOLVED ONCE WITH (complete): (define (vowel? c) (member c (list a e i o u)))~~NL~~(define (count-vowels s)~~NL~~  (let* ((chars (str-split (to-string s) ~~QT~~~~QT~~))~~NL~~         (vowels (filter vowel? chars)))~~NL~~    (reduce + 0 vowels)))~~NL~~(rlm-set answer 5)~~NL~~(final true)

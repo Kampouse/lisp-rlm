@@ -1,6 +1,0 @@
-(define (run)
-  (let* ((resp (http-get "https://api.rhea.finance/list-token-price"))
-         (len (str-len resp)))
-    (if (< len 1000)
-            (str-cat "TRUNCATED: " (str-cat (int-to-str len) " bytes"))
-            (str-cat "OK: " (str-cat (int-to-str len) " bytes")))))

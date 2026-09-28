@@ -1,5 +1,0 @@
-(define (run)
-  (let* ((prices (http-get "https://api.rhea.finance/list-token-price"))
-         (obj (json-get-str "token.burrow.near" prices))
-         (p (json-get-str "price" obj)))
-    (str-cat "obj:" obj " p:" p)))

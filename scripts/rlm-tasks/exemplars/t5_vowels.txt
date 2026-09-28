@@ -1,8 +1,0 @@
-# auto — mined from own completed worlds
-(define (vowel? c) (member c (list a e i o u)))
-(define (count-vowels s)
-  (let* ((chars (str-split (to-string s) ""))
-         (vowels (filter vowel? chars)))
-    (reduce + 0 vowels)))
-(rlm-set answer 5)
-(final true)

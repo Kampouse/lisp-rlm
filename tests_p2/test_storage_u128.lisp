@@ -1,5 +1,0 @@
-(define (check)
-  (near/store_u128 "test-key" 1000000000000000000)
-  (let ((val (near/load_u128 "test-key")))
-    val))
-(export "check" check)

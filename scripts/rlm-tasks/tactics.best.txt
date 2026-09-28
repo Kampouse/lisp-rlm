@@ -1,7 +1,0 @@
-# tactics gen · brain brain:glm-4.5-flash ·7
-- For ta_prime_sum: Create helper function (prime? n) that checks if n is prime
-- For ta_prime_sum: In (prime? n), handle edge cases: n≤1 (false), n=2 (true), even numbers >2 (false)
-- For ta_prime_sum: For (prime? n), check divisibility by testing (mod n i) for odd i from 3 to (sqrt n)
-- For ta_prime_sum: Use (filter prime? lst) to get primes from input list
-- For ta_prime_sum: Sum primes with (+ a b ...) or use (reduce + 0 (filter prime? lst))
-- For ta_prime_sum: Return 0 for empty input list

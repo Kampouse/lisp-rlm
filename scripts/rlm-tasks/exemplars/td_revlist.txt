@@ -1,4 +1,0 @@
-# auto — mined from own completed worlds
-(let ((lst (list 1 2 3 4)))
-  (rlm-set answer (reverse lst))
-  (rlm-set Final t))

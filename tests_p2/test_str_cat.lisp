@@ -1,5 +1,0 @@
-(define (test-keys)
-  (let ((acct (near/signer_account_id)))
-    (near/store (str-cat acct "/credits") 1000)
-    (near/return_str (str-cat "key=" acct "/credits"))))
-(export "test-keys" test-keys)

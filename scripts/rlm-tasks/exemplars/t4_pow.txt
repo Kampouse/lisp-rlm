@@ -1,8 +1,0 @@
-# auto — mined from own completed worlds
-(define (pow base exp)
-  (if (= exp 0)
-      1
-      (* base (pow base (- exp 1)))))
-(let ((res (pow 2 16)))
-  (rlm-set answer res)
-  (final true))

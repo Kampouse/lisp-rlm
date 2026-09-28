@@ -1,2 +1,0 @@
-# hand — bootstrap exemplar (different list than the task; do not auto-overwrite)
-(begin (rlm-set answer (fold-right (lambda (x acc) (* x acc)) 1 (list 3 5 7))) (rlm-set Final t))

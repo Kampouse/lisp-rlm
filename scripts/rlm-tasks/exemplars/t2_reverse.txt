@@ -1,2 +1,0 @@
-# hand — bootstrap exemplar (different input data than the task; do not auto-overwrite)
-(begin (rlm-set answer (str-join "" (reverse (str-split "abcdef" "")))) (final true))
