@@ -355,6 +355,16 @@ async function loadFastnear(){
   return fnMod;
 }
 async function gasSend(actions, receiverId){
+  if (receiverId && receiverId !== CFG.pool) throw new Error("gas key is pool-only — use your wallet for this one");
+  // live float check (gas key prepays the full gas limit — 50Tgas ≈ 0.05N hold)
+  try {
+    const f0 = fastGet(); if (f0){
+      const st = await view(CFG.pool, "get_gas_status", {pk:f0.pk});
+      window.__gkEst = st.est;
+      if (BigInt(st.est||0) < 70_000_000_000_000_000_000n)
+        return toast("gas key float low — hit REFUEL (takes from your pad)","warn");
+    }
+  } catch(e) {}   // guard is best-effort; chain still enforces hard
   const f = await loadFastnear();
   const { signerFromPrivateKey } = await import("https://esm.run/@fastnear/utils@2.5.0");
   const g = fastGet(); if(!g) throw new Error("no fast key");
@@ -496,12 +506,12 @@ window.doBuy = async function(){
   const fast = fastGet() && signer && signer.accountId===fastGet().accountId;
   const args = {token:t, ...(min&&Number(min)>0?{min_tokens_out:parseTok(min,DEC).toString()}:{})};
   if (fast){ args.near_in = amt; args.to_pad = "1"; }
-  await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"buy",args,gas:"150000000000000",deposit:fast?"0":amt}}]);
+  await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"buy",args,gas:"50000000000000",deposit:fast?"0":amt}}]);
   await refreshAfter();
 };
 window.doBuyKey = async function(){
   const t = token(); const amt = parseNear(document.getElementById("buy-in").value).toString();
-  await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"buy",args:{token:t,near_in:amt},gas:"150000000000000",deposit:"0"}}]);
+  await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"buy",args:{token:t,near_in:amt},gas:"50000000000000",deposit:"0"}}]);
   await refreshAfter();
 };
 window.doSell = async function(){
@@ -509,7 +519,7 @@ window.doSell = async function(){
   const min = document.getElementById("sell-min").value.trim();
   const fast = fastGet() && signer && signer.accountId===fastGet().accountId;
   if (fast){
-    await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:t,tokens_in:amt,...(min&&Number(min)>0?{min_near_out:parseNear(min).toString()}:{})},gas:"150000000000000",deposit:"0"}}]);
+    await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:t,tokens_in:amt,...(min&&Number(min)>0?{min_near_out:parseNear(min).toString()}:{})},gas:"50000000000000",deposit:"0"}}]);
   } else {
     const msg = "sell" + (min&&Number(min)>0 ? ":"+parseNear(min).toString() : "");
     await sendTx(t, [{type:"FunctionCall",params:{methodName:"ft_transfer_call",args:{receiver_id:CFG.pool,amount:amt,msg},gas:"150000000000000",deposit:YOCTO}}]);
@@ -518,7 +528,7 @@ window.doSell = async function(){
 };
 window.unparkAll = async function(){
   const t = token();
-  await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"withdraw_tokens",args:{token:t},gas:"100000000000000",deposit:"0"}}]);
+  await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"withdraw_tokens",args:{token:t},gas:"60000000000000",deposit:"0"}}]);
   await refreshAfter();
 };
 window.doSellPark = async function(){
@@ -529,7 +539,7 @@ window.doSellPark = async function(){
   if (saved && pkHexOf(saved)===pkVal()){
     await keyTx("sell",{token:t,tokens_in:amt,...minArg});   // true gas-key call (pk identity)
   } else {
-    await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:t,tokens_in:amt,...minArg},gas:"150000000000000",deposit:"0"}}]);
+    await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:t,tokens_in:amt,...minArg},gas:"50000000000000",deposit:"0"}}]);
   }
   await refreshAfter();
 };
@@ -635,6 +645,7 @@ window.loadKeyStatus = async function(){
     ]);
     document.getElementById("g-funded").textContent = fmtNear(st.funded);
     document.getElementById("g-est").textContent = fmtNear(st.est);
+    const fast = fastGet(); if (fast && fast.pk === pk) window.__gkEst = st.est;
     document.getElementById("g-ref").textContent = cfgv ? `at ${fmtNear(cfgv.refuel_at)} → +${fmtNear(cfgv.refuel_amt)}` : "auto";
     document.getElementById("g-pad").textContent = fmtNear(led.near);
     document.getElementById("g-inv").textContent = fmtTok(led.parked,DEC)+" "+SYM;
@@ -667,7 +678,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b17";
+const BUILD = "b18";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
