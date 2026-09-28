@@ -340,6 +340,7 @@ async function devSend(receiverId, actions){
 
 /* ── ⚡ fast mode: one-time restricted trading key, popup-free pad trading ── */
 function fastGet(){ try{ return JSON.parse(localStorage.getItem("gk-fast")||"null"); }catch{ return null; } }
+window.fastGet = fastGet;   // inline onclick handlers run in global scope — export it
 window.fastEnable = async function(){
   if (!signer || signer.kind!=="connect") return toast("connect your wallet first","bad");
   const na = await loadNaj();
@@ -628,7 +629,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b11";
+const BUILD = "b12";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
