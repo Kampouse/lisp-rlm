@@ -118,6 +118,11 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|d| bincode::deserialize(&d).ok())
         .unwrap_or_default();
+    // A state file on disk must be rewritable even when the call drains
+    // storage to zero — the storage-cleaner case. Skipping the persist
+    // on empty left the STALE pre-clean map on disk (count-after-clean
+    // resurrected the wiped keys).
+    let had_state_file = std::path::Path::new(state_path).exists();
     if loaded_storage.is_empty() {
         println!("🆕 Fresh state");
     } else {
@@ -129,6 +134,9 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         registers: HashMap::new(),
         return_data: None,
         view: run_view,
+        iters: HashMap::new(),
+        iter_cursors: HashMap::new(),
+        next_iter_id: 0,
     }));
 
     MODULES.with(|m| *m.borrow_mut() = Some(Arc::new(modules)));
@@ -304,7 +312,9 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // Persist
     {
         let st = state.lock().unwrap();
-        if !st.storage.is_empty() {
+        // save even when EMPTY if a state file existed — a wipe must
+        // persist (fresh-state read-only calls still skip the write)
+        if !st.storage.is_empty() || had_state_file {
             let mut keys: Vec<(&Vec<u8>, &Vec<u8>)> = st.storage.iter().collect();
             keys.sort();
             println!("💾 Saved {} keys", keys.len());
@@ -1491,6 +1501,102 @@ fn build_env_linker(
         },
     );
 
+    // ── host fn 36: storage_iter_prefix(len, ptr) → u64 iterator id ──
+    // Mock-only surface (chain deprecated the fn): snapshot this
+    // contract's keys under prefix, SORTED, namespacing stripped — the
+    // same contract the interp mock gives (bytecode near/storage_iter_*).
+    // Gas: no on-chain oracle exists anymore; sanity-charged at
+    // has_key base + one trie-node touch per snapshotted key.
+    let s10 = state.clone();
+    let storage_iter_prefix_fn = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![ValType::I64; 2], vec![ValType::I64]),
+        move |mut caller, args, results| {
+            let (pl, pp) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
+            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                let md = mem.data(&caller);
+                if pp + pl <= md.len() {
+                    let prefix = md[pp..pp + pl].to_vec();
+                    let acct = exec_ctx_or_default().contract;
+                    let ns = prefixed_key(&acct, b"");
+                    let (id, cost) = {
+                        let mut st = s10.lock().unwrap();
+                        let mut ks: Vec<Vec<u8>> = st.storage.keys()
+                            .filter(|k| k.starts_with(&ns))
+                            .map(|k| k[ns.len()..].to_vec())
+                            .collect();
+                        ks.sort();
+                        let mut cost = fees::STORAGE_HAS_KEY_BASE;
+                        for k in &ks {
+                            cost += trie_charge(&mut st, &prefixed_key(&acct, k));
+                        }
+                        let id = st.next_iter_id;
+                        st.next_iter_id += 1;
+                        st.iters.insert(id, ks);
+                        st.iter_cursors.insert(id, 0);
+                        (id, cost)
+                    };
+                    caller.set_fuel(caller.get_fuel()?.saturating_sub(cost))?;
+                    results[0] = Val::I64(id as i64);
+                    return Ok(());
+                }
+            }
+            // Bad ptr/no mem: -1 is never a valid iterator id (real ids
+            // start at 0) — iter_next(-1) then reports exhausted, matching
+            // the interp's unknown-id → nil. Never return 0 here: that
+            // would alias a REAL iterator.
+            results[0] = Val::I64(-1);
+            Ok(())
+        },
+    );
+
+    // ── host fn 38: storage_iter_next(id, key_reg, val_reg) → 1|0 ──
+    // Live-trie semantics: walk the sorted snapshot, skip keys deleted
+    // after the snapshot (the cleaner loop's next → remove → next …
+    // drains storage exactly). Writes key+value into the registers like
+    // the real host; emitted code reads them via register_len(1)/
+    // read_register(1). Unknown/exhausted → 0.
+    let s11 = state.clone();
+    let storage_iter_next_fn = Func::new(
+        &mut *store,
+        FuncType::new(&engine, vec![ValType::I64; 3], vec![ValType::I64]),
+        move |mut caller, args, results| {
+            let id = args[0].unwrap_i64() as u64;
+            let (key_reg, val_reg) = (args[1].unwrap_i64() as u64, args[2].unwrap_i64() as u64);
+            let acct = exec_ctx_or_default().contract;
+            let mut st = s11.lock().unwrap();
+            let keys = match st.iters.get(&id) {
+                Some(k) => k.clone(),
+                None => {
+                    results[0] = Val::I64(0);
+                    return Ok(());
+                }
+            };
+            // local index — a held Entry borrow would fight the storage
+            // read below (guard deref can't split field borrows)
+            let mut idx = *st.iter_cursors.get(&id).unwrap_or(&0);
+            while idx < keys.len() {
+                let key = keys[idx].clone();
+                idx += 1;
+                let full = prefixed_key(&acct, &key);
+                if let Some(val) = st.storage.get(&full).cloned() {
+                    st.iter_cursors.insert(id, idx);
+                    st.registers.insert(key_reg, key);
+                    st.registers.insert(val_reg, val);
+                    drop(st);
+                    // sanity gas: one cached trie-node read per advanced
+                    // entry (nodes were touched at snapshot time)
+                    caller.set_fuel(caller.get_fuel()?.saturating_sub(2_280_000_000))?;
+                    results[0] = Val::I64(1);
+                    return Ok(());
+                }
+            }
+            st.iter_cursors.insert(id, idx);
+            results[0] = Val::I64(0);
+            Ok(())
+        },
+    );
+
     let panic_fn = Func::new(
         &mut *store,
         FuncType::new(&engine, vec![ValType::I64; 2], vec![]),
@@ -2357,9 +2463,11 @@ fn build_env_linker(
     linker.define(&*store, "env", "promise_results", noop1.clone())?;
     // (yield hosts defined below — cross engine or noop, never twice)
     linker.define(&*store, "env", "account_locked_balance", noop1.clone())?;
-    linker.define(&*store, "env", "storage_iter_prefix", noop_2i_1o.clone())?;
+    linker.define(&*store, "env", "storage_iter_prefix", storage_iter_prefix_fn)?;
+    // host fn 37 storage_iter_range — deprecated on-chain and never
+    // emitted by wasm_emit; noop registered for import completeness.
     linker.define(&*store, "env", "storage_iter_range", noop_4i_1o.clone())?;
-    linker.define(&*store, "env", "storage_iter_next", noop_3i_1o.clone())?;
+    linker.define(&*store, "env", "storage_iter_next", storage_iter_next_fn)?;
     linker.define(&*store, "env", "write_register", write_register_fn)?;
     linker.define(
         &*store,
@@ -3144,6 +3252,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         registers: HashMap::new(),
         return_data: None,
         view: run_view,
+        iters: HashMap::new(),
+        iter_cursors: HashMap::new(),
+        next_iter_id: 0,
     }));
 
     let mut store = Store::new(&engine, ());
@@ -3386,6 +3497,15 @@ struct MockState {
     view: bool,
     /// keys already trie-touched this invocation (cached thereafter)
     touched: std::collections::HashSet<Vec<u8>>,
+    /// storage_iter_prefix/next snapshots (host fns 36/38). Mock-only
+    /// surface: mainnet deprecated the fns, but the interp + wasm_emit
+    /// keep the builtins (storage-cleaner loops), so the mock honors
+    /// them with the SAME semantics: sorted snapshot, live-check
+    /// skip-deleted on next. Raw (un-namespaced) keys are stored —
+    /// contracts must see their own key space, like the interp mock.
+    iters: HashMap<u64, Vec<Vec<u8>>>,
+    iter_cursors: HashMap<u64, usize>,
+    next_iter_id: u64,
 }
 
 /// Register write with near-core limit semantics (logic/tests/registers.rs):
