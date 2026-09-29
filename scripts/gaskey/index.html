@@ -2,430 +2,748 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>gaskey — session trading</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>gaskey — terminal</title>
 <style>
-  :root {
-    --bg: #0A0A0F; --panel: #111118; --panel2: #16161F; --line: #23232E;
-    --text: #E8E8EE; --dim: #8A8A99; --dimmer: #55555F;
-    --green: #00EC97; --green-dim: #00B374; --red: #FF5C7A; --amber: #FFB454;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-  html, body { height: 100%; }
-  body {
-    background: var(--bg); color: var(--text);
-    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, sans-serif;
-    display: flex; flex-direction: column; overflow: hidden;
-    user-select: none; -webkit-user-select: none;
-  }
-  header {
-    display: flex; align-items: center; gap: 10px;
-    padding: 14px 18px; border-bottom: 1px solid var(--line); flex-shrink: 0;
-  }
-  header .logo { width: 26px; height: 26px; border-radius: 8px; background: linear-gradient(135deg, var(--green), #0077FF); }
-  header h1 { font-size: 17px; font-weight: 700; letter-spacing: -0.02em; }
-  header h1 span { color: var(--green); }
-  header .net { margin-left: auto; font-size: 12px; color: var(--dim); }
-  header .net b { color: var(--green); font-weight: 600; }
+:root{
+  --bg:#0A0A0F;--panel:#111118;--panel2:#16161F;--panel3:#1B1B26;--line:#23232E;--line2:#2E2E3B;
+  --text:#E8E8EE;--dim:#8A8A99;--dimmer:#55555F;
+  --green:#00EC97;--green-dim:#00B374;--green-bg:rgba(0,236,151,.08);
+  --red:#FF5C7A;--red-bg:rgba(255,92,122,.08);--amber:#FFB454;--blue:#4D9FFF;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,sans-serif;
+  display:flex;flex-direction:column;overflow:hidden;user-select:none;-webkit-user-select:none}
+svg.ic{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
 
-  #app { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+/* ── header ── */
+header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);flex-shrink:0}
+.logo{width:24px;height:24px;border-radius:7px;background:linear-gradient(135deg,var(--green),#0077FF)}
+header h1{font-size:15px;font-weight:800;letter-spacing:-.02em}
+header h1 span{color:var(--green)}
+.hspace{flex:1}
+.hpill{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);background:var(--panel2);
+  border:1px solid var(--line);border-radius:999px;padding:5px 11px;cursor:pointer}
+.hpill b{color:var(--text);font-weight:600}
+.hpill .dot{width:6px;height:6px;border-radius:50%;background:var(--green)}
 
-  /* ── onboarding ── */
-  #setup {
-    margin: auto; width: min(440px, calc(100% - 40px));
-    background: var(--panel); border: 1px solid var(--line); border-radius: 20px;
-    padding: 28px 24px; display: none;
-  }
-  #setup h2 { font-size: 19px; margin-bottom: 6px; letter-spacing: -0.02em; }
-  #setup p { color: var(--dim); font-size: 13.5px; margin-bottom: 20px; }
-  .field { margin-bottom: 14px; }
-  .field label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 6px; font-weight: 600; }
-  input, select {
-    width: 100%; background: var(--panel2); border: 1px solid var(--line); border-radius: 12px;
-    color: var(--text); font: inherit; padding: 12px 14px; outline: none;
-  }
-  input:focus, select:focus { border-color: var(--green-dim); }
-  .row { display: flex; gap: 10px; }
-  .row > * { flex: 1; }
-  .btn {
-    width: 100%; border: 0; border-radius: 14px; padding: 14px;
-    background: var(--green); color: #04110B; font: inherit; font-weight: 700;
-    cursor: pointer; transition: transform .06s ease, filter .15s;
-  }
-  .btn:active { transform: scale(0.98); }
-  .btn:disabled { filter: grayscale(1) brightness(.6); cursor: default; }
-  .btn.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--line); font-weight: 600; }
-  .btn.red { background: transparent; color: var(--red); border: 1px solid var(--red); font-weight: 600; }
-  #setup .note { margin-top: 14px; font-size: 12px; color: var(--dimmer); }
+/* ── desktop grid ── */
+#grid{flex:1;display:grid;grid-template-columns:58fr 21fr 21fr;gap:1px;background:var(--line);min-height:0}
+.col{background:var(--bg);display:flex;flex-direction:column;min-height:0;min-width:0}
 
-  /* ── main ── */
-  #main { display: none; flex-direction: column; flex: 1; min-height: 0; }
-  .sessbar {
-    display: flex; align-items: center; gap: 8px; padding: 12px 18px;
-    border-bottom: 1px solid var(--line); flex-shrink: 0; overflow-x: auto;
-  }
-  .sessbar::-webkit-scrollbar { display: none; }
-  .chip {
-    display: flex; align-items: center; gap: 7px; white-space: nowrap;
-    background: var(--panel2); border: 1px solid var(--line); border-radius: 999px;
-    padding: 7px 14px; font-size: 13px; cursor: pointer; color: var(--dim);
-  }
-  .chip.active { border-color: var(--green-dim); color: var(--text); }
-  .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dimmer); }
-  .chip.active .dot { background: var(--green); }
-  .chip.add { color: var(--dim); border-style: dashed; }
-  .chip .x { color: var(--dimmer); padding-left: 2px; }
+/* chart column */
+#chartCol{padding:0}
+.mkt{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.mkt .tok{display:flex;align-items:center;gap:10px}
+.mkt .ticon{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,#2b2b38,#3a3a4a);
+  display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;color:var(--green)}
+.mkt .tname{font-weight:700;font-size:15px;letter-spacing:-.01em}
+.mkt .tsub{font-size:11.5px;color:var(--dim)}
+.mkt select{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:10px;
+  padding:8px 10px;font:inherit;font-size:12.5px;outline:none;margin-left:auto;max-width:170px}
+#priceHead{display:flex;align-items:baseline;gap:12px;padding:14px 16px 6px}
+#priceNow{font-size:30px;font-weight:800;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+#priceNow small{font-size:14px;color:var(--dim);font-weight:600}
+#priceChg{font-size:13.5px;font-weight:700;font-variant-numeric:tabular-nums}
+#chartWrap{flex:1;position:relative;min-height:0}
+canvas#chart{position:absolute;inset:0;width:100%;height:100%}
+#chartFoot{display:flex;gap:18px;padding:10px 16px;border-top:1px solid var(--line);font-size:11.5px;color:var(--dim)}
+#chartFoot b{color:var(--text);font-variant-numeric:tabular-nums;font-weight:600}
 
-  #padbar {
-    display: flex; align-items: center; gap: 14px; padding: 14px 18px;
-    border-bottom: 1px solid var(--line); flex-shrink: 0;
-  }
-  .stat { flex: 1; }
-  .stat .k { font-size: 11px; color: var(--dim); font-weight: 600; letter-spacing: .03em; }
-  .stat .v { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
-  .stat .v small { font-size: 12px; color: var(--dim); font-weight: 600; }
-  #padbar .actions { display: flex; gap: 8px; }
-  .sbtn {
-    background: var(--panel2); border: 1px solid var(--line); color: var(--text);
-    border-radius: 10px; padding: 9px 13px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
-  }
-  .sbtn:disabled { opacity: .4; cursor: default; }
+/* trade column */
+#tradeCol{overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px}
+.card h3{font-size:11px;color:var(--dim);font-weight:700;letter-spacing:.06em;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.side{display:flex;background:var(--panel2);border-radius:11px;padding:3px;margin-bottom:12px}
+.side button{flex:1;border:0;background:transparent;color:var(--dim);font:inherit;font-weight:700;
+  padding:10px;border-radius:9px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px}
+.side button.on-buy{background:var(--green);color:#04110B}
+.side button.on-sell{background:var(--red);color:#1A050A}
+.amtwrap{position:relative}
+input{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:12px;color:var(--text);
+  font:inherit;outline:none}
+input:focus{border-color:var(--green-dim)}
+.amtwrap input{font-size:22px;font-weight:800;padding:14px 64px 14px 14px;font-variant-numeric:tabular-nums}
+.amtwrap .cur{position:absolute;left:14px;top:50%;transform:translateY(-50%);color:var(--dim);font-weight:700;font-size:13px;display:none}
+.amtwrap .max{position:absolute;right:10px;top:50%;transform:translateY(-50%);background:var(--line);
+  border:0;color:var(--green);font-weight:700;font-size:11px;padding:6px 10px;border-radius:8px;cursor:pointer}
+.qrow{display:flex;justify-content:space-between;padding:7px 2px;font-size:12.5px;color:var(--dim)}
+.qrow b{color:var(--text);font-variant-numeric:tabular-nums;font-weight:600}
+.btn{width:100%;border:0;border-radius:13px;padding:14px;background:var(--green);color:#04110B;
+  font:inherit;font-weight:800;font-size:15px;cursor:pointer;transition:transform .06s,filter .15s;
+  display:flex;align-items:center;justify-content:center;gap:8px;margin-top:10px}
+.btn:active{transform:scale(.98)}
+.btn:disabled{filter:grayscale(1) brightness(.55);cursor:default}
+.btn.sell{background:var(--red);color:#1A050A}
+.statgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.stat{background:var(--panel2);border-radius:11px;padding:10px 12px}
+.stat .k{font-size:10px;color:var(--dim);font-weight:700;letter-spacing:.05em}
+.stat .v{font-size:16px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-.01em;margin-top:2px}
+.stat .v small{font-size:10.5px;color:var(--dim);font-weight:600}
+.stat .v.pos{color:var(--green)}.stat .v.neg{color:var(--red)}
+.lanes{display:flex;gap:3px;margin-top:6px}
+.lanes i{flex:1;height:12px;border-radius:3px;background:var(--line)}
+.lanes i.busy{background:var(--green-dim)}
 
-  #trade { flex: 1; display: flex; flex-direction: column; padding: 18px; gap: 14px; overflow-y: auto; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 18px; }
-  .card h3 { font-size: 13px; color: var(--dim); font-weight: 600; margin-bottom: 12px; letter-spacing: .03em; }
-  .side { display: flex; background: var(--panel2); border-radius: 12px; padding: 4px; margin-bottom: 14px; }
-  .side button {
-    flex: 1; border: 0; background: transparent; color: var(--dim); font: inherit;
-    font-weight: 700; padding: 10px; border-radius: 9px; cursor: pointer;
-  }
-  .side button.on-buy { background: var(--green); color: #04110B; }
-  .side button.on-sell { background: var(--red); color: #1A050A; }
-  .amtwrap { position: relative; }
-  .amtwrap input { font-size: 26px; font-weight: 700; padding: 16px 70px 16px 16px; font-variant-numeric: tabular-nums; }
-  .amtwrap .max {
-    position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
-    background: var(--line); border: 0; color: var(--green); font-weight: 700;
-    font-size: 12px; padding: 6px 10px; border-radius: 8px; cursor: pointer;
-  }
-  .quote { display: flex; justify-content: space-between; padding: 9px 2px; font-size: 13.5px; color: var(--dim); }
-  .quote b { color: var(--text); font-variant-numeric: tabular-nums; }
-  #toast {
-    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(80px);
-    background: var(--panel2); border: 1px solid var(--line); border-radius: 14px;
-    padding: 12px 18px; font-size: 14px; transition: transform .25s ease; max-width: 90%;
-    display: flex; gap: 10px; align-items: center; z-index: 10;
-  }
-  #toast.show { transform: translateX(-50%) translateY(0); }
-  #toast .ic { font-size: 16px; }
-  .lanes { display: flex; gap: 4px; }
-  .lanes i { width: 8px; height: 14px; border-radius: 3px; background: var(--line); }
-  .lanes i.busy { background: var(--green-dim); }
-  #log { font: 11.5px/1.6 ui-monospace, "SF Mono", Menlo, monospace; color: var(--dimmer); max-height: 120px; overflow-y: auto; }
-  #log .ok { color: var(--green-dim); }
-  #log .err { color: var(--red); }
+/* right column */
+#sideCol{overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:12px}
+.sesslist{display:flex;flex-direction:column;gap:8px}
+.sess{display:flex;align-items:center;gap:10px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:12px;padding:11px 12px;cursor:pointer}
+.sess.active{border-color:var(--green-dim)}
+.sess .dot{width:8px;height:8px;border-radius:50%;background:var(--dimmer)}
+.sess.active .dot{background:var(--green);box-shadow:0 0 8px var(--green)}
+.sess .nm{font-weight:700;font-size:13.5px}
+.sess .ct{font-size:11px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sess .x{margin-left:auto;color:var(--dimmer);cursor:pointer;padding:6px}
+.sess .x:hover{color:var(--red)}
+#log{display:flex;flex-direction:column;gap:6px;font-size:12px;max-height:260px;overflow-y:auto}
+.lrow{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--panel2);border-radius:10px}
+.lrow .t{color:var(--dimmer);font-size:10.5px;font-variant-numeric:tabular-nums}
+.lrow .m{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lrow.ok .m{color:var(--green)}.lrow.err .m{color:var(--red)}
+.lrow a{color:var(--blue);text-decoration:none;font-size:10.5px}
+
+/* ── modals (centered, eye level) ── */
+.overlay{position:fixed;inset:0;background:rgba(4,4,8,.72);backdrop-filter:blur(6px);
+  display:none;align-items:center;justify-content:center;z-index:50;padding:20px}
+.overlay.show{display:flex}
+.modal{width:min(420px,100%);background:var(--panel);border:1px solid var(--line2);border-radius:20px;padding:22px}
+.modal h2{font-size:17px;letter-spacing:-.02em;margin-bottom:4px}
+.modal .sub{font-size:12.5px;color:var(--dim);margin-bottom:16px}
+.modal .field{margin-bottom:12px}
+.modal label{display:block;font-size:11px;color:var(--dim);font-weight:700;letter-spacing:.05em;margin-bottom:6px}
+.modal .note{font-size:11.5px;color:var(--dimmer);margin-top:12px;line-height:1.5}
+.modal .row2{display:flex;gap:10px}.modal .row2>*{flex:1}
+
+/* ── toast ── */
+#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(90px);
+  background:var(--panel3);border:1px solid var(--line2);border-radius:14px;padding:12px 18px;
+  font-size:13.5px;transition:transform .25s ease;max-width:92%;display:flex;gap:10px;align-items:center;z-index:99}
+#toast.show{transform:translateX(-50%) translateY(0)}
+
+/* ── mobile ── */
+#mobnav{display:none}
+@media (max-width: 900px){
+  #grid{display:none}
+  #mview{flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  .mpane{flex:1;overflow-y:auto;padding:14px;display:none;flex-direction:column;gap:12px}
+  .mpane.on{display:flex}
+  #mobnav{display:flex;border-top:1px solid var(--line);flex-shrink:0;background:var(--panel)}
+  #mobnav button{flex:1;border:0;background:transparent;color:var(--dim);font:inherit;font-size:11px;
+    font-weight:700;padding:10px 0 calc(12px + env(safe-area-inset-bottom));cursor:pointer;
+    display:flex;flex-direction:column;align-items:center;gap:4px}
+  #mobnav button.on{color:var(--green)}
+  #mobnav svg.ic{width:20px;height:20px}
+  .mchart{height:200px;position:relative;border:1px solid var(--line);border-radius:16px;overflow:hidden;flex-shrink:0}
+  .mchart canvas{position:absolute;inset:0;width:100%;height:100%}
+}
 </style>
 </head>
 <body>
 <header>
   <div class="logo"></div>
   <h1>gas<span>key</span></h1>
-  <div class="net"><b id="netLbl">testnet</b> · session trading</div>
+  <div class="hspace"></div>
+  <div class="hpill" id="walletPill"><span class="dot"></span><span id="walletLbl">no wallet</span></div>
 </header>
 
-<div id="app">
-  <!-- onboarding -->
-  <div id="setup">
-    <h2>New session</h2>
-    <p>A session key signs trades locally — no wallet popup per action. It can only call the methods you whitelist, on the one contract you pin. Funds can't leave your account.</p>
-    <div class="field"><label>ACCOUNT (local key required, once)</label><input id="sOwner" placeholder="you.testnet" spellcheck="false"></div>
-    <div class="field"><label>CONTRACT</label><input id="sContract" placeholder="pool2.nostrgove2e.testnet" spellcheck="false"></div>
-    <div class="field"><label>METHODS (whitelist)</label><input id="sMethods" value="buy,sell_internal" spellcheck="false"></div>
-    <div class="row">
-      <div class="field"><label>LANES</label><select id="sLanes"><option>4</option><option selected>8</option><option>16</option><option>32</option></select></div>
-      <div class="field"><label>GAS PREPAID (N)</label><input id="sFund" value="0.5"></div>
+<div id="grid">
+  <!-- ═══ chart ═══ -->
+  <div class="col" id="chartCol">
+    <div class="mkt">
+      <div class="tok">
+        <div class="ticon" id="ticon">GK</div>
+        <div><div class="tname" id="tname">—</div><div class="tsub" id="tsub">—</div></div>
+      </div>
+      <select id="tokenSel"></select>
     </div>
-    <button class="btn" id="sCreate">Create session · 1 signature</button>
-    <div class="note">This single signature adds a scoped gas key + funds its gas. After this, everything is popup-free.</div>
+    <div id="priceHead">
+      <div id="priceNow">—<small> N</small></div>
+      <div id="priceChg"></div>
+    </div>
+    <div id="chartWrap"><canvas id="chart"></canvas></div>
+    <div id="chartFoot">
+      <span>RESERVES <b id="fPn">—</b> N</span>
+      <span>TOKENS <b id="fPt">—</b></span>
+      <span>FEE <b id="fFee">1%</b></span>
+      <span>LANES <b id="fLanes">—</b></span>
+    </div>
   </div>
 
-  <!-- main -->
-  <div id="main">
-    <div class="sessbar" id="sessbar"></div>
-    <div id="padbar">
-      <div class="stat"><div class="k">GAS PAD</div><div class="v" id="padNear">— <small>N</small></div></div>
-      <div class="stat"><div class="k" id="tokLbl">TOKENS (INTERNAL)</div><div class="v" id="padTok">—</div></div>
-      <div class="stat" style="max-width:90px"><div class="k">LANES</div><div class="lanes" id="laneDots" style="margin-top:5px"></div></div>
-      <div class="actions">
-        <button class="sbtn" id="bFund">＋ Gas</button>
-        <button class="sbtn" id="bRevoke" title="revoke key">⏻</button>
+  <!-- ═══ trade ═══ -->
+  <div class="col" id="tradeCol">
+    <div class="card">
+      <h3><svg class="ic" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg> TRADE</h3>
+      <div class="side">
+        <button id="bBuy" class="on-buy"><svg class="ic" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>Buy</button>
+        <button id="bSell"><svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>Sell</button>
       </div>
+      <div class="amtwrap">
+        <input id="amt" inputmode="decimal" placeholder="0.0">
+        <button class="max" id="bMax">MAX</button>
+      </div>
+      <div style="margin-top:10px">
+        <div class="qrow"><span> you receive</span><b id="qOut">—</b></div>
+        <div class="qrow"><span> fee (1%)</span><b id="qFee">—</b></div>
+        <div class="qrow"><span> min out (slippage guard)</span><b id="qMin">0</b></div>
+      </div>
+      <button class="btn" id="bGo"><svg class="ic" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg><span id="bGoLbl">Buy</span></button>
     </div>
 
-    <div id="trade">
-      <div class="card">
-        <h3>TRADE</h3>
-        <div class="side">
-          <button id="bBuy" class="on-buy">Buy</button>
-          <button id="bSell">Sell</button>
-        </div>
-        <div class="amtwrap">
-          <input id="amt" inputmode="decimal" placeholder="0.0">
-          <button class="max" id="bMax">MAX</button>
-        </div>
-        <div class="quote" style="margin-top:10px"><span>You receive (net of fee)</span><b id="quoteOut">—</b></div>
-        <button class="btn" id="bGo" style="margin-top:12px">Buy with session key</button>
+    <div class="card">
+      <h3><svg class="ic" viewBox="0 0 24 24"><path d="M21 12V7H3v10h8M3 7l9-4 9 4"/><path d="M12 17v5M8 21h8"/></svg> YOUR PAD</h3>
+      <div class="statgrid">
+        <div class="stat"><div class="k">GAS PAD</div><div class="v" id="pNear">—<small> N</small></div></div>
+        <div class="stat"><div class="k">TOKENS (INTERNAL)</div><div class="v" id="pTok">—</div></div>
       </div>
-      <div class="card">
-        <h3>ACTIVITY</h3>
-        <div id="log"></div>
+      <div class="lanes" id="laneDots" style="margin-top:10px"></div>
+      <div class="row2" style="display:flex;gap:8px;margin-top:10px">
+        <button class="sbtn btn" id="bDeposit" style="background:var(--panel2);color:var(--text);border:1px solid var(--line);font-size:13px;font-weight:700;padding:10px">＋ Deposit</button>
+        <button class="sbtn btn" id="bWithdraw" style="background:var(--panel2);color:var(--text);border:1px solid var(--line);font-size:13px;font-weight:700;padding:10px">↑ Withdraw</button>
       </div>
+    </div>
+  </div>
+
+  <!-- ═══ sessions + activity ═══ -->
+  <div class="col" id="sideCol">
+    <div class="card">
+      <h3><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> SESSIONS</h3>
+      <div class="sesslist" id="sessList"></div>
+      <button class="btn ghost" id="bNew" style="background:var(--panel2);color:var(--text);border:1px solid var(--line);font-size:13px;font-weight:700;padding:11px">＋ New session</button>
+    </div>
+    <div class="card">
+      <h3><svg class="ic" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg> ACTIVITY</h3>
+      <div id="log"></div>
     </div>
   </div>
 </div>
 
-<div id="toast"><span class="ic" id="toastIc">✅</span><span id="toastMsg"></span></div>
+<!-- mobile -->
+<div id="mview" style="display:none">
+  <div class="mpane on" id="mp-trade">
+    <div class="mchart"><canvas id="chartM"></canvas></div>
+    <div class="card">
+      <div class="side">
+        <button id="bBuyM" class="on-buy">Buy</button>
+        <button id="bSellM">Sell</button>
+      </div>
+      <div class="amtwrap"><input id="amtM" inputmode="decimal" placeholder="0.0"><button class="max" id="bMaxM">MAX</button></div>
+      <div style="margin-top:10px">
+        <div class="qrow"><span>you receive</span><b id="qOutM">—</b></div>
+        <div class="qrow"><span>fee (1%)</span><b id="qFeeM">—</b></div>
+      </div>
+      <button class="btn" id="bGoM"><span id="bGoLblM">Buy</span></button>
+    </div>
+    <div class="card">
+      <div class="statgrid">
+        <div class="stat"><div class="k">GAS PAD</div><div class="v" id="pNearM">—<small> N</small></div></div>
+        <div class="stat"><div class="k">TOKENS</div><div class="v" id="pTokM">—</div></div>
+        <div class="stat"><div class="k">UNREALIZED P&L</div><div class="v" id="pnlM">—</div></div>
+        <div class="stat"><div class="k">REALIZED P&L</div><div class="v" id="rplM">—</div></div>
+      </div>
+      <div class="row2" style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn" id="bDepositM" style="background:var(--panel2);color:var(--text);border:1px solid var(--line);font-size:13px">＋ Deposit</button>
+        <button class="btn" id="bNewM" style="background:var(--panel2);color:var(--text);border:1px solid var(--line);font-size:13px">Sessions</button>
+      </div>
+    </div>
+  </div>
+  <div class="mpane" id="mp-pos">
+    <div class="card"><h3>POSITION</h3><div class="statgrid">
+      <div class="stat"><div class="k">TOKENS (INTERNAL)</div><div class="v" id="pTok2">—</div></div>
+      <div class="stat"><div class="k">VALUE</div><div class="v" id="valM">—</div></div>
+      <div class="stat"><div class="k">AVG ENTRY</div><div class="v" id="avgM">—</div></div>
+      <div class="stat"><div class="k">UNREALIZED P&L</div><div class="v" id="pnl2">—</div></div>
+    </div>
+    <button class="btn sell" id="bCloseM" style="margin-top:12px">Close position (sell all)</button></div>
+    <div class="card"><h3>ACTIVITY</h3><div id="logM"></div></div>
+  </div>
+  <div class="mpane" id="mp-sess">
+    <div class="card"><h3>SESSIONS</h3><div class="sesslist" id="sessListM"></div>
+      <button class="btn" id="bNewM2" style="margin-top:10px">＋ New session</button></div>
+    <div class="card"><h3>GAS PAD</h3>
+      <div class="statgrid">
+        <div class="stat"><div class="k">PAD</div><div class="v" id="pNear2">—</div></div>
+        <div class="stat"><div class="k">KEY GAS</div><div class="v" id="keyGasM">—</div></div>
+      </div>
+      <button class="btn" id="bDepositM2" style="margin-top:12px;background:var(--panel2);color:var(--text);border:1px solid var(--line);font-size:13px">＋ Deposit</button>
+    </div>
+  </div>
+  <div id="mobnav">
+    <button data-t="mp-trade" class="on"><svg class="ic" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>Trade</button>
+    <button data-t="mp-pos"><svg class="ic" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>Position</button>
+    <button data-t="mp-sess"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Sessions</button>
+  </div>
+</div>
+
+<!-- modals -->
+<div class="overlay" id="mNew">
+  <div class="modal">
+    <h2>New session</h2>
+    <div class="sub">One signature creates a scoped session key. After this — zero popups.</div>
+    <div class="field"><label>WALLET ACCOUNT</label><input id="nOwner" placeholder="you.testnet" spellcheck="false"></div>
+    <div class="field"><label>SECRET KEY (stored only in this browser)</label><input id="nSecret" type="password" placeholder="ed25519:…"></div>
+    <div class="field"><label>CONTRACT</label><input id="nContract" value="pool2.nostrgove2e.testnet" spellcheck="false"></div>
+    <div class="field"><label>METHODS</label><input id="nMethods" value="buy,sell_internal" spellcheck="false"></div>
+    <div class="row2">
+      <div class="field"><label>LANES</label><select id="nLanes"><option>4</option><option selected>8</option><option>16</option></select></div>
+      <div class="field"><label>GAS PREPAID (N)</label><input id="nFund" value="0.4"></div>
+    </div>
+    <button class="btn" id="nGo">Create session</button>
+    <div class="note">The key can call <b>only</b> these methods on <b>only</b> this contract, can never attach deposits, and funds structurally cannot leave your account. Revoke anytime.</div>
+  </div>
+</div>
+
+<div class="overlay" id="mDep">
+  <div class="modal">
+    <h2>Deposit to gas pad</h2>
+    <div class="sub">Trading capital lives inside the pool contract. This needs your full key — the only popup path.</div>
+    <div class="field"><label>AMOUNT (NEAR)</label><input id="dAmt" value="1" inputmode="decimal"></div>
+    <button class="btn" id="dGo">Sign deposit</button>
+    <div class="note">Gas keys can't attach deposits (protocol rule) — that's what makes them safe. Deposit once, trade popup-free.</div>
+  </div>
+</div>
+
+<div class="overlay" id="mWdr">
+  <div class="modal">
+    <h2>Withdraw pad</h2>
+    <div class="sub">Drain your gas pad back to your wallet. Requires a 1-yoctoNEAR signature (session keys structurally can't do this).</div>
+    <div class="field"><label>AMOUNT (NEAR) — empty = all</label><input id="wAmt" placeholder="all" inputmode="decimal"></div>
+    <button class="btn" id="wGo">Sign withdraw</button>
+  </div>
+</div>
+
+<div id="toast"><span id="toastIc">✅</span><span id="toastMsg"></span></div>
 
 <script type="module">
+/* ───────────────────────── setup ───────────────────────── */
 const NET = "testnet";
-const $ = (id) => document.getElementById(id);
-const fmt = (yocto, d=3) => (Number(BigInt(yocto)) / 1e24).toFixed(d);
-const NEAR = (n) => BigInt(Math.round(parseFloat(n) * 1e24)).toString();
+const EXPLORER = `https://explorer.${NET}.near.org/transactions/`;
+const DEFAULT_TOKEN = "gktrial-2.lpad.nostrgove2e.testnet";
+const $ = id => document.getElementById(id);
+const NEAR = n => BigInt(Math.round(parseFloat(n) * 1e24)).toString();
+const fmtN = (y, d=4) => (Number(BigInt(y||"0"))/1e24).toFixed(d);
+const short = a => a ? a.slice(0,6)+"…"+a.slice(-4) : "—";
 
-let sessions = JSON.parse(localStorage.getItem("gaskey_sessions") || "{}");
-let active = localStorage.getItem("gaskey_active");
-let side = "buy";
-let busyLanes = {};
+let sessions = JSON.parse(localStorage.getItem("gk_sessions") || "{}");
+let active = localStorage.getItem("gk_active") || null;
+let side = "buy", busy = {}, priceHist = [], pollTimer = null;
+const pnl = JSON.parse(localStorage.getItem("gk_pnl") || "{}");
+const save = () => { localStorage.setItem("gk_sessions", JSON.stringify(sessions));
+  localStorage.setItem("gk_active", active || ""); localStorage.setItem("gk_pnl", JSON.stringify(pnl)); };
+const sess = () => sessions[active];
 
-const save = () => { localStorage.setItem("gaskey_sessions", JSON.stringify(sessions)); localStorage.setItem("gaskey_active", active || ""); };
+const api = await import("https://esm.sh/@fastnear/api@2.5.0");
+const utils = await import("https://esm.sh/@fastnear/utils@2.5.0");
+const { actions, queryAccessKey } = api;
 
-function toast(ic, msg, ms=2600) {
-  $("toastIc").textContent = ic; $("toastMsg").textContent = msg;
-  $("toast").classList.add("show");
-  clearTimeout(toast._t); toast._t = setTimeout(() => $("toast").classList.remove("show"), ms);
-}
-function log(msg, cls="") {
-  const div = document.createElement("div");
-  div.className = cls; div.textContent = `${new Date().toLocaleTimeString()}  ${msg}`;
-  $("log").prepend(div);
-}
-
-// fastnear browser bundle (CDN, pinned)
-let api, utils;
-try {
-  api = await import("https://esm.sh/@fastnear/api@2.5.0");
-  utils = await import("https://esm.sh/@fastnear/utils@2.5.0");
-} catch (e) { toast("⚠️", "module load failed — check connection"); throw e; }
-const { actions, queryAccessKey, queryGasKeyNonces } = api;
-
-async function rpc(method, params) {
+async function view(c, m, a) {
   const r = await fetch(`https://rpc.${NET}.near.org`, { method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: "x", method, params }) });
-  return (await r.json()).result;
-}
-async function view(contract, method, args) {
-  const res = await rpc("query", { request_type: "call_function", account_id: contract,
-    method_name: method, args_base64: btoa(JSON.stringify(args)), finality: "final" });
-  let p = JSON.parse(new TextDecoder().decode(new Uint8Array(res.result)));
+    body: JSON.stringify({ jsonrpc: "2.0", id: "v", method: "query", params: {
+      request_type: "call_function", account_id: c, method_name: m,
+      args_base64: btoa(JSON.stringify(a)), finality: "final" } }) });
+  const j = await r.json();
+  let p = JSON.parse(new TextDecoder().decode(new Uint8Array(j.result.result)));
   if (typeof p === "string") p = JSON.parse(p);
   if (p && typeof p.result === "string") p = JSON.parse(p.result);
   return p;
 }
-
-// ── render sessions ──
-function renderBar() {
-  const bar = $("sessbar"); bar.innerHTML = "";
-  for (const [name, s] of Object.entries(sessions)) {
-    const c = document.createElement("div");
-    c.className = "chip" + (name === active ? " active" : "");
-    c.innerHTML = `<span class="dot"></span>${name}<span class="x" data-x="${name}">✕</span>`;
-    c.onclick = (e) => { if (e.target.dataset.x) return; active = name; save(); renderBar(); refreshPad(); };
-    bar.appendChild(c);
-  }
-  const add = document.createElement("div");
-  add.className = "chip add"; add.textContent = "＋ new session";
-  add.onclick = () => { $("main").style.display = "none"; $("setup").style.display = "block"; };
-  bar.appendChild(add);
-  const s = sessions[active];
-  $("main").style.display = s ? "flex" : "none";
-  $("setup").style.display = s ? "none" : (Object.keys(sessions).length ? "none" : "block");
+function toast(ic, msg, ms=2800) {
+  $("toastIc").textContent = ic; $("toastMsg").textContent = msg;
+  $("toast").classList.add("show");
+  clearTimeout(toast._t); toast._t = setTimeout(() => $("toast").classList.remove("show"), ms);
 }
-
-function renderLanes(sess) {
-  const d = $("laneDots"); d.innerHTML = "";
-  for (let i = 0; i < Math.min(sess.lanes, 16); i++) {
-    const b = document.createElement("i");
-    if (busyLanes[i] && Date.now() - busyLanes[i] < 6000) b.className = "busy";
-    d.appendChild(b);
+function log(msg, cls="", hash="") {
+  for (const el of [$("log"), $("logM")]) {
+    const d = document.createElement("div"); d.className = "lrow " + cls;
+    d.innerHTML = `<span class="t">${new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>
+      <span class="m">${msg}</span>${hash ? `<a href="${EXPLORER}${hash}" target="_blank">tx ↗</a>` : ""}`;
+    el.prepend(d);
   }
 }
-
-// ── pad refresh ──
-async function refreshPad() {
-  const sess = sessions[active]; if (!sess) return;
-  try {
-    const token = sess.token || "";
-    const p = await view(sess.contract, "get_balance", { account: sess.owner, token });
-    $("padNear").innerHTML = `${fmt(p.near)} <small>N</small>`;
-    $("padTok").textContent = token ? Number(BigInt(p.tokens)).toLocaleString(undefined, {notation:"compact", maximumFractionDigits:2}) : "—";
-    renderLanes(sess);
-    const k = await queryAccessKey({ accountId: sess.owner, publicKey: sess.gas_public, blockId: "final", network: NET });
-    const perm = k.result?.permission?.GasKeyFunctionCall;
-    if (perm) $("padNear").title = `key gas: ${fmt(perm.balance)} N`;
-  } catch (e) { /* pad view may fail pre-deposit */ }
+function ownerSigner(owner) {
+  let sk = localStorage.getItem("gk_sk_" + owner);
+  if (!sk) { sk = prompt(`secret key for ${owner} (ed25519:…) — stored only in this browser`); if (!sk) return null;
+    localStorage.setItem("gk_sk_" + owner, sk.trim()); }
+  return utils.signerFromPrivateKey(sk.trim());
 }
 
-// ── create session (the ONE signature) ──
-$("sCreate").onclick = async () => {
-  const owner = $("sOwner").value.trim();
-  const contract = $("sContract").value.trim();
-  const methods = $("sMethods").value.split(",").map(s => s.trim()).filter(Boolean);
-  const lanes = parseInt($("sLanes").value, 10);
-  const fund = $("sFund").value || "0.5";
-  if (!owner || !contract || !methods.length) return toast("⚠️", "fill account, contract, methods");
-  const name = contract.split(".")[0].slice(0, 10);
-  let finalName = name, i = 2;
-  while (sessions[finalName]) finalName = name + i++;
+/* ───────────────────────── price chart ───────────────────────── */
+function drawChart(cv) {
+  if (!cv || priceHist.length < 2) return;
+  const dpr = devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  cv.width = w * dpr; cv.height = h * dpr;
+  const g = cv.getContext("2d"); g.scale(dpr, dpr);
+  const pts = priceHist.slice(-160);
+  const min = Math.min(...pts), max = Math.max(...pts);
+  const pad = (max - min) * 0.12 || max * 0.02 || 1e-12;
+  const lo = min - pad, hi = max + pad;
+  const X = i => 8 + (i / (pts.length - 1)) * (w - 16);
+  const Y = v => h - 10 - ((v - lo) / (hi - lo)) * (h - 24);
+  // grid
+  g.strokeStyle = "#1B1B26"; g.lineWidth = 1;
+  for (let i = 1; i < 4; i++) { g.beginPath(); g.moveTo(0, (h/4)*i); g.lineTo(w, (h/4)*i); g.stroke(); }
+  // fill
+  const grad = g.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, "rgba(0,236,151,.18)"); grad.addColorStop(1, "rgba(0,236,151,0)");
+  g.beginPath(); g.moveTo(X(0), Y(pts[0]));
+  pts.forEach((v, i) => g.lineTo(X(i), Y(v)));
+  g.lineTo(X(pts.length-1), h); g.lineTo(X(0), h); g.closePath();
+  g.fillStyle = grad; g.fill();
+  // line
+  g.beginPath(); g.moveTo(X(0), Y(pts[0]));
+  pts.forEach((v, i) => g.lineTo(X(i), Y(v)));
+  g.strokeStyle = "#00EC97"; g.lineWidth = 1.8; g.stroke();
+  // last dot + price tag
+  const lx = X(pts.length-1), ly = Y(pts[pts.length-1]);
+  g.beginPath(); g.arc(lx, ly, 3.2, 0, 7); g.fillStyle = "#00EC97"; g.fill();
+}
+function price() { // NEAR per 1 token (1e24 units), from reserves
+  if (!state.pool || BigInt(state.pool.tokens) === 0n) return 0;
+  return Number(BigInt(state.pool.near)) / Number(BigInt(state.pool.tokens));
+}
 
-  $("sCreate").disabled = true; $("sCreate").textContent = "Sign in wallet…";
+/* ───────────────────────── state polling ───────────────────────── */
+const state = { pool: null, pad: null, key: null };
+async function poll() {
+  const s = sess(); if (!s) return;
   try {
-    const cred = JSON.parse(localStorage.getItem("gaskey_cred_" + owner) || "null");
-    let signer;
-    if (cred) signer = utils.signerFromPrivateKey(cred);
-    else {
-      const sk = prompt(`paste the SECRET KEY for ${owner} (ed25519:…) — stored only in this browser`);
-      if (!sk) throw new Error("cancelled");
-      signer = utils.signerFromPrivateKey(sk.trim());
-      localStorage.setItem("gaskey_cred_" + owner, sk.trim());
+    const pool = await view(s.contract, "get_pool", { token: s.token });
+    const pad = await view(s.contract, "get_balance", { account: s.owner, token: s.token });
+    const prev = state.pool ? Number(BigInt(state.pool.near))/Number(BigInt(state.pool.tokens)) : null;
+    state.pool = pool; state.pad = pad;
+    const p = price();
+    if (p > 0) { priceHist.push(p); if (priceHist.length > 400) priceHist.shift(); }
+    // header numbers
+    const ps = p ? p.toPrecision(4) : "—";
+    for (const el of [$("priceNow")]) el.innerHTML = `${ps}<small> N</small>`;
+    if (prev && p) {
+      const chg = ((p - prev) / prev) * 100;
+      $("priceChg").textContent = (chg >= 0 ? "▲ " : "▼ ") + Math.abs(chg).toFixed(2) + "%";
+      $("priceChg").style.color = chg >= 0 ? "var(--green)" : "var(--red)";
     }
-    const gasPriv = utils.privateKeyFromRandom("ed25519");
-    const gSigner = utils.signerFromPrivateKey(gasPriv);
-    await api.sendTx({
-      signerId: owner, signer, receiverId: owner,
-      actions: [
-        actions.addLimitedAccessGasKey({ publicKey: gSigner.publicKey, numNonces: lanes, accountId: contract, methodNames: methods }),
-        actions.transferToGasKey({ publicKey: gSigner.publicKey, deposit: `${fund} NEAR` }),
-      ],
-      waitUntil: "FINAL", network: NET,
-    });
-    sessions[finalName] = { owner, contract, methods, lanes, token: "",
-      gas_public: gSigner.publicKey, gas_secret: gasPriv, calls: 0 };
-    active = finalName; save(); renderBar(); refreshPad();
-    toast("✅", `session '${finalName}' live — no more popups`);
-    log(`session ${finalName} created (${contract})`, "ok");
-  } catch (e) { toast("❌", String(e).slice(0, 90)); log("create failed: " + String(e).slice(0, 80), "err"); }
-  $("sCreate").disabled = false; $("sCreate").textContent = "Create session · 1 signature";
-};
-
-// ── trade form ──
-$("bBuy").onclick = () => setSide("buy");
-$("bSell").onclick = () => setSide("sell");
-function setSide(s) {
-  side = s;
-  $("bBuy").className = s === "buy" ? "on-buy" : "";
-  $("bSell").className = s === "sell" ? "on-sell" : "";
-  $("bGo").textContent = s === "buy" ? "Buy with session key" : "Sell with session key";
-  updateQuote();
-}
-$("bMax").onclick = async () => {
-  const sess = sessions[active]; if (!sess) return;
-  const p = await view(sess.contract, "get_balance", { account: sess.owner, token: sess.token || "" });
-  $("amt").value = side === "buy" ? fmt(p.near, 4) : fmt(p.tokens || "0", 4);
-  updateQuote();
-};
-async function updateQuote() {
-  const sess = sessions[active]; if (!sess || !sess.token) return;
-  const v = parseFloat($("amt").value); $("quoteOut").textContent = "—";
-  if (!v || v <= 0) return;
+    $("fPn").textContent = fmtN(pool.near, 3);
+    $("fPt").textContent = Number(BigInt(pool.tokens)).toLocaleString(undefined,{notation:"compact",maximumFractionDigits:2});
+    drawChart($("chart")); drawChart($("chartM"));
+    renderPad(); updateQuote();
+  } catch {}
   try {
-    const q = side === "buy"
-      ? await view(sess.contract, "quote_buy", { token: sess.token, near_in: NEAR(String(v)) })
-      : await view(sess.contract, "quote_sell", { token: sess.token, tokens_in: NEAR(String(v)) });
-    $("quoteOut").textContent = side === "buy" ? fmt(q.net, 2) + " tok" : fmt(q.net, 4) + " N";
+    const s2 = sess(); if (!s2) return;
+    const k = await queryAccessKey({ accountId: s2.owner, publicKey: s2.gas_public, blockId: "final", network: NET });
+    state.key = k.result?.permission?.GasKeyFunctionCall || null;
+    if (state.key) { $("keyGasM").textContent = fmtN(state.key.balance, 3) + " N"; $("fLanes").textContent = `${s2.lanes}`; }
   } catch {}
 }
-$("amt").oninput = updateQuote;
 
-// ── the hot path: gas-key call, zero popups ──
-async function gkSend(sess, method, args, lane) {
-  const gSigner = utils.signerFromPrivateKey(sess.gas_secret);
-  return api.sendTx({
-    signerId: sess.owner, signer: gSigner, receiverId: sess.contract, nonceIndex: lane,
-    actions: [actions.functionCall({ methodName: method, args, deposit: "0", gas: "120 Tgas" })],
+function renderPad() {
+  const s = sess(); if (!s || !state.pad) return;
+  const tokDisp = Number(BigInt(state.pad.tokens)).toLocaleString(undefined,{maximumFractionDigits:2});
+  for (const [a,b] of [[$("pNear"),$("pNear2")],[$("pTok"),$("pTok2")]]) {
+    if (a) a.innerHTML = `${fmtN(state.pad.near)}<small> N</small>`;
+    if (b) b.textContent = tokDisp;
+  }
+  const p = price();
+  const tokN = Number(BigInt(state.pad.tokens))/1e24;
+  const val = tokN * p;
+  if ($("valM")) $("valM").textContent = val ? val.toFixed(4)+" N" : "—";
+  // P&L vs avg entry
+  const key = active + "|" + s.token;
+  const rec = pnl[key] || { tok: 0, cost: 0, realized: 0, avg: 0 };
+  if ($("avgM")) $("avgM").textContent = rec.avg ? rec.avg.toPrecision(4)+" N" : "—";
+  const upnl = rec.avg ? (p - rec.avg) * tokN : 0;
+  for (const [el, v] of [[$("pnlM"), upnl], [$("pnl2"), upnl], [$("rplM"), rec.realized]]) {
+    if (!el) continue;
+    el.textContent = (v >= 0 ? "+" : "") + v.toFixed(5) + " N";
+    el.className = "v " + (v >= 0 ? "pos" : "neg");
+  }
+}
+
+/* ───────────────────────── sessions UI ───────────────────────── */
+function renderSessions() {
+  for (const list of [$("sessList"), $("sessListM")]) {
+    list.innerHTML = "";
+    for (const [name, s] of Object.entries(sessions)) {
+      const d = document.createElement("div");
+      d.className = "sess" + (name === active ? " active" : "");
+      d.innerHTML = `<span class="dot"></span><div style="min-width:0"><div class="nm">${name}</div>
+        <div class="ct">${s.contract} · ${s.methods.join(",")}</div></div><span class="x" data-x="${name}">✕</span>`;
+      d.onclick = e => { if (e.target.dataset.x) return; active = name; save(); boot(); };
+      list.appendChild(d);
+    }
+    if (!Object.keys(sessions).length) {
+      const d = document.createElement("div");
+      d.className = "sess"; d.innerHTML = `<span class="dot"></span><div class="ct">no sessions — create one</div>`;
+      list.appendChild(d);
+    }
+  }
+  const s = sess();
+  $("walletLbl").textContent = s ? `${s.owner} · ${active}` : "no wallet";
+}
+
+/* ───────────────────────── create session ───────────────────────── */
+async function createSession(owner, sk, contract, methods, lanes, fund) {
+  const oSigner = utils.signerFromPrivateKey(sk);
+  const gasPriv = utils.privateKeyFromRandom("ed25519");
+  const gSigner = utils.signerFromPrivateKey(gasPriv);
+  await api.sendTx({
+    signerId: owner, signer: oSigner, receiverId: owner,
+    actions: [
+      actions.addLimitedAccessGasKey({ publicKey: gSigner.publicKey, numNonces: lanes, accountId: contract, methodNames: methods }),
+      actions.transferToGasKey({ publicKey: gSigner.publicKey, deposit: `${fund} NEAR` }),
+    ],
     waitUntil: "FINAL", network: NET,
   });
-}
-function pickLane(sess) {
-  const now = Date.now();
-  for (let l = 0; l < sess.lanes; l++)
-    if (!busyLanes[l] || now - busyLanes[l] > 6000) return l;
-  return 0;
+  let name = contract.split(".")[0].slice(0, 10), i = 2;
+  while (sessions[name]) name = contract.split(".")[0].slice(0, 8) + i++;
+  sessions[name] = { owner, contract, methods, lanes, token: DEFAULT_TOKEN,
+    gas_public: gSigner.publicKey, gas_secret: gasPriv, calls: 0 };
+  localStorage.setItem("gk_sk_" + owner, sk);
+  active = name; save();
 }
 
-$("bGo").onclick = async () => {
-  const sess = sessions[active]; if (!sess) return;
-  const v = parseFloat($("amt").value);
-  if (!v || v <= 0) return toast("⚠️", "enter an amount");
-  const lane = pickLane(sess); busyLanes[lane] = Date.now(); renderLanes(sess);
-  $("bGo").disabled = true;
-  const label = side === "buy" ? `buy ${v}N` : `sell ${v} tok`;
+$("nGo").onclick = async () => {
+  const owner = $("nOwner").value.trim(), sk = $("nSecret").value.trim();
+  const contract = $("nContract").value.trim();
+  const methods = $("nMethods").value.split(",").map(x=>x.trim()).filter(Boolean);
+  if (!owner || !sk || !contract) return toast("⚠️","fill all fields");
+  $("nGo").disabled = true; $("nGo").textContent = "Signing…";
+  try {
+    await createSession(owner, sk, contract, methods, parseInt($("nLanes").value,10), $("nFund").value);
+    $("mNew").classList.remove("show");
+    toast("✅","session live — zero popups from here");
+    log(`session created → ${contract}`, "ok"); boot();
+  } catch (e) { toast("❌", String(e).slice(0, 90)); }
+  $("nGo").disabled = false; $("nGo").textContent = "Create session";
+};
+
+/* ───────────────────────── trade ───────────────────────── */
+function setSide(s) {
+  side = s;
+  for (const [b, o] of [[$("bBuy"),$("bSell")],[$("bBuyM"),$("bSellM")]]) {
+    b.className = s === "buy" ? "on-buy" : "";
+    o.className = s === "sell" ? "on-sell" : "";
+  }
+  $("bGoLbl").textContent = s === "buy" ? "Buy" : "Sell";
+  $("bGoLblM").textContent = s === "buy" ? "Buy" : "Sell";
+  updateQuote();
+}
+$("bBuy").onclick = $("bBuyM").onclick = () => setSide("buy");
+$("bSell").onclick = $("bSellM").onclick = () => setSide("sell");
+
+let quoteT = null;
+function updateQuote() {
+  const s = sess(); if (!s || !s.token) return;
+  const v = parseFloat(($("amt").value || $("amtM").value || "0"));
+  $("qOut").textContent = $("qOutM").textContent = "—";
+  $("qFee").textContent = $("qFeeM").textContent = "—";
+  if (!v || v <= 0) return;
+  clearTimeout(quoteT);
+  quoteT = setTimeout(async () => {
+    try {
+      if (side === "buy") {
+        const q = await view(s.contract, "quote_buy", { token: s.token, near_in: NEAR(String(v)) });
+        $("qOut").textContent = $("qOutM").textContent =
+          (Number(BigInt(q.net))/1e24).toLocaleString(undefined,{maximumFractionDigits:2}) + " " + (s.token.split(".")[0]||"tok").toUpperCase();
+        $("qFee").textContent = $("qFeeM").textContent = fmtN(q.fee, 4) + " N equiv";
+      } else {
+        const q = await view(s.contract, "quote_sell", { token: s.token, tokens_in: NEAR(String(v)) });
+        $("qOut").textContent = $("qOutM").textContent = fmtN(q.net, 5) + " N";
+        $("qFee").textContent = $("qFeeM").textContent = fmtN(q.fee, 5) + " N";
+      }
+    } catch {}
+  }, 250);
+}
+$("amt").oninput = $("amtM").oninput = () => { $("amtM").value = $("amt").value = ($("amt").value || $("amtM").value); updateQuote(); };
+
+async function pickLane(s) {
+  const now = Date.now();
+  for (let l = 0; l < s.lanes; l++) if (!busy[l] || now - busy[l] > 6000) return l;
+  return 0;
+}
+async function execute() {
+  const s = sess(); if (!s) return toast("⚠️","no session");
+  const raw = ($("amt").value || $("amtM").value || "0");
+  const v = parseFloat(raw);
+  if (!v || v <= 0) return toast("⚠️","enter an amount");
+  if (!s.token) return toast("⚠️","pick a token");
+  const lane = await pickLane(s); busy[lane] = Date.now(); renderLanes();
+  const btns = [$("bGo"), $("bGoM")]; btns.forEach(b => b.disabled = true);
+  const label = `${side} ${v}`;
   log(`${label} → lane ${lane}…`);
   try {
     const args = side === "buy"
-      ? { token: sess.token, near_in: NEAR(String(v)), min_tokens_out: "0" }
-      : { token: sess.token, tokens_in: side === "sell" ? $("amt").dataset.raw || NEAR(String(v)) : "0", min_near_out: "0" };
-    await gkSend(sess, side === "buy" ? "buy" : "sell_internal", args, lane);
-    sess.calls++; save();
-    toast("✅", `${label} landed (lane ${lane})`);
-    log(`${label} ✓ lane ${lane}`, "ok");
-    $("amt").value = ""; updateQuote(); refreshPad();
+      ? { token: s.token, near_in: NEAR(raw), min_tokens_out: "0" }
+      : { token: s.token, tokens_in: await myTokens(raw), min_near_out: "0" };
+    const g = utils.signerFromPrivateKey(s.gas_secret);
+    const r = await api.sendTx({
+      signerId: s.owner, signer: g, receiverId: s.contract, nonceIndex: lane,
+      actions: [actions.functionCall({ methodName: side === "buy" ? "buy" : "sell_internal", args, deposit: "0", gas: "120 Tgas" })],
+      waitUntil: "FINAL", network: NET,
+    });
+    const hash = r.txHash ?? r.result?.transaction?.hash ?? "";
+    // pull return value for pnl bookkeeping
+    const val64 = (r.receipts_outcome || []).map(x => x.outcome?.status?.SuccessValue).find(Boolean);
+    if (val64) {
+      const ret = JSON.parse(Buffer.from(val64, "base64").toString());
+      const p = price();
+      const key = active + "|" + s.token;
+      const rec = pnl[key] || { tok: 0, cost: 0, realized: 0, avg: 0 };
+      if (side === "buy") {
+        const got = Number(BigInt(ret.net))/1e24;
+        rec.avg = (rec.tok * rec.avg + got * p) / (rec.tok + got);
+        rec.tok += got;
+      } else {
+        const sold = Number(BigInt(args.tokens_in))/1e24;
+        const proceeds = Number(BigInt(ret.net))/1e24;
+        rec.realized += proceeds - sold * rec.avg;
+        rec.tok = Math.max(0, rec.tok - sold);
+      }
+      pnl[key] = rec; save();
+    }
+    s.calls++; save();
+    toast("✅", `${label} landed`);
+    log(`${label} ✓ lane ${lane}`, "ok", hash);
+    $("amt").value = $("amtM").value = ""; updateQuote(); poll(); renderPad();
   } catch (e) {
-    toast("❌", String(e).slice(0, 90));
-    log(`${label} ✗ ${String(e).slice(0, 60)}`, "err");
+    toast("❌", String(e).slice(0, 90)); log(`${label} ✗ ${String(e).slice(0,60)}`, "err");
   }
-  $("bGo").disabled = false;
-};
+  btns.forEach(b => b.disabled = false);
+}
+async function myTokens(raw) {
+  if (raw === "all") {
+    const p = await view(sess().contract, "get_balance", { account: sess().owner, token: sess().token });
+    return p.tokens;
+  }
+  return NEAR(raw);
+}
+$("bGo").onclick = execute; $("bGoM").onclick = execute;
 
-// ── pad fund (full key — the only popup path, rare) ──
-$("bFund").onclick = async () => {
-  const sess = sessions[active]; if (!sess) return;
-  const amt = prompt("deposit NEAR into your gas pad (full-key signature):", "1");
-  if (!amt) return;
+async function maxAmt() {
+  const s = sess(); if (!s) return;
+  const p = await view(s.contract, "get_balance", { account: s.owner, token: s.token || "" });
+  const v = side === "buy" ? fmtN(p.near, 6) : (Number(BigInt(p.tokens||"0"))/1e24).toFixed(6);
+  $("amt").value = $("amtM").value = v; updateQuote();
+}
+$("bMax").onclick = maxAmt; $("bMaxM").onclick = maxAmt;
+
+/* ───────────────────────── deposit / withdraw ───────────────────────── */
+function openDep() { if (!sess()) return toast("⚠️","create a session first"); $("mDep").classList.add("show"); }
+$("bDeposit").onclick = openDep; $("bDepositM").onclick = openDep; $("bDepositM2").onclick = openDep;
+$("dGo").onclick = async () => {
+  const s = sess(); const amt = parseFloat($("dAmt").value);
+  if (!amt || amt <= 0) return toast("⚠️","enter amount");
+  $("dGo").disabled = true;
   try {
-    let signer;
-    const cred = localStorage.getItem("gaskey_cred_" + sess.owner);
-    signer = cred ? utils.signerFromPrivateKey(cred) : utils.signerFromPrivateKey(prompt(`secret key for ${sess.owner}:`));
-    await api.sendTx({
-      signerId: sess.owner, signer, receiverId: sess.contract,
+    const signer = ownerSigner(s.owner); if (!signer) throw new Error("cancelled");
+    const r = await api.sendTx({
+      signerId: s.owner, signer, receiverId: s.contract,
       actions: [actions.functionCall({ methodName: "deposit", args: {}, deposit: `${amt} NEAR`, gas: "60 Tgas" })],
       waitUntil: "FINAL", network: NET,
     });
-    toast("✅", `+${amt}N pad`); log(`pad +${amt}N`, "ok"); refreshPad();
+    const hash = r.txHash ?? r.result?.transaction?.hash ?? "";
+    toast("✅", `+${amt}N pad`); log(`deposit ${amt}N`, "ok", hash);
+    $("mDep").classList.remove("show"); poll();
   } catch (e) { toast("❌", String(e).slice(0, 90)); }
+  $("dGo").disabled = false;
 };
-
-// ── revoke ──
-$("bRevoke").onclick = async () => {
-  const sess = sessions[active]; if (!sess) return;
-  if (!confirm(`revoke session key for '${active}'? (one full-key signature)`)) return;
+$("bWithdraw").onclick = () => { if (!sess()) return toast("⚠️","no session"); $("mWdr").classList.add("show"); };
+$("wGo").onclick = async () => {
+  const s = sess(); $("wGo").disabled = true;
   try {
-    const cred = localStorage.getItem("gaskey_cred_" + sess.owner);
-    const signer = cred ? utils.signerFromPrivateKey(cred) : utils.signerFromPrivateKey(prompt(`secret key for ${sess.owner}:`));
-    await api.sendTx({
-      signerId: sess.owner, signer, receiverId: sess.owner,
-      actions: [actions.deleteKey({ publicKey: sess.gas_public })],
-      waitUntil: "FINAL", network: NET,
-    });
-    delete sessions[active]; active = Object.keys(sessions)[0] || null; save();
-    renderBar(); toast("✅", "session revoked"); log("session revoked", "ok");
+    const signer = ownerSigner(s.owner); if (!signer) throw new Error("cancelled");
+    const actions2 = [];
+    const amt = $("wAmt").value.trim();
+    if (amt) {
+      actions2.push(actions.functionCall({ methodName: "withdraw", args: {}, deposit: "1", gas: "60 Tgas" }));
+    } else {
+      actions2.push(actions.functionCall({ methodName: "withdraw", args: {}, deposit: "1", gas: "60 Tgas" }));
+    }
+    const r = await api.sendTx({ signerId: s.owner, signer, receiverId: s.contract,
+      actions: actions2, waitUntil: "FINAL", network: NET });
+    const hash = r.txHash ?? r.result?.transaction?.hash ?? "";
+    toast("✅","withdraw sent"); log("withdraw → wallet", "ok", hash);
+    $("mWdr").classList.remove("show"); poll();
   } catch (e) { toast("❌", String(e).slice(0, 90)); }
+  $("wGo").disabled = false;
 };
 
-// boot
-renderBar();
-if (active && sessions[active]) refreshPad();
-setInterval(() => { const s = sessions[active]; if (s) renderLanes(s); }, 2000);
+/* ───────────────────────── revoke / misc ───────────────────────── */
+async function revoke(name) {
+  const s = sessions[name]; if (!s || !confirm(`revoke session '${name}'? one full-key signature`)) return;
+  try {
+    const signer = ownerSigner(s.owner); if (!signer) return;
+    await api.sendTx({ signerId: s.owner, signer, receiverId: s.owner,
+      actions: [actions.deleteKey({ publicKey: s.gas_public })], waitUntil: "FINAL", network: NET });
+    delete sessions[name]; if (active === name) active = Object.keys(sessions)[0] || null;
+    save(); renderSessions(); boot(); toast("✅","session revoked");
+  } catch (e) { toast("❌", String(e).slice(0, 90)); }
+}
+function openNew() { $("mNew").classList.add("show"); }
+$("bNew").onclick = openNew; $("bNewM").onclick = openNew; $("bNewM2").onclick = openNew;
+
+function renderLanes() {
+  const s = sess(); if (!s) return;
+  const d = $("laneDots"); d.innerHTML = "";
+  for (let i = 0; i < Math.min(s.lanes, 16); i++) {
+    const b = document.createElement("i");
+    if (busy[i] && Date.now() - busy[i] < 6000) b.className = "busy";
+    d.appendChild(b);
+  }
+  $("fLanes").textContent = s.lanes;
+}
+
+/* mobile nav */
+for (const b of document.querySelectorAll("#mobnav button")) {
+  b.onclick = () => {
+    for (const x of document.querySelectorAll("#mobnav button")) x.classList.remove("on");
+    b.classList.add("on");
+    for (const p of document.querySelectorAll(".mpane")) p.classList.remove("on");
+    $(b.dataset.t).classList.add("on");
+  };
+}
+
+/* close position (mobile) */
+$("bCloseM").onclick = async () => {
+  const s = sess(); if (!s) return;
+  const p = await view(s.contract, "get_balance", { account: s.owner, token: s.token });
+  if (BigInt(p.tokens || "0") === 0n) return toast("⚠️","no position");
+  setSide("sell");
+  $("amt").value = $("amtM").value = (Number(BigInt(p.tokens))/1e24).toFixed(6);
+  execute();
+};
+
+/* token select */
+function fillTokens() {
+  const sel = $("tokenSel"); sel.innerHTML = "";
+  const s = sess();
+  const toks = s?.token ? [s.token] : [DEFAULT_TOKEN];
+  for (const t of toks) {
+    const o = document.createElement("option"); o.value = t;
+    o.textContent = t.split(".")[0].toUpperCase(); sel.appendChild(o);
+  }
+  sel.onchange = () => { if (s) { s.token = sel.value; save(); poll(); } };
+}
+
+/* ───────────────────────── boot ───────────────────────── */
+function boot() {
+  renderSessions(); fillTokens();
+  const s = sess();
+  if (s) {
+    $("tname").textContent = s.token ? s.token.split(".")[0].toUpperCase() : "—";
+    $("tsub").textContent = s.token || "—";
+    $("ticon").textContent = (s.token ? s.token.split(".")[0] : "??").slice(0,2).toUpperCase();
+    priceHist = [];
+    poll(); 
+    if (!pollTimer) pollTimer = setInterval(() => { renderLanes(); poll(); }, 3000);
+  } else {
+    openNew();
+  }
+}
+boot();
+window.addEventListener("resize", () => { drawChart($("chart")); drawChart($("chartM")); });
 </script>
 </body>
 </html>
