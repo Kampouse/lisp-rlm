@@ -1281,3 +1281,31 @@ Proof matrix (project registry-nostrgov.testnet/nostr-identity-v2, TEE root):
 
 Agent: tests_p2/nostr_identity_agent.lisp (~108KB component). Spoofing a
 caller now requires their NEAR key — same bar as taking the account.
+
+## 2026-09-29 (hybrid) — VRF SALTS + EVENT-BOUND CHALLENGES — SHIPPED & PROVEN
+
+New compiler surface: (vrf-generate seed) → 64-hex TEE randomness.
+Wired near:vrf/api generate (import 26, sentinel 147; type (i32*3)->()
+in both P2 builders; ret = first tuple element, error len @ +28).
+HOST QUIRK: near:vrf rejects seeds containing ':' — keep seeds colon-free
+(bisected via probes: literal ✓, concat ✓, concat-with-colon ✗).
+
+Identity agent v3 (tests_p2/nostr_identity_agent.lisp):
+  sk = SHA256(root ‖ 0x1f ‖ salt_X ‖ 0x1f ‖ caller)
+  salt_X = VRF output at registration (stored) — INDEPENDENT of root
+  → root leak alone derives NOTHING; storage leak alone derives NOTHING
+  challenge = SHA256(root ‖ caller ‖ ctr ‖ purpose)
+  purpose = "derive" | "sign|<ts>|<kind>|<content>" — binds attestation
+  to ONE action; both ch+purpose stored (grief-proof: later counter bumps
+  can't break a live challenge), single-use (deleted on success)
+
+Proof matrix (project nostr-identity-v2, TEE root + VRF salt):
+- derive #1 → salt minted 134c7ddd…, pk be00aa81…
+- derive #2 → SAME salt + SAME pk (stable identity, salt persisted)
+- RACE: attest for content A, sign content B → REJECTED (purpose bound)
+- legit sign content A (same live challenge!) → ACCEPTED
+- event id MATCH, sig VALID (independent verifier), and pk confirmed to
+  require BOTH root and salt (salt-only derivation ≠ pk)
+
+Cost: ~0.001 NEAR/op. Identity security now: spoofing = victim's NEAR key;
+offline derivation = root AND salt (two independent stores, two leaks).

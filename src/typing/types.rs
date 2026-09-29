@@ -37,6 +37,7 @@ fn is_builtin_wildcard(name: &str) -> bool {
                 | "http-get"
                 | "http-post"
                 | "env/get"
+                | "vrf-generate"
                 // P1/OutLayer storage aliases (kebab-case)
                 | "storage-set"
                 | "storage-get"

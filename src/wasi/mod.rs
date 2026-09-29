@@ -336,6 +336,15 @@ fn outlayer_imports() -> Vec<WasiFunc> {
             params: vec![W; 1],
             results: vec![],
         },
+        // 26: VRF generate — near:vrf/api generate(user-seed: string)
+        // -> tuple<output-hex, sig-hex, alpha, error>
+        // canonical ABI: (seed_ptr, seed_len, ret_area) -> ()
+        WasiFunc {
+            module: "near:vrf/api@0.1.0",
+            name: "generate",
+            params: vec![W; 3],
+            results: vec![],
+        },
     ]
 }
 
@@ -368,6 +377,7 @@ const OUTLAYER_SENTINELS: &[(u32, usize)] = &[
     (145, 23), // ai-chat
     (146, 24), // rpc-call
     (150, 25), // env lookup via wasi:cli/environment get-environment
+    (147, 26), // vrf generate (near:vrf/api)
 ];
 
 /// Scan emitted instructions for sentinel Call(N) values and return
@@ -1846,6 +1856,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         8,                       // 23: ai-chat — 3 i32 -> ()
         10,                      // 24: rpc-call — 5 i32 -> ()
         env_getenv_ret_i32_type, // 25: get-environment — () -> i32
+        8,                       // 26: vrf generate — (i32*3) -> ()
     ];
     // Emit only filtered outlayer imports
     for &(sentinel, ol_idx) in OUTLAYER_SENTINELS {
@@ -2861,6 +2872,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         ol_type_3, // 23: ai-chat
         ol_type_5, // 24: rpc-call
         ol_type_1, // 25: get-environment — [ret_area] -> []
+        ol_type_3, // 26: vrf generate — 3 i32 -> ()
     ];
 
     imports.import("wasi:cli/stdin@0.2.2", "get-stdin", EntityType::Function(0));

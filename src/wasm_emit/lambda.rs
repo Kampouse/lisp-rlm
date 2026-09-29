@@ -735,6 +735,7 @@ impl WasmEmitter {
             | "outlayer/call"
             | "outlayer/transfer"
             | "outlayer/status"
+            | "vrf-generate"
             | "outlayer/storage-set"
             | "outlayer/storage-get"
             | "outlayer/storage-has"

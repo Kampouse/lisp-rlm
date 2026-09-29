@@ -1426,6 +1426,66 @@ impl WasmEmitter {
                 v.push(Instruction::End);
                 Ok(v)
             }
+            "vrf-generate" => {
+                // (vrf-generate seed) -> output-hex (32B hex = TEE randomness)
+                // near:vrf/api generate(user-seed: string)
+                //   -> tuple<output-hex, signature-hex, alpha, error>
+                // canonical ABI: (seed_ptr, seed_len, ret_area) -> ()
+                // sentinel 147 → outlayer_imports()[26]. Ret: first tuple
+                // element at +0/+4 (output-hex), error (4th) len at +28.
+                if a.len() != 1 {
+                    return Err("vrf-generate: need 1 arg (seed)".into());
+                }
+                let seed = self.expr(&a[0])?;
+                let ma4 = wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 2,
+                    memory_index: 0,
+                };
+                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 576;
+                let mut v = Vec::new();
+                // seed ptr/len
+                v.extend(seed.clone());
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(seed);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                // ret_area
+                v.push(Instruction::I32Const(ret_area));
+                v.push(Instruction::Call(147));
+                // error len @ +28 (4th tuple element)
+                v.push(Instruction::I32Const(ret_area + 28));
+                v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Ne);
+                v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                v.push(Instruction::I64Const(TAG_NIL));
+                v.push(Instruction::Else);
+                // output-hex: ptr @ +0, len @ +4
+                v.push(Instruction::I32Const(ret_area));
+                v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 4));
+                v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Or);
+                v.push(Instruction::End);
+                Ok(v)
+            }
             "outlayer/status" => {
                 // (outlayer/status) -> string
                 // near:rpc/api view with empty contract, method="status", args=""
