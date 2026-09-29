@@ -1337,3 +1337,38 @@ challenge → gcpool26 attest → derive (TEE root + VRF salt, pk eafa27b4…,
 salt 605df7d4…) → sign → event id MATCH + sig VALID (independent verifier).
 
 Suite: 172/173 (pre-existing live-network red only).
+
+## 2026-09-29 (perf) — SIGN-OP INSTRUCTION BREAKDOWN + OPTIMIZATION ROADMAP
+
+Measured head-to-head on outlayer.testnet (same sign op, same caller/content):
+
+| agent | instructions | wall | note |
+|---|---|---|---|
+| Lisp nostr-identity-v2 | 57,250,843 | 1554 ms | sig ✓ |
+| TS nostr-identity-ts | 59,297,407 | 1131 ms | sig ✓ (~3.6% more = TS lowering ceremony) |
+
+Wall time is worker-load noise (identical proof runs varied 195→233 ms earlier
+and ~1.1 s of the wall is the attestation RPC round-trip inside the op);
+instruction count is the real metric — it drives NEAR cost.
+
+Where the ~57M go:
+- EC scalar mults ×3 ≈ 48M (84%): pk-of does P=d·G, then schnorr-sign
+  RECOMPUTES P=d·G internally (pk bytes for nonce/challenge hashes), plus
+  R=k·G. ~16M per mult (plain double-and-add, Jacobian, ~384 field
+  mults each).
+- sha256 ×3 ≈ 1M; tx RPC fetch + JSON scans ≈ 2-3M; storage/glue ≈ 1M.
+
+Optimization roadmap (ranked by payoff/effort — NOT yet implemented):
+1. pk cache + sign-with-pk export: store pk:<caller> at derive; add
+   schnorr_sign_bip340_pk(sk, pk, msg, aux) so sign skips its internal
+   P=d·G. 3 mults → 1 (R=k·G): ~57M → ~20M (~2.8×, ~0.002 → ~0.0007
+   NEAR/op). Fail-closed: a wrong cached pk just fails verification.
+2. Fixed-base windowed mult: remaining mults are G-multiples — 4-bit
+   precomputed tables cut point-adds ~4× (another ~1.3-1.5×).
+3. Field-arithmetic tuning (batch inversion for fe_inv, addition
+   chains): diminishing; realistic stack after 1+2+3 ≈ 10-12M (~5×).
+4. Not worth it: attestation JSON scan + RPC are a few %; latency is
+   RPC-bound regardless — these cuts are about COST.
+
+Decision trigger: optimize when volume matters (1K signs/day ≈ 2 NEAR/day
+today → ~0.7 after #1 alone).
