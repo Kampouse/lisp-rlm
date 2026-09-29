@@ -59,7 +59,9 @@ fn is_builtin_wildcard(name: &str) -> bool {
                 | "env/predecessor"
                 | "schnorr-verify"
                 | "schnorr-sign"
+                | "schnorr-sign-pk"
                 | "schnorr-pubkey"
+                | "schnorr-pubkey33"
         )
 }
 

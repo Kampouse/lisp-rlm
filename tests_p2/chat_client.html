@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OutLayer chat — TEE-signed Nostr</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; --bg:#0d1117; --panel:#161b22; --edge:#30363d; --me:#2f6fed; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --tx:#c9d1d9; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 -apple-system,ui-sans-serif,sans-serif; background:var(--bg); color:var(--tx); }
+  header { display:flex; align-items:center; gap:10px; padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--edge); }
+  header b { font-size:15px; } header .dim { color:#8b949e; font-size:12px; }
+  #dot { width:9px; height:9px; border-radius:50%; background:var(--bad); }
+  #dot.on { background:var(--ok); }
+  main { max-width:760px; margin:0 auto; padding:12px 16px 84px; }
+  .card { background:var(--panel); border:1px solid var(--edge); border-radius:10px; padding:14px 16px; margin-top:12px; }
+  .card h3 { margin:0 0 8px; font-size:14px; }
+  .code { font:12px/1.4 ui-monospace,monospace; background:#0b0f14; border:1px solid var(--edge); padding:8px 10px; border-radius:8px; word-break:break-all; }
+  button { background:var(--me); color:#fff; border:0; border-radius:8px; padding:9px 14px; font-size:14px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  button.ghost { background:transparent; border:1px solid var(--edge); color:var(--tx); }
+  .msg { display:flex; margin:9px 0; gap:9px; align-items:flex-start; }
+  .msg.me { flex-direction:row-reverse; }
+  .bub { max-width:78%; padding:8px 12px; border-radius:12px; background:var(--panel); border:1px solid var(--edge); overflow-wrap:anywhere; }
+  .msg.me .bub { background:#1f3a70; border-color:#2f6fed55; }
+  .meta { font-size:11px; color:#8b949e; margin-top:4px; }
+  .pending .meta::after { content:" · signing…"; color:var(--warn); }
+  .fail .bub { border-color:var(--bad); }
+  .fail .meta::after { content:" · failed — retry?"; content:" · failed"; color:var(--bad); }
+  .confirmed .meta::before { content:"✓ "; color:var(--ok); }
+  #bar { position:fixed; left:0; right:0; bottom:0; background:var(--panel); border-top:1px solid var(--edge); }
+  #bar form { display:flex; gap:8px; max-width:760px; margin:0 auto; padding:10px 16px; }
+  #bar input { flex:1; background:#0b0f14; border:1px solid var(--edge); color:var(--tx); border-radius:8px; padding:10px 12px; font-size:14px; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <span id="dot"></span><b>outlayer chat</b>
+  <span class="dim" id="who">no identity yet</span>
+  <span class="dim" id="relay">relay: connecting…</span>
+  <span class="dim" id="bal"></span>
+  <span style="flex:1"></span>
+  <button id="reset" class="ghost" style="padding:3px 10px;font-size:12px">reset identity</button>
+</header>
+<main>
+  <div id="boot" class="card">
+    <h3>Create your identity</h3>
+    <p style="margin:4px 0;color:#8b949e">A key is generated <b>in your browser</b> (never leaves this tab). Your Nostr identity is derived inside the OutLayer TEE from <b>your NEAR account</b> — the agent signs every message, so no one (not even another site) can speak with your key.</p>
+    <button id="create">Create identity</button>
+  </div>
+  <div id="fund" class="card hidden">
+    <h3>One-time: get your account sponsored</h3>
+    <p style="margin:4px 0;color:#8b949e">Ask the operator to fund this account (each message then costs ~0.001–0.002 NEAR, paid from this balance, mostly refunded — zero popups ever):</p>
+    <div class="code" id="acct"></div>
+    <p style="margin:10px 0 6px"><button class="ghost" id="refresh">check balance</button> <span class="dim">from the operator console:</span> <code>bun scripts/gaskey/sponsor.mjs &lt;account&gt;</code></p>
+  </div>
+  <div id="msgs"></div>
+</main>
+<div id="bar">
+  <form id="send">
+    <input id="text" placeholder="Message… (optimistic — you'll see it instantly)" autocomplete="off" maxlength="280">
+    <button id="sendbtn">Send</button>
+  </form>
+</div>
+<script src="https://js.fastnear.com/near.js"></script>
+<script type="module">
+const AGENT_PROJECT = "registry-nostrgov.testnet/nostr-chat2";
+const ROOM = new URLSearchParams(location.search).get("room") || "lisp-chat-demo";
+const RELAY = new URLSearchParams(location.search).get("relay") || "wss://nos.lol";
+const OUTLAYER_CONTRACT = "outlayer.testnet";
+const EXEC_DEPOSIT = "2000100000000000000000"; // 0.0020001 NEAR, mostly refunded
+const EXEC_GAS = "100 Tgas"; // attached gas = the upfront check (~0.77 N at current price; real burn ≈ 25 Tgas)
+const NETWORK = "testnet";
+const LS_KEY = "chat.demo.key.v1";
+const $ = (id) => document.getElementById(id);
+const enc = (o) => JSON.stringify(o);
+const fromB64 = (b64) => { try { const s = atob(b64); const u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return new TextDecoder().decode(u); } catch { return ""; } };
+const short = (s, n = 4) => s.slice(0, n) + "…" + s.slice(-n);
+let acct = null, signer = null, relay = null, relayOn = false, seenIds = new Set();
+let pending = new Map(); // nonce -> {el, timer}
+
+// ── boot / identity ──────────────────────────────────────────────
+try { const saved = localStorage.getItem(LS_KEY); if (saved) { acct = saved; } } catch {}
+let acctId = "";
+function bootIdentity() {
+  const secret = localStorage.getItem(LS_KEY);
+  if (secret) {
+    acctId = window.near.utils.implicitAccountId(signer.publicKey);
+    $("acct").textContent = acctId;
+    $("who").textContent = "identity: " + short(acctId);
+    $("boot").classList.add("hidden");
+    $("fund").classList.toggle("hidden", Number(balCache) > 0.05);
+    pollBal();
+    $("text").focus();
+  }
+}
+let balCache = 0;
+async function pollBal() {
+  if (!acctId) return;
+  try {
+    const a = await window.near.queryAccount({ accountId: acctId, network: NETWORK });
+    const amt = Number(a.result?.amount || a.amount || 0) / 1e24;
+    balCache = amt;
+    $("bal").textContent = amt > 0 ? amt.toFixed(3) + " N" : "";
+    $("fund").classList.toggle("hidden", amt >= 0.05);
+    if (amt >= 0.05) $("boot").classList.add("hidden");
+  } catch {}
+  setTimeout(pollBal, 4000);
+}
+$("create").onclick = () => {
+  const secret = window.near.utils.privateKeyFromRandom("ed25519");
+  signer = window.near.utils.signerFromPrivateKey(secret);
+  acctId = window.near.utils.implicitAccountId(signer.publicKey);
+  localStorage.setItem(LS_KEY, secret);
+  bootIdentity();
+};
+$("refresh").onclick = pollBal;
+$("reset").onclick = () => { if (confirm("Forget this identity (key removed from this browser)?")) { localStorage.removeItem(LS_KEY); location.reload(); } };
+
+// ── relay ws ─────────────────────────────────────────────────────
+let ws = null, wsSince = Math.floor(Date.now() / 1000) - 600;
+function connectRelay() {
+  ws = new WebSocket(RELAY);
+  ws.onopen = () => {
+    $("dot").classList.add("on");
+    $("relay").textContent = "relay: " + RELAY.replace("wss://", "") + " · #" + ROOM;
+    ws.send(JSON.stringify(["REQ", "s", { kinds: [1], "#t": [ROOM], since: wsSince, until: Math.floor(Date.now() / 1000) + 3600 }]));
+  };
+  ws.onmessage = (m) => {
+    let d; try { d = JSON.parse(m.data); } catch { return; }
+    if (d[0] !== "EVENT") return;
+    const ev = d[2];
+    if (!ev || ev.id === undefined || seenIds.has(ev.id)) return;
+    seenIds.add(ev.id);
+    const myNonce = (ev.tags || []).find((t) => t[0] === "nonce")?.[1];
+    if (pending.has(myNonce)) {
+      const p = pending.get(myNonce);
+      p.el.querySelector(".meta")?.classList.add("confirmed");
+      p.el.classList.remove("pending");
+      p.el.querySelector(".meta").textContent = p.metaText + " ✓ signed & relayed";
+      clearTimeout(p.timer);
+      pending.delete(myNonce);
+    } else {
+      render(ev.pubkey, ev.content, new Date((ev.created_at || 0) * 1000), false, false, null);
+    }
+  };
+  ws.onclose = () => { $("dot").classList.remove("on"); $("relay").textContent = "relay: reconnecting…"; setTimeout(connectRelay, 2000); };
+  ws.onerror = () => { try { ws.close(); } catch {} };
+}
+
+// ── rendering ────────────────────────────────────────────────────
+function who(pk) { return "anon·" + (pk || "?").slice(0, 6); }
+function render(name, content, when, mine, optimistic, el) {
+  const div = el || document.createElement("div");
+  div.className = "msg" + (mine ? " me" : "");
+  div.innerHTML = `<div class="bub"><div class="txt"></div><div class="meta"></div></div>`;
+  div.querySelector(".txt").textContent = content;
+  const meta = `${mine ? "you" : who(name)} · ${String(when.getHours()).padStart(2, "0")}:${String(when.getMinutes()).padStart(2, "0")}`;
+  div.querySelector(".meta").textContent = meta;
+  div.dataset.meta = meta;
+  const msgs = $("msgs");
+  msgs.appendChild(div);
+  msgs.scrollIntoView && window.scrollTo({ top: document.body.scrollHeight });
+  return div;
+}
+
+// ── send: exec per message → decode → ws publish → echo confirms ──
+function execArgs(inputJson) {
+  return {
+    input_data: inputJson,
+    params: null,
+    payer_account_id: null,
+    resource_limits: { max_execution_seconds: 10, max_instructions: 1000000000, max_memory_mb: 128 },
+    response_format: "Json",
+    secrets_ref: null,
+    source: { Project: { project_id: AGENT_PROJECT, version_key: null } },
+  };
+}
+async function exec(inputJson) {
+  const r0 = await window.near.sendTx({
+    signerId: acctId, signer, receiverId: OUTLAYER_CONTRACT,
+    actions: [window.near.actions.functionCall({ methodName: "request_execution", args: execArgs(inputJson), gas: EXEC_GAS, deposit: EXEC_DEPOSIT })],
+    waitUntil: "FINAL", network: NETWORK,
+  });
+  const r = r0.result || r0;
+  const body = JSON.stringify(r);
+  const svFromStatus = (r.status?.SuccessValue) ?? (r.result?.status?.SuccessValue);
+  if (svFromStatus != null) return fromSV(svFromStatus);
+  const receipts = r.receipts_outcome || r.result?.receipts_outcome || [];
+  for (const ro of receipts)
+    for (const rc of [ro]) {
+      const sv = ro.outcome?.status?.SuccessValue;
+      if (sv != null) return JSON.parse(fromSV(sv));
+    }
+  throw new Error("no output: " + body.slice(0, 240));
+}
+function fromSV(b64) { const s = fromB64(b64); try { return JSON.parse(s); } catch { return s; } }
+function post(ev) { try { if (ws?.readyState === 1) ws.send(JSON.stringify(["EVENT", ev])); } catch {} }
+
+let queue = Promise.resolve();
+$("send").onsubmit = (e) => {
+  e.preventDefault();
+  const content = $("text").value.trim();
+  if (!content) return;
+  $("text").value = "";
+  const nonce = Array.from(crypto.getRandomValues(new Uint8Array(8))).map((b) => b.toString(16).padStart(2, "0")).join("");
+  const ts = Math.floor(Date.now() / 1000);
+  const el = render("you", content, new Date(), true, true, null);
+  el.classList.add("pending");
+  const met = el.dataset.meta;
+  const timer = setTimeout(() => {
+    if (!pending.has(nonce)) return;
+    pending.delete(nonce);
+    el.classList.remove("pending"); el.classList.add("fail");
+    el.querySelector(".meta").textContent += " · not confirmed";
+    const btn = document.createElement("button");
+    btn.className = "ghost"; btn.style.cssText = "padding:2px 10px;font-size:12px;margin-top:4px";
+    btn.textContent = "retry";
+    btn.onclick = () => { btn.remove(); sendIt({ content, nonce: hexNonce(), ts, mine: true, el, metaText: met }); };
+    el.querySelector(".meta").appendChild(btn);
+  }, 20000);
+  pending.set(nonce, { el, timer, metaText: met });
+  queue = queue.catch(() => {}).then(() => sendIt({ content, nonce, ts, mine: true, el, metaText: met }));
+};
+async function sendIt(m) {
+  const input = JSON.stringify({ op: "chat", content: m.content, ts: String(m.ts), nonce: m.nonce, room: ROOM });
+  try {
+    const out = await exec(input);
+    if (out.error) throw new Error(out.error);
+    m.el.classList.remove("pending");
+    const ev = {
+      id: out.id, pubkey: out.pk, created_at: Number(m.ts), kind: 1,
+      tags: [["t", ROOM], ["nonce", m.nonce]], content: m.content, sig: out.sig,
+    };
+    post(["EVENT", ev]);
+    m.el.querySelector(".meta").textContent = m.metaText + " · sent — waiting for relay";
+  } catch (e) {
+    m.el.classList.remove("pending"); m.el.classList.add("fail");
+    m.el.querySelector(".meta").textContent = m.metaText + " · ⛔ " + String(e.message || e).slice(0, 80);
+  }
+}
+
+// ── start ────────────────────────────────────────────────────────
+const saved = localStorage.getItem(LS_KEY);
+if (saved) { signer = window.near.utils.signerFromPrivateKey(saved); bootIdentity(); pollBal(); }
+connectRelay();
+setInterval(() => { if (acctId) pollBal(); }, 5000);
+</script>
+</body>
+</html>

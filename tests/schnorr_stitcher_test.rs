@@ -380,6 +380,18 @@ export function probe(pk: string, sig: string, msg: string): number {
 }
 "#;
 
+const SIGN_PK_TS: &str = r#"
+// sign-with-cached-pk path: derive pk33 from sk, sign using pk33 (no internal
+// P=d·G in sign), verify with the x-only pk — the exact chat-agent v4 shape.
+export function probe(sk: string, msg: string): number {
+  const skB = hexDecode(sk);
+  const pk33 = schnorrPubkey33(skB);
+  const sig = schnorrSignPk(skB, pk33, hexDecode(msg), hexDecode("0000000000000000000000000000000000000000000000000000000000000000"));
+  const xpk = strSlice(pk33, 1, 33);
+  return schnorrVerify(xpk, sig, hexDecode(msg));
+}
+"#;
+
 #[test]
 fn stitcher_bip340_vector0_valid() {
     let wasm = compile_ts(PROBE_TS);
@@ -440,6 +452,55 @@ fn stitcher_bip340_vector1_valid() {
         "vector 1 must verify: logs={:?}",
         r.logs
     );
+}
+
+// ── Layer 1b: pk-cached sign path (chat agent v4) ─────────────────────
+#[test]
+fn stitcher_sign_pk_roundtrip_via_pubkey33() {
+    let wasm = compile_ts(SIGN_PK_TS);
+    let c = Contract::new(wasm);
+    // BIP-340 vector-0 secret key (known to produce a valid pk), msg = its
+    // own vector msg. Deterministic aux=zeros → deterministic sig.
+    let r = c.call(
+        "probe",
+        r#"{"sk":"0000000000000000000000000000000000000000000000000000000000000003","msg":"243F6A8885A308D313198A2E03707344A4093822299F31D0082EFA98EC4E6C89"}"#,
+    );
+    assert_eq!(
+        r.ret_i64(),
+        Some(1),
+        "sign-pk via pubkey33 must roundtrip: logs={:?}",
+        r.logs
+    );
+}
+
+// ── Layer 1c: variadic str-cat arg-boundary bug (found by chat agent v4) ──
+#[test]
+fn strcat_variadic_call_arg_loses_literal_quote() {
+    // A literal arg followed by a CALL arg lost its trailing \" in the
+    // emitted concat loop (op-chat output: {"id":<unquoted>). Bind the call
+    // to a var first and the same shape is fine — pin BOTH.
+    let src = r#"
+export function probe(ok: number): string {
+  return strCat("{\"id\":\"", "abc", "\",\"posted\":", toStr(ok), "}");
+}
+export function probe2(ok: number): string {
+  const o = toStr(ok);
+  return strCat("{\"id\":\"", "abc", "\",\"post\":", o, "}");
+}
+"#;
+    let wasm = compile_ts(src);
+    let c = Contract::new(wasm);
+    let r = c.call("probe", r#"{"ok":1}"#);
+    assert!(!r.trapped, "trapped: {:?}", r.logs);
+    let got = String::from_utf8_lossy(r.ret.as_deref().unwrap_or(&[])).to_string();
+    assert_eq!(
+        got.trim_matches('"'),
+        "{\"id\":\"abc\",\"posted\":1}",
+        "variadic str-cat with a call arg must not eat literal quotes"
+    );
+    let r2 = c.call("probe2", r#"{"ok":1}"#);
+    let got2 = String::from_utf8_lossy(r2.ret.as_deref().unwrap_or(&[])).to_string();
+    assert_eq!(got2.trim_matches('"'), "{\"id\":\"abc\",\"post\":1}");
 }
 
 // ── Layer 2: nostr-gov digest chain (the real regression) ──────────────

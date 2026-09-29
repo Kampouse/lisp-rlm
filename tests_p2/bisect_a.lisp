@@ -1,0 +1,8 @@
+;; bisect A: storage + env + vrf (the v3 surface, known-good on the worker)
+(define (run input)
+  (let* ((sender (env/get "NEAR_SENDER_ID"))
+         (snd (if sender sender "?"))
+         (s (outlayer/storage-get (str-cat "probe:" snd)))
+         (v (vrf-generate "bisect-b")))
+    (str-cat "{\"snd\":\"" snd "\",\"stored\":\"" (if s s "?")
+             "\",\"vrf\":\"" (str-slice v 0 16) "\"}")))

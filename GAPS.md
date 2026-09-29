@@ -1372,3 +1372,87 @@ Optimization roadmap (ranked by payoff/effort — NOT yet implemented):
 
 Decision trigger: optimize when volume matters (1K signs/day ≈ 2 NEAR/day
 today → ~0.7 after #1 alone).
+
+## 2026-09-29 (chat) — SEAMLESS CHAT LOOP: TEE-SIGNED NOSTR FROM A BROWSER —
+DELIVERED END-TO-END
+
+The slice: one exec per message on OutLayer (agent signs with the TEE-derived
+identity, caller = host-injected NEAR_SENDER_ID), the BROWSER publishes the
+signed event locally over its own relay WebSocket, and the relay echo is the
+only confirmation. No wallet popups, no challenge dance, optimistic bubbles.
+
+THE BIG UNLOCK — `NEAR_SENDER_ID`. The 2026-09-29 identity probe guessed
+wrong names (SENDER_ID, SIGNER_ID…) and missed the exact var nostr_seal
+proved host-injected from the request_execution tx (commit f86c310,
+2026-09-22). Re-proven for lisp p2 components via tests_p2/env_probe.lisp:
+{NEAR_SENDER_ID: tx signer, input caller: spoofed-and-ignored}. Consequence:
+the v3 challenge/attest dance is GONE — one unforgeable op per message.
+Fail-closed posture: with the TEE root secret set, a missing NEAR_SENDER_ID
+(HTTPS/no-tx paths) is REJECTED; demo-root (no secret) falls back to input
+caller for local dev only.
+
+request_execution BY THE BROWSER (full schema captured from an on-chain tx):
+  - receiver outlayer.testnet, method request_execution, args {
+      input_data: <agent input as a JSON STRING>, params: null,
+      payer_account_id: null, resource_limits: {max_execution_seconds: 10,
+      max_instructions: 1000000000, max_memory_mb: 128},
+      response_format: "Json", secrets_ref: null,
+      source: {Project: {project_id, version_key: null}} }
+  - DEPOSIT REQUIRED: 2000100000000000000000 yocto (0.002 N, mostly
+    refunded) — "gas keys cannot attach deposits" (protocol rule), so the
+    client uses its full in-memory key and pays from a sponsored balance.
+  - ATTACHED GAS = the UPFRONT check: 300 Tgas ⇒ ~2.3 N (refunded later but
+    must be on hand). Real burn ≈ 25-30 Tgas ⇒ attach 100 Tgas.
+  - The agent OUTPUT rides `status.SuccessValue` (base64, FULL — the human
+    log line truncates at ~100 chars). The client decodes {id,sig,pk} from
+    its own tx.
+
+RELAYS: NIP-01 publishing is WEBSOCKET-ONLY. strfry (nos.lol, relay.damus.io)
+returns its HTML landing page to HTTP POST `(["EVENT"…])` — even from a
+normal machine (bisect_c/postprobe prove the wasi:http POST bridge sends a
+well-formed application/json POST; the relay endpoint just doesn't ingest).
+So: agent-side http-post stays for self-hosted relays with HTTP ingest, and
+the PRIMARY path is browser-local publish. Bonus: the relay echo means
+STRFRY ITSELF verified the BIP-340 sig server-side before accepting.
+
+LIB + COMPILER: schnorr_sign_pk(sk, pk33, msg, aux) — the SEC1 33-byte pk
+(0x02/0x03 prefix) carries the y-parity bit that pins d'=d vs n−d, so sign
+skips its internal P=d·G (3 EC mults → 1). Fail-closed: wrong prefix ⇒ zero
+sig; wrong parity ⇒ (proved) fails verify. schnorr_pubkey_33 caches the
+prefix+x at pk33:<sender>; parity-flip and bad-prefix tests + the full
+TS-side roundtrip pinned in tests/schnorr_stitcher_test.rs.
+
+PERF, measured on outlayer.testnet (warm pk33 cache, 1 EC mult):
+| agent | chat-op instructions | note |
+|---|---|---|
+| Lisp nostr-chat2 | 19,524,123 | sig ✓ (oracle) |
+| TS nostr-chat2-ts | 19,561,013 | sig ✓ (oracle) — 0.02% over Lisp |
+| (v3 baseline) | 57,250,843 | 3 mults → 2.9× improvement |
+Net cost ≈ 0.0027 N/message (deposit 0.002 mostly refunded + 8 Tgas).
+
+E2E HEADLESS PROOF (scripts/gaskey/chate2e.mjs — the client logic headless):
+browser-style keygen → implicit account → sponsor.mjs transfer → exec per
+message → SuccessValue decode → ["EVENT",…] over wss://nos.lol → relay echo
+matches the nonce tag → CONFIRMED (twice; identity stable, id persisted —
+fetched back by id via relayget.mjs). Same shape as tests_p2/chat_client.html.
+
+WORKER GAPS found this round:
+1. outlayer host import 21 (dynamic http-post) FAILS component
+   instantiation on the worker — literal-URL posts ride the native wasi:http
+   bridge instead (bridge_native_post) and relays become compile-time baked
+   (0=nos.lol, 1=relay.damus.io, selected by input flag r).
+2. near:vrf seeds must stay colon-free (reconfirmed).
+3. Output log line truncates; SuccessValue is the full-output channel.
+4. Implicit accounts need NO addKey (id = hex(ed25519_pk)); a transfer both
+   creates and funds. Sponsor math: state-stake quirks make ~0.05 N+
+   overhead per new account — send 0.3-0.5 N per identity.
+
+Projects: registry-nostrgov.testnet/nostr-chat2 (+ nostr-chat2-ts). Ops:
+pk {} → {pk,sender}; chat {content,ts,nonce,room,r} → signs+publishes;
+ser (debug, lisp only) → pre-hash serialization. Secrets: re-seal
+PROTECTED_NOSTR_ROOT per rebuild (binds to wasm hash).
+
+NEXT: multi-relay fan-out at compile time; gas-key lanes instead of full-key
+sends (key isolation, but deposits still blocked by protocol — needs a
+sponsored/payer path); NIP-28 channel events; NIP-98-authed HTTP relays for
+agent-side publish; windowed EC mult (roadmap item 2) once volume matters.

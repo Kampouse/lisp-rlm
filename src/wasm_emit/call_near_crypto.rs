@@ -659,6 +659,119 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_str());
                 Ok(v)
             }
+            "schnorr-sign-pk" => {
+                // (schnorr-sign-pk sk_bytes pk33_bytes msg_bytes aux_bytes) -> 64-byte sig
+                // BIP-340 with a CACHED pubkey: skips the internal P=d·G mult. pk33 =
+                // 33-byte SEC1 (0x02/0x03 prefix carries the y-parity that picks d').
+                // Import: schnorr_sign_bip340_pk(sk, pk33, msg, aux, out) -> i32.
+                if a.len() != 4 {
+                    return Err("schnorr-sign-pk: need 4 args (sk, pk33, msg, aux)".into());
+                }
+                let sk = self.expr(&a[0])?;
+                let pk33 = self.expr(&a[1])?;
+                let msg = self.expr(&a[2])?;
+                let aux = self.expr(&a[3])?;
+                let wasm_idx = self.need_wasm_import(
+                    "schnorr_sign_bip340_pk",
+                    vec![ValType::I32; 5],
+                    vec![ValType::I32],
+                );
+                let mut v = Vec::new();
+                // sk_ptr
+                v.extend(sk);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                // pk33_ptr
+                v.extend(pk33);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                // msg_ptr
+                v.extend(msg);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                // aux_ptr
+                v.extend(aux);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                // out_ptr: fresh runtime-heap buffer (64 bytes) — same aliasing rule as
+                // schnorr-sign (never TEMP_MEM: scratch clobber).
+                let hx_old = self.local_idx("__hx_old");
+                v.push(Instruction::I32Const(56));
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::LocalSet(hx_old));
+                v.push(Instruction::I32Const(56));
+                v.push(Instruction::LocalGet(hx_old));
+                v.push(Instruction::I64Const(64));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::LocalGet(hx_old));
+                v.push(Instruction::I32WrapI64);
+                v.push(Self::wasm_import_call(wasm_idx));
+                v.push(Instruction::Drop);
+                // tagged Str: (64 << 32) | buffer
+                v.push(Instruction::I64Const(64));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(hx_old));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
+            "schnorr-pubkey33" => {
+                // (schnorr-pubkey33 sk_bytes) -> 33-byte SEC1 pk (prefix + x) — the
+                // cacheable form schnorr-sign-pk consumes. Import:
+                //   schnorr_pubkey_bip340_33(sk_ptr, out33_ptr) -> i32
+                if a.len() != 1 {
+                    return Err("schnorr-pubkey33: need 1 arg (sk)".into());
+                }
+                let sk = self.expr(&a[0])?;
+                let wasm_idx = self.need_wasm_import(
+                    "schnorr_pubkey_bip340_33",
+                    vec![ValType::I32, ValType::I32],
+                    vec![ValType::I32],
+                );
+                let mut v = Vec::new();
+                v.extend(sk);
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                let hx_old = self.local_idx("__hx_old");
+                v.push(Instruction::I32Const(56));
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::LocalSet(hx_old));
+                v.push(Instruction::I32Const(56));
+                v.push(Instruction::LocalGet(hx_old));
+                v.push(Instruction::I64Const(33));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::LocalGet(hx_old));
+                v.push(Instruction::I32WrapI64);
+                v.push(Self::wasm_import_call(wasm_idx));
+                v.push(Instruction::Drop);
+                // tagged Str: (33 << 32) | buffer
+                v.push(Instruction::I64Const(33));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(hx_old));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
             "near/p256_verify" => {
                 if a.len() != 3 {
                     return Err("near/p256_verify: need 3 args (sig, msg, pk)".into());

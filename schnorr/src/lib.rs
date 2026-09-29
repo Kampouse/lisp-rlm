@@ -675,6 +675,81 @@ pub unsafe extern "C" fn schnorr_sign_bip340(
     }
 }
 
+// ── BIP-340 sign with a CACHED public key ──
+// Skips the internal P = d·G mult (the caller supplies pk33, the SEC1-
+// compressed point: 0x02/0x03 prefix + x). The prefix carries the y-parity
+// that selects d' = d vs n-d — the one bit an x-only pk loses. A wrong
+// prefix yields a sig that simply fails verification (fail-closed).
+pub fn schnorr_sign_pk(
+    sk_bytes: &[u8; 32],
+    pk33: &[u8; 33],
+    msg: &[u8; 32],
+    aux: &[u8; 32],
+) -> [u8; 64] {
+    if pk33[0] != 0x02 && pk33[0] != 0x03 {
+        return [0u8; 64];
+    }
+    let mut d = fe_bytes_to_fe(sk_bytes);
+    if sc_geq_n(d) {
+        d = sc_sub_n(d);
+    }
+    if d == [0; 4] {
+        return [0u8; 64];
+    }
+    // y(d·G) even (0x02) → d' = d; odd (0x03) → d' = n - d
+    let dp = if pk33[0] == 0x02 { d } else { sc_sub_n(d) };
+    let mut p_bytes = [0u8; 32];
+    p_bytes.copy_from_slice(&pk33[1..33]);
+    // t = xor(d', tagged_hash("BIP0340/aux", aux))
+    let aux_hash = tagged_hash(b"BIP0340/aux", aux);
+    let mut dp_bytes = [0u8; 32];
+    for i in 0..4 {
+        dp_bytes[i * 8..(i + 1) * 8].copy_from_slice(&dp[3 - i].to_be_bytes());
+    }
+    let mut t = [0u8; 32];
+    for i in 0..32 {
+        t[i] = dp_bytes[i] ^ aux_hash[i];
+    }
+    // rand = tagged_hash("BIP0340/nonce", t || P_bytes || msg)
+    let mut nonce_input = [0u8; 96];
+    nonce_input[..32].copy_from_slice(&t);
+    nonce_input[32..64].copy_from_slice(&p_bytes);
+    nonce_input[64..96].copy_from_slice(msg);
+    let rand = tagged_hash(b"BIP0340/nonce", &nonce_input);
+    let mut kp = fe_bytes_to_fe(&rand);
+    if sc_geq_n(kp) {
+        kp = sc_sub_n(kp);
+    }
+    if kp == [0; 4] {
+        return [0u8; 64];
+    }
+    // R = k' * G
+    let (rx, ry) = match point_mul((GX, GY), kp) {
+        Some(r) => jac_to_affine(r),
+        None => return [0u8; 64],
+    };
+    let kp = if ry[0] & 1 != 0 { sc_sub_n(kp) } else { kp };
+    // e = tagged_hash("BIP0340/challenge", R || P || msg)
+    let mut r_bytes = [0u8; 32];
+    for i in 0..4 {
+        r_bytes[i * 8..(i + 1) * 8].copy_from_slice(&rx[3 - i].to_be_bytes());
+    }
+    let mut challenge_input = [0u8; 96];
+    challenge_input[..32].copy_from_slice(&r_bytes);
+    challenge_input[32..64].copy_from_slice(&p_bytes);
+    challenge_input[64..96].copy_from_slice(msg);
+    let e_hash = tagged_hash(b"BIP0340/challenge", &challenge_input);
+    let e = fe_bytes_to_fe(&e_hash);
+    let ed = sc_mul_mod_n(e, dp);
+    let sig_s = sc_add_mod_n(kp, ed);
+    let mut sig = [0u8; 64];
+    sig[..32].copy_from_slice(&r_bytes);
+    for i in 0..4 {
+        sig[32 + i * 8..32 + (i + 1) * 8].copy_from_slice(&sig_s[3 - i].to_be_bytes());
+    }
+    sig
+}
+
 // ── BIP-340 public key derivation (x-only: pk = x-coord of d·G) ──
 pub fn schnorr_pubkey(sk_bytes: &[u8; 32]) -> [u8; 32] {
     let mut d = fe_bytes_to_fe(sk_bytes);
@@ -705,6 +780,78 @@ pub unsafe extern "C" fn schnorr_pubkey_bip340(sk_ptr: u32, out_ptr: u32) -> u32
     let out = core::slice::from_raw_parts_mut(out_ptr as *mut u8, 32);
     out.copy_from_slice(&pk);
     if pk == [0u8; 32] {
+        0
+    } else {
+        1
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn schnorr_sign_bip340_pk(
+    sk_ptr: u32,
+    pk33_ptr: u32,
+    msg_ptr: u32,
+    aux_ptr: u32,
+    out_ptr: u32,
+) -> u32 {
+    let sk = core::slice::from_raw_parts(sk_ptr as *const u8, 32);
+    let pk33 = core::slice::from_raw_parts(pk33_ptr as *const u8, 33);
+    let msg = core::slice::from_raw_parts(msg_ptr as *const u8, 32);
+    let aux = core::slice::from_raw_parts(aux_ptr as *const u8, 32);
+    let Ok(sk): Result<[u8; 32], _> = sk.try_into() else {
+        return 0;
+    };
+    let Ok(pk33): Result<[u8; 33], _> = pk33.try_into() else {
+        return 0;
+    };
+    let Ok(msg): Result<[u8; 32], _> = msg.try_into() else {
+        return 0;
+    };
+    let Ok(aux): Result<[u8; 32], _> = aux.try_into() else {
+        return 0;
+    };
+    let sig = schnorr_sign_pk(&sk, &pk33, &msg, &aux);
+    let out = core::slice::from_raw_parts_mut(out_ptr as *mut u8, 64);
+    out.copy_from_slice(&sig);
+    if sig == [0u8; 64] {
+        0
+    } else {
+        1
+    }
+}
+
+// 33-byte pubkey: 0x02/0x03 prefix (y-parity) + x — the form sign_bip340_pk
+// consumes and the pk:<caller> cache stores.
+pub fn schnorr_pubkey_33(sk_bytes: &[u8; 32]) -> [u8; 33] {
+    let mut d = fe_bytes_to_fe(sk_bytes);
+    if sc_geq_n(d) {
+        d = sc_sub_n(d);
+    }
+    let mut out = [0u8; 33];
+    if d == [0; 4] {
+        return out;
+    }
+    let (px, py) = match point_mul((GX, GY), d) {
+        Some(r) => jac_to_affine(r),
+        None => return out,
+    };
+    out[0] = if py[0] & 1 == 0 { 0x02 } else { 0x03 };
+    for i in 0..4 {
+        out[1 + i * 8..1 + (i + 1) * 8].copy_from_slice(&px[3 - i].to_be_bytes());
+    }
+    out
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn schnorr_pubkey_bip340_33(sk_ptr: u32, out33_ptr: u32) -> u32 {
+    let sk = core::slice::from_raw_parts(sk_ptr as *const u8, 32);
+    let Ok(sk): Result<[u8; 32], _> = sk.try_into() else {
+        return 0;
+    };
+    let pk33 = schnorr_pubkey_33(&sk);
+    let out = core::slice::from_raw_parts_mut(out33_ptr as *mut u8, 33);
+    out.copy_from_slice(&pk33);
+    if pk33 == [0u8; 33] {
         0
     } else {
         1
@@ -939,6 +1086,83 @@ mod sign_test2 {
             }
         }
         panic!("no valid aux found");
+    }
+}
+
+#[cfg(test)]
+mod sign_pk_test {
+    use super::*;
+    fn h(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+    fn a32(v: Vec<u8>) -> [u8; 32] {
+        let mut a = [0u8; 32];
+        a.copy_from_slice(&v);
+        a
+    }
+    #[test]
+    fn test_sign_pk_matches_plain_sign() {
+        // BIP-340 vector 1 key + a few others: for the SAME aux, sign_pk with
+        // the true pk33 must equal plain sign byte-for-byte (deterministic
+        // nonce path is identical once d' and P are pinned).
+        let keys = [
+            "0000000000000000000000000000000000000000000000000000000000000003",
+            "C90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B14E5C9",
+            "0B432B2677937381AEF05BB02A66ECD012773062CF3FA2549E44F58ED2401710",
+        ];
+        let msg = compute_sha256(b"chat-op-pk-cache-test");
+        let aux = [0xABu8; 32];
+        for k in keys {
+            let sk = a32(h(k));
+            let pk33 = schnorr_pubkey_33(&sk);
+            let sig_plain = schnorr_sign(&sk, &msg, &aux);
+            let sig_pk = schnorr_sign_pk(&sk, &pk33, &msg, &aux);
+            assert_eq!(sig_plain, sig_pk, "sig mismatch for sk {k}");
+            // and it verifies against the x-only pk
+            let mut xpk = [0u8; 32];
+            xpk.copy_from_slice(&pk33[1..]);
+            assert!(schnorr_verify(&xpk, &sig_pk, &msg));
+        }
+    }
+    #[test]
+    fn test_sign_pk_wrong_parity_fails() {
+        let sk = a32(h(
+            "0000000000000000000000000000000000000000000000000000000000000003",
+        ));
+        let msg = compute_sha256(b"parity-flip-test");
+        let aux = [0x01u8; 32];
+        let mut pk33 = schnorr_pubkey_33(&sk);
+        pk33[0] ^= 0x01; // flip 0x02 <-> 0x03
+        let sig = schnorr_sign_pk(&sk, &pk33, &msg, &aux);
+        let mut xpk = [0u8; 32];
+        xpk.copy_from_slice(&pk33[1..]);
+        // wrong d' → the sig must NOT verify (fail-closed, not garbage-accept)
+        assert!(!schnorr_verify(&xpk, &sig, &msg));
+    }
+    #[test]
+    fn test_sign_pk_bad_prefix_zero_sig() {
+        let sk = a32(h(
+            "0000000000000000000000000000000000000000000000000000000000000003",
+        ));
+        let msg = compute_sha256(b"bad-prefix-test");
+        let aux = [0u8; 32];
+        let mut pk33 = schnorr_pubkey_33(&sk);
+        pk33[0] = 0xFF;
+        assert_eq!(schnorr_sign_pk(&sk, &pk33, &msg, &aux), [0u8; 64]);
+    }
+    #[test]
+    fn test_pubkey33_prefix_consistency() {
+        // x-only pubkey must equal pk33[1..] for random-ish keys
+        for i in 0u8..8 {
+            let sk = compute_sha256(&[i; 57]);
+            let pk33 = schnorr_pubkey_33(&sk);
+            let xpk = schnorr_pubkey(&sk);
+            assert!(pk33[0] == 0x02 || pk33[0] == 0x03);
+            assert_eq!(&pk33[1..], &xpk[..]);
+        }
     }
 }
 
