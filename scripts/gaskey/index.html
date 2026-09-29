@@ -334,22 +334,13 @@ const save = () => { localStorage.setItem("gk_sessions", JSON.stringify(sessions
   localStorage.setItem("gk_active", active || ""); localStorage.setItem("gk_pnl", JSON.stringify(pnl)); };
 const sess = () => sessions[active];
 
-const api = await import("https://esm.sh/@fastnear/api@2.5.0");
-const utils = await import("https://esm.sh/@fastnear/utils@2.5.0");
-const { actions, queryAccessKey } = api;
+const { Near, fromHotConnect, InMemoryKeyStore, parseKey } = await import("https://esm.sh/near-kit@0.20.2");
+const { NearConnector } = await import("https://esm.sh/@hot-labs/near-connect@0.11.4");
 
-async function view(c, m, a) {
-  const r = await fetch(`https://rpc.${NET}.near.org`, { method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: "v", method: "query", params: {
-      request_type: "call_function", account_id: c, method_name: m,
-      args_base64: btoa(JSON.stringify(a)), finality: "final" } }) });
-  const j = await r.json();
-  let p = JSON.parse(new TextDecoder().decode(new Uint8Array(j.result.result)));
-  if (typeof p === "string") p = JSON.parse(p);
-  if (p && typeof p.result === "string") p = JSON.parse(p.result);
-  return p;
-}
+const ro = new Near({ network: NET });
+const unwrap = v => (v && typeof v === "object" && typeof v.result === "string")
+  ? (() => { try { return JSON.parse(v.result); } catch { return v; } })() : v;
+async function view(c, m, a) { return unwrap(await ro.view(c, m, a)); }
 function toast(ic, msg, ms=2800) {
   $("toastIc").textContent = ic; $("toastMsg").textContent = msg;
   $("toast").classList.add("show");
@@ -363,11 +354,13 @@ function log(msg, cls="", hash="") {
     el.prepend(d);
   }
 }
-function ownerSigner(owner) {
+function ownerKit(owner) {
   let sk = localStorage.getItem("gk_sk_" + owner);
   if (!sk) { sk = prompt(`secret key for ${owner} (ed25519:…) — stored only in this browser`); if (!sk) return null;
     localStorage.setItem("gk_sk_" + owner, sk.trim()); }
-  return utils.signerFromPrivateKey(sk.trim());
+  const ks = new InMemoryKeyStore();
+  ks.add(owner, parseKey(sk.trim()));
+  return new Near({ network: NET, keyStore: ks });
 }
 
 /* ───────────────────────── price chart ───────────────────────── */
@@ -429,7 +422,7 @@ async function poll() {
     $("fPt").textContent = Number(BigInt(pool.tokens)).toLocaleString(undefined,{notation:"compact",maximumFractionDigits:2});
     drawChart($("chart")); drawChart($("chartM"));
     renderPad(); updateQuote();
-  } catch {}
+  } catch (e) { console.warn("poll:", String(e).slice(0, 120)); }
   try {
     const s2 = sess(); if (!s2) return;
     const k = await queryAccessKey({ accountId: s2.owner, publicKey: s2.gas_public, blockId: "final", network: NET });
@@ -440,11 +433,11 @@ async function poll() {
 
 function renderPad() {
   const s = sess(); if (!s || !state.pad) return;
-  const tokDisp = Number(BigInt(state.pad.tokens)).toLocaleString(undefined,{maximumFractionDigits:2});
-  for (const [a,b] of [[$("pNear"),$("pNear2")],[$("pTok"),$("pTok2")]]) {
-    if (a) a.innerHTML = `${fmtN(state.pad.near)}<small> N</small>`;
-    if (b) b.textContent = tokDisp;
-  }
+  const tokDisp = (Number(BigInt(state.pad.tokens))/1e24).toLocaleString(undefined,{maximumFractionDigits:2});
+  $("pNear").innerHTML = `${fmtN(state.pad.near)}<small> N</small>`;
+  if ($("pNear2")) $("pNear2").innerHTML = `${fmtN(state.pad.near)}<small> N</small>`;
+  $("pTok").textContent = tokDisp;
+  if ($("pTok2")) $("pTok2").textContent = tokDisp;
   const p = price();
   const tokN = Number(BigInt(state.pad.tokens))/1e24;
   const val = tokN * p;
@@ -485,21 +478,18 @@ function renderSessions() {
 
 /* ───────────────────────── create session ───────────────────────── */
 async function createSession(owner, sk, contract, methods, lanes, fund) {
-  const oSigner = utils.signerFromPrivateKey(sk);
-  const gasPriv = utils.privateKeyFromRandom("ed25519");
-  const gSigner = utils.signerFromPrivateKey(gasPriv);
-  await api.sendTx({
-    signerId: owner, signer: oSigner, receiverId: owner,
-    actions: [
-      actions.addLimitedAccessGasKey({ publicKey: gSigner.publicKey, numNonces: lanes, accountId: contract, methodNames: methods }),
-      actions.transferToGasKey({ publicKey: gSigner.publicKey, deposit: `${fund} NEAR` }),
-    ],
-    waitUntil: "FINAL", network: NET,
-  });
+  const ks = new InMemoryKeyStore();
+  ks.add(owner, parseKey(sk));
+  const ownerKit = new Near({ network: NET, keyStore: ks });
+  const gk = generateKey();
+  await ownerKit.transaction(owner)
+    .addKey(String(gk.publicKey), { type: "gasKeyFunctionCall", numNonces: lanes, receiverId: contract, methodNames: methods })
+    .transferToGasKey(String(gk.publicKey), `${fund} NEAR`)
+    .send({ waitUntil: "FINAL" });
   let name = contract.split(".")[0].slice(0, 10), i = 2;
   while (sessions[name]) name = contract.split(".")[0].slice(0, 8) + i++;
   sessions[name] = { owner, contract, methods, lanes, token: DEFAULT_TOKEN,
-    gas_public: gSigner.publicKey, gas_secret: gasPriv, calls: 0 };
+    gas_public: String(gk.publicKey), gas_secret: String(gk.secretKey), calls: 0 };
   localStorage.setItem("gk_sk_" + owner, sk);
   active = name; save();
 }
@@ -577,17 +567,18 @@ async function execute() {
     const args = side === "buy"
       ? { token: s.token, near_in: NEAR(raw), min_tokens_out: "0" }
       : { token: s.token, tokens_in: await myTokens(raw), min_near_out: "0" };
-    const g = utils.signerFromPrivateKey(s.gas_secret);
-    const r = await api.sendTx({
-      signerId: s.owner, signer: g, receiverId: s.contract, nonceIndex: lane,
-      actions: [actions.functionCall({ methodName: side === "buy" ? "buy" : "sell_internal", args, deposit: "0", gas: "120 Tgas" })],
-      waitUntil: "FINAL", network: NET,
-    });
-    const hash = r.txHash ?? r.result?.transaction?.hash ?? "";
+    const ks = new InMemoryKeyStore();
+    ks.add(s.owner, parseKey(s.gas_secret));
+    const gasKit = new Near({ network: NET, keyStore: ks });
+    const r = await gasKit.transaction(s.owner)
+      .useGasKey(lane)
+      .functionCall(s.contract, side === "buy" ? "buy" : "sell_internal", args, { gas: "120 Tgas" })
+      .send({ waitUntil: "FINAL" });
+    const hash = r.transaction?.hash ?? "";
     // pull return value for pnl bookkeeping
     const val64 = (r.receipts_outcome || []).map(x => x.outcome?.status?.SuccessValue).find(Boolean);
     if (val64) {
-      const ret = JSON.parse(Buffer.from(val64, "base64").toString());
+      const ret = JSON.parse(atob(val64));
       const p = price();
       const key = active + "|" + s.token;
       const rec = pnl[key] || { tok: 0, cost: 0, realized: 0, avg: 0 };
@@ -637,13 +628,11 @@ $("dGo").onclick = async () => {
   if (!amt || amt <= 0) return toast("⚠️","enter amount");
   $("dGo").disabled = true;
   try {
-    const signer = ownerSigner(s.owner); if (!signer) throw new Error("cancelled");
-    const r = await api.sendTx({
-      signerId: s.owner, signer, receiverId: s.contract,
-      actions: [actions.functionCall({ methodName: "deposit", args: {}, deposit: `${amt} NEAR`, gas: "60 Tgas" })],
-      waitUntil: "FINAL", network: NET,
-    });
-    const hash = r.txHash ?? r.result?.transaction?.hash ?? "";
+    const kit = ownerKit(s.owner); if (!kit) throw new Error("cancelled");
+    const r = await kit.transaction(s.owner)
+      .functionCall(s.contract, "deposit", {}, { attachedDeposit: `${amt} NEAR`, gas: "60 Tgas" })
+      .send({ waitUntil: "FINAL" });
+    const hash = r.transaction?.hash ?? "";
     toast("✅", `+${amt}N pad`); log(`deposit ${amt}N`, "ok", hash);
     $("mDep").classList.remove("show"); poll();
   } catch (e) { toast("❌", String(e).slice(0, 90)); }
@@ -653,17 +642,11 @@ $("bWithdraw").onclick = () => { if (!sess()) return toast("⚠️","no session"
 $("wGo").onclick = async () => {
   const s = sess(); $("wGo").disabled = true;
   try {
-    const signer = ownerSigner(s.owner); if (!signer) throw new Error("cancelled");
-    const actions2 = [];
-    const amt = $("wAmt").value.trim();
-    if (amt) {
-      actions2.push(actions.functionCall({ methodName: "withdraw", args: {}, deposit: "1", gas: "60 Tgas" }));
-    } else {
-      actions2.push(actions.functionCall({ methodName: "withdraw", args: {}, deposit: "1", gas: "60 Tgas" }));
-    }
-    const r = await api.sendTx({ signerId: s.owner, signer, receiverId: s.contract,
-      actions: actions2, waitUntil: "FINAL", network: NET });
-    const hash = r.txHash ?? r.result?.transaction?.hash ?? "";
+    const kit = ownerKit(s.owner); if (!kit) throw new Error("cancelled");
+    const r = await kit.transaction(s.owner)
+      .functionCall(s.contract, "withdraw", {}, { attachedDeposit: "1 yocto", gas: "60 Tgas" })
+      .send({ waitUntil: "FINAL" });
+    const hash = r.transaction?.hash ?? "";
     toast("✅","withdraw sent"); log("withdraw → wallet", "ok", hash);
     $("mWdr").classList.remove("show"); poll();
   } catch (e) { toast("❌", String(e).slice(0, 90)); }
@@ -674,9 +657,8 @@ $("wGo").onclick = async () => {
 async function revoke(name) {
   const s = sessions[name]; if (!s || !confirm(`revoke session '${name}'? one full-key signature`)) return;
   try {
-    const signer = ownerSigner(s.owner); if (!signer) return;
-    await api.sendTx({ signerId: s.owner, signer, receiverId: s.owner,
-      actions: [actions.deleteKey({ publicKey: s.gas_public })], waitUntil: "FINAL", network: NET });
+    const kit = ownerKit(s.owner); if (!kit) return;
+    await kit.transaction(s.owner).deleteKey(s.gas_public).send({ waitUntil: "FINAL" });
     delete sessions[name]; if (active === name) active = Object.keys(sessions)[0] || null;
     save(); renderSessions(); boot(); toast("✅","session revoked");
   } catch (e) { toast("❌", String(e).slice(0, 90)); }
@@ -729,6 +711,9 @@ function fillTokens() {
 
 /* ───────────────────────── boot ───────────────────────── */
 function boot() {
+  // normalize CLI-created sessions (they lack a token field)
+  for (const [, x] of Object.entries(sessions)) if (!x.token) x.token = DEFAULT_TOKEN;
+  save();
   renderSessions(); fillTokens();
   const s = sess();
   if (s) {
