@@ -604,14 +604,19 @@ window.heroSellSel = async function(frac){
     tokRes = BigInt(r?.tokens ?? "0");
     if (tokRes>0n && (amtPk+amtWal) > tokRes*95n/100n) thin = true;   // > 95% of token reserve
   } catch(e){}
+  const fmtNearX = y => { const v = Number(BigInt(y))/1e24; return v>0 && v<0.001 ? v.toFixed(7)+" NEAR" : fmtNear(y); };
+  const GAS_COST = 1000000000000000000000n;   // ~0.001 N — what a sell burns in gas
+  const dust = !net || BigInt(net) < GAS_COST;
   const parts = [`sell <b>${fmtTok((amtPk+amtWal).toString(),DEC)} ${SYM}</b>`];
-  if (net) parts.push(`→ get <b class="ok">${fmtNear(net)}</b>`);
-  if (amtWal>0n) parts.push('<span class="dim">(first batch needs one wallet confirm)</span>');
+  if (net) parts.push(`→ get <b class="ok">${fmtNearX(net)}</b>`);
+  if (dust) parts.push(`<span style="color:var(--warn)">✋ worth less than the gas it costs — skip it</span>`);
+  else if (amtWal>0n) parts.push('<span class="dim">(first batch needs one wallet confirm)</span>');
   window.__sellDump = !!thin;
   if (thin) parts.push(`<span style="color:var(--warn)">⚠️ over the curve's ${fmtTok(tokRes.toString(),DEC)} ${SYM} per-hit limit — DUMP will auto-slice it (each hit refills the pool, slices grow)</span>`);
   sq.innerHTML = parts.join(" ") + (net?"":' <span class="dim">· fetching price…</span>');
   go.textContent = thin ? "DUMP →" : "SELL →";
-  go.disabled = !(thin || net); go.style.opacity = (thin || net) ? 1 : .45;
+  const armed = (thin || !!net) && !dust;
+  go.disabled = !armed; go.style.opacity = armed ? 1 : .45;
 };
 window.heroSellGo = async function(){
   if (!__sellSel || !__sellAmts) return;
@@ -1013,7 +1018,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b36";
+const BUILD = "b37";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
