@@ -487,15 +487,24 @@ window.heroBuy = async function(){
     const rr = await fetch("/api/relay",{method:"POST",headers:{"content-type":"application/json"},
       body:JSON.stringify({pk:pkHex,owner:acct})}).then(r=>r.json()).catch(e=>({error:"relay unreachable: "+e}));
     if (rr.error) { localStorage.removeItem("gk-fast"); throw new Error("setup: "+rr.error); }
-    // wait for the key to appear on-chain (relay tx commit → propagation)
-    for (let i=0;i<10;i++){
+    // wait for the key to appear on-chain (relay tx commit → propagation; can take ~10s+)
+    for (let i=0;i<25;i++){
       const st=await view(CFG.pool,"get_gas_status",{pk:pkHex}).catch(()=>null);
       if (st && BigInt(st.funded||0)>0n) break;
       await new Promise(r=>setTimeout(r,800));
     }
     try {
       await gasSend([{type:"FunctionCall", methodName:"buy", args:buyArgs, gas:"50000000000000", deposit:"0"}]);
-    } catch(e){ throw new Error("[after-relay buy] "+(e&&e.message||e)); }
+    } catch(e){
+      // one retry — propagation races can make the first attempt miss the fresh key
+      await new Promise(r=>setTimeout(r,2500));
+      try {
+        await gasSend([{type:"FunctionCall", methodName:"buy", args:buyArgs, gas:"50000000000000", deposit:"0"}]);
+      } catch(e2){
+        localStorage.removeItem("gk-fast");   // don't strand a half-registered key
+        throw new Error("[after-relay buy] "+(e2&&e2.message||e2));
+      }
+    }
     toast("⚡ instant mode on — no wallet needed, ever","ok");
   }
   await heroPaint(); await refreshAfter();
@@ -827,7 +836,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b28";
+const BUILD = "b29";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
