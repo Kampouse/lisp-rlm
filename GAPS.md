@@ -1194,3 +1194,32 @@ Also: the compile CLI only parses `--target outlayer-p2` (space form);
 Bite-risk documented here; not yet fixed.
 
 Suite: 172/173 (the 1 red is the pre-existing live-network http test).
+
+## 2026-09-29 (final) — DEPLOYED & PROVEN ON OUTLAYER TESTNET
+
+The schnorr P2 component ran on the REAL OutLayer runtime (outlayer.testnet
+worker), producing a byte-exact official BIP-340 signature on-chain:
+
+- Artifact: `tests_p2/test_schnorr_proof_agent.lisp` → 76,696-byte P2
+  component (self-contained crypto, no host deps), hosted as GitHub release
+  asset `schnorr-proof/schnorr_proof2.wasm`
+  (SHA256 a798cdedcef981f95db7e0d173f8afd543d4851030d015dd8ce3fe053fb954b0)
+- Exec tx (testnet, sender registry-nostrgov.testnet):
+  `99p13WWofQiEVGG2WzuuHaLUH5DEtQUnCQMHD6qxTZTk` — status Success,
+  execution_completed success=true, 68,826,114 instructions, 233 ms,
+  output `Json: {"match":"YES","verify":"VALID"}` (match = byte-exact
+  official vector 0; verify = in-execution validation)
+- Reproduce: `outlayer run --wasm https://github.com/Kampouse/lisp-rlm/
+  releases/download/schnorr-proof/schnorr_proof2.wasm '{}'`
+
+Deploy-path notes (mainnet blocked, testnet CLI bugs worked around):
+- mainnet: outlayer CLI's stored key no longer on kampouse.near; no local
+  private key for the on-chain full-access key. Testnet used instead.
+- `outlayer upload` (CLI v0.1.0) submits FastFS tx with gas=1 and prints
+  "Upload complete!" even on failure; outlayer.testnet's contract also
+  lacks `__fastdata_fastfs`. Workaround: host the wasm on any HTTPS URL
+  (GitHub release asset) and `outlayer run --wasm <url>` — run path is
+  healthy.
+- OutLayer host expects JSON output; plain-string stdout logs
+  "Failed to parse output as JSON ... Output was: MATCH=YES VERIFY=VALID"
+  (the proof still visible, but JSON output gives a clean green receipt).
