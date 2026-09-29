@@ -113,13 +113,22 @@
       <button class="ghost" onclick="heroSell(1)">ALL&nbsp;→</button>
       <span class="ok" id="h-park" style="font-size:13px">0 parked</span>
     </div>
-    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-top:1px solid #1c2b1e;padding-top:10px">
-      <span class="dim" style="font-size:12px">pool balance</span>
-      <b id="h-pad" style="font-size:14px">—</b><span class="dim">pad</span>
-      <b id="h-key" style="font-size:14px">—</b><span class="dim">⚡key</span>
-      <input id="h-add" type="number" step="0.01" min="0.01" value="0.05" style="width:70px" title="NEAR into your pool pad (fuel + funds)">
-      <button class="ghost" style="font-size:12px;padding:4px 10px" onclick="addNear()">＋ add NEAR</button>
-      <span id="h-setup" class="dim" style="font-size:11px"></span>
+    <div style="margin-top:12px;border-top:1px solid #1c2b1e;padding-top:10px">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center">
+        <span class="dim" style="font-size:11px">you can trade</span>
+        <span style="display:flex;gap:6px;align-items:center">
+          <input id="h-add" type="number" step="0.01" min="0.01" value="0.05" style="width:70px" title="NEAR into your pool pad (fuel + funds)">
+          <button class="ghost" style="font-size:12px;padding:4px 10px" onclick="addNear()">＋ add NEAR</button>
+        </span>
+      </div>
+      <div style="margin-top:4px;font-size:14px;line-height:1.8">
+        <span class="ok"><b id="h-pad" style="font-size:16px">—</b> NEAR to buy with</span>
+        <span class="dim">·</span>
+        <span><b id="h-park2" style="font-size:16px">—</b> <span class="dim">to sell</span></span>
+        <span class="dim">·</span>
+        <span style="color:#e2b714"><b id="h-key" style="font-size:16px">—</b> <span class="dim">⚡key gas</span></span>
+      </div>
+      <div id="h-setup" class="dim" style="font-size:11px;margin-top:2px"></div>
     </div>
   </div>
 
@@ -566,21 +575,25 @@ window.addNear = async function(){
 window.heroPaint = async function(returnOnly){
   try{
     const g = fastGet();
-    if (!signer || !g) { if(!returnOnly){ document.getElementById("h-setup").textContent = signer ? "first BUY sets everything up (one popup)" : ""; } return; }
+    if (!signer) { if(!returnOnly){ document.getElementById("h-setup").textContent = ""; } return; }
+    const a = signer.accountId;
     const [led, st, wal] = await Promise.all([
-      view(CFG.pool,"get_balance",{account:"pk:"+g.pk, token:token()}),
-      view(CFG.pool,"get_gas_status",{pk:g.pk}).catch(()=>null),
-      view(CFG.pool,"get_balance",{account:signer.accountId, token:token()}).catch(()=>null),
+      view(CFG.pool,"get_balance",{account: g ? "pk:"+g.pk : a, token:token()}).catch(()=>null),
+      g ? view(CFG.pool,"get_gas_status",{pk:g.pk}).catch(()=>null) : null,
+      view(CFG.pool,"get_balance",{account:a, token:token()}).catch(()=>null),
     ]);
     const walParked = wal?.parked ?? "0";
+    const totParked = BigInt((led?.parked ?? "0")) + BigInt(walParked);
     if (!returnOnly){
-      document.getElementById("h-pad").textContent = fmtNear(led.near);
-      document.getElementById("h-key").textContent = st ? fmtNear(st.est) : "—";
+      document.getElementById("h-pad").textContent = fmtNear(led?.near ?? "0");
+      document.getElementById("h-key").textContent = g ? (st ? fmtNear(st.est) : "—") : "—";
+      document.getElementById("h-park2").textContent = fmtTok(totParked.toString(),DEC)+" "+SYM;
       window.__gkEst = st?.est;
-      const tot = BigInt(led.parked) + BigInt(walParked);
+      const tot = totParked;
       document.getElementById("h-park").textContent = fmtTok(tot.toString(),DEC)+" parked";
+      document.getElementById("h-setup").textContent = !g ? "first BUY sets everything up (one popup)" : "";
     }
-    return {parked:led.parked, walParked, pad:led.near, est:st?.est};
+    return {parked:String(totParked), walParked, pad:led?.near ?? "0", est:st?.est};
   }catch(e){}
 };
 
@@ -894,7 +907,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b30";
+const BUILD = "b31";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
