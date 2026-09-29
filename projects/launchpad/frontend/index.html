@@ -595,19 +595,19 @@ window.heroSellSel = async function(frac){
   if (amtPk>0n){
     try { net = (await view(CFG.pool,"quote_sell",{token:token(),tokens_in:amtPk.toString()})).net; } catch(e){}
   }
-  // solvency guard: the pool refuses sells that pull too much of its reserve —
-  // catch it HERE with a readable message instead of a contract panic
-  let thin = false, reserve = 0n;
+  // curve guard: a sell can't return more tokens than the pool's token reserve —
+  // bigger dumps must be sliced (each sell refills the reserve, so slices can grow)
+  let thin = false, tokRes = 0n;
   try {
     const p = await view(CFG.pool,"get_pool",{token:token()});
     const r = typeof p?.result==="string" ? JSON.parse(p.result) : p;
-    reserve = BigInt(r?.near ?? "0");
-    if (net && reserve>0n && BigInt(net)*10n > reserve*4n) thin = true;   // net > 40% of reserve
+    tokRes = BigInt(r?.tokens ?? "0");
+    if (tokRes>0n && (amtPk+amtWal) > tokRes*95n/100n) thin = true;   // > 95% of token reserve
   } catch(e){}
   const parts = [`sell <b>${fmtTok((amtPk+amtWal).toString(),DEC)} ${SYM}</b>`];
   if (net) parts.push(`→ get <b class="ok">${fmtNear(net)}</b>`);
   if (amtWal>0n) parts.push('<span class="dim">(first batch needs one wallet confirm)</span>');
-  if (thin) parts.push(`<span style="color:var(--bad)">⚠️ pool too thin for this size — sell a smaller slice (needs &lt;40% of its ${fmtNear(reserve.toString())} reserve)</span>`);
+  if (thin) parts.push(`<span style="color:var(--bad)">⚠️ dump too big for one hit — the curve holds ${fmtTok(tokRes.toString(),DEC)} ${SYM}; slice it (slices can grow as the pool refills)</span>`);
   sq.innerHTML = parts.join(" ") + (net?"":' <span class="dim">· fetching price…</span>');
   go.disabled = !!thin; go.style.opacity = thin ? .45 : 1;
 };
@@ -976,7 +976,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b34";
+const BUILD = "b35";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
