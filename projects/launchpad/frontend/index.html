@@ -245,31 +245,49 @@ const CFG = {
 };
 window.CFG = CFG;
 
-/* ── rpc ────────────────────────────────────────────────── */
-function Buffer_from(arr){ let s=""; for (const b of arr) s+=String.fromCharCode(b); return s; }
-async function viewRaw(accountId, methodName, args) {
-  const r = await fetch(CFG.rpc, {method:"POST",headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({jsonrpc:"2.0",id:"ui",method:"query",params:{
-      request_type:"call_function",finality:"final",account_id:accountId,
-      method_name:methodName,args_base64:btoa(JSON.stringify(args||{}))}})});
-  const j = await r.json();
-  if (j.error) throw new Error(j.error.data?.error_message || JSON.stringify(j.error).slice(0,120));
-  return Buffer_from(j.result.result);   // RAW text — never JSON.parse big numbers
+/* ── rpc — near-kit layer (r-near/near-kit) ─────────────── */
+let nkMod=null, nkViewInst=null, nkDevBy={};
+async function ensureNK(){
+  if (nkViewInst) return nkViewInst;
+  nkMod ||= await import("https://esm.run/near-kit@0.20.2");
+  nkViewInst = new nkMod.Near({ network: CFG.network });   // keyless: views only
+  return nkViewInst;
 }
+const uv = j => (j && typeof j.result === "string") ? JSON.parse(j.result) : j;
 async function view(accountId, methodName, args) {
-  let j = JSON.parse(await viewRaw(accountId, methodName, args));
-  if (typeof j === "string") j = JSON.parse(j);           // JSON-string returns are double-encoded
-  if (j && typeof j.result === "string") j = JSON.parse(j.result);  // and wrapped in {result:"…"}
-  return j;
+  const k = await ensureNK();
+  return uv(await k.view(accountId, methodName, args));   // pool wraps payloads in {"result":"…"}
+}
+async function ftBalRaw(tokenAcct, accountId){
+  // bare-number view result — JSON.parse would Number()-truncate it; raw text only
+  const k = await ensureNK();
+  const r = await k._rpc.viewFunction(tokenAcct, "ft_balance_of", { account_id: accountId });
+  return new TextDecoder().decode(new Uint8Array(r.result));
 }
 async function nearBal(accountId){
-  const r = await fetch(CFG.rpc,{method:"POST",body:JSON.stringify({jsonrpc:"2.0",id:"ui",
-    method:"query",params:{request_type:"view_account",finality:"optimistic",account_id:accountId}})});
-  const j = await r.json();
-  if (j.error) throw new Error(j.error.message||"account not found");
-  return BigInt(j.result.amount);
+  const k = await ensureNK();
+  const a = await k._rpc.getAccount(accountId);
+  return BigInt(a.amount);
 }
-window.view = view;
+window.view = view; window.ftBalRaw = ftBalRaw;
+/* dev/raw-key signing via near-kit privateKey mode (classic V0 txs) */
+async function devNear(secretKey, signerId){
+  await ensureNK();
+  return nkDevBy[signerId] ??= new nkMod.Near({ network: CFG.network, privateKey: secretKey, defaultSignerId: signerId });
+}
+function nkAddAction(tx, receiverId, a){
+  if (a.type==="FunctionCall")
+    return tx.functionCall(receiverId, a.params.methodName, a.params.args,
+      { gas: `${BigInt(a.params.gas)/10n**12n} Tgas`, attachedDeposit: `${a.params.deposit||"0"} yocto` });
+  if (a.type==="Transfer")
+    return tx.transfer(receiverId, `${BigInt(a.params.deposit)} yocto`);
+  if (a.type==="AddKey"){
+    const fc=a.params.accessKey.permission.FunctionCall;
+    return tx.addKey(a.params.publicKey, { type:"functionCall", receiverId: fc.receiverId,
+      methodNames: fc.methodNames, allowance: fc.allowance?`${BigInt(fc.allowance)} yocto`:null });
+  }
+  throw new Error("action not supported: "+a.type);
+}
 
 /* ── fmt ────────────────────────────────────────────────── */
 const D18 = 10n**18n;      // tokens (GKT, 18 dec)
@@ -352,42 +370,19 @@ async function sendTx(receiverId, actions, opts={}){
     }
     toast("tx sent ✓","ok"); return res;
   }
-  try { return await devSend(receiverId, actions); }
-  catch(e){
-    const w = connectorWallet;
-    const caps = w ? ["txn","tx1"].map(k=>k+":"+(typeof (k==="txn"?w.signAndSendTransactions:w.signAndSendTransaction)==="function"?"y":"n")).join(" ") : "";
-    toast("tx failed ["+signer.accountId+"] "+(e?.message||e).toString().slice(0,200)+(caps?" · "+caps:""),"bad");
+  try {
+    const d = await devNear(signer.secret, signer.accountId);
+    const tx = d.transaction(signer.accountId);
+    for (const a of actions) nkAddAction(tx, receiverId, a);
+    return await tx.send();
+  } catch(e){
+    toast("tx failed ["+signer.accountId+"] "+(e?.message||e).toString().slice(0,200),"bad");
     throw e;
   }
 }
 window.sendTx = sendTx;
-
-/* dev-mode raw tx via near-api-js */
-let nearAPI = null;
-async function loadNaj(){ nearAPI ||= await import("https://esm.run/near-api-js@5.0.0"); return nearAPI; }
-window.loadNaj = loadNaj;
-async function devSend(receiverId, actions){
-  const na = await loadNaj();
-  const keyPair = na.KeyPair.fromString(signer.secret);
-  const ks = new na.keyStores.InMemoryKeyStore();
-  await ks.setKey(CFG.network, signer.accountId, keyPair);
-  const connection = {
-    networkId: CFG.network,
-    provider: new na.providers.JsonRpcProvider({ url: CFG.rpc }),
-    signer: new na.InMemorySigner(ks),
-    jsvmAccountId: "jsvm.testnet",
-  };
-  const acc = new na.Account(connection, signer.accountId);
-  const out = await acc.signAndSendTransaction({receiverId, actions: actions.map(a=>{
-    if (a.type==="FunctionCall") return na.transactions.functionCall(a.params.methodName, a.params.args, BigInt(a.params.gas), BigInt(a.params.deposit||"0"));
-    if (a.type==="AddKey"){ const fc=a.params.accessKey.permission.FunctionCall; return na.transactions.addKey(
-      na.utils.PublicKey.fromString(a.params.publicKey),
-      na.transactions.functionCallAccessKey(fc.receiverId, fc.methodNames, BigInt(fc.allowance))); }
-    if (a.type==="Transfer") return na.transactions.transfer(BigInt(a.params.deposit));
-    throw new Error("action not supported: "+a.type);
-  })});
-  return out;
-}
+// NB: near-kit's fromHotConnect adapter dispatches the SINGULAR wallet form only;
+// MyNearWallet's executor rejects that (b13) — the plural-first dispatch above stays.
 
 /* ── ⚡ fast mode: one-time restricted trading key, popup-free pad trading ── */
 let fnMod=null, fnSigner=null, fnLane=0, fnSignerKey=null;
@@ -416,9 +411,9 @@ window.fastEnable = async function(){
     return toast("connect a wallet OR set the dev signer first","bad");
   // v3.6 self-service gas key: contract registers the key on the pool and
   // funds its gas float — one signed tx, no full key in the browser
-  const na = await loadNaj();
-  const kp = na.KeyPair.fromRandom("ed25519");
-  const pub = kp.getPublicKey().toString();
+  const na = await ensureNK();
+  const kp = nkMod.generateKey();
+  const pub = String(kp.publicKey);
   const AL="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
   let n=0n; for(const c of pub.split(":")[1]) n=n*58n+BigInt(AL.indexOf(c));
   const pkHex="00"+n.toString(16).padStart(64,"0");
@@ -429,7 +424,7 @@ window.fastEnable = async function(){
     {type:"FunctionCall",params:{methodName:"register_gas_key",args:{pk:pkHex,owner:acct},gas:"100000000000000",deposit:fund}},
     {type:"FunctionCall",params:{methodName:"deposit",args:{pk:pkHex,owner:acct},gas:"30000000000000",deposit:pad}},
   ]);
-  localStorage.setItem("gk-fast", JSON.stringify({secret:kp.toString(), accountId:acct, pk:pkHex}));
+  localStorage.setItem("gk-fast", JSON.stringify({secret:kp.secretKey, accountId:acct, pk:pkHex}));
   toast("⚡ gas key live — instant pad trading, gas floats on the key","ok");
   loadAccount(true); paintFast(); loadKeyUI?.();
 };
@@ -476,9 +471,9 @@ window.heroBuy = async function(){
     await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"buy",args:buyArgs,gas:"50000000000000",deposit:"0"}}]);
   } else {
     // one-time setup: register gas key + fuel pad + first buy — ONE wallet popup
-    const na = await loadNaj();
-    const kp = na.KeyPair.fromRandom("ed25519");
-    const pub = kp.getPublicKey().toString();
+    const na = await ensureNK();
+    const kp = nkMod.generateKey();
+    const pub = String(kp.publicKey);
     const AL="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     let n=0n; for(const c of pub.split(":")[1]) n=n*58n+BigInt(AL.indexOf(c));
     const pkHex="00"+n.toString(16).padStart(64,"0");
@@ -487,7 +482,7 @@ window.heroBuy = async function(){
     const setup = parseNear("0.25").toString();
     // RELAY SETUP (testnet): the pool's backend registers the key + funds it —
     // no wallet popup at all, then this buy rides the gas key like every other
-    localStorage.setItem("gk-fast", JSON.stringify({secret:kp.toString(), accountId:acct, pk:pkHex}));
+    localStorage.setItem("gk-fast", JSON.stringify({secret:kp.secretKey, accountId:acct, pk:pkHex}));
     toast("setting up instant trading…","");
     const rr = await fetch("/api/relay",{method:"POST",headers:{"content-type":"application/json"},
       body:JSON.stringify({pk:pkHex,owner:acct})}).then(r=>r.json()).catch(e=>({error:"relay unreachable: "+e}));
@@ -615,7 +610,7 @@ window.loadAccount = async function(silent){
   const t = token();
   try{
     const [tokBal, led, nb] = await Promise.all([
-      viewRaw(t,"ft_balance_of",{account_id:a}),
+      ftBalRaw(t,a),
       view(CFG.pool,"get_balance",{account:a, token:t}),
       nearBal(a).catch(()=>null),
     ]);
@@ -718,11 +713,11 @@ function pkHexOf(pkStr){
   return "00"+n.toString(16).padStart(64,"0");
 }
 window.genKey = async function(){
-  const na = await loadNaj();
-  const pair = na.KeyPair.fromRandom("ed25519");
-  localStorage.setItem("gk-key", pair.toString());
-  localStorage.setItem("gk-pub", pair.getPublicKey().toString());
-  document.getElementById("key-pk").value = pkHexOf(pair.getPublicKey().toString());
+  await ensureNK();
+  const pair = nkMod.generateKey();
+  localStorage.setItem("gk-key", pair.secretKey);
+  localStorage.setItem("gk-pub", String(pair.publicKey));
+  document.getElementById("key-pk").value = pkHexOf(String(pair.publicKey));
   toast("key generated & saved in this browser (testnet) — back it up!","warn");
 };
 window.loadKeyUI = function(){
@@ -783,18 +778,10 @@ window.keyWithdrawPad = async function(){
 };
 async function keyTx(method,args){
   const saved = localStorage.getItem("gk-key"); if(!saved) return toast("no local key","bad");
-  const na = await loadNaj();
-  const pair = na.KeyPair.fromString(saved);
-  const ks = new na.keyStores.InMemoryKeyStore(); await ks.setKey(CFG.network, CFG.pool, pair);
-  const connection = {
-    networkId: CFG.network,
-    provider: new na.providers.JsonRpcProvider({ url: CFG.rpc }),
-    signer: new na.InMemorySigner(ks),
-    jsvmAccountId: "jsvm.testnet",
-  };
-  const acc = new na.Account(connection, CFG.pool);
-  const res = await acc.signAndSendTransaction({receiverId:CFG.pool,
-    actions:[na.transactions.functionCall(method,args,180000000000000n,0n)]});
+  const d = await devNear(saved, CFG.pool);
+  const res = await d.transaction(CFG.pool)
+    .functionCall(CFG.pool, method, args, { gas: 180000000000000n, attachedDeposit: 0n })
+    .send();
   toast(method+" ✓","ok"); return res;
 }
 window.loadKeyStatus = async function(){
@@ -840,7 +827,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b27";
+const BUILD = "b28";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
