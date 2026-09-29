@@ -1309,3 +1309,31 @@ Proof matrix (project nostr-identity-v2, TEE root + VRF salt):
 
 Cost: ~0.001 NEAR/op. Identity security now: spoofing = victim's NEAR key;
 offline derivation = root AND salt (two independent stores, two leaks).
+
+## 2026-09-29 (ts) — TYPESCRIPT FRONTEND REACHES P2/OUTLAYER + FULL CRYPTO SURFACE
+
+Answer to "can the TS frontend do this?": it couldn't, now it can.
+
+Frontend gaps found & fixed (src/ts_frontend.rs + wasi/mod.rs):
+1. P2 pipeline never lowered .ts — compile_outlayer_p2 parsed raw TS as
+   Lisp ("no functions defined"). Now: TS detection → ts_to_lisp_source.
+2. NEAR input convention injected (near/json_get_str "param") bindings for
+   exported fns — a NEAR host op nonexistent on OutLayer (unresolved
+   sentinel 0xFFFFFFF7). New TS_WASI_MODE: exported run(params) keep REAL
+   params (P2 _start passes stdin input as the argument).
+3. clojure::desugar relocated the :: type annotations into shapes the P2
+   checker rejects ("undefined variable '::'") — desugar skipped for
+   TS-lowered code (frontend already emits canonical forms); plus an AST
+   level :: strip as belt-and-braces.
+4. outlayer.* members lowered snake_case (outlayer/storage_get — no such
+   op) — now kebab (outlayer/storage-get).
+5. Missing builtin bridges: schnorrSign→schnorr-sign, schnorrPubkey→
+   schnorr-pubkey, vrfGenerate→vrf-generate, jsonGetStr→json-get-str.
+
+Proof: tests_p2/nostr_identity_agent.ts — the SAME non-spoofable hybrid
+identity agent (VRF salt + event-bound challenges) written in TypeScript,
+deployed as project nostr-identity-ts. Full flow on outlayer.testnet:
+challenge → gcpool26 attest → derive (TEE root + VRF salt, pk eafa27b4…,
+salt 605df7d4…) → sign → event id MATCH + sig VALID (independent verifier).
+
+Suite: 172/173 (pre-existing live-network red only).

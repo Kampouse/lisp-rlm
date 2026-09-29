@@ -761,11 +761,50 @@ fn sync_p2_memory_pages(em: &mut WasmEmitter) {
 }
 
 pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
+    // TS inputs lower through the TypeScript frontend first (same chain as
+    // the NEAR target's .ts branch — the P2 pipeline itself speaks Lisp).
+    // The frontend already emits canonical forms, so desugar is SKIPPED for
+    // TS (clojure::desugar relocates the :: type annotations into shapes
+    // the P2 checker rejects — found via the TS identity agent).
+    let lowered: String;
+    let is_ts = source.contains("function ")
+        && (source.contains(": string") || source.contains(": number"));
+    let source: &str = if is_ts {
+        lowered = crate::ts_frontend::ts_to_lisp_source_wasi(source)?;
+        lowered.as_str()
+    } else {
+        source
+    };
     // 1. Compile the core P1 module first
     let resolved = crate::wasm_emit::resolve_modules(source, std::path::Path::new("."))?;
     let exprs = crate::parser::parse_all(&resolved)?;
     let mut exprs = exprs;
-    crate::clojure::desugar(&mut exprs);
+    if !is_ts {
+        crate::clojure::desugar(&mut exprs);
+    } else {
+        // TS-lowered defines carry `:: anns -> ret` advisory annotations the
+        // P2 inference path resolves as a variable — strip them (define
+        // (name params) :: … body) → (define (name params) body).
+        for e in exprs.iter_mut() {
+            if let crate::types::LispVal::List(items) = e {
+                if items.len() >= 3 {
+                    let is_def =
+                        matches!(&items[0], crate::types::LispVal::Sym(s) if s == "define");
+                    let has_ann = matches!(&items[2], crate::types::LispVal::Sym(s) if s == "::");
+                    if is_def && has_ann {
+                        // find the body: last element after the annotation run
+                        items.remove(2); // ::
+                                         // remove annotation syms until the final body remains:
+                                         // signature is (name params) :: ann* -> ret body
+                                         // body = last element; drop everything between.
+                        while items.len() > 3 {
+                            items.remove(2);
+                        }
+                    }
+                }
+            }
+        }
+    }
     type_check_p2(&exprs)?;
     let mut em = WasmEmitter::new();
     em.wasi_mode = true;

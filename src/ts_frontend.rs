@@ -43,8 +43,28 @@ use oxc_syntax::operator::{BinaryOperator, LogicalOperator, UnaryOperator};
 
 // ── Public entry ──────────────────────────────────────────────────────────
 
-/// Parse TypeScript source and lower it to lisp source text.
+/// WASI/P2 lowering mode: exported `run` keeps REAL params (the P2 _start
+/// wrapper passes the stdin input as an argument) instead of the NEAR
+/// tx-input convention (params re-bound to near/json_get_str reads —
+/// a NEAR host op that doesn't exist on the OutLayer runtime).
+thread_local! {
+    pub(crate) static TS_WASI_MODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Parse TypeScript source and lower it to lisp source text (NEAR
+/// input convention — see TS_WASI_MODE for the P2 variant).
 pub fn ts_to_lisp_source(src: &str) -> Result<String, String> {
+    TS_WASI_MODE.with(|m| m.set(false));
+    ts_to_lisp_source_inner(src)
+}
+
+/// P2/WASI variant: exported run(params) stay real function params.
+pub fn ts_to_lisp_source_wasi(src: &str) -> Result<String, String> {
+    TS_WASI_MODE.with(|m| m.set(true));
+    ts_to_lisp_source_inner(src)
+}
+
+fn ts_to_lisp_source_inner(src: &str) -> Result<String, String> {
     // compilation is stateless from the caller's view — reset all
     // cross-compilation side maps (tests compile many programs on one
     // thread; stale consts/aliases would shadow)
@@ -839,7 +859,11 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
 
     // Exported contracts read args from the transaction input JSON
     // (json_get_str pattern); `: number` annotations wrap str->num.
-    let expr = if exported {
+    // WASI/P2 mode: exported functions keep REAL params — the P2 _start
+    // wrapper passes the stdin input string as the argument (the NEAR
+    // near/json_get_str host op does not exist on the OutLayer runtime).
+    let wasi_mode = TS_WASI_MODE.with(|m| m.get());
+    let expr = if exported && !wasi_mode {
         if !param_names.is_empty() {
             let bindings = param_names
                 .iter()
@@ -4765,6 +4789,25 @@ fn map_global_fn(name: &str) -> String {
 
 /// Object.method(...) → object/method_snake (near.* passthrough + snake).
 fn map_member_fn(obj: &str, prop: &str) -> String {
+    // outlayer.* members → kebab-case lisp ops (outlayer/storage-get etc).
+    // The near.* family uses snake_case host names, but the outlayer ops
+    // are kebab — snake() here produced outlayer/storage_get (nonexistent).
+    if obj == "outlayer" {
+        // storageGet -> storage-get (kebab, matching the lisp op names).
+        // The near.* family uses snake_case host names, but the outlayer
+        // ops are kebab — snake() here produced outlayer/storage_get
+        // (nonexistent op).
+        let mut out = String::new();
+        for ch in prop.chars() {
+            if ch.is_uppercase() {
+                out.push('-');
+                out.push(ch.to_ascii_lowercase());
+            } else {
+                out.push(ch);
+            }
+        }
+        return format!("outlayer/{}", out);
+    }
     // near-sdk-js spelling: storage.set/get/has/del(...) — same builtins
     // as near.storageSet/Get/… so both dialect spellings coexist.
     if obj == "storage" {
@@ -4810,6 +4853,9 @@ fn map_member_fn(obj: &str, prop: &str) -> String {
             "hexDecode" => Some("hex-decode"),
             "hexEncode" => Some("hex-encode"),
             "schnorrVerify" => Some("schnorr-verify"),
+            "schnorrSign" => Some("schnorr-sign"),
+            "schnorrPubkey" => Some("schnorr-pubkey"),
+            "vrfGenerate" => Some("vrf-generate"),
             "ed25519Verify" => Some("ed25519-verify"),
             _ => None,
         } {
@@ -4834,12 +4880,16 @@ fn map_builtin_call(name: &str) -> String {
         "strToNum" => "str->num",
         "toStr" | "toString" => "to-string",
         "jsonGet" => "json-get",
+        "jsonGetStr" => "json-get-str",
         "jsonExtract" => "json-extract-input",
         "strSplit" => "str-split",
         "hexDecode" => "hex-decode",
         "hexEncode" => "hex-encode",
         "sha256Hash" => "sha256-hash",
         "schnorrVerify" => "schnorr-verify",
+        "schnorrSign" => "schnorr-sign",
+        "schnorrPubkey" => "schnorr-pubkey",
+        "vrfGenerate" => "vrf-generate",
         "ed25519Verify" => "ed25519-verify",
         "jsonSet" => "json-set",
         "jsonQuote" => "json-quote",
