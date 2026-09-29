@@ -1,0 +1,9 @@
+{
+  "name": "gaskey-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@fastnear/api": "^2.5.0",
+    "@fastnear/utils": "^2.5.0"
+  }
+}

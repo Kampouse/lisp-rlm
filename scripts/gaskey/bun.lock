@@ -1,0 +1,30 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "gaskey-cli",
+      "dependencies": {
+        "@fastnear/api": "^2.5.0",
+        "@fastnear/utils": "^2.5.0",
+      },
+    },
+  },
+  "packages": {
+    "@fastnear/api": ["@fastnear/api@2.5.0", "", { "dependencies": { "@fastnear/utils": "2.5.0", "@noble/curves": "=2.0.1", "@noble/hashes": "=2.0.1", "base58-js": "=2.0.0" } }, "sha512-TNdGHlNDsgfRZWl2z/2ORdyUkuaehLneGnNuycwtWFSFoIsjw1E3XuaAMNFyn4LZ7s/rx/BM26IZvhdEOtYEOw=="],
+
+    "@fastnear/borsh": ["@fastnear/borsh@2.5.0", "", {}, "sha512-ITnI2UCNi/ksWSttbkP8nBXqQjvcazXIh7ewRScySvmjc/ka9oDS4i4pLtkXHRK8L7JSjy4bIO8y7ZnrJmLHLg=="],
+
+    "@fastnear/borsh-schema": ["@fastnear/borsh-schema@2.5.0", "", { "dependencies": { "@fastnear/borsh": "2.5.0" } }, "sha512-SKvfclYqglAPer9o84eH1iKq/rSn6smA+B4Z4eeXACVqpQzb+zXLSiCYwat4ElgyLhD0M3G8txgo1IzhdbzAzg=="],
+
+    "@fastnear/utils": ["@fastnear/utils@2.5.0", "", { "dependencies": { "@fastnear/borsh": "2.5.0", "@fastnear/borsh-schema": "2.5.0", "@noble/curves": "=2.0.1", "@noble/hashes": "=2.0.1", "base58-js": "=2.0.0", "js-base64": "^3.7.7" } }, "sha512-KCu0YmnfTXFI6lAwk13pCYxa5GiaaRVtwq9RicnhO5FoacdAmc2W4ojhqU62knEby3mH486sxSK1DUoHTetUKg=="],
+
+    "@noble/curves": ["@noble/curves@2.0.1", "", { "dependencies": { "@noble/hashes": "2.0.1" } }, "sha512-vs1Az2OOTBiP4q0pwjW5aF0xp9n4MxVrmkFBxc6EKZc6ddYx5gaZiAsZoq0uRRXWbi3AT/sBqn05eRPtn1JCPw=="],
+
+    "@noble/hashes": ["@noble/hashes@2.0.1", "", {}, "sha512-XlOlEbQcE9fmuXxrVTXCTlG2nlRXa9Rj3rr5Ue/+tX+nmkgbX720YHh0VR3hBF9xDvwnb8D2shVGOwNx+ulArw=="],
+
+    "base58-js": ["base58-js@2.0.0", "", {}, "sha512-nAV5d32QXuGcGptSApkKpC1gGakWBnfJMNjKrYTBh4tb0szfZF+ooueFLy8T4VrY+o4SrE/TyrtUnRZcwZchaA=="],
+
+    "js-base64": ["js-base64@3.9.4", "", {}, "sha512-PtOMXpEGuP0RRiRXsjzHzl44dMHxSu2CPvAhinupR1tBa88me+1DPqsobl7eupn5UukjLkln1ZnAOAOXOrYG0Q=="],
+  }
+}
