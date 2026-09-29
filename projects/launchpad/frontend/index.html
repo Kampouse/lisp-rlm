@@ -607,12 +607,15 @@ window.heroSellSel = async function(frac){
   const parts = [`sell <b>${fmtTok((amtPk+amtWal).toString(),DEC)} ${SYM}</b>`];
   if (net) parts.push(`→ get <b class="ok">${fmtNear(net)}</b>`);
   if (amtWal>0n) parts.push('<span class="dim">(first batch needs one wallet confirm)</span>');
-  if (thin) parts.push(`<span style="color:var(--bad)">⚠️ dump too big for one hit — the curve holds ${fmtTok(tokRes.toString(),DEC)} ${SYM}; slice it (slices can grow as the pool refills)</span>`);
+  window.__sellDump = !!thin;
+  if (thin) parts.push(`<span style="color:var(--warn)">⚠️ over the curve's ${fmtTok(tokRes.toString(),DEC)} ${SYM} per-hit limit — DUMP will auto-slice it (each hit refills the pool, slices grow)</span>`);
   sq.innerHTML = parts.join(" ") + (net?"":' <span class="dim">· fetching price…</span>');
-  go.disabled = !!thin; go.style.opacity = thin ? .45 : 1;
+  go.textContent = thin ? "DUMP →" : "SELL →";
+  go.disabled = !(thin || net); go.style.opacity = (thin || net) ? 1 : .45;
 };
 window.heroSellGo = async function(){
   if (!__sellSel || !__sellAmts) return;
+  if (window.__sellDump) return heroDump(__sellAmts);
   const {pk, wal} = __sellAmts;
   if (BigInt(pk)>0n)   // instant lane: gas-key identity
     await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:token(),tokens_in:pk},gas:"50000000000000",deposit:"0"}}]);
@@ -624,6 +627,40 @@ window.heroSellGo = async function(){
   const go = document.getElementById("h-sell-go");
   go.disabled = true; go.style.opacity=.45;
   document.getElementById("h-sell-quote").innerHTML = '<span class="dim">sold ✓ — pick another size</span>';
+  for (const id of ["hs-25","hs-50","hs-100"]) document.getElementById(id).classList.remove("on");
+  await heroPaint(); await refreshAfter();
+};
+/* 💣 auto-slicing dump: sells ≤90% of the live token reserve per hit, loops until done */
+window.heroDump = async function(amts){
+  const {pk, wal} = amts;
+  const sq = document.getElementById("h-sell-quote"), go = document.getElementById("h-sell-go");
+  // wallet-identity batch first (small, one confirm)
+  if (BigInt(wal)>0n){
+    toast("selling your first (setup) batch — confirm once","warn");
+    await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:token(),tokens_in:wal},gas:"50000000000000",deposit:"0"}}], {forceWallet:true});
+  }
+  let remaining = BigInt(pk), sold = 0n, hits = 0;
+  go.disabled = true; go.style.opacity=.45; go.textContent = "DUMPING…";
+  const t0 = token();
+  while (remaining > 0n && hits < 60){
+    let res = 0n;
+    try { const p = await view(CFG.pool,"get_pool",{token:t0}); const r = typeof p?.result==="string"?JSON.parse(p.result):p; res = BigInt(r?.tokens ?? "0"); } catch(e){}
+    const cap = res*90n/100n;
+    let slice = remaining < cap ? remaining : cap;
+    if (slice <= 0n){ sq.innerHTML = '<span style="color:var(--bad)">pool reserve went empty — stopped</span>'; break; }
+    sq.innerHTML = `💣 dumping · hit <b>${hits+1}</b> · sold <b class="ok">${fmtTok(sold.toString(),DEC)} / ${fmtTok(pk,DEC)} ${SYM}</b> · next slice ${fmtTok(slice.toString(),DEC)} · avg ${sold>0n?(hits):0} hits in`;
+    try {
+      await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:t0,tokens_in:slice.toString()},gas:"50000000000000",deposit:"0"}}]);
+    } catch(e){ sq.innerHTML = `<span style="color:var(--bad)">slice failed: ${String(e.message||e).slice(0,90)} — stopped, ${fmtTok(remaining.toString(),DEC)} ${SYM} left</span>`; break; }
+    sold += slice; remaining -= slice; hits++;
+    await new Promise(r=>setTimeout(r,1500));   // let the reserve refill land
+  }
+  const done = remaining <= 0n;
+  sq.innerHTML = done
+    ? `💣 dump complete — <b class="ok">${fmtTok(sold.toString(),DEC)} ${SYM}</b> sold in ${hits} hits — enjoy the carnage 😄`
+    : `💣 stopped with <b>${fmtTok(remaining.toString(),DEC)} ${SYM}</b> unsold (${hits} hits)`;
+  go.textContent = "SELL →";
+  __sellSel = null; __sellAmts = null; window.__sellDump = false;
   for (const id of ["hs-25","hs-50","hs-100"]) document.getElementById(id).classList.remove("on");
   await heroPaint(); await refreshAfter();
 };
@@ -976,7 +1013,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b35";
+const BUILD = "b36";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
