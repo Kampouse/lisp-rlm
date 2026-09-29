@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>gaskey — session trading</title>
+<style>
+  :root {
+    --bg: #0A0A0F; --panel: #111118; --panel2: #16161F; --line: #23232E;
+    --text: #E8E8EE; --dim: #8A8A99; --dimmer: #55555F;
+    --green: #00EC97; --green-dim: #00B374; --red: #FF5C7A; --amber: #FFB454;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+    user-select: none; -webkit-user-select: none;
+  }
+  header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 18px; border-bottom: 1px solid var(--line); flex-shrink: 0;
+  }
+  header .logo { width: 26px; height: 26px; border-radius: 8px; background: linear-gradient(135deg, var(--green), #0077FF); }
+  header h1 { font-size: 17px; font-weight: 700; letter-spacing: -0.02em; }
+  header h1 span { color: var(--green); }
+  header .net { margin-left: auto; font-size: 12px; color: var(--dim); }
+  header .net b { color: var(--green); font-weight: 600; }
+
+  #app { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+  /* ── onboarding ── */
+  #setup {
+    margin: auto; width: min(440px, calc(100% - 40px));
+    background: var(--panel); border: 1px solid var(--line); border-radius: 20px;
+    padding: 28px 24px; display: none;
+  }
+  #setup h2 { font-size: 19px; margin-bottom: 6px; letter-spacing: -0.02em; }
+  #setup p { color: var(--dim); font-size: 13.5px; margin-bottom: 20px; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 6px; font-weight: 600; }
+  input, select {
+    width: 100%; background: var(--panel2); border: 1px solid var(--line); border-radius: 12px;
+    color: var(--text); font: inherit; padding: 12px 14px; outline: none;
+  }
+  input:focus, select:focus { border-color: var(--green-dim); }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+  .btn {
+    width: 100%; border: 0; border-radius: 14px; padding: 14px;
+    background: var(--green); color: #04110B; font: inherit; font-weight: 700;
+    cursor: pointer; transition: transform .06s ease, filter .15s;
+  }
+  .btn:active { transform: scale(0.98); }
+  .btn:disabled { filter: grayscale(1) brightness(.6); cursor: default; }
+  .btn.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--line); font-weight: 600; }
+  .btn.red { background: transparent; color: var(--red); border: 1px solid var(--red); font-weight: 600; }
+  #setup .note { margin-top: 14px; font-size: 12px; color: var(--dimmer); }
+
+  /* ── main ── */
+  #main { display: none; flex-direction: column; flex: 1; min-height: 0; }
+  .sessbar {
+    display: flex; align-items: center; gap: 8px; padding: 12px 18px;
+    border-bottom: 1px solid var(--line); flex-shrink: 0; overflow-x: auto;
+  }
+  .sessbar::-webkit-scrollbar { display: none; }
+  .chip {
+    display: flex; align-items: center; gap: 7px; white-space: nowrap;
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 999px;
+    padding: 7px 14px; font-size: 13px; cursor: pointer; color: var(--dim);
+  }
+  .chip.active { border-color: var(--green-dim); color: var(--text); }
+  .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dimmer); }
+  .chip.active .dot { background: var(--green); }
+  .chip.add { color: var(--dim); border-style: dashed; }
+  .chip .x { color: var(--dimmer); padding-left: 2px; }
+
+  #padbar {
+    display: flex; align-items: center; gap: 14px; padding: 14px 18px;
+    border-bottom: 1px solid var(--line); flex-shrink: 0;
+  }
+  .stat { flex: 1; }
+  .stat .k { font-size: 11px; color: var(--dim); font-weight: 600; letter-spacing: .03em; }
+  .stat .v { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .stat .v small { font-size: 12px; color: var(--dim); font-weight: 600; }
+  #padbar .actions { display: flex; gap: 8px; }
+  .sbtn {
+    background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 10px; padding: 9px 13px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .sbtn:disabled { opacity: .4; cursor: default; }
+
+  #trade { flex: 1; display: flex; flex-direction: column; padding: 18px; gap: 14px; overflow-y: auto; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 18px; }
+  .card h3 { font-size: 13px; color: var(--dim); font-weight: 600; margin-bottom: 12px; letter-spacing: .03em; }
+  .side { display: flex; background: var(--panel2); border-radius: 12px; padding: 4px; margin-bottom: 14px; }
+  .side button {
+    flex: 1; border: 0; background: transparent; color: var(--dim); font: inherit;
+    font-weight: 700; padding: 10px; border-radius: 9px; cursor: pointer;
+  }
+  .side button.on-buy { background: var(--green); color: #04110B; }
+  .side button.on-sell { background: var(--red); color: #1A050A; }
+  .amtwrap { position: relative; }
+  .amtwrap input { font-size: 26px; font-weight: 700; padding: 16px 70px 16px 16px; font-variant-numeric: tabular-nums; }
+  .amtwrap .max {
+    position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+    background: var(--line); border: 0; color: var(--green); font-weight: 700;
+    font-size: 12px; padding: 6px 10px; border-radius: 8px; cursor: pointer;
+  }
+  .quote { display: flex; justify-content: space-between; padding: 9px 2px; font-size: 13.5px; color: var(--dim); }
+  .quote b { color: var(--text); font-variant-numeric: tabular-nums; }
+  #toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(80px);
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 14px;
+    padding: 12px 18px; font-size: 14px; transition: transform .25s ease; max-width: 90%;
+    display: flex; gap: 10px; align-items: center; z-index: 10;
+  }
+  #toast.show { transform: translateX(-50%) translateY(0); }
+  #toast .ic { font-size: 16px; }
+  .lanes { display: flex; gap: 4px; }
+  .lanes i { width: 8px; height: 14px; border-radius: 3px; background: var(--line); }
+  .lanes i.busy { background: var(--green-dim); }
+  #log { font: 11.5px/1.6 ui-monospace, "SF Mono", Menlo, monospace; color: var(--dimmer); max-height: 120px; overflow-y: auto; }
+  #log .ok { color: var(--green-dim); }
+  #log .err { color: var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"></div>
+  <h1>gas<span>key</span></h1>
+  <div class="net"><b id="netLbl">testnet</b> · session trading</div>
+</header>
+
+<div id="app">
+  <!-- onboarding -->
+  <div id="setup">
+    <h2>New session</h2>
+    <p>A session key signs trades locally — no wallet popup per action. It can only call the methods you whitelist, on the one contract you pin. Funds can't leave your account.</p>
+    <div class="field"><label>ACCOUNT (local key required, once)</label><input id="sOwner" placeholder="you.testnet" spellcheck="false"></div>
+    <div class="field"><label>CONTRACT</label><input id="sContract" placeholder="pool2.nostrgove2e.testnet" spellcheck="false"></div>
+    <div class="field"><label>METHODS (whitelist)</label><input id="sMethods" value="buy,sell_internal" spellcheck="false"></div>
+    <div class="row">
+      <div class="field"><label>LANES</label><select id="sLanes"><option>4</option><option selected>8</option><option>16</option><option>32</option></select></div>
+      <div class="field"><label>GAS PREPAID (N)</label><input id="sFund" value="0.5"></div>
+    </div>
+    <button class="btn" id="sCreate">Create session · 1 signature</button>
+    <div class="note">This single signature adds a scoped gas key + funds its gas. After this, everything is popup-free.</div>
+  </div>
+
+  <!-- main -->
+  <div id="main">
+    <div class="sessbar" id="sessbar"></div>
+    <div id="padbar">
+      <div class="stat"><div class="k">GAS PAD</div><div class="v" id="padNear">— <small>N</small></div></div>
+      <div class="stat"><div class="k" id="tokLbl">TOKENS (INTERNAL)</div><div class="v" id="padTok">—</div></div>
+      <div class="stat" style="max-width:90px"><div class="k">LANES</div><div class="lanes" id="laneDots" style="margin-top:5px"></div></div>
+      <div class="actions">
+        <button class="sbtn" id="bFund">＋ Gas</button>
+        <button class="sbtn" id="bRevoke" title="revoke key">⏻</button>
+      </div>
+    </div>
+
+    <div id="trade">
+      <div class="card">
+        <h3>TRADE</h3>
+        <div class="side">
+          <button id="bBuy" class="on-buy">Buy</button>
+          <button id="bSell">Sell</button>
+        </div>
+        <div class="amtwrap">
+          <input id="amt" inputmode="decimal" placeholder="0.0">
+          <button class="max" id="bMax">MAX</button>
+        </div>
+        <div class="quote" style="margin-top:10px"><span>You receive (net of fee)</span><b id="quoteOut">—</b></div>
+        <button class="btn" id="bGo" style="margin-top:12px">Buy with session key</button>
+      </div>
+      <div class="card">
+        <h3>ACTIVITY</h3>
+        <div id="log"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"><span class="ic" id="toastIc">✅</span><span id="toastMsg"></span></div>
+
+<script type="module">
+const NET = "testnet";
+const $ = (id) => document.getElementById(id);
+const fmt = (yocto, d=3) => (Number(BigInt(yocto)) / 1e24).toFixed(d);
+const NEAR = (n) => BigInt(Math.round(parseFloat(n) * 1e24)).toString();
+
+let sessions = JSON.parse(localStorage.getItem("gaskey_sessions") || "{}");
+let active = localStorage.getItem("gaskey_active");
+let side = "buy";
+let busyLanes = {};
+
+const save = () => { localStorage.setItem("gaskey_sessions", JSON.stringify(sessions)); localStorage.setItem("gaskey_active", active || ""); };
+
+function toast(ic, msg, ms=2600) {
+  $("toastIc").textContent = ic; $("toastMsg").textContent = msg;
+  $("toast").classList.add("show");
+  clearTimeout(toast._t); toast._t = setTimeout(() => $("toast").classList.remove("show"), ms);
+}
+function log(msg, cls="") {
+  const div = document.createElement("div");
+  div.className = cls; div.textContent = `${new Date().toLocaleTimeString()}  ${msg}`;
+  $("log").prepend(div);
+}
+
+// fastnear browser bundle (CDN, pinned)
+let api, utils;
+try {
+  api = await import("https://esm.sh/@fastnear/api@2.5.0");
+  utils = await import("https://esm.sh/@fastnear/utils@2.5.0");
+} catch (e) { toast("⚠️", "module load failed — check connection"); throw e; }
+const { actions, queryAccessKey, queryGasKeyNonces } = api;
+
+async function rpc(method, params) {
+  const r = await fetch(`https://rpc.${NET}.near.org`, { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: "x", method, params }) });
+  return (await r.json()).result;
+}
+async function view(contract, method, args) {
+  const res = await rpc("query", { request_type: "call_function", account_id: contract,
+    method_name: method, args_base64: btoa(JSON.stringify(args)), finality: "final" });
+  let p = JSON.parse(new TextDecoder().decode(new Uint8Array(res.result)));
+  if (typeof p === "string") p = JSON.parse(p);
+  if (p && typeof p.result === "string") p = JSON.parse(p.result);
+  return p;
+}
+
+// ── render sessions ──
+function renderBar() {
+  const bar = $("sessbar"); bar.innerHTML = "";
+  for (const [name, s] of Object.entries(sessions)) {
+    const c = document.createElement("div");
+    c.className = "chip" + (name === active ? " active" : "");
+    c.innerHTML = `<span class="dot"></span>${name}<span class="x" data-x="${name}">✕</span>`;
+    c.onclick = (e) => { if (e.target.dataset.x) return; active = name; save(); renderBar(); refreshPad(); };
+    bar.appendChild(c);
+  }
+  const add = document.createElement("div");
+  add.className = "chip add"; add.textContent = "＋ new session";
+  add.onclick = () => { $("main").style.display = "none"; $("setup").style.display = "block"; };
+  bar.appendChild(add);
+  const s = sessions[active];
+  $("main").style.display = s ? "flex" : "none";
+  $("setup").style.display = s ? "none" : (Object.keys(sessions).length ? "none" : "block");
+}
+
+function renderLanes(sess) {
+  const d = $("laneDots"); d.innerHTML = "";
+  for (let i = 0; i < Math.min(sess.lanes, 16); i++) {
+    const b = document.createElement("i");
+    if (busyLanes[i] && Date.now() - busyLanes[i] < 6000) b.className = "busy";
+    d.appendChild(b);
+  }
+}
+
+// ── pad refresh ──
+async function refreshPad() {
+  const sess = sessions[active]; if (!sess) return;
+  try {
+    const token = sess.token || "";
+    const p = await view(sess.contract, "get_balance", { account: sess.owner, token });
+    $("padNear").innerHTML = `${fmt(p.near)} <small>N</small>`;
+    $("padTok").textContent = token ? Number(BigInt(p.tokens)).toLocaleString(undefined, {notation:"compact", maximumFractionDigits:2}) : "—";
+    renderLanes(sess);
+    const k = await queryAccessKey({ accountId: sess.owner, publicKey: sess.gas_public, blockId: "final", network: NET });
+    const perm = k.result?.permission?.GasKeyFunctionCall;
+    if (perm) $("padNear").title = `key gas: ${fmt(perm.balance)} N`;
+  } catch (e) { /* pad view may fail pre-deposit */ }
+}
+
+// ── create session (the ONE signature) ──
+$("sCreate").onclick = async () => {
+  const owner = $("sOwner").value.trim();
+  const contract = $("sContract").value.trim();
+  const methods = $("sMethods").value.split(",").map(s => s.trim()).filter(Boolean);
+  const lanes = parseInt($("sLanes").value, 10);
+  const fund = $("sFund").value || "0.5";
+  if (!owner || !contract || !methods.length) return toast("⚠️", "fill account, contract, methods");
+  const name = contract.split(".")[0].slice(0, 10);
+  let finalName = name, i = 2;
+  while (sessions[finalName]) finalName = name + i++;
+
+  $("sCreate").disabled = true; $("sCreate").textContent = "Sign in wallet…";
+  try {
+    const cred = JSON.parse(localStorage.getItem("gaskey_cred_" + owner) || "null");
+    let signer;
+    if (cred) signer = utils.signerFromPrivateKey(cred);
+    else {
+      const sk = prompt(`paste the SECRET KEY for ${owner} (ed25519:…) — stored only in this browser`);
+      if (!sk) throw new Error("cancelled");
+      signer = utils.signerFromPrivateKey(sk.trim());
+      localStorage.setItem("gaskey_cred_" + owner, sk.trim());
+    }
+    const gasPriv = utils.privateKeyFromRandom("ed25519");
+    const gSigner = utils.signerFromPrivateKey(gasPriv);
+    await api.sendTx({
+      signerId: owner, signer, receiverId: owner,
+      actions: [
+        actions.addLimitedAccessGasKey({ publicKey: gSigner.publicKey, numNonces: lanes, accountId: contract, methodNames: methods }),
+        actions.transferToGasKey({ publicKey: gSigner.publicKey, deposit: `${fund} NEAR` }),
+      ],
+      waitUntil: "FINAL", network: NET,
+    });
+    sessions[finalName] = { owner, contract, methods, lanes, token: "",
+      gas_public: gSigner.publicKey, gas_secret: gasPriv, calls: 0 };
+    active = finalName; save(); renderBar(); refreshPad();
+    toast("✅", `session '${finalName}' live — no more popups`);
+    log(`session ${finalName} created (${contract})`, "ok");
+  } catch (e) { toast("❌", String(e).slice(0, 90)); log("create failed: " + String(e).slice(0, 80), "err"); }
+  $("sCreate").disabled = false; $("sCreate").textContent = "Create session · 1 signature";
+};
+
+// ── trade form ──
+$("bBuy").onclick = () => setSide("buy");
+$("bSell").onclick = () => setSide("sell");
+function setSide(s) {
+  side = s;
+  $("bBuy").className = s === "buy" ? "on-buy" : "";
+  $("bSell").className = s === "sell" ? "on-sell" : "";
+  $("bGo").textContent = s === "buy" ? "Buy with session key" : "Sell with session key";
+  updateQuote();
+}
+$("bMax").onclick = async () => {
+  const sess = sessions[active]; if (!sess) return;
+  const p = await view(sess.contract, "get_balance", { account: sess.owner, token: sess.token || "" });
+  $("amt").value = side === "buy" ? fmt(p.near, 4) : fmt(p.tokens || "0", 4);
+  updateQuote();
+};
+async function updateQuote() {
+  const sess = sessions[active]; if (!sess || !sess.token) return;
+  const v = parseFloat($("amt").value); $("quoteOut").textContent = "—";
+  if (!v || v <= 0) return;
+  try {
+    const q = side === "buy"
+      ? await view(sess.contract, "quote_buy", { token: sess.token, near_in: NEAR(String(v)) })
+      : await view(sess.contract, "quote_sell", { token: sess.token, tokens_in: NEAR(String(v)) });
+    $("quoteOut").textContent = side === "buy" ? fmt(q.net, 2) + " tok" : fmt(q.net, 4) + " N";
+  } catch {}
+}
+$("amt").oninput = updateQuote;
+
+// ── the hot path: gas-key call, zero popups ──
+async function gkSend(sess, method, args, lane) {
+  const gSigner = utils.signerFromPrivateKey(sess.gas_secret);
+  return api.sendTx({
+    signerId: sess.owner, signer: gSigner, receiverId: sess.contract, nonceIndex: lane,
+    actions: [actions.functionCall({ methodName: method, args, deposit: "0", gas: "120 Tgas" })],
+    waitUntil: "FINAL", network: NET,
+  });
+}
+function pickLane(sess) {
+  const now = Date.now();
+  for (let l = 0; l < sess.lanes; l++)
+    if (!busyLanes[l] || now - busyLanes[l] > 6000) return l;
+  return 0;
+}
+
+$("bGo").onclick = async () => {
+  const sess = sessions[active]; if (!sess) return;
+  const v = parseFloat($("amt").value);
+  if (!v || v <= 0) return toast("⚠️", "enter an amount");
+  const lane = pickLane(sess); busyLanes[lane] = Date.now(); renderLanes(sess);
+  $("bGo").disabled = true;
+  const label = side === "buy" ? `buy ${v}N` : `sell ${v} tok`;
+  log(`${label} → lane ${lane}…`);
+  try {
+    const args = side === "buy"
+      ? { token: sess.token, near_in: NEAR(String(v)), min_tokens_out: "0" }
+      : { token: sess.token, tokens_in: side === "sell" ? $("amt").dataset.raw || NEAR(String(v)) : "0", min_near_out: "0" };
+    await gkSend(sess, side === "buy" ? "buy" : "sell_internal", args, lane);
+    sess.calls++; save();
+    toast("✅", `${label} landed (lane ${lane})`);
+    log(`${label} ✓ lane ${lane}`, "ok");
+    $("amt").value = ""; updateQuote(); refreshPad();
+  } catch (e) {
+    toast("❌", String(e).slice(0, 90));
+    log(`${label} ✗ ${String(e).slice(0, 60)}`, "err");
+  }
+  $("bGo").disabled = false;
+};
+
+// ── pad fund (full key — the only popup path, rare) ──
+$("bFund").onclick = async () => {
+  const sess = sessions[active]; if (!sess) return;
+  const amt = prompt("deposit NEAR into your gas pad (full-key signature):", "1");
+  if (!amt) return;
+  try {
+    let signer;
+    const cred = localStorage.getItem("gaskey_cred_" + sess.owner);
+    signer = cred ? utils.signerFromPrivateKey(cred) : utils.signerFromPrivateKey(prompt(`secret key for ${sess.owner}:`));
+    await api.sendTx({
+      signerId: sess.owner, signer, receiverId: sess.contract,
+      actions: [actions.functionCall({ methodName: "deposit", args: {}, deposit: `${amt} NEAR`, gas: "60 Tgas" })],
+      waitUntil: "FINAL", network: NET,
+    });
+    toast("✅", `+${amt}N pad`); log(`pad +${amt}N`, "ok"); refreshPad();
+  } catch (e) { toast("❌", String(e).slice(0, 90)); }
+};
+
+// ── revoke ──
+$("bRevoke").onclick = async () => {
+  const sess = sessions[active]; if (!sess) return;
+  if (!confirm(`revoke session key for '${active}'? (one full-key signature)`)) return;
+  try {
+    const cred = localStorage.getItem("gaskey_cred_" + sess.owner);
+    const signer = cred ? utils.signerFromPrivateKey(cred) : utils.signerFromPrivateKey(prompt(`secret key for ${sess.owner}:`));
+    await api.sendTx({
+      signerId: sess.owner, signer, receiverId: sess.owner,
+      actions: [actions.deleteKey({ publicKey: sess.gas_public })],
+      waitUntil: "FINAL", network: NET,
+    });
+    delete sessions[active]; active = Object.keys(sessions)[0] || null; save();
+    renderBar(); toast("✅", "session revoked"); log("session revoked", "ok");
+  } catch (e) { toast("❌", String(e).slice(0, 90)); }
+};
+
+// boot
+renderBar();
+if (active && sessions[active]) refreshPad();
+setInterval(() => { const s = sessions[active]; if (s) renderLanes(s); }, 2000);
+</script>
+</body>
+</html>
