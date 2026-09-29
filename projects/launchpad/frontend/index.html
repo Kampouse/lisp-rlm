@@ -48,20 +48,50 @@
     <button class="ghost" style="margin-top:8px" onclick="uiConnect()">connect signer</button>
   </header>
 
-  <div id="acct-bar" style="display:none;position:sticky;top:8px;z-index:50;margin:14px 0;padding:10px 14px;border:1px solid #2e7d32;background:#0d1f10;border-radius:10px;backdrop-filter:blur(8px)">
+  <div id="acct-bar" style="display:none;position:sticky;top:8px;z-index:50;margin:14px 0;padding:12px 14px;border:1px solid #2e7d32;background:#0d1f10;border-radius:10px;backdrop-filter:blur(8px)">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center">
       <b id="ab-acct" style="font-size:14px"></b>
-      <input id="fast-fund" placeholder="NEAR" style="width:64px;font-size:12px" value="0.3" title="gas-key float funding">
-      <button id="fast-btn" class="ghost" style="font-size:12px;padding:4px 10px" onclick="fastGet()&&confirm('disable fast mode?')?fastOff():fastEnable()">⚡ enable fast mode</button>
-      <span id="ab-wallet" class="dim" style="font-size:11px"></span>
+      <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span id="ab-wallet" class="dim" style="font-size:11px"></span>
+        <input id="fast-fund" placeholder="NEAR" style="width:64px;font-size:12px" value="0.3" title="gas-key float funding">
+        <button id="fast-btn" class="ghost" style="font-size:12px;padding:4px 10px" onclick="fastGet()&&confirm('disable fast mode?')?fastOff():fastEnable()">⚡ enable fast mode</button>
+      </span>
     </div>
-    <div id="fast-hint" class="dim" style="font-size:11px;margin-top:2px">one popup to authorize a restricted trading key, then instant pad trading</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px;margin-top:6px">
-      <div><div class="dim" style="font-size:11px">NEAR · wallet</div><b id="ab-near" style="font-size:15px">—</b></div>
-      <div><div class="dim" style="font-size:11px">NEAR · pad (pool)</div><b id="ab-pad" style="font-size:15px">—</b></div>
-      <div><div class="dim" style="font-size:11px" id="ab-sym">tokens · wallet</div><b id="ab-tok" style="font-size:15px">—</b></div>
-      <div><div class="dim" style="font-size:11px" id="ab-sym2">tokens · parked</div><b id="ab-park" style="font-size:15px">—</b></div>
+    <!-- total position -->
+    <div style="display:flex;align-items:baseline;gap:10px;margin-top:8px;flex-wrap:wrap">
+      <span class="dim" style="font-size:11px">portfolio</span>
+      <b id="ab-total" style="font-size:22px;color:#7ddc84">—</b>
+      <span class="dim" style="font-size:12px">NEAR total</span>
+      <span id="ab-break" class="dim" style="font-size:12px"></span>
     </div>
+    <!-- the live balances -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:8px">
+      <div style="background:#0a1810;border:1px solid #1c2b1e;border-radius:8px;padding:8px 10px">
+        <div class="dim" style="font-size:11px">NEAR · wallet</div>
+        <b id="ab-near" style="font-size:17px">—</b>
+        <div class="dim" style="font-size:11px">deposits & withdrawals</div>
+      </div>
+      <div style="background:#0a1810;border:1px solid #1c2b1e;border-radius:8px;padding:8px 10px">
+        <div class="dim" style="font-size:11px">NEAR · pad (pool)</div>
+        <b id="ab-pad" style="font-size:17px;color:#7ddc84">—</b>
+        <div class="dim" style="font-size:11px">what your buys spend</div>
+      </div>
+      <div style="background:#0a1810;border:1px solid #1c2b1e;border-radius:8px;padding:8px 10px">
+        <div class="dim" style="font-size:11px">⚡ key float (gas)</div>
+        <b id="ab-key" style="font-size:17px;color:#e2b714">—</b>
+        <div style="height:4px;border-radius:2px;background:#1c2b1e;margin-top:5px;overflow:hidden"><div id="ab-keyfill" style="height:4px;background:#e2b714;width:0%"></div></div>
+        <div class="dim" style="font-size:11px;margin-top:2px" id="ab-keynote">no fast key — buys use wallet popups</div>
+      </div>
+      <div style="background:#0a1810;border:1px solid #1c2b1e;border-radius:8px;padding:8px 10px;grid-column:1/-1">
+        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px;align-items:baseline">
+          <span class="dim" style="font-size:11px" id="ab-sym">tokens</span>
+          <span id="ab-tokval" class="dim" style="font-size:12px"></span>
+        </div>
+        <b id="ab-tok" style="font-size:17px">—</b>
+        <span class="dim" id="ab-toksplit" style="font-size:12px"></span>
+      </div>
+    </div>
+    <div id="fast-hint" class="dim" style="font-size:11px;margin-top:4px">one popup to authorize a restricted trading key, then instant pad trading</div>
   </div>
 
     <!-- ══ HERO: the dumb interface ══ -->
@@ -600,6 +630,7 @@ async function loadPool(){
     document.getElementById("p-near").textContent = fmtNear(pool.near);
     document.getElementById("p-tok").textContent = fmtTok(pool.tokens,DEC)+" "+SYM;
     const pn=BigInt(pool.near), pt=BigInt(pool.tokens);
+    window.__poolRatio = { near: pool.near, tok: pool.tokens };   // for position valuation
     if (pn>0n && pt>0n){
       document.getElementById("p-price").textContent =
         `1 NEAR ≈ ${fmtTok((pt*10n**18n/pn).toString(),18)} ${SYM} · 1 ${SYM} ≈ ${(Number(pn*10n**12n/pt)/1e12).toFixed(9)} NEAR`;
@@ -618,24 +649,51 @@ window.loadAccount = async function(silent){
   const a = document.getElementById("in-acct").value.trim(); if(!a){ if(!silent) toast("enter account id","bad"); return; }
   const t = token();
   try{
-    const [tokBal, led, nb] = await Promise.all([
+    const g = fastGet();
+    const [tokBal, led, nb, gst] = await Promise.all([
       ftBalRaw(t,a),
       view(CFG.pool,"get_balance",{account:a, token:t}),
       nearBal(a).catch(()=>null),
+      g ? view(CFG.pool,"get_gas_status",{pk:g.pk}).catch(()=>null) : null,
     ]);
     document.getElementById("m-tok").textContent = fmtTok(tokBal,DEC)+" "+SYM+" ✓ in wallet";
     document.getElementById("m-pad").textContent = fmtNear(led.near);
     document.getElementById("m-inv").textContent = fmtTok(led.parked,DEC)+" "+SYM;
-    // sticky account bar — everything in one glance
+    // ── position card ──
     const bar = document.getElementById("acct-bar");
     bar.style.display = "";
     document.getElementById("ab-acct").textContent = a;
     document.getElementById("ab-near").textContent = nb===null ? "n/a" : fmtNear(nb);
     document.getElementById("ab-pad").textContent = fmtNear(led.near);
-    document.getElementById("ab-tok").textContent = fmtTok(tokBal,DEC);
-    document.getElementById("ab-park").textContent = fmtTok(led.parked,DEC);
-    document.getElementById("ab-sym").textContent = SYM+" · wallet";
-    document.getElementById("ab-sym2").textContent = SYM+" · parked";
+    // ⚡ key float + fuel bar (float starts at 0.3N; refuel keeps it alive)
+    const est = g && gst ? BigInt(gst.est||"0") : null;
+    document.getElementById("ab-key").textContent = est===null ? "—" : fmtNear(est.toString());
+    const pct = est===null ? 0 : Math.min(100, Math.round(Number(est*10000n/BigInt(parseNear("0.3")))/10000));
+    document.getElementById("ab-keyfill").style.width = pct+"%";
+    document.getElementById("ab-keynote").textContent = est===null
+      ? (g ? "key status unavailable" : "no fast key — buys use wallet popups")
+      : (pct < 15 ? "⚠️ low — refuel or it dies" : pct < 40 ? "burning down — refuel soon" : "gas for popup-free trades");
+    // tokens: one total, split + NEAR value at pool price
+    const totTok = BigInt(tokBal) + BigInt(led.parked);
+    document.getElementById("ab-tok").textContent = fmtTok(totTok.toString(),DEC)+" "+SYM;
+    document.getElementById("ab-toksplit").textContent =
+      ` · ${fmtTok(tokBal,DEC)} in wallet + ${fmtTok(led.parked,DEC)} parked (sells from parked)`;
+    document.getElementById("ab-sym").textContent = SYM+" · holdings";
+    const pr = window.__poolRatio;   // {near, tok} bigint strings, set by loadPool
+    let tokVal = 0n, total = null;
+    if (pr && BigInt(pr.tok) > 0n){
+      tokVal = totTok * BigInt(pr.near) / BigInt(pr.tok);          // NEAR-yocto value of tokens
+      const parts = [ (nb===null?0n:nb), BigInt(led.near), ...(est!==null?[est]:[]), tokVal ];
+      total = parts.reduce((x,y)=>x+y, 0n);
+      document.getElementById("ab-tokval").textContent = `≈ ${fmtNear(tokVal.toString())} NEAR at pool price`;
+      document.getElementById("ab-total").textContent = fmtNear(total.toString());
+      document.getElementById("ab-break").textContent =
+        `= ${nb===null?"?":fmtNear(nb)} wallet + ${fmtNear(led.near)} pad${est!==null?" + "+fmtNear(est.toString())+" ⚡":""} + ${fmtNear(tokVal.toString())} tokens`;
+    } else {
+      document.getElementById("ab-tokval").textContent = "";
+      document.getElementById("ab-total").textContent = "—";
+      document.getElementById("ab-break").textContent = "pool price unavailable";
+    }
     const wn = localStorage.getItem("gk-wallet-name");
     document.getElementById("ab-wallet").textContent = signer ? (signer.kind==="connect" ? `💳 ${wn||"wallet"}` : "🔧 dev signer") : "view-only (connect to trade)";
     if(!silent) toast("balances loaded","ok");
@@ -836,7 +894,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b29";
+const BUILD = "b30";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
