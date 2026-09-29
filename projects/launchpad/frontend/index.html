@@ -63,7 +63,7 @@
     <div style="display:flex;align-items:baseline;gap:10px;margin-top:8px;flex-wrap:wrap">
       <span class="dim" style="font-size:11px">portfolio</span>
       <b id="ab-total" style="font-size:22px;color:#7ddc84">—</b>
-      <span class="dim" style="font-size:12px">NEAR total</span>
+      <span class="dim" style="font-size:12px">total</span>
       <span id="ab-break" class="dim" style="font-size:12px"></span>
     </div>
     <!-- the live balances -->
@@ -139,7 +139,7 @@
         </span>
       </div>
       <div style="margin-top:4px;font-size:14px;line-height:1.8">
-        <span class="ok"><b id="h-pad" style="font-size:16px">—</b> NEAR to buy with</span>
+        <span class="ok"><b id="h-pad" style="font-size:16px">—</b> to buy with</span>
         <span class="dim">·</span>
         <span><b id="h-park2" style="font-size:16px">—</b> <span class="dim">to sell</span></span>
         <span class="dim">·</span>
@@ -596,7 +596,7 @@ window.heroSellSel = async function(frac){
     try { net = (await view(CFG.pool,"quote_sell",{token:token(),tokens_in:amtPk.toString()})).net; } catch(e){}
   }
   const parts = [`sell <b>${fmtTok((amtPk+amtWal).toString(),DEC)} ${SYM}</b>`];
-  if (net) parts.push(`→ get <b class="ok">${fmtNear(net)} NEAR</b>`);
+  if (net) parts.push(`→ get <b class="ok">${fmtNear(net)}</b>`);
   if (amtWal>0n) parts.push('<span class="dim">(first batch needs one wallet confirm)</span>');
   sq.innerHTML = parts.join(" ") + (net?"":' <span class="dim">· fetching price…</span>');
   go.disabled = false; go.style.opacity = 1;
@@ -757,7 +757,7 @@ window.loadAccount = async function(silent){
       tokVal = totTok * BigInt(pr.near) / BigInt(pr.tok);          // NEAR-yocto value of tokens
       const parts = [ (nb===null?0n:nb), BigInt(led.near), ...(est!==null?[est]:[]), tokVal ];
       total = parts.reduce((x,y)=>x+y, 0n);
-      document.getElementById("ab-tokval").textContent = `≈ ${fmtNear(tokVal.toString())} NEAR at pool price`;
+      document.getElementById("ab-tokval").textContent = `≈ ${fmtNear(tokVal.toString())} at pool price`;
       document.getElementById("ab-total").textContent = fmtNear(total.toString());
       document.getElementById("ab-break").textContent =
         `= ${nb===null?"?":fmtNear(nb)} wallet + ${fmtNear(led.near)} pad${est!==null?" + "+fmtNear(est.toString())+" ⚡":""} + ${fmtNear(tokVal.toString())} tokens`;
@@ -966,7 +966,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b32";
+const BUILD = "b33";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
