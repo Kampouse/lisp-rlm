@@ -58,6 +58,7 @@ fn is_builtin_wildcard(name: &str) -> bool {
                 | "env/predecessor"
                 | "schnorr-verify"
                 | "schnorr-sign"
+                | "schnorr-pubkey"
         )
 }
 
@@ -1424,6 +1425,11 @@ impl TcEnv {
                 vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
                 Box::new(str_ty.clone()),
             ),
+        );
+        // schnorr-pubkey : str -> str (BIP-340 x-only pk = x(d·G), 32 bytes)
+        env.insert_mono(
+            "schnorr-pubkey".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
         );
         // near/schnorr_verify : str -> str -> str -> int (BIP-340 secp256k1, stitched WASM)
         env.insert_mono(

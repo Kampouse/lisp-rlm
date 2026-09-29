@@ -675,6 +675,42 @@ pub unsafe extern "C" fn schnorr_sign_bip340(
     }
 }
 
+// ── BIP-340 public key derivation (x-only: pk = x-coord of d·G) ──
+pub fn schnorr_pubkey(sk_bytes: &[u8; 32]) -> [u8; 32] {
+    let mut d = fe_bytes_to_fe(sk_bytes);
+    if sc_geq_n(d) {
+        d = sc_sub_n(d);
+    } // normalize into [0, n)
+    if d == [0; 4] {
+        return [0u8; 32];
+    }
+    let (px, _py) = match point_mul((GX, GY), d) {
+        Some(r) => jac_to_affine(r),
+        None => return [0u8; 32],
+    };
+    let mut pk = [0u8; 32];
+    for i in 0..4 {
+        pk[i * 8..(i + 1) * 8].copy_from_slice(&px[3 - i].to_be_bytes());
+    }
+    pk
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn schnorr_pubkey_bip340(sk_ptr: u32, out_ptr: u32) -> u32 {
+    let sk = core::slice::from_raw_parts(sk_ptr as *const u8, 32);
+    let Ok(sk): Result<[u8; 32], _> = sk.try_into() else {
+        return 0;
+    };
+    let pk = schnorr_pubkey(&sk);
+    let out = core::slice::from_raw_parts_mut(out_ptr as *mut u8, 32);
+    out.copy_from_slice(&pk);
+    if pk == [0u8; 32] {
+        0
+    } else {
+        1
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn sha256_hash(input_ptr: u32, input_len: u32, output_ptr: u32) {
     let input = core::slice::from_raw_parts(input_ptr as *const u8, input_len as usize);
@@ -787,6 +823,33 @@ mod sign_test {
             "MSG: {}",
             msg.iter().map(|b| format!("{:02X}", b)).collect::<String>()
         );
+    }
+
+    /// Official vector's pubkey: sk=3 → pk = x(3G) = F9308A01...CE036F9.
+    #[test]
+    fn test_pubkey_official() {
+        let sk = a32(h(
+            "0000000000000000000000000000000000000000000000000000000000000003",
+        ));
+        let pk = schnorr_pubkey(&sk);
+        assert_eq!(
+            pk.to_vec(),
+            h("F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9")
+        );
+    }
+
+    /// Odd-y d (sk=2): pk is still the x-coordinate; sign's internal d' = n-d
+    /// parity handling must accept whatever key this produces.
+    #[test]
+    fn test_pubkey_sign_roundtrip_sk2() {
+        let sk = a32(h(
+            "0000000000000000000000000000000000000000000000000000000000000002",
+        ));
+        let pk = schnorr_pubkey(&sk);
+        let msg = compute_sha256(b"odd-y secret key roundtrip");
+        let sig = schnorr_sign(&sk, &msg, &[7u8; 32]);
+        assert!(sig != [0u8; 64]);
+        assert!(schnorr_verify(&pk, &sig, &msg));
     }
 
     /// Official BIP-340 test vector (index 0): sk=3, msg=0^32, aux=0^32 →

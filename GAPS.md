@@ -1223,3 +1223,32 @@ Deploy-path notes (mainnet blocked, testnet CLI bugs worked around):
 - OutLayer host expects JSON output; plain-string stdout logs
   "Failed to parse output as JSON ... Output was: MATCH=YES VERIFY=VALID"
   (the proof still visible, but JSON output gives a clean green receipt).
+
+## 2026-09-29 (identity) — DETERMINISTIC PER-CALLER NOSTR IDENTITIES, SEALED-ROOT, ON OUTLAYER
+
+New API: `(schnorr-pubkey sk)` → 32-byte x-only pk (Rust export
+schnorr_pubkey_bip340, official vector pk green in crate tests; artifact
+rebuilt, 72,248 B, 4 exports).
+
+Agent `tests_p2/nostr_identity_agent.lisp` (97 KB P2 component):
+  sk_c   = SHA256(root ‖ 0x1f ‖ caller)     — deterministic per caller
+  derive → {"pk":..., "root":"real"|"demo"} — sk NEVER returned
+  sign   → re-derives sk internally, NIP-01 serialize → id → BIP-340 sig
+
+Sealing: root generated INSIDE the TEE via `outlayer secrets set --generate
+PROTECTED_NOSTR_ROOT:hex32 --wasm-hash <hash>` — value has never existed on
+any machine; injected as env at execution (PROTECTED_ prefix required).
+Secrets bind to the wasm hash — re-setting needed after rebuild.
+
+On-chain proofs (outlayer.testnet, all cross-checked vs pure-Python ref):
+- demo root: alice→f3061d99… twice (deterministic), bob→77a847ec… (distinct);
+  sign MATCH on derive+sig and event id
+- real (TEE) root: alice→3dfb8b72…, bob→d23434f4…, sign → sig VALID
+  (root unknowable, so verify-only cross-check — event id MATCH, sig VALID)
+
+Gotchas hit: `outlayer run --wasm <url> <input>` DROPS the positional input —
+must use `--input <file>`. Exec requests write contract state staked against
+the sender → LackBalanceForState after several runs (topped up 3 NEAR via
+npx near-cli send-near; the rust near-cli-rs has no transfer cmd).
+PRODUCTION TODO: bind caller to ATTESTED identity (env-signer / request
+predecessor) — the input "caller" field is spoofable by design of this demo.
