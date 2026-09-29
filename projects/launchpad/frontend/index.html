@@ -30,6 +30,8 @@
   .tabs{display:flex;gap:6px;margin-bottom:12px}
   .tabs button{background:transparent;border:1px solid var(--line);color:var(--dim);padding:6px 14px}
   .tabs button.on{color:#fff;border-color:var(--acc);background:#16233f}
+  button.chip{font-size:13px;padding:5px 14px;border-radius:999px}
+  button.chip.on{color:#fff;border-color:var(--acc);background:#16233f}
   .quote{font-family:var(--mono);font-size:13px;background:#0e1320;border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:10px;min-height:20px;color:var(--dim)}
   .feed{max-height:300px;overflow-y:auto;font-size:13px}
   .feed .t{display:flex;gap:8px;padding:6px 0;border-bottom:1px dashed #1c2434;font-family:var(--mono)}
@@ -48,7 +50,7 @@
     <button class="ghost" style="margin-top:8px" onclick="uiConnect()">connect signer</button>
   </header>
 
-  <div id="acct-bar" style="display:none;position:sticky;top:8px;z-index:50;margin:14px 0;padding:12px 14px;border:1px solid #2e7d32;background:#0d1f10;border-radius:10px;backdrop-filter:blur(8px)">
+  <div id="acct-bar" style="display:none;margin:14px 0;padding:12px 14px;border:1px solid #2e7d32;background:#0d1f10;border-radius:10px">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center">
       <b id="ab-acct" style="font-size:14px"></b>
       <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -94,7 +96,7 @@
     <div id="fast-hint" class="dim" style="font-size:11px;margin-top:4px">one popup to authorize a restricted trading key, then instant pad trading</div>
   </div>
 
-    <!-- ══ HERO: the dumb interface ══ -->
+    <!-- ══ HERO: the trade panel ══ -->
   <div class="card hero" id="hero-card" style="grid-column:1/-1;border-color:#2e7d32">
     <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px">
       <h2 style="margin:0">Buy <span id="h-sym">—</span></h2>
@@ -105,14 +107,29 @@
       <span class="dim">NEAR</span>
       <button id="h-buy" onclick="heroBuy()" style="font-size:18px;padding:14px 34px">BUY</button>
     </div>
-    <div class="quote" id="h-quote" style="margin-top:8px">≈ …</div>
-    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <span class="dim">sell</span>
-      <button class="ghost" onclick="heroSell(0.25)">25%</button>
-      <button class="ghost" onclick="heroSell(0.5)">50%</button>
-      <button class="ghost" onclick="heroSell(1)">ALL&nbsp;→</button>
-      <span class="ok" id="h-park" style="font-size:13px">0 parked</span>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+      <span class="dim" style="font-size:12px;align-self:center">amount:</span>
+      <button class="ghost chip" onclick="heroAmt(0.1)">0.1</button>
+      <button class="ghost chip" onclick="heroAmt(0.5)">0.5</button>
+      <button class="ghost chip" onclick="heroAmt(1)">1</button>
+      <button class="ghost chip" onclick="heroAmt(0)" title="everything in your pad">MAX</button>
     </div>
+    <div class="quote" id="h-quote" style="margin-top:8px">≈ …</div>
+
+    <div style="margin-top:12px;border-top:1px solid #1c2b1e;padding-top:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px">
+        <b style="font-size:14px">Sell <span id="h-sym2">—</span></b>
+        <span class="dim" style="font-size:12px" id="h-park">0 parked</span>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;align-items:center">
+        <button class="ghost chip" id="hs-25" onclick="heroSellSel(0.25)">25%</button>
+        <button class="ghost chip" id="hs-50" onclick="heroSellSel(0.5)">50%</button>
+        <button class="ghost chip" id="hs-100" onclick="heroSellSel(1)">ALL</button>
+        <button id="h-sell-go" onclick="heroSellGo()" disabled style="font-size:14px;padding:8px 22px;opacity:.45">SELL&nbsp;→</button>
+      </div>
+      <div class="quote" id="h-sell-quote" style="margin-top:6px">pick a size above — you'll see exactly what you get before it fires</div>
+    </div>
+
     <div style="margin-top:12px;border-top:1px solid #1c2b1e;padding-top:10px">
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center">
         <span class="dim" style="font-size:11px">you can trade</span>
@@ -548,21 +565,61 @@ window.heroBuy = async function(){
   }
   await heroPaint(); await refreshAfter();
 };
-window.heroSell = async function(frac){
+window.heroAmt = function(n){
+  const inp = document.getElementById("h-in");
+  if (n === 0){   // MAX = whole pad minus a hair for key gas
+    const pad = window.__heroPad;
+    if (!pad || BigInt(pad) <= 10_000_000_000_000_000_000n) return toast("nothing in your pad yet","warn");
+    inp.value = (Number(BigInt(pad) - 5_000_000_000_000_000_000n) / 1e24).toFixed(3);
+  } else inp.value = n;
+  heroQuote();
+};
+/* two-step sell: % selects a size + live preview, SELL fires it */
+let __sellSel = null, __sellAmts = null;
+window.heroSellSel = async function(frac){
+  __sellSel = frac;
+  for (const [id,f] of [["hs-25",0.25],["hs-50",0.5],["hs-100",1]])
+    document.getElementById(id).classList.toggle("on", f===frac);
   const g = await heroPaint(true);
   const pkP = BigInt(g?.parked || 0), walP = BigInt(g?.walParked || 0);
-  if (pkP<=0n && walP<=0n) return toast("nothing parked yet — buy first","warn");
   const q = BigInt(Math.round(frac*100));
-  if (pkP>0n){   // instant lane: gas-key identity
-    const amt = (pkP * q / 100n).toString();
-    await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:token(),tokens_in:amt},gas:"50000000000000",deposit:"0"}}]);
+  const amtPk = pkP * q / 100n, amtWal = walP * q / 100n;
+  const go = document.getElementById("h-sell-go"), sq = document.getElementById("h-sell-quote");
+  if (amtPk<=0n && amtWal<=0n){
+    sq.innerHTML = '<span class="dim">nothing parked yet — buy first</span>';
+    go.disabled = true; go.style.opacity=.45; __sellAmts = null;
+    return;
   }
-  if (walP>0n){  // setup-time buys parked under the wallet identity — one wallet confirm
-    const amt = (walP * q / 100n).toString();
-    toast(frac<1 ? "selling your first (setup) batch — confirm once" : "cashing out your first (setup) batch — confirm once","warn");
-    await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:token(),tokens_in:amt},gas:"50000000000000",deposit:"0"}}], {forceWallet:true});
+  __sellAmts = {pk: amtPk.toString(), wal: amtWal.toString()};
+  let net = null;
+  if (amtPk>0n){
+    try { net = (await view(CFG.pool,"quote_sell",{token:token(),tokens_in:amtPk.toString()})).net; } catch(e){}
   }
+  const parts = [`sell <b>${fmtTok((amtPk+amtWal).toString(),DEC)} ${SYM}</b>`];
+  if (net) parts.push(`→ get <b class="ok">${fmtNear(net)} NEAR</b>`);
+  if (amtWal>0n) parts.push('<span class="dim">(first batch needs one wallet confirm)</span>');
+  sq.innerHTML = parts.join(" ") + (net?"":' <span class="dim">· fetching price…</span>');
+  go.disabled = false; go.style.opacity = 1;
+};
+window.heroSellGo = async function(){
+  if (!__sellSel || !__sellAmts) return;
+  const {pk, wal} = __sellAmts;
+  if (BigInt(pk)>0n)   // instant lane: gas-key identity
+    await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:token(),tokens_in:pk},gas:"50000000000000",deposit:"0"}}]);
+  if (BigInt(wal)>0n){ // setup-time buys parked under the wallet identity — one wallet confirm
+    toast("selling your first (setup) batch — confirm once","warn");
+    await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"sell",args:{token:token(),tokens_in:wal},gas:"50000000000000",deposit:"0"}}], {forceWallet:true});
+  }
+  __sellSel = null; __sellAmts = null;
+  const go = document.getElementById("h-sell-go");
+  go.disabled = true; go.style.opacity=.45;
+  document.getElementById("h-sell-quote").innerHTML = '<span class="dim">sold ✓ — pick another size</span>';
+  for (const id of ["hs-25","hs-50","hs-100"]) document.getElementById(id).classList.remove("on");
   await heroPaint(); await refreshAfter();
+};
+window.heroSell = async function(frac){   // legacy instant path (bots)
+  await heroSellSel(frac);
+  if (__sellAmts) await heroSellGo();
 };
 window.addNear = async function(){
   if (!signer) return toast("connect a signer first","warn");
@@ -585,9 +642,11 @@ window.heroPaint = async function(returnOnly){
     const walParked = wal?.parked ?? "0";
     const totParked = BigInt((led?.parked ?? "0")) + BigInt(walParked);
     if (!returnOnly){
+      window.__heroPad = led?.near ?? "0";
       document.getElementById("h-pad").textContent = fmtNear(led?.near ?? "0");
       document.getElementById("h-key").textContent = g ? (st ? fmtNear(st.est) : "—") : "—";
       document.getElementById("h-park2").textContent = fmtTok(totParked.toString(),DEC)+" "+SYM;
+      document.getElementById("h-sym2").textContent = SYM;
       window.__gkEst = st?.est;
       const tot = totParked;
       document.getElementById("h-park").textContent = fmtTok(tot.toString(),DEC)+" parked";
@@ -907,7 +966,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b31";
+const BUILD = "b32";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
