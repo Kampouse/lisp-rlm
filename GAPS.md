@@ -1252,3 +1252,32 @@ the sender → LackBalanceForState after several runs (topped up 3 NEAR via
 npx near-cli send-near; the rust near-cli-rs has no transfer cmd).
 PRODUCTION TODO: bind caller to ATTESTED identity (env-signer / request
 predecessor) — the input "caller" field is spoofable by design of this demo.
+
+## 2026-09-29 (attested) — NON-SPOOFABLE CALLER BINDING — PROVEN ON OUTLAYER
+
+The identity agent now binds callers via NEAR-signed executions, not input
+fields. Identity probing first (tests_p2/identity_probe.lisp): the worker
+exposes NO caller identity to components on any path (all env candidates
+empty, with and without secrets; env-signer op removed from compiler; WIT
+has no identity function). Attestation therefore rides NEAR itself:
+
+  1. challenge {"caller"} → ch = SHA256(root‖0x1f‖caller‖0x1f‖ctr), stored
+  2. caller runs op attest {ch} FROM THEIR OWN ACCOUNT → the exec request
+     is a signed tx whose logs contain input_data (the challenge)
+  3. derive/sign {"caller","tx"} → outlayer/raw "tx" [hash, caller] →
+     contains? "signer_id":"<caller>" AND contains? ch → single-use
+     (deleted on success) → then derive/sign as before
+
+Proof matrix (project registry-nostrgov.testnet/nostr-identity-v2, TEE root):
+- registry-signed attest claiming gcpool26.testnet → REJECTED (signer≠caller)
+- gcpool26-signed attest + same challenge (survives failed attempts)
+  → ACCEPTED, pk derived, event signed → sig VALID per independent verifier,
+  event id MATCH
+- NB storage requires a PROJECT context (standalone --wasm runs fail with
+  "storage is not configured") — deploy via `outlayer deploy <name> <url>`
+- str-contains is literal-needle-only; runtime scan = str-index-of (dynamic)
+- tx-status identity field is "signer_id" (top level), not "sender_id"
+  (which only appears escaped inside event logs)
+
+Agent: tests_p2/nostr_identity_agent.lisp (~108KB component). Spoofing a
+caller now requires their NEAR key — same bar as taking the account.
