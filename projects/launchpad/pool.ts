@@ -299,6 +299,55 @@ function tradeEvent(token: string, side: string, trader: string,
   return 0;
 }
 
+// ── v3.5: trade ring — last 64 trades per token, on-chain chart + feed.
+// PURE STRING arithmetic only (addStr/cmpDec/trimZeros): u128 host-fn
+// operands are layout-sensitive in the emitter (GAPS.md 2026-09-28 matrix)
+// and a first cut of this code flipped those seams — this shape doesn't.
+// Window: counter "ringn:<tok>", oldest "ringo:<tok>", rows "ring:<tok>:<seq>".
+function cmpDec(a: string, b: string): number {
+  const at = trimZeros(a);
+  const bt = trimZeros(b);
+  const la = strLength(at);
+  const lb = strLength(bt);
+  if (la < lb) { return -1; }
+  if (la > lb) { return 1; }
+  let i = 0;
+  while (i < la) {
+    const da = strToNum(strSlice(at, i, i + 1));
+    const db = strToNum(strSlice(bt, i, i + 1));
+    if (da < db) { return -1; }
+    if (da > db) { return 1; }
+    i = i + 1;
+  }
+  return 0;
+}
+function recordTrade(token: string, side: string, trader: string, nearAmt: string, tokAmt: string): number {
+  const ck = "ringn:" + token;
+  const cntRaw = near.storageGet(ck) ?? "0";
+  const cnt = trimZeros(cntRaw);
+  const seq = addStr(cnt, "1");
+  const okKey = "ringo:" + token;
+  const oldRaw = near.storageGet(okKey) ?? "";
+  let oldest = oldRaw;
+  if (oldest == "") { oldest = "1"; }
+  if (cmpDec(seq, "65") >= 0) {
+    const dk = "ring:" + token + ":" + oldest;
+    near.storageRemove(dk);
+    oldest = addStr(oldest, "1");
+  }
+  near.storageSet(okKey, oldest);
+  near.storageSet(ck, seq);
+  const rk = "ring:" + token + ":" + seq;
+  const seqJ = jsonQuote(seq);
+  const sideJ = jsonQuote(side);
+  const nearJ = jsonQuote(nearAmt);
+  const tokJ = jsonQuote(tokAmt);
+  const trJ = jsonQuote(trader);
+  const row = `{"seq":${seqJ},"side":${sideJ},"near":${nearJ},"tokens":${tokJ},"trader":${trJ}}`;
+  near.storageSet(rk, row);
+  return 0;
+}
+
 // ── pool lifecycle ─────────────────────────────────────────────────
 
 // init: owner = whoever deploys/initializes (the launchpad factory)
@@ -572,6 +621,7 @@ export function sell_internal(): string {
   near.storageSet(nk, u128Add(padNow, net));
   autoRefuel(trader, gkPk);
   tradeEvent(token, "sell", trader, net, amount, fee);
+  recordTrade(token, "sell", trader, net, amount);
   near.log(`selli:${trader}:${amount}:${net}`);
   return `{"gross":${jsonQuote(gross)},"fee":${jsonQuote(fee)},"net":${jsonQuote(net)}}`;
 }
@@ -618,6 +668,7 @@ export function sell(): string {
   }
   autoRefuel(trader, gkPk);
   tradeEvent(token, "sell", trader, net, amount, fee);
+  recordTrade(token, "sell", trader, net, amount);
   near.log(`sell:${trader}:${amount}:${net}${toPad ? ":pad" : ":" + rcpt}`);
   return `{"gross":${jsonQuote(gross)},"fee":${jsonQuote(fee)},"net":${jsonQuote(net)}}`;
 }
@@ -745,6 +796,7 @@ export function buy(): string {
       30000000000000, "0");
   }
   tradeEvent(token, "buy", trader, nearIn, net, fee);
+  recordTrade(token, "buy", trader, nearIn, net);
   near.log(`buy:${trader}:${nearIn}:${net}`);
   checkGrad(token, newPn);
   return `{"gross":${jsonQuote(gross)},"fee":${jsonQuote(fee)},"net":${jsonQuote(net)}}`;
@@ -793,6 +845,7 @@ export function ft_on_transfer(): string {
     }
     near.transferU128(sender, net);
     tradeEvent(token, "sell", sender, net, amount, fee);
+    recordTrade(token, "sell", sender, net, amount);
     near.log(`sell:${sender}:${amount}:${net}`);
   } else {
     // seed / donation: tokens join the reserve (sender gets nothing back —
@@ -822,6 +875,26 @@ export function get_fee(): string {
   return `{"bps":${jsonQuote(near.storageGet("fee_bps") ?? "0")},"to":${jsonQuote(near.storageGet("fee_to") ?? (near.storageGet("owner") ?? ""))},"fees_near":${jsonQuote(near.storageGet("fees_near") ?? "0")},"paused":${paused}}`;
 }
 // quote: NEAR in → tokens out net of fee {"gross","fee","net"}
+export function get_recent_trades(): string {
+  const token = near.jsonGetStr("token") ?? "";
+  const cntRaw = near.storageGet("ringn:" + token) ?? "0";
+  const seq = trimZeros(cntRaw);
+  const oldRaw = near.storageGet("ringo:" + token) ?? "";
+  let oldest = oldRaw;
+  if (oldest == "") { oldest = "1"; }
+  let out = "";
+  let cur = oldest;
+  while (cmpDec(cur, seq) <= 0) {
+    const rk = "ring:" + token + ":" + cur;
+    const row = near.storageGet(rk) ?? "";
+    if (row != "") {
+      if (out != "") { out = out + ","; }
+      out = out + row;
+    }
+    cur = addStr(cur, "1");
+  }
+  return `[${out}]`;
+}
 export function quote_buy(): string {
   const token = near.jsonGetStr("token") ?? "";
   const nearIn = near.jsonGetStr("near_in") ?? "0";

@@ -1067,8 +1067,7 @@ window.loadKeyStatus = async function(){
   }catch(e){}
 };
 
-/* ── live feed ──────────────────────────────────────────── */
-async function loadFeed(){
+async function loadFeedOld(){
   try{
     const r = await fetch(`${CFG.fastnearApi}/v3/account/${CFG.pool}/txns?limit=12`);
     const j = await r.json();
@@ -1090,10 +1089,10 @@ async function loadFeed(){
     if(!el.innerHTML) el.innerHTML='<div class="dim">no recent trades</div>';
   }catch(e){ document.getElementById("feed").innerHTML='<div class="dim">feed unavailable</div>'; }
 }
-window.loadFeed = loadFeed;
+window.loadFeed = function(){ paintFeed(); };
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b40";
+const BUILD = "b41";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
