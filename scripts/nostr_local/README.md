@@ -1,34 +1,20 @@
-# Local Nostr-from-Contract pipeline (near-mock + inlayer + lisp-rlm)
+# Local Nostr-from-Contract pipeline — SUPERSEDED (2026-09-29)
 
-End-to-end rehearsal of: **smart contract → per-caller Nostr identity → signed
-event → on-chain verify → real relay**. Runs 100% locally except the final
-relay publish (real ws, trustless — the sig self-verifies).
+**This Python-driven pipeline is obsolete.** Signing now lives at the Rust
+layer: `(schnorr-sign sk msg aux)` works in NEAR contracts AND P2 components
+(self-contained, no two-mult limit, no A/B run split). The worker no longer
+needs the 640KB generated kernel or the splice scripts — both removed.
+A rewrite of this e2e rehearsal against the new API is the natural follow-up:
+the worker collapses to ~20 lines of Lisp around `(schnorr-sign)`.
 
-## Components
-
-| Piece | File | What it is |
-|---|---|---|
-| Worker wasm | `../probe/bip340_nostr.lisp` → `nostr_worker.wasm` | bip340 lib + 2 dispatcher cases (spliced by `splice_nostr.py`): **N** = derive `sk=SHA256(root‖0x1f‖caller) mod n` → `pk\|flip\|sk`; **E** = NIP-01 serialize → id → BIP-340 sig → `id\|sig` |
-| Registrar | `registrar_main.ts` (TS dialect) | `post()` attests predecessor, `yieldCreate(on_sign)`; `on_sign` re-computes id (sha256), verifies sig via host `schnorrVerify` (k256), stores `pk:<caller>` + `last:<caller>`; `resume(data_id,payload)` calls `near.yieldResume`; `get_pk`/`get_last` views |
-| Driver | `driver.py` | plays the OutLayer worker: near-mock cross calls, inlayer runs, resume; 7 assertions incl. tamper + replay rejection |
-| Relay hop | `relay_hop.py` | re-runs worker with real unix ts, publishes to `wss://nos.lol`, expects `["OK",…,true]`, queries back by id |
-
-## Run
-
-```bash
-cd /tmp/nostr_local   # or recreate: registrar needs types/lisp-rlm.d.ts
-~/dev/lisp-rlm/target/release/near-compile \
-  ../nostr_probe/bip340_nostr.lisp --target=outlayer-p2 -o nostr_worker.wasm
-cd registrar && ~/dev/lisp-rlm/target/release/near-compile src/main.ts target/registrar.wasm
-cd .. && python3 driver.py && python3 relay_hop.py
-```
+Kept here: `registrar_main.ts` (the contract — still valid) and the
+**semantics proven** below (they carry over to any rewrite).
 
 ## Semantics proven (2026-09-21, driver 7/7)
 
 1. **Caller binding**: contract attests `predecessorAccountId()`; the yield
    spec freezes (caller, content, pk) at post() time — the resuming party
-   cannot change them (tamper probe died at `ERR_ID_MISMATCH` for wrong
-   content, `ERR_SIG_INVALID` for corrupted sig).
+   cannot change them (tamper died at `ERR_ID_MISMATCH` / `ERR_SIG_INVALID`).
 2. **sk isolation**: derivation+signing inside wasm (TEE role). Contract
    state holds pk + sig only.
 3. **On-chain verification**: host `schnorrVerify(hexDecode(pk),
@@ -36,11 +22,11 @@ cd .. && python3 driver.py && python3 relay_hop.py
 4. **One-shot yield**: `yieldResume` returns 0 on consumed handle →
    `ERR_RESUME_FAILED`; replay cannot re-store.
 5. **NotReady leg**: mock runs the callback once with nil payload at post
-   time — must early-return (log NOT_READY) WITHOUT dying or storing.
+   time — must early-return WITHOUT dying or storing.
 6. **Relay acceptance**: worker-signed event with real created_at accepted
    by nos.lol (id+sig valid); identical content+key → deterministic id.
 
-## Mock-fidelity notes (near-mock specifics)
+## Mock-fidelity notes (near-mock specifics) — still current
 
 - `promise_yield_create` persists `\x00yield:<idx>` = account␟method␟creator␟args
   (0x1f-separated) in STATE — resume works across CLI invocations.
@@ -58,7 +44,7 @@ cd .. && python3 driver.py && python3 relay_hop.py
 | Local | Mainnet |
 |---|---|
 | near-mock cross | real tx via any wallet/CLI |
-| driver.py (this process) | OutLayer TEE worker (exec on outlayer.near) |
+| OutLayer TEE worker (driver role) | exec on outlayer.near — now `(schnorr-sign)` in a P2 component |
 | ts="0" deterministic | TEE supplies real unix time (relays reject future ts) |
 | resume() call | worker → `yield_resume` on the contract (NEAR yield/resume) |
 | nos.lol publish | same, or any relay; the sig makes it trustless |
