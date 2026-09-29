@@ -1,0 +1,7 @@
+name = "gaskey-launchpad"
+compatibility_date = "2026-09-01"
+pages_build_output_dir = "."
+
+[[kv_namespaces]]
+binding = "PRICE_KV"
+id = "a68e5f44d9b04f58b3142ac62d53c97a"

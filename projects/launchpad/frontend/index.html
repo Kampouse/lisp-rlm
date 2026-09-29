@@ -185,6 +185,26 @@
       <p class="dim" style="font-size:11px;margin-top:6px">pad = your NEAR float inside the pool — trades draw from it (cheaper gas), withdraw anytime</p>
     </div>
 
+    <!-- PRICE CHART -->
+    <div class="card" style="grid-column:1/-1" id="chart-card">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap">
+        <div>
+          <span class="dim" style="font-size:12px">GKT price</span>
+          <b id="ch-price" style="font-size:20px;font-family:ui-monospace,monospace">—</b>
+          <span class="dim" style="font-size:11px">NEAR per GKT · <span id="ch-inv">—</span></span>
+          <b id="ch-delta" style="font-size:13px;margin-left:8px"></b>
+        </div>
+        <div id="ch-wins" style="display:flex;gap:4px">
+          <button class="chip on" id="cw-all" onclick="chSetWin(0,'cw-all')" style="padding:3px 8px;font-size:11px">ALL</button>
+          <button class="chip" id="cw-1h" onclick="chSetWin(3600e3,'cw-1h')" style="padding:3px 8px;font-size:11px">1H</button>
+          <button class="chip" id="cw-6h" onclick="chSetWin(21600e3,'cw-6h')" style="padding:3px 8px;font-size:11px">6H</button>
+          <button class="chip" id="cw-24h" onclick="chSetWin(86400e3,'cw-24h')" style="padding:3px 8px;font-size:11px">24H</button>
+        </div>
+      </div>
+      <canvas id="ch-canvas" height="150" style="width:100%;margin-top:8px;display:block"></canvas>
+      <div class="dim" style="font-size:11px" id="ch-foot">booting price feed…</div>
+    </div>
+
     <!-- TRADE -->
     <div class="card" style="grid-column:1/-1">
       <h2>Trade</h2>
@@ -728,6 +748,55 @@ function gkSyncAccount(){
     toast("cleared trading key from another account","warn");
   }
 }
+
+/* 📈 price chart — /api/prices KV history, vanilla canvas */
+window.__chWin = 0;   // ALL until history grows
+window.__chData = [];
+window.chSetWin = function(ms, btn){
+  window.__chWin = ms;
+  for (const id of ["cw-1h","cw-6h","cw-24h","cw-all"]) document.getElementById(id)?.classList.toggle("on", id===btn);
+  chDraw();
+};
+window.chDraw = function(){
+  const cv = document.getElementById("ch-canvas"); if (!cv) return;
+  const dpr = (window.devicePixelRatio||1);
+  const W = cv.clientWidth || 600, H = 150;
+  cv.width = W*dpr; cv.height = H*dpr;
+  const g = cv.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,W,H);
+  const now = Date.now();
+  const pts = (window.__chData||[]).filter(x => !window.__chWin || x.t >= now-window.__chWin);
+  document.getElementById("ch-foot").textContent = pts.length < 2
+    ? "collecting price feed… (samples every few minutes)"
+    : `${pts.length} pts · ${window.__chWin?(window.__chWin/3600e3)+"h":"all"} · latest ${Math.max(0,Math.round((now-pts[pts.length-1].t)/60e3))}m ago`;
+  if (pts.length < 2) return;
+  const ps = pts.map(x=>x.p), lo = Math.min(...ps), hi = Math.max(...ps);
+  const X = i => 4 + (pts[i].t-pts[0].t)/((pts[pts.length-1].t-pts[0].t)||1)*(W-8);
+  const Y = p => H-14-((p-lo)/((hi-lo)||1))*(H-34);
+  const first = ps[0], last = ps[ps.length-1], up = last >= first;
+  document.getElementById("ch-price").textContent = last.toFixed(7);
+  document.getElementById("ch-inv").textContent = `1 NEAR ≈ ${(1/last).toFixed(0)} GKT`;
+  const dEl = document.getElementById("ch-delta"), dp = (last-first)/(first||1)*100;
+  dEl.textContent = (dp>=0?"▲ +":"▼ ")+dp.toFixed(1)+"%";
+  dEl.style.color = up ? "var(--ok)" : "var(--bad)";
+  const col = up ? "#7ddc84" : "#ff6b6b";
+  const grad = g.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0, up?"rgba(125,220,132,.35)":"rgba(255,107,107,.35)"); grad.addColorStop(1,"rgba(0,0,0,0)");
+  g.beginPath(); g.moveTo(X(0), Y(first));
+  pts.forEach((x,i)=>g.lineTo(X(i), Y(x.p)));
+  g.lineTo(X(pts.length-1), H); g.lineTo(X(0), H); g.closePath(); g.fillStyle = grad; g.fill();
+  g.beginPath(); g.moveTo(X(0), Y(first));
+  pts.forEach((x,i)=>g.lineTo(X(i), Y(x.p)));
+  g.strokeStyle = col; g.lineWidth = 2; g.stroke();
+  g.fillStyle = "rgba(255,255,255,.4)"; g.font = "10px ui-monospace,monospace";
+  g.fillText(hi.toFixed(6), 4, 12); g.fillText(lo.toFixed(6), 4, H-4);
+};
+window.chLoad = async function(){
+  try { window.__chData = await (await fetch("/api/prices?sample=1", {cache:"no-store"})).json(); } catch {}
+  chDraw();
+  setTimeout(chLoad, (window.__chData?.length||0) < 40 ? 90e3 : 10*60e3);
+};
+chLoad();
+
 window.setDevSigner = function(){
   const k = document.getElementById("dev-key").value.trim();
   const acct = document.getElementById("dev-acct").value.trim();
@@ -1024,7 +1093,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b38";
+const BUILD = "b40";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
