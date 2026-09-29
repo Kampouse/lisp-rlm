@@ -516,13 +516,17 @@ window.heroBuy = async function(){
     }
   }
   if (fast){
-    // auto-fuel: pad must cover the buy + a buffer; contract auto-refuels the key from pad
+    // auto-fuel: only top up the SHORTFALL, via the WALLET (the ⚡key can't sign deposits);
+    // the key-refuel margin is only demanded when the key float is actually running low
     const st = await heroPaint(true);
     const pad = BigInt(st?.pad || 0);
-    const need = BigInt(amt) + 120_000_000_000_000_000_000n;   // buy + 0.12N pad margin
+    const est = BigInt(st?.est || 0);
+    const margin = est > 50_000_000_000_000_000_000n ? 5_000_000_000_000_000_000n : 120_000_000_000_000_000_000n;  // healthy key → 0.005N, low key → 0.12N
+    const need = BigInt(amt) + margin;
     if (pad < need){
-      toast("adding NEAR to your pool — confirm once","warn");
-      await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"deposit",args:{pk:fastGet().pk,owner:signer.accountId},gas:"30000000000000",deposit:need.toString()}}]);
+      const shortfall = need - pad;
+      toast(`topping up ${fmtNear(shortfall.toString())} from your wallet — confirm once`,"warn");
+      await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"deposit",args:{pk:fastGet().pk,owner:signer.accountId},gas:"30000000000000",deposit:shortfall.toString()}}], {forceWallet:true});
     }
     await sendTx(CFG.pool, [{type:"FunctionCall",params:{methodName:"buy",args:buyArgs,gas:"50000000000000",deposit:"0"}}]);
   } else {
@@ -774,12 +778,14 @@ window.loadAccount = async function(silent){
   const t = token();
   try{
     const g = fastGet();
-    const [tokBal, led, nb, gst] = await Promise.all([
+    const [tokBal, led, nb, gst, pkLed] = await Promise.all([
       ftBalRaw(t,a),
       view(CFG.pool,"get_balance",{account:a, token:t}),
       nearBal(a).catch(()=>null),
       g ? view(CFG.pool,"get_gas_status",{pk:g.pk}).catch(()=>null) : null,
+      g ? view(CFG.pool,"get_balance",{account:"pk:"+g.pk, token:t}).catch(()=>null) : null,
     ]);
+    if (pkLed) led.near = pkLed.near;   // ⚡ buys spend the key-lane pad — show that one
     document.getElementById("m-tok").textContent = fmtTok(tokBal,DEC)+" "+SYM+" ✓ in wallet";
     document.getElementById("m-pad").textContent = fmtNear(led.near);
     document.getElementById("m-inv").textContent = fmtTok(led.parked,DEC)+" "+SYM;
@@ -1018,7 +1024,7 @@ async function loadFeed(){
 window.loadFeed = loadFeed;
 
 /* ── diagnostics: every failure visible, build always identifiable ── */
-const BUILD = "b37";
+const BUILD = "b38";
 document.getElementById("head-sub").textContent += " · " + BUILD;
 window.addEventListener("error", e=>toast("JS error: "+(e.message||e.type),"bad"));
 window.addEventListener("unhandledrejection", e=>toast("async error: "+(e.reason?.message||String(e.reason)).slice(0,160),"bad"));
