@@ -283,7 +283,7 @@ input:focus{border-color:var(--green-dim)}
     <h2>New session</h2>
     <div class="sub">One signature creates a scoped session key. After this — zero popups.</div>
     <div class="field"><label>WALLET ACCOUNT</label><input id="nOwner" placeholder="you.testnet" spellcheck="false"></div>
-    <div class="field"><label>SECRET KEY (stored only in this browser)</label><input id="nSecret" type="password" placeholder="ed25519:…"></div>
+    <div class="field"><label>SECRET KEY — or leave empty if a wallet is connected</label><input id="nSecret" type="password" placeholder="ed25519:… (blank = use connected wallet)"></div>
     <div class="field"><label>CONTRACT</label><input id="nContract" value="pool2.nostrgove2e.testnet" spellcheck="false"></div>
     <div class="field"><label>METHODS</label><input id="nMethods" value="buy,sell_internal" spellcheck="false"></div>
     <div class="row2">
@@ -338,6 +338,47 @@ const { Near, fromHotConnect, InMemoryKeyStore, parseKey } = await import("https
 const { NearConnector } = await import("https://esm.sh/@hot-labs/near-connect@0.11.4");
 
 const ro = new Near({ network: NET });
+// NEAR Connect: full-key actions (deposit/withdraw/revoke/create-with-wallet) sign
+// through the user's wallet. walletNear = a Near instance whose signer is the wallet.
+let connector = null, walletNear = null, walletAcct = null;
+async function connectWallet() {
+  if (!connector) connector = new NearConnector({ network: NET });
+  connector.on("wallet:signIn", async (data) => {
+    walletAcct = data.accounts[0].accountId;
+    walletNear = new Near({ network: NET, wallet: fromHotConnect(connector) });
+    renderWallet();
+    toast("✅", `wallet connected: ${walletAcct}`);
+    log("wallet connected: " + walletAcct, "ok");
+  });
+  await connector.connect();
+}
+function renderWallet() {
+  const s = sess();
+  if (walletAcct) { $("walletLbl").textContent = `${walletAcct} · wallet`; return; }
+  $("walletLbl").textContent = s ? `${s.owner} · ${active}` : "no wallet";
+}
+// resolve a full-key signer for owner: wallet (popup) if connected+matching, else local key
+async function resolveOwnerKit(owner) {
+  if (walletNear && walletAcct === owner) return walletNear;
+  let sk = localStorage.getItem("gk_sk_" + owner);
+  if (!sk) {
+    // no local key: offer wallet connection for THIS account
+    if (confirm(`No local key for ${owner}. Connect a wallet to sign? (Cancel = paste secret key)`)) {
+      await connectWallet();
+      // wait briefly for the signIn handler to fire
+      for (let i = 0; i < 60 && (!walletNear || walletAcct !== owner); i++)
+        await new Promise(r => setTimeout(r, 250));
+      if (walletNear && walletAcct === owner) return walletNear;
+      return null;
+    }
+    sk = prompt(`secret key for ${owner} (ed25519:…) — stored only in this browser`);
+    if (!sk) return null;
+    localStorage.setItem("gk_sk_" + owner, sk.trim());
+  }
+  const ks = new InMemoryKeyStore();
+  ks.add(owner, parseKey(sk.trim()));
+  return new Near({ network: NET, keyStore: ks });
+}
 const unwrap = v => (v && typeof v === "object" && typeof v.result === "string")
   ? (() => { try { return JSON.parse(v.result); } catch { return v; } })() : v;
 async function view(c, m, a) { return unwrap(await ro.view(c, m, a)); }
@@ -354,15 +395,6 @@ function log(msg, cls="", hash="") {
     el.prepend(d);
   }
 }
-function ownerKit(owner) {
-  let sk = localStorage.getItem("gk_sk_" + owner);
-  if (!sk) { sk = prompt(`secret key for ${owner} (ed25519:…) — stored only in this browser`); if (!sk) return null;
-    localStorage.setItem("gk_sk_" + owner, sk.trim()); }
-  const ks = new InMemoryKeyStore();
-  ks.add(owner, parseKey(sk.trim()));
-  return new Near({ network: NET, keyStore: ks });
-}
-
 /* ───────────────────────── price chart ───────────────────────── */
 function drawChart(cv) {
   if (!cv || priceHist.length < 2) return;
@@ -456,6 +488,7 @@ function renderPad() {
 
 /* ───────────────────────── sessions UI ───────────────────────── */
 function renderSessions() {
+  renderWallet();
   for (const list of [$("sessList"), $("sessListM")]) {
     list.innerHTML = "";
     for (const [name, s] of Object.entries(sessions)) {
@@ -495,10 +528,33 @@ async function createSession(owner, sk, contract, methods, lanes, fund) {
 }
 
 $("nGo").onclick = async () => {
-  const owner = $("nOwner").value.trim(), sk = $("nSecret").value.trim();
+  let owner = $("nOwner").value.trim(), sk = $("nSecret").value.trim();
   const contract = $("nContract").value.trim();
   const methods = $("nMethods").value.split(",").map(x=>x.trim()).filter(Boolean);
-  if (!owner || !sk || !contract) return toast("⚠️","fill all fields");
+  if (!owner && walletAcct) owner = walletAcct;
+  if (!contract || !methods.length) return toast("⚠️","fill contract + methods");
+  if (!sk && walletNear && walletAcct === owner) {
+    // wallet mode: ask the wallet to add the gas key + fund it (popup once)
+    $("nGo").disabled = true; $("nGo").textContent = "Signing in wallet…";
+    try {
+      const gk = generateKey();
+      await walletNear.transaction(owner)
+        .addKey(String(gk.publicKey), { type: "gasKeyFunctionCall", numNonces: parseInt($("nLanes").value,10), receiverId: contract, methodNames: methods })
+        .transferToGasKey(String(gk.publicKey), `${$("nFund").value || "0.4"} NEAR`)
+        .send({ waitUntil: "FINAL" });
+      let name = contract.split(".")[0].slice(0, 10), i = 2;
+      while (sessions[name]) name = contract.split(".")[0].slice(0, 8) + i++;
+      sessions[name] = { owner, contract, methods, lanes: parseInt($("nLanes").value,10), token: DEFAULT_TOKEN,
+        gas_public: String(gk.publicKey), gas_secret: String(gk.secretKey), calls: 0 };
+      active = name; save();
+      $("mNew").classList.remove("show");
+      toast("✅","session live — zero popups from here");
+      log(`session created (wallet-signed) → ${contract}`, "ok"); boot();
+    } catch (e) { toast("❌", String(e).slice(0, 90)); }
+    $("nGo").disabled = false; $("nGo").textContent = "Create session";
+    return;
+  }
+  if (!owner || !sk) return toast("⚠️","fill all fields");
   $("nGo").disabled = true; $("nGo").textContent = "Signing…";
   try {
     await createSession(owner, sk, contract, methods, parseInt($("nLanes").value,10), $("nFund").value);
@@ -628,7 +684,7 @@ $("dGo").onclick = async () => {
   if (!amt || amt <= 0) return toast("⚠️","enter amount");
   $("dGo").disabled = true;
   try {
-    const kit = ownerKit(s.owner); if (!kit) throw new Error("cancelled");
+    const kit = await resolveOwnerKit(s.owner); if (!kit) throw new Error("cancelled");
     const r = await kit.transaction(s.owner)
       .functionCall(s.contract, "deposit", {}, { attachedDeposit: `${amt} NEAR`, gas: "60 Tgas" })
       .send({ waitUntil: "FINAL" });
@@ -642,7 +698,7 @@ $("bWithdraw").onclick = () => { if (!sess()) return toast("⚠️","no session"
 $("wGo").onclick = async () => {
   const s = sess(); $("wGo").disabled = true;
   try {
-    const kit = ownerKit(s.owner); if (!kit) throw new Error("cancelled");
+    const kit = await resolveOwnerKit(s.owner); if (!kit) throw new Error("cancelled");
     const r = await kit.transaction(s.owner)
       .functionCall(s.contract, "withdraw", {}, { attachedDeposit: "1 yocto", gas: "60 Tgas" })
       .send({ waitUntil: "FINAL" });
@@ -657,7 +713,7 @@ $("wGo").onclick = async () => {
 async function revoke(name) {
   const s = sessions[name]; if (!s || !confirm(`revoke session '${name}'? one full-key signature`)) return;
   try {
-    const kit = ownerKit(s.owner); if (!kit) return;
+    const kit = await resolveOwnerKit(s.owner); if (!kit) return;
     await kit.transaction(s.owner).deleteKey(s.gas_public).send({ waitUntil: "FINAL" });
     delete sessions[name]; if (active === name) active = Object.keys(sessions)[0] || null;
     save(); renderSessions(); boot(); toast("✅","session revoked");
@@ -676,6 +732,12 @@ function renderLanes() {
   }
   $("fLanes").textContent = s.lanes;
 }
+
+/* wallet pill → NEAR Connect */
+$("walletPill").onclick = async () => {
+  if (walletAcct) { toast("🔗", `wallet: ${walletAcct}`); return; }
+  await connectWallet();
+};
 
 /* mobile nav */
 for (const b of document.querySelectorAll("#mobnav button")) {
