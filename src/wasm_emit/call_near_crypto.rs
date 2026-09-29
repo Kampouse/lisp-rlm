@@ -542,6 +542,74 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_str());
                 Ok(v)
             }
+            "schnorr-sign" => {
+                // (schnorr-sign sk_bytes msg_bytes aux_bytes) -> 64-byte sig string (r||s)
+                // or "" on failure (zero sig: sk=0 / degenerate nonce).
+                // Byte-string return matches schnorr-verify's byte inputs —
+                // canonical internal representation (registrar TS convention:
+                // schnorrVerify(hexDecode(pk), hexDecode(sig), hexDecode(id))).
+                // BIP-340 via stitched WASM import:
+                //   schnorr_sign_bip340(sk_ptr, msg_ptr, aux_ptr, out_ptr) -> i32
+                // Writes 64 raw bytes to out_ptr; returns 1 ok / 0 fail.
+                if a.len() != 3 {
+                    return Err("schnorr-sign: need 3 args (sk, msg, aux)".into());
+                }
+                let sk = self.expr(&a[0])?;
+                let msg = self.expr(&a[1])?;
+                let aux = self.expr(&a[2])?;
+                let wasm_idx = self.need_wasm_import(
+                    "schnorr_sign_bip340",
+                    vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
+                    vec![ValType::I32],
+                );
+                let mut v = Vec::new();
+                // sk_ptr (untag Str -> raw pointer) — 32 bytes expected
+                v.extend(sk.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                // msg_ptr
+                v.extend(msg.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                // aux_ptr
+                v.extend(aux.clone());
+                v.extend(self.emit_untag());
+                v.push(Instruction::I32WrapI64);
+                // out_ptr: fresh runtime-heap buffer (64 bytes) — NOT TEMP_MEM:
+                // a live sig in the scratch area would be clobbered by the next
+                // op that uses it (same aliasing class as the sha256 HTLC bug).
+                let hx_old = self.local_idx("__hx_old");
+                v.push(Instruction::I32Const(56)); // RUNTIME_HEAP_PTR addr
+                v.push(Instruction::I64Load(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::LocalSet(hx_old));
+                v.push(Instruction::I32Const(56));
+                v.push(Instruction::LocalGet(hx_old));
+                v.push(Instruction::I64Const(64));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                // out_ptr arg: i32 view of the buffer address
+                v.push(Instruction::LocalGet(hx_old));
+                v.push(Instruction::I32WrapI64);
+                // Call — 64 raw bytes now at the heap buffer
+                v.push(Self::wasm_import_call(wasm_idx));
+                v.push(Instruction::Drop);
+                // tagged Str: (64 << 32) | buffer
+                v.push(Instruction::I64Const(64));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::LocalGet(hx_old));
+                v.push(Instruction::I64Or);
+                v.extend(self.emit_tag_str());
+                Ok(v)
+            }
             "near/p256_verify" => {
                 if a.len() != 3 {
                     return Err("near/p256_verify: need 3 args (sig, msg, pk)".into());

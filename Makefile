@@ -18,7 +18,10 @@ board:
 .PHONY: verify-erc20 verify-safe board
 
 # Regenerate the committed crypto artifact embedded by wasm_link
-# (schnorr_verify_bip340 + sha256_hash stitched into NEAR contracts).
-schnorr-wasm:
+# (schnorr_verify_bip340 + schnorr_sign_bip340 + sha256_hash stitched into
+# NEAR contracts). Sources: schnorr/src/lib.rs — rebuild when it changes.
+SCHNORR_SRC := $(wildcard schnorr/src/*.rs)
+
+schnorr-wasm: $(SCHNORR_SRC)
 	cd schnorr && cargo build --release --target wasm32-unknown-unknown
 	cp schnorr/target/wasm32-unknown-unknown/release/schnorr.wasm src/wasm_emit/schnorr.wasm

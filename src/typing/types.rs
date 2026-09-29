@@ -57,6 +57,7 @@ fn is_builtin_wildcard(name: &str) -> bool {
                 | "env/signer"
                 | "env/predecessor"
                 | "schnorr-verify"
+                | "schnorr-sign"
         )
 }
 
@@ -1414,6 +1415,14 @@ impl TcEnv {
             TcType::Arrow(
                 vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
                 Box::new(int_ty.clone()),
+            ),
+        );
+        // schnorr-sign : str -> str -> str -> str (BIP-340 sign, returns 128-hex r||s)
+        env.insert_mono(
+            "schnorr-sign".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+                Box::new(str_ty.clone()),
             ),
         );
         // near/schnorr_verify : str -> str -> str -> int (BIP-340 secp256k1, stitched WASM)

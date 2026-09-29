@@ -1127,3 +1127,70 @@ era). Central fix spot if ever wanted: to_bool/truthy in ts_frontend.rs
 (~4655) — all if/while/ternary conditions flow through it. Workaround
 today: `if (strLength(s) > 0)` when s is statically a string; `!s` is
 now exact in all cases.
+
+## 2026-09-29 — RUST-LAYER BIP-340 SIGN (the schnorr reds, killed)
+
+The "schnorr 3" pre-existing reds are dead. Root causes (three bugs
+stacked, found by comparing against `scripts/probe/bip340_ref.py` —
+a pure-stdlib Python BIP-340 reference):
+
+1. **`schnorr_sign` used field-mul (mod P) where BIP-340 needs scalar-mul
+   (mod n)** — `fe_mul(e, dp)` produced `e·d' mod P`; sigs were structurally
+   plausible but never verified. Fixed with `sc_mul_mod_n` (schoolbook 512-bit
+   product + shift-subtract reduction mod n) + `sc_add_mod_n`.
+2. **Odd-y R returned a zero sig** (~50% of nonces) instead of negating k.
+   Fixed: `k ← n−k` (R.x is invariant under negation — no re-multiplication).
+3. **The TESTS themselves computed pk wrong** — they threw away the Jacobian
+   Z and passed `[1,0,0,0]` to `jac_to_affine`, treating Jacobian X as
+   affine x. This masked partial progress and kept verify red after fix 1+2.
+4. (Found in my own first fix attempt: reduction must subtract **r − n**,
+   not n − r — `sc_sub_n` is the negation op; added `sc_sub_n_in_place`.)
+
+Evidence: `schnorr/` crate 9/9 green, including the **official BIP-340
+vector 0 reproduced byte-for-byte** (sk=3, msg=0^32, aux=0^32) and a
+64-aux sweep (every nonce verifies).
+
+**New API**: `schnorr_sign_bip340(sk*, msg*, aux*, out*)` exported from the
+stitched lib; Lisp surface `(schnorr-sign sk msg aux) → 64-byte sig string`
+(mirrors `schnorr-verify`'s byte-string convention; registered in the
+typechecker). Artifact rebuilt (71KB, `make schnorr-wasm` now depends on
+the .rs sources). End-to-end proof: `tests_p2/test_schnorr_sign.lisp` under
+near-mock logs `MATCH=YES VERIFY=VALID`.
+
+**Consequence**: the 640KB pure-Lisp kernel in `scripts/probe/` is no longer
+needed for signing — native stitched wasm has no two-mult limit, so the
+A/B two-run split is obsolete too. Kept as historical probe/fallback.
+Workspace tests: 172/173 (the 1 red is `test_p2_wasi_http_live`, a live
+network test unrelated to crypto).
+
+## 2026-09-29 (later) — SCHNORR IN P2 COMPONENTS — YES
+
+`(schnorr-sign)` / `(schnorr-verify)` / `(sha256-hash)` now work in
+outlayer-p2 components. Previously the P2 finish couldn't resolve
+WASM_IMPORT_BASE sentinels ("unresolved WASM_IMPORT_BASE sentinel" +
+silent call misdirection) — the schnorr stitch only ran in the NEAR finish.
+
+Wiring (src/wasi/mod.rs):
+- finish_outlayer_inner: emits env.<name> imports for em.wasm_imports
+  (types appended post near-host types), maps sentinels → import indices,
+  internal_base += wasm_import_count (was colliding with crypto imports).
+- build_combined_p2_core (storage/http programs): same treatment; crypto
+  imports sit at ol_import_base + ol_count + i, internal_fn_base bumped.
+  (First attempt used internal_fn_base as the import index — func 37
+  resolved sha256_hash → near:storage get; found via wasm-tools print.)
+- compile_outlayer_p2: link_schnorr_wat inlines the 71KB lib into the core
+  BEFORE componentization → self-contained component, no env.schnorr_*
+  host dependency. NOT yet wired: build_p2_with_wasi_http branch (pure
+  wasi:http programs — no crypto program shape hits it today).
+
+Proof: tests_p2/test_schnorr_sign_p2.lisp → `wasmtime run` (plain CLI,
+no custom host) prints `MATCH=YES VERIFY=VALID` — official BIP-340 sig
+byte-for-byte inside a P2 component. tests_p2/test_schnorr_storage_p2.lisp
+(storage+crypto, combined core path) validates; running it needs inlayer
+(near:storage/api host, not available locally — expected).
+
+Also: the compile CLI only parses `--target outlayer-p2` (space form);
+`--target=outlayer-p2` is SILENTLY ignored (produces a NEAR module).
+Bite-risk documented here; not yet fixed.
+
+Suite: 172/173 (the 1 red is the pre-existing live-network http test).

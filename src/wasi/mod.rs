@@ -809,9 +809,25 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
             f.instrs.len()
         );
     }
+    // Inline the stitched crypto lib (schnorr_*, sha256_hash) into the core
+    // module before componentization — replaces the env.* imports with the
+    // real implementations so the component is self-contained (no host
+    // dependency on env.schnorr_*).
+    let crypto_pairs: Vec<(&'static str, &'static str)> = em
+        .wasm_imports
+        .iter()
+        .map(|(name, _, _)| (*name, *name))
+        .collect();
+    let stitch_crypto = move |core: Vec<u8>| -> Vec<u8> {
+        if crypto_pairs.is_empty() {
+            return core;
+        }
+        crate::wasm_emit::wasm_link::link_schnorr_wat(&core, &crypto_pairs)
+    };
     let bytes = if em.need_outlayer && em.need_wasi_http {
         // Combined P2 path: wasi:http + outlayer in one component.
         let (core_bytes, has_outlayer) = build_combined_p2_core(&mut em)?;
+        let core_bytes = stitch_crypto(core_bytes);
         let dump = format!("/tmp/p2_core_debug.{}.wasm", std::process::id());
         std::fs::write(&dump, &core_bytes).ok();
         build_combined_p2_component(&core_bytes, has_outlayer, true)?
@@ -819,13 +835,16 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
         // Outlayer without HTTP — use combined P2 core + outlayer-nohttp WIT metadata.
         // This avoids wasi:http adapter traps from wit-component.
         let (core_bytes, has_outlayer) = build_combined_p2_core(&mut em)?;
+        let core_bytes = stitch_crypto(core_bytes);
         std::fs::write("/tmp/p2_core_nohttp.wasm", &core_bytes).ok();
         build_combined_p2_component(&core_bytes, has_outlayer, false)?
     } else if em.need_wasi_http {
         // wasi:http path — build component with embedded HTTP metadata
+        // (wasm-import stitching not yet wired in build_p2_with_wasi_http)
         build_p2_with_wasi_http(&em)?
     } else {
         let core_bytes = finish_outlayer_no_ol(&mut em)?;
+        let core_bytes = stitch_crypto(core_bytes);
         // Use manual component builder (production-compatible, handles wasi_snapshot_preview1 stubs)
         std::fs::write("/tmp/p2_ol_core.wasm", &core_bytes).ok();
         crate::p2_native::build_native_p2_component(&core_bytes)?
@@ -1757,6 +1776,29 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     let env_getenv_ret_i32_type = nti;
     nti += 1;
 
+    // Stitched WASM import types (schnorr_verify_bip340, schnorr_sign_bip340,
+    // sha256_hash): one type per unique signature. These become env.* imports
+    // that link_schnorr_wat replaces with the inlined lib post-build.
+    let mut wasm_import_type_map: std::collections::HashMap<(usize, bool), u32> =
+        std::collections::HashMap::new();
+    for (wi, (_name, params, results)) in em.wasm_imports.iter().enumerate() {
+        let has_result = !results.is_empty();
+        let key = (params.len(), has_result);
+        if !wasm_import_type_map.contains_key(&key) {
+            let mut ps = params.clone();
+            ps.sort_by_key(|_| 0); // stable — all our imports are all-i32
+            let rs: Vec<ValType> = if has_result {
+                vec![ValType::I32]
+            } else {
+                vec![]
+            };
+            types.ty().function(ps, rs);
+            wasm_import_type_map.insert(key, nti);
+            nti += 1;
+        }
+        let _ = wi;
+    }
+
     m.section(&types);
 
     // ── Import section ──
@@ -1869,10 +1911,24 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         );
         near_host_idx.insert(hi, func_idx);
     }
+    // Stitched WASM imports (schnorr_*) as env.* — indices after NEAR host
+    // stubs. resolve_static maps WASM_IMPORT_BASE sentinels to these; the
+    // link_schnorr_wat post-pass then inlines the lib, replacing the imports.
+    let mut wasm_import_fn_idx: std::collections::HashMap<usize, u32> =
+        std::collections::HashMap::new();
+    for (i, (name, params, results)) in em.wasm_imports.iter().enumerate() {
+        let key = (params.len(), !results.is_empty());
+        let type_idx = wasm_import_type_map[&key];
+        let func_idx = total_imports + near_host_used.len() as u32 + i as u32;
+        imports.import("env", name, EntityType::Function(type_idx));
+        wasm_import_fn_idx.insert(i, func_idx);
+    }
     m.section(&imports);
 
     let near_import_count = near_host_used.len() as u32;
-    let internal_base = total_imports + near_import_count;
+    // + wasm imports (schnorr_*) — internal functions start AFTER those too,
+    // else function indices collide with the env.* crypto imports.
+    let internal_base = total_imports + near_import_count + em.wasm_imports.len() as u32;
 
     // ── Function section ──
     let mut funcs = FunctionSection::new();
@@ -2012,7 +2068,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
             &name_map,
             &em.funcs,
             &ol_map,
-            &std::collections::HashMap::new(),
+            &wasm_import_fn_idx,
         );
         let mut fb = Function::new(locals);
         for instr in &resolved {
@@ -2674,9 +2730,10 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     let ol_import_base = HTTP_IMPORT_COUNT + 1; // 29
     let (ol, ol_sentinel_map, ol_count) = build_filtered_outlayer(&used_ol_indices, ol_import_base);
 
-    // Import layout: HTTP 0..27, get-stdin 28, outlayer 29..29+ol_count
+    // Import layout: HTTP 0..27, get-stdin 28, outlayer 29..29+ol_count,
+    // stitched wasm (schnorr_*) env.* imports after that.
     let get_stdin_import_idx = HTTP_IMPORT_COUNT; // 28
-    let internal_fn_base = ol_import_base + ol_count;
+    let internal_fn_base = ol_import_base + ol_count + em.wasm_imports.len() as u32;
     // sentinel 150 import index (entry 25 is imported by the filtered loop
     // like every other outlayer import — no separate import, no index shift)
     let env_getenv_import_idx = *ol_sentinel_map.get(&150).unwrap_or(&0);
@@ -2758,6 +2815,21 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     types.ty().function([ValType::I32; 3], []); // memcpy_type: (dst, src, len) -> ()
     types.ty().function([], [ValType::I32]); // ol_type_ret_i32: () -> i32 (get-environment)
 
+    // Stitched WASM import types (schnorr_*, sha256_hash): appended after all
+    // fixed types; one per unique (param_count, has_result) signature.
+    let schnorr_type_base = ol_type_base + 14;
+    let mut wasm_import_type_map_c: std::collections::HashMap<(usize, bool), u32> =
+        std::collections::HashMap::new();
+    for (_name, params, results) in em.wasm_imports.iter() {
+        let key = (params.len(), !results.is_empty());
+        if !wasm_import_type_map_c.contains_key(&key) {
+            let idx = schnorr_type_base + wasm_import_type_map_c.len() as u32;
+            let rs: Vec<ValType> = if key.1 { vec![ValType::I32] } else { vec![] };
+            types.ty().function(vec![ValType::I32; key.0], rs);
+            wasm_import_type_map_c.insert(key, idx);
+        }
+    }
+
     module.section(&types);
 
     // Full type map: outlayer_imports index → type index (for filtered lookup)
@@ -2805,6 +2877,23 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
             );
         }
     }
+
+    // Stitched WASM imports (schnorr_*, sha256_hash) as env.* — appended at the
+    // END of the import section so every downstream index shifts uniformly via
+    // internal_fn_base. resolve_static maps WASM_IMPORT_BASE sentinels here;
+    // link_schnorr_wat inlines the lib post-build, replacing these imports.
+    let mut wasm_import_fn_idx_c: std::collections::HashMap<usize, u32> =
+        std::collections::HashMap::new();
+    for (i, (name, params, results)) in em.wasm_imports.iter().enumerate() {
+        let key = (params.len(), !results.is_empty());
+        let type_idx = wasm_import_type_map_c[&key];
+        // Import position: after HTTP (28) + stdin (1) + filtered outlayer —
+        // NOT internal_fn_base (that's where FUNCTIONS start, after all imports).
+        let func_idx = ol_import_base + ol_count + i as u32;
+        imports.import("env", name, EntityType::Function(type_idx));
+        wasm_import_fn_idx_c.insert(i, func_idx);
+    }
+    let wasm_import_count_c = em.wasm_imports.len() as u32;
 
     module.section(&imports);
 
@@ -3199,7 +3288,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
                 &name_map,
                 &em.funcs,
                 &ol_map,
-                &std::collections::HashMap::new(),
+                &wasm_import_fn_idx_c,
             )
         };
 

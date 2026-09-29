@@ -1,3 +1,11 @@
+;; GENERATED FILE -- DO NOT EDIT BY HAND.
+;; bip340_nostr.lisp = bip340.lisp + Nostr cases (N=derive csw 78, E=event-sign csw 69).
+;; Generator: scripts/nostr_local/splice_nostr.py (reads /tmp/nostr_probe/bip340.lisp,
+;; writes /tmp/nostr_probe/bip340_nostr.lisp); the committed copy is the v1 artifact.
+;; v3 sealed-root ops (c/i/d/s = 99/105/100/115) are spliced in-place in /tmp by
+;; scripts/nostr_local/splice_nostr_v3.py to build nostr_worker.wasm -- they are
+;; NOT in this committed copy. Regen + status: see scripts/probe/README.md.
+
 (define (c-p _d) (list 1073740847 1073741819 1073741823 1073741823 1073741823 1073741823 1073741823 1073741823 65535))
 (define (c-n _d) (list 271991105 1061780019 881460155 733428139 1073741498 1073741823 1073741823 1073741823 65535))
 (define (c-r2 _d) (list 268435456 238632 1954 4 0 0 0 0 0))
