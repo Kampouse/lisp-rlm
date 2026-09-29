@@ -184,7 +184,7 @@ if (cmd === "status") {
   const perm = k.result?.permission?.GasKeyFunctionCall;
   const nonces = await queryGasKeyNonces({ accountId: sess.owner, publicKey: sess.gas_public, blockId: "final", network: NET });
   const rawArr = nonces.result?.nonces || nonces.nonces || [];
-  const arr = rawArr.map((x) => `L${x.nonce_index ?? x.nonceIndex}:${x.nonce}`).join(" ");
+  const arr = rawArr.map((n, i) => `L${i}:${n}`).join(" ");
   console.log(`session '${name}' → ${sess.contract}`);
   console.log(`  methods: ${sess.methods.join(", ") || "ALL"}  lanes: ${sess.lanes}  calls made: ${sess.calls}`);
   if (perm) console.log(`  prepaid: ${(Number(BigInt(perm.balance)) / 1e24).toFixed(4)} N`);
