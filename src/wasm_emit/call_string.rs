@@ -4724,6 +4724,26 @@ impl WasmEmitter {
     }
 
     fn str_contains(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
+        // Needle policy (mirrors str_index_of, 2026-09-02): a string LITERAL
+        // keeps the compile-time-embedded fast path below; any other
+        // expression reuses the dynamic scan — found = (dyn-index >= 0),
+        // tagged BOOL to match the literal path and the interpreter. This
+        // closes the .includes(dynamicNeedle) TS surface (str-contains was
+        // the last string op with a literal-only needle).
+        let needle_lit = match &a[1] {
+            LispVal::Str(s) => Some(s.clone()),
+            _ => None,
+        };
+        if needle_lit.is_none() {
+            let mut v = self.str_index_of_dyn(a)?;
+            v.extend(self.emit_untag());
+            v.push(Instruction::I64Const(0));
+            v.push(Instruction::I64GeS);
+            v.push(Instruction::I64ExtendI32U);
+            v.extend(self.emit_tag_bool());
+            return Ok(v);
+        }
+
         let ma = wasm_encoder::MemArg {
             offset: 0,
             align: 0,
