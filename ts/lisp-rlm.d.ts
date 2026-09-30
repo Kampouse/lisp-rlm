@@ -204,13 +204,32 @@ declare const near: {
   jsonReturnStr(v: string): void;
   jsonReturnInt(v: number): void;
 
+  /** RAW value_return (lisp near/return_str parity): bytes go to the
+   *  caller exactly as-is — no {"result": ...} wrap. Needed when a
+   *  consumer JSON.parse's the bytes directly (e.g. an outbox array).
+   *  NOTE on return conventions (2026-09-30, verified against the wasm
+   *  export wrapper + lending battery):
+   *    - get_* exports: plain `return v` → json_return_str → {"result": v}
+   *    - non-get_ exports: plain `return v` → RAW value_return of v
+   *      (works for change methods too — the wrapper always value_returns
+   *      the non-nil tail; nil tail = empty bytes)
+   *    - near.returnStr(v): explicit raw return from any fn
+   *  Use whichever reads best; near.returnStr is the unambiguous form. */
+  returnStr(v: string): void;
+
   // env
   predecessorAccountId(): string;
   currentAccountId(): string;
   signerAccountId(): string;
   blockIndex(): number;
-  /** u128-scale ns since epoch — crosses as NUM (lattice); typed any. */
-  blockTimestamp(): any;
+  /** ns since epoch as a DECIMAL STRING (2026-09-30: ns ~1.8e18 exceed
+   *  JS safe integers — arithmetic on a `number` silently loses
+   *  precision). Slice chars for seconds/nonce the way contracts do.
+   *  For arithmetic use blockTimestampNum(). */
+  blockTimestamp(): string;
+  /** Raw numeric ns (lattice Num) — prefer blockTimestamp() unless you
+   *  actually need arithmetic on the value. */
+  blockTimestampNum(): number;
 
   // money (u128 scale → decimal strings)
   attachedDeposit(): string;
@@ -222,6 +241,11 @@ declare const near: {
   // deposit check: writes attached_deposit to TEMP_MEM, compares u128.
   // Returns a REAL bool (TAG_BOOL) — use `!depositGte(...)` for gates;
   // `== 0` never fires (tag mismatch → false).
+  /** Preferred form: ONE bigint literal — the frontend splits u128 →
+   *  (lo64, hi64) at compile time: `near.depositGte(12000000000000000000000n)`
+   *  Nobody should hand-split a u128. */
+  depositGte(yocto: bigint): boolean;
+  /** Legacy two-number form (lo64, hi64). */
   depositGte(lo64: number, hi64: number): boolean;
   transfer(toAccountId: string, yoctoAmount: string): void;
   transferU128(toAccountId: string, amount: string): void;

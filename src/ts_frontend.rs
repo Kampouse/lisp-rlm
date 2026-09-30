@@ -4544,7 +4544,52 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     }
                 }
             }
+            // ── near.* special forms (2026-09-30) ─────────────────────────
+            // depositGte(<bigint literal>) — compile-time u128 → (lo64, hi64)
+            // split. Nobody should hand-split a u128 (crossport: the 0.012N
+            // fee pair was machine-verified because hand-computing it is a
+            // footgun). Two-number form stays as-is.
+            if let Expression::StaticMemberExpression(sm) = &c.callee {
+                if let (Expression::Identifier(o), "depositGte") =
+                    (&sm.object, sm.property.name.as_str())
+                {
+                    if o.name == "near" && c.arguments.len() == 1 {
+                        let a = c
+                            .arguments
+                            [0]
+                            .as_expression()
+                            .ok_or("ts_frontend: bad depositGte arg")?;
+                        if let Expression::BigIntLiteral(b) = a {
+                            let raw = b
+                                .raw
+                                .as_ref()
+                                .map(|s| s.as_str().trim_end_matches('n'))
+                                .unwrap_or_default();
+                            let v = raw.parse::<u128>().map_err(|_| {
+                                "ts_frontend: depositGte bigint literal out of u128 range".to_string()
+                            })?;
+                            return Ok(list(vec![
+                                Sym("near/deposit-gte"),
+                                Num((v & u64::MAX as u128) as i64),
+                                Num((v >> 64) as i64),
+                            ]));
+                        }
+                        return Err(
+                            "ts_frontend: depositGte takes (lo64, hi64) numbers or ONE \
+                             bigint literal, e.g. depositGte(12000000000000000000000n)"
+                                .into(),
+                        );
+                    }
+                }
+            }
             let head = callee_name(&c.callee)?;
+            // blockTimestampNum() → RAW numeric ns (alias for the host op
+            // — near/block_timestamp_num doesn't exist)
+            let head = if head == "near/block_timestamp_num" {
+                "near/block_timestamp".to_string()
+            } else {
+                head
+            };
             let head = map_builtin_call(&head);
             let mut items = vec![Sym(head.clone())];
             for a in &c.arguments {
@@ -4559,6 +4604,30 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             // json-get is dynamically str-or-num; the checker types it Int,
             // which breaks string comparisons. to-string is tag-aware
             // (identity on str, decimal on num) — safe cast for the dialect.
+            // blockTimestamp(): STRING (ns ~1.8e18 exceed JS safe ints —
+            // arithmetic on a `number` silently loses precision). Raw numeric
+            // variant stays available as near.blockTimestampNum().
+            if head == "near/block_timestamp" && c.arguments.is_empty() {
+                return Ok(list(vec![Sym("to-string"), list(items)]));
+            }
+            // nil-trap shield: haystack ops fed a bare miss-able getter
+            // (nil-on-miss) get a (default x "") wrap — strSlice(nil,0,10)
+            // and strIndexOf(nil,…) silently misbehave otherwise. Users who
+            // `??` explicitly are unaffected (the wrap sees a non-bare arg).
+            if matches!(head.as_str(), "str-slice" | "str-index-of" | "str-split")
+                && items.len() >= 2
+            {
+                if let Some(a) = c.arguments[0].as_expression() {
+                    if expr_is_missable_getter(a) {
+                        let shielded = list(vec![
+                            Sym("default"),
+                            items[1].clone(),
+                            Str(String::new()),
+                        ]);
+                        items[1] = shielded;
+                    }
+                }
+            }
             if head == "json-get" {
                 return Ok(list(vec![Sym("to-string"), list(items)]));
             }
@@ -4757,9 +4826,94 @@ fn callee_name(e: &Expression<'_>) -> Result<String, String> {
                 _ => return Err("ts_frontend: nested member chains not in M1".into()),
             };
             note_ident(s.property.name.as_str(), s.property.span.start);
-            Ok(map_member_fn(&obj, s.property.name.as_str()))
+            let mapped = map_member_fn(&obj, s.property.name.as_str());
+            // Typo hole: near.<member> lowers generically to near/<snake>,
+            // so an unknown member compiles fine and traps at RUNTIME
+            // (or worse, silently no-ops). Warn at compile time instead
+            // (2026-09-30). Generic lowering stays — the d.ts surface is a
+            // convention, not a whitelist (near.returnStr works pre-d.ts).
+            if obj == "near" && !known_near_member(s.property.name.as_str()) {
+                eprintln!(
+                    "[warn] ts_frontend: near.{} is not in the known host surface — \
+                     lowering to `{}`. If that op doesn't exist, this traps at \
+                     runtime. (typo? check ts/lisp-rlm.d.ts)",
+                    s.property.name.as_str(),
+                    mapped
+                );
+            }
+            Ok(mapped)
         }
         _ => Err("ts_frontend: callee must be an identifier or member (M1)".into()),
+    }
+}
+
+/// The known near.* member surface (keep in sync with ts/lisp-rlm.d.ts —
+/// the warning above only exists to catch typos, not to close the door on
+/// undocumented host ops).
+fn known_near_member(p: &str) -> bool {
+    matches!(
+        p,
+        // input/args
+        "jsonGetStr" | "jsonGetInt" | "jsonGetArr" | "jsonArr" | "jsonGet" | "jsonSet"
+            | "jsonQuote" | "jsonExtract" | "jsonReturnStr" | "jsonReturnInt"
+        // identity / env
+            | "predecessorAccountId" | "signerAccountId" | "currentAccountId"
+            | "signerAccountPk" | "blockIndex" | "blockHeight" | "blockTimestamp"
+            | "blockTimestampNum" | "prepaidGas" | "usedGas" | "storageUsage"
+            | "accountBalance" | "attachedDepositLow" | "attachedDepositHigh"
+            | "depositGte"
+        // storage
+            | "storageGet" | "storageSet" | "storageRemove" | "storageHas"
+            | "storageHasKey" | "iterPrefix"
+        // returns / control
+            | "returnStr" | "log" | "logNum" | "panic" | "abort"
+        // money
+            | "transfer" | "transferU128" | "storeU128" | "readU128"
+        // promises
+            | "promiseCreate" | "promiseThen" | "promiseAnd" | "promiseReturn"
+            | "promiseResult" | "promiseSucceeded" | "promiseResultsCount"
+            | "promiseBatchCreate" | "promiseBatchThen"
+            | "promiseBatchActionTransfer" | "promiseBatchActionFunctionCall"
+            | "promiseBatchActionFunctionCallWeight"
+            | "promiseBatchActionCreateAccount"
+            | "promiseBatchActionDeployGlobalContract"
+            | "promiseBatchActionDeployGlobalContractByAccountId"
+            | "promiseBatchActionUseGlobalContract"
+            | "promiseBatchActionUseGlobalContractByAccountId"
+            | "promiseBatchActionAddKeyWithFullAccess"
+            | "promiseBatchActionAddGasKeyWithFullAccess"
+            | "promiseBatchActionAddKeyWithFunctionCall"
+            | "promiseBatchActionAddGasKeyWithFunctionCall"
+            | "promiseBatchActionTransferToGasKey"
+            | "promiseBatchActionDeleteKey" | "promiseBatchActionStake"
+            | "promiseBatchActionDeleteAccount"
+            | "promiseYieldCreate" | "promiseYieldResume"
+            | "yieldCreate" | "yieldResume"
+            | "callAwait" | "call"
+        // crypto
+            | "sha256Hash" | "keccak256Hash" | "hexDecode" | "hexEncode"
+            | "ed25519Verify" | "schnorrVerify" | "schnorrSign" | "schnorrSignPk"
+            | "schnorrPubkey" | "schnorrPubkey33" | "vrfGenerate"
+            | "p256Verify" | "altBn128PairingCheck" | "bls12381PairingCheck"
+            | "altBn128G1Sum" | "altBn128G2Sum" | "blsG1Sum" | "blsG2Sum"
+    )
+}
+
+/// Bare getter calls that yield NIL on a miss (jsonGetStr / near.jsonGetStr /
+/// near.storageGet) — first-arg shield candidates for the haystack ops.
+fn expr_is_missable_getter(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::CallExpression(cc) => match &cc.callee {
+            Expression::StaticMemberExpression(s) => {
+                matches!(
+                    (&s.object, s.property.name.as_str()),
+                    (Expression::Identifier(o), "jsonGetStr" | "storageGet") if o.name == "near"
+                )
+            }
+            Expression::Identifier(id) => id.name.as_str() == "jsonGetStr",
+            _ => false,
+        },
+        _ => false,
     }
 }
 

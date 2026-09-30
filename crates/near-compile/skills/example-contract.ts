@@ -41,3 +41,27 @@ export function increment() {
 export function get_count() {
   return getStr("count");
 }
+
+// ── structured JSON building (2026-09-30): prefer jsonSet/jsonQuote over
+// hand-concatenating "{\"k\":\"v\"...}" strings — that's where escape bugs
+// breed. jsonQuote(v) returns the ENCODED value INCLUDING quotes, so it
+// drops straight into a value slot; jsonSet merges a key into a JSON
+// object string. Nested payloads (a request JSON embedding a JSON string)
+// compose cleanly:
+export function request_echo(): string {
+  const inner = jsonSet("{}", "content", jsonQuote("hello \"quoted\" world"));
+  const payload = jsonSet("{}", "input_data", jsonQuote(inner));
+  const req = jsonSet(payload, "payer_account_id", jsonQuote(near.predecessorAccountId()));
+  // bigint literals split u128 → (lo64,hi64) at compile time:
+  if (!near.depositGte(12000000000000000000000n)) {
+    near.panic("fee required");
+  }
+  return near.storageSet("last_req", req) as unknown as string;
+}
+// Return conventions (verified against the wasm export wrapper):
+//   get_* exports: `return v` → {"result": v} wrap (json_return_str)
+//   non-get_ exports: `return v` → RAW bytes (change methods too —
+//     the wrapper value_returns any non-nil tail; nil tail = empty bytes)
+//   near.returnStr(v): explicit raw return from any fn
+// blockTimestamp(): STRING (ns exceed JS safe ints) — slice chars for
+// seconds/nonce; blockTimestampNum() for arithmetic.
