@@ -1,0 +1,6 @@
+{
+  "account": "xcross-9f3.testnet",
+  "network": "testnet",
+  "src": "contract.lisp",
+  "out": "target/contract.wasm"
+}

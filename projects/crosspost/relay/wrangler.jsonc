@@ -1,0 +1,13 @@
+{
+  "name": "crosspost-relay-bridge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-15",
+  "observability": { "enabled": true },
+  "kv_namespaces": [{ "binding": "CURSOR", "id": "c112adf743134d4b919e4bc0a64368be" }],
+  "triggers": { "crons": ["* * * * *"] },
+  "vars": {
+    "NEAR_RPC": "https://rpc.testnet.fastnear.com",
+    "CONTRACT": "xcross-9f3.testnet",
+    "RELAYS": "wss://nos.lol,wss://relay.damus.io,wss://relay.primal.net"
+  }
+}

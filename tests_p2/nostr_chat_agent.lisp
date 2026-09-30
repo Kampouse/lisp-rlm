@@ -76,13 +76,22 @@
 (define (valid-nonce n) (and (< 0 (str-len n)) (< (str-len n) 33)))
 (define (valid-room r) (and (< 0 (str-len r)) (< (str-len r) 65)))
 (define (resolve-caller input)
+  ;; Identity precedence:
+  ;;  1. env == TRUSTED-ROUTER  -> tx came through the router contract; honor
+  ;;     its forwarded caller (only the router composes that input mid-chain;
+  ;;     a direct mallory tx has env=mallory and CANNOT reach this branch).
+  ;;  2. env set (direct tx)    -> env wins, input caller ignored (spoof-proof).
+  ;;  3. no env (HTTPS/CLI)     -> prod: reject; demo-root: dev fallback.
   (let* ((envs (env/get "NEAR_SENDER_ID"))
          (proot (env/get "PROTECTED_NOSTR_ROOT"))
          (snd (if envs envs ""))
          (prod (< 63 (str-len (if proot proot ""))))
          (inp (json-get-str "caller" input))
-         (fallback (if prod "" (if inp inp ""))))
-    (if (< 0 (str-len snd)) snd fallback)))
+         (via-router (= snd "xcross-9f3.testnet")))
+    (if via-router
+        (if (and inp (< 0 (str-len inp))) inp snd)
+        (if (< 0 (str-len snd)) snd
+            (if prod "" (if inp inp ""))))))
 (define (root-of)
   (let* ((proot (env/get "PROTECTED_NOSTR_ROOT"))
          (env-root (if (and proot (< 63 (str-len (if proot proot "")))) proot "")))
