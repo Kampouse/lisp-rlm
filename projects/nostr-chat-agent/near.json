@@ -1,0 +1,7 @@
+{
+  "name": "nostr-chat-agent",
+  "src": "../../tests_p2/nostr_chat_agent.lisp",
+  "output": "target/nostr-chat-agent.wasm",
+  "account": "chat.kampy.testnet",
+  "network": "testnet"
+}
