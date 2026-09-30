@@ -29,9 +29,11 @@
 (define (on_price)
   (begin
     (let ((tag (near/json_get_str "tag"))
-          ;; storage_get yields (opt str) — (default ...) unwraps, "" on miss;
-          ;; promise_result is fail-closed: "" when the callee errored.
-          (res (default (near/promise_result 0) "")))
+          ;; promise_result is fail-closed (Aug 2026): "" when the callee
+          ;; errored, never nil — no (default ...) unwrap needed. (An explicit
+          ;; int → str checker entry, 57ecaca 2026-09-27, now rejects the
+          ;; stale maybe-nil wrapping at compile time.)
+          (res (near/promise_result 0)))
       (if (= (str-length res) 0)
           (near/storage_set "last" (str-cat tag "|FAIL"))
           (near/storage_set "last" (str-cat tag (str-cat "|" res)))))

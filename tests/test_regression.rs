@@ -952,6 +952,81 @@ fn compile_transfer_p2() {
     assert!(wasm.len() > 500, "WASM too small: {} bytes", wasm.len());
 }
 
+// ============================================================================
+// Schnorr/BIP-340 (Rust-layer builtins, Sep 29)
+// The stitched lib lives in src/wasm_emit/schnorr.wasm (make schnorr-wasm);
+// compile-tier here proves wiring + guards; execution was proven in inlayer
+// (68.8M instr sign+verify, 37.9M verify-only) and near-mock below.
+// ============================================================================
+
+/// Official vector 0 end-to-end through the NEAR target (stitched lib).
+#[test]
+fn near_schnorr_sign_official_vector() {
+    let src = include_str!("../tests_p2/test_schnorr_sign.lisp");
+    let wasm = lisp_rlm_wasm::compile_near(src).expect("compile failed");
+    assert!(
+        wasm.len() > 60_000,
+        "stitched lib missing — contract suspiciously small: {} bytes",
+        wasm.len()
+    );
+    std::fs::write("/tmp/test_schnorr_near.wasm", &wasm).expect("write failed");
+}
+
+/// Verify-only probe must now compile (hex-decoded args) and embed the lib.
+#[test]
+fn compile_schnorr_verify_p2() {
+    let src = include_str!("../tests_p2/test_schnorr_probe.lisp");
+    let wasm = compile_p2(src);
+    assert!(wasm.len() > 50_000, "WASM too small: {} bytes", wasm.len());
+    validate(&wasm, "schnorr_verify_p2");
+}
+
+/// Storage+sign P2 pipeline compiles and validates.
+#[test]
+fn compile_schnorr_storage_p2() {
+    let src = include_str!("../tests_p2/test_schnorr_storage_p2.lisp");
+    let wasm = compile_p2(src);
+    assert!(wasm.len() > 50_000, "WASM too small: {} bytes", wasm.len());
+    validate(&wasm, "schnorr_storage_p2");
+}
+
+/// GUARD: hex string literal to schnorr-verify must FAIL compilation loudly,
+/// not silently emit a verifier that always returns 0.
+#[test]
+fn guard_schnorr_verify_rejects_hex_literals() {
+    let src = r#"(define (run input)
+  (schnorr-verify
+    "F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9"
+    "E907831F80848D1069A5371B402410364BDF1C5F8307B0084C55F1CE2DCA821525F66A4A85EA8B71E482A74F382D2CE5EBEEE8FDB2172F477DF4900D310536C0"
+    "0000000000000000000000000000000000000000000000000000000000000000"))"#;
+    let err = lisp_rlm_wasm::compile_outlayer_p2(src)
+        .err()
+        .expect("hex-literal args must be a compile ERROR, not silent 0");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("RAW BYTES"),
+        "error should explain the footgun, got: {msg}"
+    );
+}
+
+/// GUARD: hex string literal as schnorr-sign sk must FAIL compilation loudly.
+#[test]
+fn guard_schnorr_sign_rejects_hex_sk_literal() {
+    let src = r#"(define (run input)
+  (schnorr-sign
+    "0000000000000000000000000000000000000000000000000000000000000003"
+    (hex-decode "0000000000000000000000000000000000000000000000000000000000000000")
+    (hex-decode "0000000000000000000000000000000000000000000000000000000000000000")))"#;
+    let err = lisp_rlm_wasm::compile_outlayer_p2(src)
+        .err()
+        .expect("hex-literal sk must be a compile ERROR, not a zero sig");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("RAW BYTES"),
+        "error should explain the footgun, got: {msg}"
+    );
+}
+
 // Near-mock tier
 mod near_mock {
     use super::*;

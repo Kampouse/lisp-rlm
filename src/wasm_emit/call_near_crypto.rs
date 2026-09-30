@@ -399,6 +399,25 @@ impl WasmEmitter {
                 // (schnorr-verify pk_bytes sig_bytes msg_bytes) -> int (1/0)
                 // BIP-340 via WASI-resolved import: schnorr_verify_bip340(pk_ptr, sig_ptr, msg_ptr, msg_len) -> i32
                 // Local: near_mock.rs resolves to builtin_schnorr.rs. On-chain: linker stitches WASM.
+                //
+                // Compile-time footgun guard (Sep 29): these builtins take RAW
+                // BYTES (the import reads ptr+len). A hex string literal here is
+                // read as ASCII garbage and silently returns 0 in ~250 instrs —
+                // indistinguishable from a real invalid signature. Hex-key-shaped
+                // literals are rejected loudly instead.
+                for (i, arg) in a.iter().enumerate() {
+                    if let LispVal::Str(s) = arg {
+                        // pk = 64 hex chars (32 bytes), sig = 128 hex chars (64 bytes)
+                        let want = if i == 0 { 64 } else { 128 };
+                        if s.len() == want && hex_decode(s).is_ok() {
+                            return Err(format!(
+                                "schnorr-verify arg {i} looks like a hex string literal — \
+                                 these builtins take RAW BYTES. Wrap it: (hex-decode \"...\"). \
+                                 For compile-time hex constants use near/schnorr_verify instead."
+                            ));
+                        }
+                    }
+                }
                 let pk = self.expr(&a[0])?;
                 let sig = self.expr(&a[1])?;
                 let msg = self.expr(&a[2])?;
@@ -553,6 +572,19 @@ impl WasmEmitter {
                 // Writes 64 raw bytes to out_ptr; returns 1 ok / 0 fail.
                 if a.len() != 3 {
                     return Err("schnorr-sign: need 3 args (sk, msg, aux)".into());
+                }
+                // Compile-time footgun guard (Sep 29): sk must be RAW BYTES.
+                // A 64-hex-char literal is read as 64 ASCII bytes -> import
+                // try_into([u8;32]) fails -> zero sig, silent garbage downstream.
+                // msg/aux stay unguarded: plain-text messages are legitimate.
+                if let LispVal::Str(s) = &a[0] {
+                    if s.len() == 64 && hex_decode(s).is_ok() {
+                        return Err(
+                            "schnorr-sign: sk looks like a hex string literal — this builtin \
+                             takes RAW BYTES. Wrap it: (schnorr-sign (hex-decode \"...\") msg aux)"
+                                .into(),
+                        );
+                    }
                 }
                 let sk = self.expr(&a[0])?;
                 let msg = self.expr(&a[1])?;
