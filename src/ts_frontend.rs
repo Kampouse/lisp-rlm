@@ -284,7 +284,7 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                     let literal = match init {
                         Expression::NumericLiteral(n) => Some(Num(n.value as i64)),
                         Expression::StringLiteral(s) => Some(Str(s.value.as_str().to_string())),
-                        Expression::BooleanLiteral(b) => Some(Num(if b.value { 1 } else { 0 })),
+                        Expression::BooleanLiteral(b) => Some(LispVal::Bool(b.value)),
                         Expression::BigIntLiteral(b) => {
                             is_bigint = true;
                             Some(Str(b
@@ -387,7 +387,7 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                     let literal = match init {
                         Expression::NumericLiteral(n) => Some(Num(n.value as i64)),
                         Expression::StringLiteral(s) => Some(Str(s.value.as_str().to_string())),
-                        Expression::BooleanLiteral(b) => Some(Num(if b.value { 1 } else { 0 })),
+                        Expression::BooleanLiteral(b) => Some(LispVal::Bool(b.value)),
                         // `const FEE_BP = 500n;` — u128 const: folds as a
                         // decimal string AND marks the name bigint-shaped
                         Expression::BigIntLiteral(b) => {
@@ -3619,7 +3619,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
     match e {
         Expression::NumericLiteral(n) => Ok(Num(n.value as i64)),
         Expression::StringLiteral(s) => Ok(Str(s.value.as_str().to_string())),
-        Expression::BooleanLiteral(b) => Ok(Num(if b.value { 1 } else { 0 })),
+        Expression::BooleanLiteral(b) => Ok(LispVal::Bool(b.value)),
         Expression::NullLiteral(_) => Ok(LispVal::Nil),
         // u128-style digits-as-string. oxc raw for `1000n` is "1000n" —
         // strip the suffix: a stray 'n' would trap the u128/* parsers.
@@ -5195,12 +5195,14 @@ fn ts_ann_to_lisp(t: Option<&oxc_ast::ast::TSTypeAnnotation<'_>>) -> Option<&'st
     match &a.type_annotation {
         TSType::TSNumberKeyword(_) => Some("int"),
         TSType::TSStringKeyword(_) => Some("str"),
-        // TS booleans lower as 0/1 ints (JS numeric semantics — see
-        // BooleanLiteral → Num(1|0) in lower_expr), so the annotation
-        // must agree: `:: ... int`. `:: bool` would make every annotated
-        // boolean function a type error (found on the first annotated
-        // `: boolean` return, Counter TS demo 2026-08-30).
-        TSType::TSBooleanKeyword(_) => Some("int"),
+        // TS booleans are first-class Bool values (2026-09-30): literals
+        // lower as Bool, comparisons/str-contains already type Bool, and
+        // the checker's `=`/`!=` are total on mixed pairs — so
+        // `ch ? x.includes(y) : false` unifies instead of dying with
+        // "branch types disagree: bool ≠ int". The old Num(1|0) decree
+        // made every ternary mixing a bool expression with a literal
+        // fail, and forced `: boolean` annotations to lie (:: int).
+        TSType::TSBooleanKeyword(_) => Some("bool"),
         _ => None,
     }
 }
@@ -5349,7 +5351,12 @@ fn Str(s: impl Into<String>) -> LispVal {
 fn sexp(v: &LispVal) -> String {
     match v {
         LispVal::Nil => "nil".into(),
-        LispVal::Bool(b) => if *b { "1" } else { "0" }.into(),
+        // 2026-09-30: print real Bool atoms. The lisp parser reads
+        // true/false back as Bool (parser.rs) — the old "1"/"0" print
+        // silently demoted every TS boolean literal to Num across the
+        // source-text boundary, so `: boolean` and ternary bool branches
+        // could never unify ("branch types disagree: bool ≠ int").
+        LispVal::Bool(b) => if *b { "true" } else { "false" }.into(),
         LispVal::Num(n) => n.to_string(),
         LispVal::U64(n) => n.to_string(),
         LispVal::Float(f) => format!("{}", f),
