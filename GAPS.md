@@ -1456,3 +1456,13 @@ NEXT: multi-relay fan-out at compile time; gas-key lanes instead of full-key
 sends (key isolation, but deposits still blocked by protocol — needs a
 sponsored/payer path); NIP-28 channel events; NIP-98-authed HTTP relays for
 agent-side publish; windowed EC mult (roadmap item 2) once volume matters.
+
+## P2 emitter: second literal-URL httpPost emits a stub (OPEN, found 2026-09-30)
+Two literal-URL POST sites in one program register both URLs in
+`http_post_urls` but the helper emission only produces ONE real wasi:http
+POST helper — the second URL's helper compiles to `nop; i32.const 0`.
+Effect: any branch routed to the second relay silently POSTs via the FIRST
+URL's helper (or returns null via the stub, depending on wrapper dispatch).
+Repro: `postRelay(r)` if/else over damus/nos.lol in tests_p2/nostr_chat_agent*.ts —
+check WAT: second helper fn = 5 lines. Fix belongs in the per-URL POST-helper
+loop in `build_combined_p2_core` (src/wasi/mod.rs).

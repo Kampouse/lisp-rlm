@@ -3078,7 +3078,15 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
 
     // Data segments for URL strings
     let mut all_http_data_segments: Vec<(i32, Vec<u8>)> = Vec::new();
-    let mut current_data_offset: i32 = 16384;
+    // URL/header segments must start ABOVE every emitter reservation
+    // (literals, site buffers, hex-encode 4096B scratch per site, …).
+    // The old hardcoded 16384 silently overlapped them once
+    // next_data_offset grew past it — runtime hex scratch then zeroed the
+    // POST URL/authority/headers → corrupted canon lowers →
+    // "unknown handle index" traps on the wasi:http bridge.
+    // (Proven 2026-09-30: every chat-agent build with
+    // next_data_offset > 16384 trapped; ≤ 16384 ran clean.)
+    let mut current_data_offset: i32 = (em.next_data_offset.max(16384) as i32 + 15) & !7;
 
     let headers: &[(&[u8], &[u8])] = &[
         (b"User-Agent", b"lisp-rlm/0.1 (wasi:http)"),
@@ -3860,6 +3868,24 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
             data.active(0, &ConstExpr::i32_const(*offset), bytes.iter().copied());
         }
         module.section(&data);
+    }
+
+    if std::env::var("LISPRLM_DEBUG_LAYOUT").is_ok() {
+        let mut spans: Vec<(u64, u64, &str)> = Vec::new();
+        for (o, b) in &em.data_segments { spans.push((*o as u64, *o as u64 + b.len() as u64, "lit")); }
+        for (o, b) in &all_http_data_segments { spans.push((*o as u64, *o as u64 + b.len() as u64, "url")); }
+        let lit_max = em.data_segments.iter().map(|(o, b)| *o as u64 + b.len() as u64).max().unwrap_or(0);
+        let url_min = all_http_data_segments.iter().map(|(o, _)| *o as u64).min().unwrap_or(0);
+        let url_max = all_http_data_segments.iter().map(|(o, b)| *o as u64 + b.len() as u64).max().unwrap_or(0);
+        eprintln!("LAYOUT: literals {} segs end={} | urls {} segs [{}..{}] | pages={} | next_data_offset={} | URL_BASE_CROSS={}",
+            em.data_segments.len(), lit_max, all_http_data_segments.len(), url_min, url_max, em.memory_pages.max(2048), em.next_data_offset,
+            if em.next_data_offset > 16384 { "YES!!" } else { "no" });
+        spans.sort();
+        for i in 0..spans.len().saturating_sub(1) {
+            if spans[i].1 > spans[i+1].0 {
+                eprintln!("OVERLAP! {}@{}..{} vs {}@{}..{}", spans[i].2, spans[i].0, spans[i].1, spans[i+1].2, spans[i+1].0, spans[i+1].1);
+            }
+        }
     }
 
     let core_bytes = module.finish();
