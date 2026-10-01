@@ -425,10 +425,17 @@
 
 (define (lint-phantom code)
   (known-fns!)
-  (let ((forms (try (read-all code) (catch e nil))))
-    (if (= (len forms) 0) false
-      (let ((defs (collect-defines forms (list))))
-        (lp forms defs)))))
+  ;; STORAGE LINT (2026-10-01): (set! answer v) is INVISIBLE outside the
+  ;; expression — snapshots don't keep env vars. t_lend_accrue it3 solved
+  ;; the math perfectly then lost the check to this. Bounces for free.
+  (let ((store-bad (and (str-contains code "set! answer")
+                        (not (str-contains code "rlm-set answer")))))
+    (if store-bad
+      "(set! answer ...) is INVISIBLE to the world — plain env vars vanish outside your expression; the checker reads the world key, not your local. Store the result with (rlm-set answer <value>)"
+      (let ((forms (try (read-all code) (catch e nil))))
+        (if (= (len forms) 0) false
+          (let ((defs (collect-defines forms (list))))
+            (lp forms defs)))))))
 
 (define (rlm-step)
   (begin
