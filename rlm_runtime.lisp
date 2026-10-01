@@ -423,6 +423,17 @@
         (collect-defines (cdr forms) (cons (to-string (car (car (cdr f)))) acc))
         (collect-defines (cdr forms) acc)))))
 
+;; top-level forms are ALL defines → nothing ever executes (2026-10-01:
+;; t_lend_accrue brains wrote the perfect formula inside (define (main)
+;; ...) and never called it, 9 iterations dead). false = has a live
+;; top-level expression.
+(define (dangling-define? forms)
+  (if (= (len forms) 0) true
+    (if (and (list? (car forms)) (>= (len (car forms)) 1)
+             (equal? (car (car forms)) (quote define)))
+      (dangling-define? (cdr forms))
+      false)))
+
 (define (lint-phantom code)
   (known-fns!)
   ;; STORAGE LINT (2026-10-01): (set! answer v) is INVISIBLE outside the
@@ -434,8 +445,12 @@
       "(set! answer ...) is INVISIBLE to the world — plain env vars vanish outside your expression; the checker reads the world key, not your local. Store the result with (rlm-set answer <value>)"
       (let ((forms (try (read-all code) (catch e nil))))
         (if (= (len forms) 0) false
-          (let ((defs (collect-defines forms (list))))
-            (lp forms defs)))))))
+          ;; DANGLING-DEFINE LINT: all top-level forms are defines → the
+          ;; program never runs (no side effects, answer stays nil).
+          (if (dangling-define? forms)
+            "your submission is all (define ...) forms — defines NEVER execute on their own, so nothing runs and answer stays nil. Compute directly: (let ((p 1000)) (rlm-set answer (+ p ...)) (final true)) — or append the call after the define"
+            (let ((defs (collect-defines forms (list))))
+              (lp forms defs))))))))
 
 (define (rlm-step)
   (begin
