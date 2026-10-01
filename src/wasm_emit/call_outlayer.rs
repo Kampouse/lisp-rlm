@@ -119,16 +119,24 @@ impl WasmEmitter {
                 // Register literal URL for wasi:http POST helper generation (P2
                 // native bridge) + count the call so the builder knows all POSTs
                 // are literal-URL and can skip the outlayer host import.
+                // post_url_idx feeds the per-URL sentinel (200+i) so each relay
+                // reaches ITS OWN bridge/core helper — a single shared sentinel
+                // silently routed every POST to the first registered URL.
                 self.http_post_call_count += 1;
+                let mut post_url_idx: u32 = 0;
                 if self.need_wasi_http {
                     if let crate::types::LispVal::Str(url) = &a[0] {
                         if let Some((auth, path)) = Self::split_url(url) {
-                            if !self
+                            match self
                                 .http_post_urls
                                 .iter()
-                                .any(|(a, p)| a == &auth && p == &path)
+                                .position(|(a, p)| a == &auth && p == &path)
                             {
-                                self.http_post_urls.push((auth, path));
+                                Some(idx) => post_url_idx = idx as u32,
+                                None => {
+                                    post_url_idx = self.http_post_urls.len() as u32;
+                                    self.http_post_urls.push((auth, path));
+                                }
                             }
                         }
                     }
@@ -184,8 +192,15 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(content_type_len));
                 // ret_area
                 v.push(Instruction::I32Const(ret_area));
-                // Call http-post-dynamic (sentinel 143) — outlayer host path with auth injection
-                v.push(Instruction::Call(143));
+                // P2 native bridge: per-URL sentinel (200+idx) when the URL is a
+                // baked literal; sentinel 143 (http-post-dynamic, outlayer host)
+                // only for the non-wasi/P1 path where post_url_idx was never set.
+                let post_sentinel: u32 = if self.need_wasi_http {
+                    200 + post_url_idx
+                } else {
+                    143
+                };
+                v.push(Instruction::Call(post_sentinel));
                 // Read result (same pattern as http-get)
                 v.push(Instruction::I32Const(ret_area));
                 v.push(Instruction::I32Load(ma4));

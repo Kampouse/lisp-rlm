@@ -2824,7 +2824,8 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     let realloc_fn_idx = start_fn_idx + 1;
 
     let env_lookup_fn_idx = if bridge_native_post {
-        realloc_fn_idx + 2
+        // realloc + 1..n POST bridges (one per literal URL) + 1
+        realloc_fn_idx + 1 + http_post_count
     } else {
         realloc_fn_idx + 1
     };
@@ -2966,8 +2967,12 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     functions.function(start_type);
     functions.function(realloc_type);
     if bridge_native_post {
-        // 143 bridge: (i32*7) -> () — same type as http-post-dynamic import
-        functions.function(ol_type_7);
+        // Per-URL POST bridges: (i32*7) -> () — same type as http-post-dynamic import.
+        // One bridge per literal URL (sentinel 200+i); each adapts the call-site
+        // (url,body,ct,ret_area) convention to its own per-URL core POST fn.
+        for _ in 0..http_post_count {
+            functions.function(ol_type_7);
+        }
     }
     // env lookup helper: (ret_area) -> () — must match its codes-section order
     // (appended after the optional 143 bridge body below)
@@ -3329,13 +3334,16 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
             for i in 0..http_get_count {
                 ol_map.insert(103 + i, http_get_fn_idx + i * 2);
             }
-            // HTTP POST sentinels → internal HTTP POST functions (wasi:http mode)
+            // HTTP POST sentinels → per-URL POST bridges (wasi:http mode).
+            // 200+i targets the bridge (ct/ret_area convention); mapping straight
+            // to the per-URL core fn would misread ct_ptr/ct_len as buf/buf_len.
             for i in 0..http_post_count {
-                ol_map.insert(post_sentinel_base + i, http_post_fn_idx + i * 2);
+                ol_map.insert(post_sentinel_base + i, realloc_fn_idx + 1 + i);
             }
             ol_map.insert(crate::wasm_emit::WASI_FD_WRITE, fd_write_shim_idx);
             if bridge_native_post {
-                ol_map.insert(143, realloc_fn_idx + 1); // → wasi:http POST bridge
+                // Compat fallback: 143 → first URL's bridge
+                ol_map.insert(143, realloc_fn_idx + 1);
             }
             if uses_env_lookup {
                 ol_map.insert(150, env_lookup_fn_idx);
@@ -3543,11 +3551,17 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         codes.function(&realloc);
     }
 
-    // ── 143 → wasi:http POST bridge (appended after realloc body; section
-    //    entry likewise appended) ──
+    // ── per-URL POST bridges (appended after realloc body; section entries
+    //    likewise appended) ──
     // Call site: (url_ptr, url_len, body_ptr, body_len, ct_ptr, ct_len, ret_area) -> ()
     // Contract: ret_area+0 err(0=ok), +4 body ptr, +8 body len.
+    // One bridge per literal URL (sentinel 200+url_idx); bridge i forwards to
+    // the per-URL core POST fn http_post_fn_idx + i*2. (Old bug: a single
+    // bridge hardwired to URL 0 made every second relay silently POST to the
+    // first URL — GAPS.md bug #2.)
     if bridge_native_post {
+     for post_url_i in 0..http_post_count {
+        let post_target = http_post_fn_idx + post_url_i * 2;
         let ma4 = MemArg {
             offset: 0,
             align: 2,
@@ -3567,7 +3581,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         bridge.instruction(&Instruction::LocalGet(6));
         bridge.instruction(&Instruction::I32Const(12));
         bridge.instruction(&Instruction::I32Add);
-        bridge.instruction(&Instruction::Call(http_post_fn_idx));
+        bridge.instruction(&Instruction::Call(post_target));
         bridge.instruction(&Instruction::LocalSet(7));
         // ret_area+8 = len (written by POST at ret_area+12)
         bridge.instruction(&Instruction::LocalGet(6));
@@ -3596,6 +3610,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         bridge.instruction(&Instruction::I32Store(ma4));
         bridge.instruction(&Instruction::End);
         codes.function(&bridge);
+     }
     }
     // ── env lookup helper at env_lookup_fn_idx ──
     // (key_area) -> (): sentinel-150 env lookup via canon get-environment.

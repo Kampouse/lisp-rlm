@@ -1457,7 +1457,15 @@ sends (key isolation, but deposits still blocked by protocol — needs a
 sponsored/payer path); NIP-28 channel events; NIP-98-authed HTTP relays for
 agent-side publish; windowed EC mult (roadmap item 2) once volume matters.
 
-## P2 emitter: second literal-URL httpPost emits a stub (OPEN, found 2026-09-30)
+## P2 emitter: second literal-URL httpPost emits a stub (FIXED 2026-09-30, same evening)
+
+Fix: per-URL POST bridges (sentinel 200+url_idx at call sites; one bridge
+per literal URL after realloc; ol_map 200+i → bridge_i; env-lookup idx
+shifted accordingly). Static proof: bridge f66 → core f38 (URL #2 data
+block); runtime: chat agent POSTs complete on both r branches.
+NOTE (pre-existing, still open): bare POST-only programs (no env/storage)
+hit "Buffer too large for blocking-write-and-flush (expected at most
+4096)" on BOTH old and new emitters — orthogonal bug, unrepro'd yet.
 Two literal-URL POST sites in one program register both URLs in
 `http_post_urls` but the helper emission only produces ONE real wasi:http
 POST helper — the second URL's helper compiles to `nop; i32.const 0`.
