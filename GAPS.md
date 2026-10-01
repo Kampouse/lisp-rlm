@@ -1,6 +1,6 @@
 # lisp-rlm — Gap Tracker
 
-**Last verified:** 2026-07-05 (source audit of 86 host functions, all `call_*.rs` modules)
+**Last verified:** 2026-09-30 (post hex-scratch + per-URL-POST fixes; suite 172/173 — the 1 red is the pre-existing live-network http test)
 
 > Generated from direct source audit, not memory. Old GAPS.md backed up to `GAPS.md.bak`.
 
@@ -1457,20 +1457,59 @@ sends (key isolation, but deposits still blocked by protocol — needs a
 sponsored/payer path); NIP-28 channel events; NIP-98-authed HTTP relays for
 agent-side publish; windowed EC mult (roadmap item 2) once volume matters.
 
-## P2 emitter: second literal-URL httpPost emits a stub (FIXED 2026-09-30, same evening)
+## P2 emitter: hex-encode scratch overwrote URL data segments (FIXED 2026-09-30, 095a425)
 
-Fix: per-URL POST bridges (sentinel 200+url_idx at call sites; one bridge
-per literal URL after realloc; ol_map 200+i → bridge_i; env-lookup idx
-shifted accordingly). Static proof: bridge f66 → core f38 (URL #2 data
-block); runtime: chat agent POSTs complete on both r branches.
-NOTE (pre-existing, still open): bare POST-only programs (no env/storage)
-hit "Buffer too large for blocking-write-and-flush (expected at most
-4096)" on BOTH old and new emitters — orthogonal bug, unrepro'd yet.
-Two literal-URL POST sites in one program register both URLs in
-`http_post_urls` but the helper emission only produces ONE real wasi:http
-POST helper — the second URL's helper compiles to `nop; i32.const 0`.
-Effect: any branch routed to the second relay silently POSTs via the FIRST
-URL's helper (or returns null via the stub, depending on wrapper dispatch).
-Repro: `postRelay(r)` if/else over damus/nos.lol in tests_p2/nostr_chat_agent*.ts —
-check WAT: second helper fn = 5 lines. Fix belongs in the per-URL POST-helper
-loop in `build_combined_p2_core` (src/wasi/mod.rs).
+**Bug:** every `hex-encode` call site reserves a 4096-byte runtime scratch via
+`next_data_offset` (src/wasm_emit/call_string.rs ~2790), while the P2 layer
+hardcoded URL/authority/header data segments at `current_data_offset = 16384`
+(src/wasi/mod.rs) with ZERO coordination between the counters. When
+reservations crossed 16384 (nostr_chat_agent: ~20K), the runtime hex scratch
+(zero-fill + hex chars) landed on the relay URL/authority/header bytes →
+corrupted canon list-lowering at component instantiation → the deterministic
+"unknown handle index 19" trap in inlayer. Proven via LISPRLM_DEBUG_LAYOUT:
+every OK build laid out ≤16384; every TRAP build crossed it.
+
+**Fix (095a425):** URL data segments now start at `max(next_data_offset,
+16384)` aligned up (`build_url_data_segments_with_base`). All three twins
+(old-TS ≡ elegant ≡ Lisp) produce byte-identical id/sig/pk; BIP-340 sigs
+verify; 172/172 real tests pass.
+
+## P2 emitter: second literal-URL httpPost emitted a dead stub (FIXED 2026-09-30, dc25196)
+
+**Bug:** two literal-URL POST sites in one program registered both URLs in
+`http_post_urls`, but EVERY call site emitted the same shared sentinel
+(`Call 143`) → ONE bridge hardwired to the FIRST registered URL's core
+helper. The second URL's helper compiled but was unreachable (`nop;
+i32.const 0` stub) — any branch "routed" to the second relay silently
+POSTed via the first URL (postRelay r=0/1 over nos.lol/relay.damus.io).
+
+**Fix (dc25196):** per-URL POST bridges mirroring the GET dispatch pattern —
+- call_outlayer.rs: literal-URL http-post computes its dedup'd url_idx and
+  emits `Call(200 + url_idx)` (143 kept for the P1/non-wasi path)
+- build_combined_p2_core: one 7-arg bridge per URL appended after
+  cabi_realloc (bridge_i → core `http_post_fn_idx + i*2`); ol_map 200+i →
+  bridge_i; 143 → first bridge (compat fallback); env-lookup fn idx
+  shifted by bridge count (function section declares N bridges)
+- direct core-fn mapping was REJECTED: call sites push (url, body, CT,
+  ret_area) but core fns expect (url, body, BUF, LEN_PTR) — the bridge does
+  that translation; calling core directly would misread ct_ptr as buf_ptr.
+
+**Proof:** WAT shows bridge f66 → core f38 (URL #2 data block @20188 vs
+damus @20056); chat agent completes POSTs on both r branches; triple twin
+byte-identical; t-ladder clean; 172/172 real tests.
+
+## P2: bare POST-only programs trap "Buffer too large for blocking-write-and-flush" (OPEN, found 2026-09-30)
+
+A minimal program whose ONLY wasi activity is httpPost (no env/storage/vrf/
+other host traffic) fails with "Buffer too large for blocking-write-and-flush
+(expected at most 4096)" — even with an 11-byte body. PRE-EXISTING: reproduces
+IDENTICALLY on 095a425 and dc25196 (verified via git stash), so NOT a
+regression from the per-URL bridge fix.
+
+Repro: /tmp/routetest.ts — `httpPost("https://nos.lol", "[1,\"test\"]")` /
+damus, either branch. Real agents (env/storage/crypto shapes) are unaffected.
+
+Suspect: in the bare shape something passes a garbage/huge length to the
+outgoing-body stream write — likely an unstaged scratch or missing init in
+`emit_http_post_to_buffer` (src/wasi_http_buffer.rs) when no other op forces
+the data/env init sequence first. Unhunted; time-boxed at discovery.
