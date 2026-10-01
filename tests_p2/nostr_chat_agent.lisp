@@ -77,19 +77,29 @@
 (define (valid-room r) (and (< 0 (str-len r)) (< (str-len r) 65)))
 (define (resolve-caller input)
   ;; Identity precedence:
-  ;;  1. env == TRUSTED-ROUTER  -> tx came through the router contract; honor
-  ;;     its forwarded caller (only the router composes that input mid-chain;
-  ;;     a direct mallory tx has env=mallory and CANNOT reach this branch).
-  ;;  2. env set (direct tx)    -> env wins, input caller ignored (spoof-proof).
+  ;;  1. env == a trusted router -> tx came through a router contract; honor
+  ;;     its forwarded caller. Trust is NOT baked in: the deployer configures
+  ;;     TRUSTED_ROUTERS (comma-separated, via OutLayer secrets) — any number
+  ;;     of independent routers/frontends can serve users, and swapping one
+  ;;     is a secrets update, not a wasm rebuild.
+  ;;  2. env set (direct tx)    -> env wins, input caller ignored (spoof-proof:
+  ;;     only a mid-chain router can compose caller; a direct tx's env is the
+  ;;     tx signer, so mallory calling directly stays mallory).
   ;;  3. no env (HTTPS/CLI)     -> prod: reject; demo-root: dev fallback.
   (let* ((envs (env/get "NEAR_SENDER_ID"))
          (proot (env/get "PROTECTED_NOSTR_ROOT"))
          (snd (if envs envs ""))
          (prod (< 63 (str-len (if proot proot ""))))
          (inp (json-get-str "caller" input))
-         (via-router (= snd "xcross-9f3.testnet")))
-    (if via-router
-        (if (and inp (< 0 (str-len inp))) inp snd)
+         (routers (env/get "TRUSTED_ROUTERS"))
+         (rl (if routers routers ""))
+         (via-router (str-contains (str-cat "," rl ",")
+                                   (str-cat "," snd ","))))
+    (if (and (< 0 (str-len snd)) via-router)
+        ;; fail-closed: a trusted-router request MUST carry the forwarded
+        ;; caller. Silent fallback to snd would sign as the router itself
+        ;; (alice/carol footgun 2026-09-30) — return empty so run() rejects.
+        (if (and inp (< 0 (str-len inp))) inp "")
         (if (< 0 (str-len snd)) snd
             (if prod "" (if inp inp ""))))))
 (define (root-of)
@@ -122,6 +132,23 @@
         (str-cat "{\"id\":\"" idh "\",\"sig\":\"" sig
           "\",\"pk\":\"" pk "\",\"posted\":" (to-string ok) "}"))
       (err "invalid-chat-args")))
+(define (op-profile sender meta ts nonce)
+  ;; kind-0 metadata event (NIP-01: latest wins per pubkey). content = raw
+  ;; metadata JSON text, no tags. Same deterministic-aux trick as chat:
+  ;; same nonce → same sig → relay dedupe on retries; fresh nonce = update.
+  (if (if (valid-nonce nonce) (< (str-len meta) 600) false)
+      (let* ((salt (ensure-salt sender))
+             (sk (derive-sk (root-of) salt sender))
+             (pk33 (ensure-pk33 sender sk))
+             (pk (hex-encode (x-only pk33)))
+             (qc (json-quote meta))
+             (ser (ev-ser pk ts "0" "" qc))
+             (idh (sha256-hash ser))
+             (aux (hex-decode (sha256-hash (str-cat "profile" (str-cat (sep) nonce)))))
+             (sig (hex-encode (schnorr-sign-pk sk pk33 (hex-decode idh) aux))))
+        (str-cat "{\"id\":\"" idh "\",\"sig\":\"" sig
+          "\",\"pk\":\"" pk "\",\"kind\":0}"))
+      (err "invalid-profile-args")))
 (define (run input)
   (let* ((op (json-get-str "op" input))
          (sender (resolve-caller input)))
@@ -129,11 +156,14 @@
         (cond
           ((= op "chat") (op-chat sender (json-get-str "content" input) (json-get-str "ts" input)
                                  (json-get-str "nonce" input) (json-get-str "room" input) (json-get-str "r" input)))
+          ((= op "profile") (op-profile sender (json-get-str "meta" input) (json-get-str "ts" input)
+                                        (json-get-str "nonce" input)))
           ((= op "ser") (let* ((salt (ensure-salt sender))
                                 (sk (derive-sk (root-of) salt sender))
                                 (pk (hex-encode (x-only (ensure-pk33 sender sk))))
                                 (tags (tags-ser (json-get-str "room" input) (json-get-str "nonce" input))))
                           (ev-ser pk (json-get-str "ts" input) "1" tags (json-quote (json-get-str "content" input)))))
+          ((= op "version") (str-cat "{\"v\":\"5\"}"))
           ((= op "pk") (op-pk sender))
           (true (op-pk sender)))
         (err "no-identity-path"))))
