@@ -31,6 +31,30 @@
 (define CUSTOM-ACTIONS (list))
 (define (rlm-register-action name fn)
   (set! CUSTOM-ACTIONS (append CUSTOM-ACTIONS (list (list name fn)))))
+(define (rlm-scope-action name prefixes)
+  ;; Attach a task-scope to a registered action (2026-10-01): prefixes
+  ;; is a list of task-id prefixes the action may fire on. Dream-proposed
+  ;; actions default to global unless scoped here.
+  (set! CUSTOM-ACTIONS
+    (map (lambda (e)
+           (if (and (equal? (to-string (car e)) (to-string name)) (= (len e) 2))
+             (append e (list prefixes))
+             e))
+         CUSTOM-ACTIONS)))
+(define (action-allowed? e)
+  ;; nil/empty scope = global; else current trace_id must start with one
+  ;; of the scope prefixes.
+  ;; NB: to-string is the JSON repr (strings gain quotes) — never wrap
+  ;; rlm-get values with it for identity/matching. Raw value or "".
+  (let ((sc (try (car (cdr (cdr e))) (catch e2 nil)))
+        (tid (if (string? (rlm-get __trace_id)) (rlm-get __trace_id) "")))
+    (if (or (nil? sc) (= (len sc) 0)) true
+      (some (lambda (p)
+              (let ((n (str-length p)))
+                (if (>= (str-length tid) n)
+                  (equal? (str-substring tid 0 n) p)
+                  false)))
+            sc))))
 (define (init-rlm P)
   (begin
     (rlm-set prompt P)
@@ -160,7 +184,7 @@
         (fnok (not (= (error-fn-name (rlm-get __last_out)) ""))))
     (append
       (list "none" "temp08" "temp10" "stop" "ladder" "decompose")
-      (map (lambda (e) (car e)) CUSTOM-ACTIONS)
+      (map (lambda (e) (car e)) (filter action-allowed? CUSTOM-ACTIONS))
       (if fnok (list "doc" "ban") (list))
       (if (str-contains s "argtype") (list "hint") (list))
       (if (< (rlm-get iteration) (- (rlm-get max_iterations) 2)) (list "budget2") (list)))))
@@ -212,7 +236,7 @@
         (fname (error-fn-name (rlm-get __last_out)))
         (rc (rlm-get __repeat_count))
         (custom (assoc a CUSTOM-ACTIONS)))
-    (if custom
+    (if (and custom (action-allowed? custom))
       ((car (cdr custom)) rc)
       (cond
       ((equal? a "doc") (error-fn-doc out))
@@ -322,10 +346,23 @@
 
 (define (exemplar-file-or f)
   (try (read-file f) (catch e "")))
+(define (tactics-for-task path tid)
+  ;; Task-scope tactics (2026-10-01): keep ONLY this task's tagged lines
+  ;; ("- For <task>: ...") plus untagged general advice. Cross-task
+  ;; scaffolds (prime? hints landing on lending tasks) were being
+  ;; copy-pasted by the small brain → 80-line paren-explosion spirals.
+  (let ((raw (exemplar-file-or path)))
+    (if (or (not (string? tid)) (= (str-length raw) 0)) raw
+      (str-join "\n"
+        (filter (lambda (l)
+                  (or (not (str-contains l "For "))
+                      (str-contains l (str-concat "For " tid ":"))))
+                (str-split raw "\n"))))))
 (define (build-prompt ctx)
   (let ((ex (exemplar-file-or
               (str-concat "scripts/rlm-tasks/exemplars/" (rlm-get __trace_id) ".txt")))
-        (tac (exemplar-file-or "scripts/rlm-tasks/tactics.txt")))
+        (tac (tactics-for-task "scripts/rlm-tasks/tactics.txt"
+                               (rlm-get __trace_id))))
     (str-concat GRAMMAR
       (if (> (str-length tac) 0)
         (str-concat "\n\nTACTICS — your own self-written advice, updated by the dream layer:\n" tac)

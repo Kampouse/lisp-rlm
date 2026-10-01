@@ -69,6 +69,22 @@ def digest(code, limit=MAX_CODE):
     return c[:limit]
 
 
+def fail_label(code):
+    """Neutralize FAIL scaffolds (2026-10-01): the small brain copy-pastes
+    code out of 'do NOT repeat these failures' blocks (prime? defines from
+    prime tasks leaked into lending tasks and were re-copied for days).
+    Short one-liners stay verbatim — the exact wrong call IS the lesson.
+    Longer scaffolds collapse to a summary that names the defined fns."""
+    c = (code or "").strip()
+    if len(c) <= 40:
+        return c
+    fns = re.findall(r"\(define \((\S+)", c)
+    if fns:
+        return "<%d-char scaffold defining %s — structure was wrong, do not reuse>" % (
+            len(c), ", ".join(fns))
+    return "<%d-char failed attempt>" % len(c)
+
+
 def build():
     st = load_state()
     done = set(st["processed"])
@@ -164,7 +180,7 @@ def write_hints(by_task, nodes):
                 continue  # identical retry across episodes — one line is enough
             seen_code.add(nd["code"])
             corr = f" → CORRECTION: {nd['corr']}" if nd["corr"] else ""
-            lines.append(f"- FAIL it{nd['i']}: {nd['code']} → {nd['out'][:60]}{corr}")
+            lines.append(f"- FAIL it{nd['i']}: {fail_label(nd['code'])} → {nd['out'][:60]}{corr}")
         for nid, nd in oks:
             # full shape — a truncated solution teaches a half-solution
             # (t2 learned reverse-without-rejoin from a 70-char digest)
