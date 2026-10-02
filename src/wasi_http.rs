@@ -686,7 +686,7 @@ pub fn build_outlayer_nohttp_wit_metadata(
             }
         }
         resolve
-            .push_file(&wit_dir.join("outlayer-nohttp.wit"))
+            .push_file(&wit_dir.parent().and_then(|p| p.parent()).unwrap().join("alt-wit/outlayer-nohttp.wit"))
             .map_err(|e| format!("push_file outlayer-nohttp.wit failed: {}", e))?;
 
         let mut found_world = None;

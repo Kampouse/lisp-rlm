@@ -1079,6 +1079,28 @@ impl TcEnv {
     /// avoid "undefined variable" errors, not to enforce effect discipline.
     pub fn with_near_builtins() -> Self {
         let mut env = Self::with_pure_builtins();
+        // OutLayer P2 host builtins (see wasi_http_buffer / near-vrf WIT) —
+        // opaque ops registered as fully polymorphic (any args → any result).
+        // Dropped from the 0.1.20 merge resolution; the cargo-installed
+        // near-compile binary predated the loss, masking it (2026-10-02).
+        // (name, arity) — opaque ops: any arg types, any result
+        for (opaque_host, arity) in [
+            ("vrf-generate", 1),
+            ("post-relay", 3),
+            ("schnorr-pubkey33", 1),
+            ("schnorr-sign-pk", 4),
+        ] {
+            env.insert(
+                opaque_host.into(),
+                Scheme {
+                    vars: vec![0],
+                    ty: TcType::Arrow(
+                        vec![TcType::Var(0); arity],
+                        Box::new(TcType::Var(0)),
+                    ),
+                },
+            );
+        }
         let str_ty = TcType::Con(TcCon::Str);
         let int_ty = TcType::Con(TcCon::Int);
         let num_ty = TcType::Con(TcCon::Num);

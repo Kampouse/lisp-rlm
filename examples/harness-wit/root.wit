@@ -1,0 +1,12 @@
+package harness:runner@0.1.0;
+
+// Minimal host world for examples/p2run.rs: the near:* imports are stubbed
+// in the example itself; ALL wasi/http imports are provided by
+// wasmtime_wasi::p2 / wasmtime_wasi_http::p2 add_to_linker_* (not bindgen),
+// so they must NOT appear here (a duplicate registration would conflict).
+// The export lets the generated Root expose wasi_cli_run() accessors.
+world harness-root {
+    import near:storage/api@0.1.0;
+    import near:vrf/api@0.1.0;
+    export wasi:cli/run@0.2.12;
+}
