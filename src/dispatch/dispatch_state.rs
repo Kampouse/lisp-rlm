@@ -360,6 +360,41 @@ pub fn handle(
             Ok(Some(crate::dispatch::json_to_lisp(json)))
         }
 
+        // --- TS surface: lower TS source to lisp source (ts_frontend).
+        // Returns TSERR:-prefixed string on frontend errors so the RLM
+        // loop can bounce it as a normal failed attempt, not a crash.
+        // Emission note: sexp() emits one top-level form per line; the
+        // frontend orders consts before function defines, but sequential
+        // eval needs functions first. JS hoists function declarations,
+        // so reordering to functions-first is faithful semantics.
+        "ts->lisp" => {
+            let src = match args.first() {
+                Some(LispVal::Str(s)) => s.clone(),
+                _ => return Err("ts->lisp: need TS source string".to_string()),
+            };
+            match crate::ts_frontend::ts_to_lisp_source(&src) {
+                Ok(lowered) => {
+                    let mut fns = Vec::new();
+                    let mut rest = Vec::new();
+                    for line in lowered.lines() {
+                        let t = line.trim_start();
+                        if t.starts_with("(define (") || t.starts_with("(export (") {
+                            fns.push(line.to_string());
+                        } else {
+                            rest.push(line.to_string());
+                        }
+                    }
+                    let mut ordered = String::new();
+                    for l in fns.iter().chain(rest.iter()) {
+                        ordered.push_str(l);
+                        ordered.push('\n');
+                    }
+                    Ok(Some(LispVal::Str(ordered)))
+                }
+                Err(e) => Ok(Some(LispVal::Str(format!("TSERR: {e}")))),
+            }
+        }
+
         // --- LLM / RLM builtins ---
         "llm" | "llm-code" => {
             let prompt = args.first().ok_or("llm: need prompt string")?.to_string();
@@ -382,7 +417,8 @@ pub fn handle(
         // --- RLM runtime state (MIT RLM paper Algorithm 1) ---
         // rlm-set/rlm-get: persistent agent state, survives snapshot/rollback
         // (iteration counters and exec_log must persist across code rollbacks).
-        "rlm-set" => {
+        // rlm_set alias: the TS frontend surface (underscore idiom) shares it.
+        "rlm-set" | "rlm_set" => {
             let key = match args.first() {
                 Some(LispVal::Sym(s)) => s.clone(),
                 Some(LispVal::Str(s)) => s.clone(),
