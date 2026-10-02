@@ -306,13 +306,23 @@
       "Current result so far: " (to-string final_val) "\n\n"
       "Recent execution log:\n" (to-string log) "\n"
       (escalation-and-cheatsheet (rlm-get __q_a))
-      "\nGenerate ONE Lisp expression to execute. You can:\n"
-      "- Use (rlm-set key value) to store results (bare symbol keys, no quoting)\n"
-      "- Use (rlm-set Final t) and (rlm-set result <val>) when done\n"
-      "- Use (sub-rlm \"sub-task\") to delegate sub-problems\n"
-      "- Use (rlm-get prompt) to read the full prompt\n"
-      "- Use string functions to slice/inspect the prompt\n"
-      "Return ONLY valid Lisp code.")))
+      (if (= (rlm-get __surface) "ts")
+        (str-concat
+          "\nGenerate ONE TypeScript module. Allowed: function declarations,\n"
+          "const/let, if/else, return, for/while, template literals, number/string/bool\n"
+          "literals, .map/.filter/.reduce/.join/.push, Math.*, unary ! and -.\n"
+          "Forbidden: imports, classes, async, destructuring, optional chaining.\n"
+          "Store results: rlm_set(\"answer\", <expr>);\n"
+          "Finish when done: rlm_set(\"Final\", true);\n"
+          "Return ONLY TypeScript code — no prose, no markdown fences.")
+        (str-concat
+          "\nGenerate ONE Lisp expression to execute. You can:\n"
+          "- Use (rlm-set key value) to store results (bare symbol keys, no quoting)\n"
+          "- Use (rlm-set Final t) and (rlm-set result <val>) when done\n"
+          "- Use (sub-rlm \"sub-task\") to delegate sub-problems\n"
+          "- Use (rlm-get prompt) to read the full prompt\n"
+          "- Use string functions to slice/inspect the prompt\n"
+          "Return ONLY valid Lisp code.")))))
 
 ;; ============================================================
 ;; 3. SINGLE STEP
