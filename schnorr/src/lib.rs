@@ -262,6 +262,8 @@ fn jac_to_affine(p: ([u64; 4], [u64; 4], [u64; 4])) -> ([u64; 4], [u64; 4]) {
     (fe_mul(p.0, z2_inv), fe_mul(p.1, z3_inv))
 }
 
+mod comb;
+
 // ── Scalar ops (mod n, the curve order — NOT the field prime P) ──
 fn sc_lt_n(a: [u64; 4]) -> bool {
     for i in (0..4).rev() {
@@ -589,8 +591,8 @@ pub fn schnorr_sign(sk_bytes: &[u8; 32], msg: &[u8; 32], aux: &[u8; 32]) -> [u8;
     if kp == [0; 4] {
         return [0u8; 64];
     }
-    // R = k' * G
-    let (rx, ry) = match point_mul((GX, GY), kp) {
+    // R = k' * G (fixed-base comb: 64 affine adds, zero doublings)
+    let (rx, ry) = match comb::point_mul_g(kp) {
         Some(r) => jac_to_affine(r),
         None => return [0u8; 64],
     };
@@ -723,8 +725,8 @@ pub fn schnorr_sign_pk(
     if kp == [0; 4] {
         return [0u8; 64];
     }
-    // R = k' * G
-    let (rx, ry) = match point_mul((GX, GY), kp) {
+    // R = k' * G (fixed-base comb: 64 affine adds, zero doublings)
+    let (rx, ry) = match comb::point_mul_g(kp) {
         Some(r) => jac_to_affine(r),
         None => return [0u8; 64],
     };
@@ -884,6 +886,20 @@ mod tests {
         let mut a = [0u8; 64];
         a.copy_from_slice(&v);
         a
+    }
+
+#[cfg(test)]
+mod comb_bench {
+    use super::*;
+    use std::time::Instant;
+    fn det_scalar(seed: u64) -> [u64; 4] {
+        let mut x = seed | 1;
+        let mut out = [0u64; 4];
+        for v in out.iter_mut() {
+            x ^= x >> 12; x ^= x << 25; x ^= x >> 27;
+            *v = x.wrapping_mul(0x2545F4914F6CDD1D);
+        }
+        out
     }
     #[test]
     fn test_sha256() {
@@ -1198,4 +1214,117 @@ mod verify_python_sig {
         );
         assert!(schnorr_verify(&pk, &sig, &msg), "python sig verify failed");
     }
+}
+
+#[cfg(test)]
+mod comb_test {
+    use super::*;
+    fn rand_scalar(seed: u64) -> [u64; 4] {
+        // xorshift64* PRNG — deterministic, no_std-friendly
+        let mut x = seed;
+        let mut out = [0u64; 4];
+        for v in out.iter_mut() {
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            *v = x.wrapping_mul(0x2545F4914F6CDD1D);
+        }
+        out
+    }
+    #[test]
+    fn comb_matches_point_mul_200() {
+        // skip zero/overflow-class scalars: rand mod (n-1) + 1 via nibble-kill
+        for seed in 1..=100u64 {
+            let k = rand_scalar(seed * 0x9E3779B97F4A7C15);
+            if sc_geq_n(k) || k == [0; 4] {
+                continue;
+            }
+            let a = comb::point_mul_g(k);
+            let b = point_mul((GX, GY), k);
+            assert_eq!(a.is_none(), b.is_none(), "infinity flag mismatch seed {seed}");
+            if let (Some(p1), Some(p2)) = (a, b) {
+                assert_eq!(jac_to_affine(p1), jac_to_affine(p2), "point mismatch seed {seed}");
+            }
+        }
+    }
+    #[test]
+    fn comb_edge_scalars() {
+        // k = 1, 15 (max digit), 16 (roll to next row), 2^255-ish high digit rows
+        for k in [
+            [1, 0, 0, 0],
+            [15, 0, 0, 0],
+            [16, 0, 0, 0],
+            [0xFFFF_FFFF, 0, 0, 0],
+            [
+                0xFFFFFFFFFFFFFFF,
+                0x7FFFFFFFFFFFFFFF,
+                0,
+                0,
+            ],
+        ] {
+            if sc_geq_n(k) {
+                continue;
+            }
+            assert_eq!(
+                comb::point_mul_g(k).map(jac_to_affine),
+                point_mul((GX, GY), k).map(jac_to_affine),
+                "edge scalar {k:?}"
+            );
+        }
+    }
+}
+
+    #[test]
+    fn bench_sign_comb_vs_double() {
+        let det_scalar = |seed: u64| -> [u64; 4] {
+            let mut x = seed | 1;
+            let mut out = [0u64; 4];
+            for v in out.iter_mut() {
+                x ^= x >> 12;
+                x ^= x << 25;
+                x ^= x >> 27;
+                *v = x.wrapping_mul(0x2545F4914F6CDD1D);
+            }
+            out
+        };
+        let msg = compute_sha256(b"bench");
+        let aux = [7u8; 32];
+        let sk = {
+            let mut b = [0u8; 32];
+            b.copy_from_slice(&[
+                0xC9, 0x0F, 0xDA, 0xA2, 0x21, 0x68, 0xC2, 0x34,
+                0xC4, 0xC6, 0x62, 0x8B, 0x80, 0xDC, 0x1C, 0xD1,
+                0x29, 0x02, 0x4E, 0x08, 0x8A, 0x67, 0xCC, 0x74,
+                0x02, 0xBB, 0xEA, 0x63, 0xB1, 0x4E, 0x5C, 0x09,
+            ]);
+            b
+        };
+        let _ = schnorr_sign(&sk, &msg, &aux);
+        let n = 50u32;
+        let t0 = std::time::Instant::now();
+        for i in 0..n {
+            let _ = comb::point_mul_g(fe_bytes_to_fe(&{ let mut b0 = [0u8;32]; let dp = det_scalar((i+1) as u64); for j in 0..4 { b0[j*8..(j+1)*8].copy_from_slice(&dp[3-j].to_be_bytes()); } b0 }));
+        }
+        let t_combmul = t0.elapsed();
+        let t0 = std::time::Instant::now();
+        for i in 0..n {
+            let kps = det_scalar((i + 1) as u64);
+            let mut kb = [0u8; 32];
+            for j in 0..4 { kb[j * 8..(j + 1) * 8].copy_from_slice(&kps[3 - j].to_be_bytes()); }
+            let _ = schnorr_sign(&sk, &msg, &kb);
+        }
+        let t_comb = t0.elapsed();
+        let t0 = std::time::Instant::now();
+        for i in 0..n {
+            let mut kpb = [0u8; 32];
+            for j in 0..4 { kpb[j * 8..(j + 1) * 8].copy_from_slice(&det_scalar((i + 1) as u64)[3 - j].to_be_bytes()); }
+            let kp = fe_bytes_to_fe(&kpb);
+            let _ = point_mul((GX, GY), kp);
+        }
+        let t_mul = t0.elapsed();
+        println!("comb mult only : {:?}", t_combmul / n);
+        println!("comb sign full : {:?}", t_comb / n);
+        println!("double-add mult: {:?}", t_mul / n);
+    }
+
 }
