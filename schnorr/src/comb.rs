@@ -1,7 +1,9 @@
+use crate::{fe_add, fe_mul, fe_sub, jac_double, jac_is_infinity};
+
 // Fixed-base k·G for signing: 64-digit radix-16 comb — 64 affine→jac adds, ZERO doublings.
 // Replaces point_mul((GX, GY), k) on the sign paths (kp·G). Table generated offline and
 // cross-verified: 200 random scalars vs double-and-add, exact match; constants match lib.rs GX/GY.
-use crate::{jac_add, jac_is_infinity};
+
 
 pub static GTAB: [[u64; 8]; 960] = [
     [0x59F2815B16F81798, 0x029BFCDB2DCE28D9, 0x55A06295CE870B07, 0x79BE667EF9DCBBAC, 0x9C47D08FFB10D4B8, 0xFD17B448A6855419, 0x5DA4FBFC0E1108A8, 0x483ADA7726A3C465],
@@ -967,8 +969,42 @@ pub static GTAB: [[u64; 8]; 960] = [
 ];
 
 #[inline]
-fn jac_from_affine(x: [u64; 4], y: [u64; 4]) -> ([u64; 4], [u64; 4], [u64; 4]) {
-    (x, y, [1, 0, 0, 0])
+
+// Mixed addition (acc jacobian, table point affine / z2 = 1): 9 fe_mul vs full jac_add ~13.
+fn jac_add_mixed(
+    p: ([u64; 4], [u64; 4], [u64; 4]),
+    x2: [u64; 4],
+    y2: [u64; 4],
+) -> ([u64; 4], [u64; 4], [u64; 4]) {
+    use crate::{fe_add, fe_mul, fe_sub, jac_double};
+    let (x1, y1, z1) = p;
+    if z1 == [0, 0, 0, 0] {
+        return (x2, y2, [1, 0, 0, 0]);
+    }
+    let z1sq = fe_mul(z1, z1);
+    let u2 = fe_mul(x2, z1sq);
+    let z1cu = fe_mul(z1sq, z1);
+    let s2 = fe_mul(y2, z1cu);
+    let h = fe_sub(u2, x1);
+    let r = fe_sub(s2, y1);
+    if h == [0, 0, 0, 0] && r == [0, 0, 0, 0] {
+        return jac_double(p);
+    }
+    if h == [0, 0, 0, 0] {
+        return ([0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]);
+    }
+    let hsq = fe_mul(h, h);
+    let hcu = fe_mul(hsq, h);
+    let u1hsq = fe_mul(x1, hsq);
+    let x3 = fe_sub(fe_sub(fe_mul(r, r), hcu), fe_add_raw2(u1hsq, u1hsq));
+    let y3 = fe_sub(fe_mul(r, fe_sub(u1hsq, x3)), fe_mul(y1, hcu));
+    let z3 = fe_mul(z1, h);
+    (x3, y3, z3)
+}
+// helper: doubling-by-add without reduce subtleties (x+x mod p)
+fn fe_add_raw2(a: [u64; 4], b: [u64; 4]) -> [u64; 4] {
+    use crate::fe_add;
+    fe_add(a, b)
 }
 
 pub fn point_mul_g(k: [u64; 4]) -> Option<([u64; 4], [u64; 4], [u64; 4])> {
@@ -979,7 +1015,7 @@ pub fn point_mul_g(k: [u64; 4]) -> Option<([u64; 4], [u64; 4], [u64; 4])> {
             let t = &GTAB[i * 15 + (digit as usize - 1)];
             let px = [t[0], t[1], t[2], t[3]];
             let py = [t[4], t[5], t[6], t[7]];
-            acc = jac_add(acc, jac_from_affine(px, py));
+            acc = jac_add_mixed(acc, px, py);
         }
     }
     if jac_is_infinity(&acc) {
