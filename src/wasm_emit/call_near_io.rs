@@ -12,8 +12,11 @@ impl WasmEmitter {
                 let val = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 let tagged_tmp = self.local_idx("__ret_tagged");
-                // Save the tagged value
-                v.extend(val.clone());
+                // [fix 2026-10-02 double-eval] Emit the arg ONCE into a local.
+                // The old code re-extended `val` inside the non-string Else
+                // branch — any effectful arg executed twice (tag-check pass +
+                // store pass). Both branches now read from the local.
+                v.extend(val);
                 v.push(Instruction::LocalSet(tagged_tmp));
                 // Check tag: (tagged & 7) == TAG_STR (5)
                 v.push(Instruction::LocalGet(tagged_tmp));
@@ -35,7 +38,7 @@ impl WasmEmitter {
                 v.push(Instruction::Else);
                 // ── Non-string path: store 8-byte untagged value at TEMP_MEM ──
                 v.push(Instruction::I32Const(TEMP_MEM as i32));
-                v.extend(val);
+                v.push(Instruction::LocalGet(tagged_tmp));
                 v.extend(self.emit_untag());
                 let ma8 = wasm_encoder::MemArg {
                     offset: 0,
@@ -58,14 +61,18 @@ impl WasmEmitter {
                 // (near/log "prefix" num) — log string then number (two separate log calls)
                 if a.len() == 1 {
                     let msg = self.expr(&a[0])?;
+                    let raw = self.local_idx("__log_raw");
                     let mut v = Vec::new();
-                    // Untag string to get encoded (ptr | (len << 32))
-                    v.extend(msg.clone());
-                    v.extend(self.emit_untag());
-                    v.push(Instruction::I64Const(32));
-                    v.push(Instruction::I64ShrU); // len
+                    // [fix 2026-10-02 double-eval] emit arg once into a local;
+                    // the old len/ptr extraction re-extended `msg`, running
+                    // any effectful argument twice.
                     v.extend(msg);
                     v.extend(self.emit_untag());
+                    v.push(Instruction::LocalSet(raw));
+                    v.push(Instruction::LocalGet(raw));
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64ShrU); // len
+                    v.push(Instruction::LocalGet(raw));
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::I64ExtendI32U); // ptr
                     v.push(Self::host_call(28));
@@ -86,13 +93,15 @@ impl WasmEmitter {
                     let tmp_digit = self.local_idx("__logn_d");
                     let ptr = self.local_idx("__logn_ptr");
                     let mut v = Vec::new();
-                    // First: log the string
-                    v.extend(msg.clone());
-                    v.extend(self.emit_untag());
-                    v.push(Instruction::I64Const(32));
-                    v.push(Instruction::I64ShrU); // len
+                    // First: log the string — [fix 2026-10-02 double-eval] local-once
+                    let raw = self.local_idx("__log_raw");
                     v.extend(msg);
                     v.extend(self.emit_untag());
+                    v.push(Instruction::LocalSet(raw));
+                    v.push(Instruction::LocalGet(raw));
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64ShrU); // len
+                    v.push(Instruction::LocalGet(raw));
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::I64ExtendI32U); // ptr
                     v.push(Self::host_call(28));
@@ -191,13 +200,17 @@ impl WasmEmitter {
             }
             "near/panic" => {
                 let msg = self.expr(&a[0])?;
+                let raw = self.local_idx("__panic_raw");
                 let mut v = Vec::new();
-                v.extend(msg.clone());
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU); // len
+                // [fix 2026-10-02 double-eval] local-once (same family as
+                // near/return_str / near/log double-emit)
                 v.extend(msg);
                 v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(raw));
+                v.push(Instruction::LocalGet(raw));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // len
+                v.push(Instruction::LocalGet(raw));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // ptr
                 v.push(Self::host_call(27)); // panic_utf8(len, ptr)
