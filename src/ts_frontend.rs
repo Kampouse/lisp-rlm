@@ -320,9 +320,11 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                             }
                             continue;
                         }
-                        let (name, define) = lower_function(f, true)?;
+                        let (name, defines) = lower_function(f, true)?;
                         let view = name.starts_with("get_");
-                        out.push(define);
+                        for d in &defines {
+                            out.push(d.clone());
+                        }
                         // `new` is a reserved word in TypeScript — `new_` is the
                         // dialect's spelling for NEAR's `new` constructor export.
                         let export_name = if name == "new_" { "new".to_string() } else { name.clone() };
@@ -372,7 +374,9 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                             .into(),
                     );
                 }
-                hoisted.push(lower_function(f, false)?.1);
+                for d in lower_function(f, false)?.1 {
+                    hoisted.push(d);
+                }
             }
             Statement::VariableDeclaration(v) => {
                 for d in &v.declarations {
@@ -795,7 +799,7 @@ fn scan_one_bigint_let(s: &Statement<'_>) {
 }
 
 /// Lower a function declaration → (define (name params...) body)
-fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal), String> {
+fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<LispVal>), String> {
     let name =
         f.id.as_ref()
             .map(|i| i.name.as_str().to_string())
@@ -863,6 +867,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
     // wrapper passes the stdin input string as the argument (the NEAR
     // near/json_get_str host op does not exist on the OutLayer runtime).
     let wasi_mode = TS_WASI_MODE.with(|m| m.get());
+    let mut impl_define: Option<LispVal> = None;
     let expr = if exported && !wasi_mode {
         if !param_names.is_empty() {
             let bindings = param_names
@@ -883,7 +888,40 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
             let inner = lower_block_tail(&body.statements, view)?;
             NUM_PARAM_NAMES.with(|s| s.borrow_mut().clear());
             OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
-            list(vec![Sym("let"), list(bindings), inner])
+            // Raw-twin entry split (2026-10-03): when every param is
+            // `number` and the return is `number`, emit
+            //   (define (__impl_f x y) :: int int -> int BODY)
+            //   (define (f) (let ((x (str->num ..)) ...) (__impl_f x y)))
+            // The impl's annotation feeds fn_int_annotations → the raw-i64
+            // twin fires, and the entry's call routes through the twin's
+            // untag/retag boundary (call.rs raw-twin fast path). String/
+            // array/object/bigint params keep the old inline-let shape.
+            // Fail-closed: any body form outside the int subset kills the
+            // twin at emit time and everything runs the tagged path, so
+            // behavior can only match — never diverge.
+            let ret_int = ts_ann_to_lisp(f.return_type.as_ref().map(|v| &**v)) == Some("int");
+            if ret_int && param_names.iter().all(|(_, k)| *k == 1) {
+                let impl_name = format!("__impl_{}", name);
+                let mut impl_sig = vec![Sym(impl_name.clone())];
+                for (n, _) in &param_names {
+                    impl_sig.push(Sym(n.clone()));
+                }
+                let mut impl_items = vec![Sym("define"), list(impl_sig), Sym("::".to_string())];
+                for _ in &param_names {
+                    impl_items.push(Sym("int".to_string()));
+                }
+                impl_items.push(Sym("->".to_string()));
+                impl_items.push(Sym("int".to_string()));
+                impl_items.push(inner);
+                impl_define = Some(list(impl_items));
+                let mut call_items = vec![Sym(impl_name)];
+                for (n, _) in &param_names {
+                    call_items.push(Sym(n.clone()));
+                }
+                list(vec![Sym("let"), list(bindings), list(call_items)])
+            } else {
+                list(vec![Sym("let"), list(bindings), inner])
+            }
         } else {
             lower_block_tail(&body.statements, view)?
         }
@@ -926,7 +964,13 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
     }
 
     define_items.push(expr);
-    Ok((name, list(define_items)))
+    // The entry define stays under `name` (the export references it). When
+    // the impl split fired, the impl define is emitted first so the twin
+    // exists before any caller compiles.
+    if let Some(impl_def) = impl_define {
+        return Ok((name, vec![impl_def, list(define_items)]));
+    }
+    Ok((name, vec![list(define_items)]))
 }
 
 /// A bare mid-function return: `return e;` as a statement at this level
