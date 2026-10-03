@@ -1,0 +1,6 @@
+package near:storage@0.1.0;
+
+interface api {
+    set: func(key: string, value: list<u8>) -> string;
+    get: func(key: string) -> tuple<list<u8>, string>;
+}

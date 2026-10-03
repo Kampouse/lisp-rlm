@@ -31,6 +31,30 @@
 (define CUSTOM-ACTIONS (list))
 (define (rlm-register-action name fn)
   (set! CUSTOM-ACTIONS (append CUSTOM-ACTIONS (list (list name fn)))))
+(define (rlm-scope-action name prefixes)
+  ;; Attach a task-scope to a registered action (2026-10-01): prefixes
+  ;; is a list of task-id prefixes the action may fire on. Dream-proposed
+  ;; actions default to global unless scoped here.
+  (set! CUSTOM-ACTIONS
+    (map (lambda (e)
+           (if (and (equal? (to-string (car e)) (to-string name)) (= (len e) 2))
+             (append e (list prefixes))
+             e))
+         CUSTOM-ACTIONS)))
+(define (action-allowed? e)
+  ;; nil/empty scope = global; else current trace_id must start with one
+  ;; of the scope prefixes.
+  ;; NB: to-string is the JSON repr (strings gain quotes) — never wrap
+  ;; rlm-get values with it for identity/matching. Raw value or "".
+  (let ((sc (try (car (cdr (cdr e))) (catch e2 nil)))
+        (tid (if (string? (rlm-get __trace_id)) (rlm-get __trace_id) "")))
+    (if (or (nil? sc) (= (len sc) 0)) true
+      (some (lambda (p)
+              (let ((n (str-length p)))
+                (if (>= (str-length tid) n)
+                  (equal? (str-substring tid 0 n) p)
+                  false)))
+            sc))))
 (define (init-rlm P)
   (begin
     (rlm-set prompt P)
@@ -160,7 +184,7 @@
         (fnok (not (= (error-fn-name (rlm-get __last_out)) ""))))
     (append
       (list "none" "temp08" "temp10" "stop" "ladder" "decompose")
-      (map (lambda (e) (car e)) CUSTOM-ACTIONS)
+      (map (lambda (e) (car e)) (filter action-allowed? CUSTOM-ACTIONS))
       (if fnok (list "doc" "ban") (list))
       (if (str-contains s "argtype") (list "hint") (list))
       (if (< (rlm-get iteration) (- (rlm-get max_iterations) 2)) (list "budget2") (list)))))
@@ -212,7 +236,7 @@
         (fname (error-fn-name (rlm-get __last_out)))
         (rc (rlm-get __repeat_count))
         (custom (assoc a CUSTOM-ACTIONS)))
-    (if custom
+    (if (and custom (action-allowed? custom))
       ((car (cdr custom)) rc)
       (cond
       ((equal? a "doc") (error-fn-doc out))
@@ -282,13 +306,23 @@
       "Current result so far: " (to-string final_val) "\n\n"
       "Recent execution log:\n" (to-string log) "\n"
       (escalation-and-cheatsheet (rlm-get __q_a))
-      "\nGenerate ONE Lisp expression to execute. You can:\n"
-      "- Use (rlm-set key value) to store results (bare symbol keys, no quoting)\n"
-      "- Use (rlm-set Final t) and (rlm-set result <val>) when done\n"
-      "- Use (sub-rlm \"sub-task\") to delegate sub-problems\n"
-      "- Use (rlm-get prompt) to read the full prompt\n"
-      "- Use string functions to slice/inspect the prompt\n"
-      "Return ONLY valid Lisp code.")))
+      (if (= (rlm-get __surface) "ts")
+        (str-concat
+          "\nGenerate ONE TypeScript module. Allowed: function declarations,\n"
+          "const/let, if/else, return, for/while, template literals, number/string/bool\n"
+          "literals, .map/.filter/.reduce/.join/.push, Math.*, unary ! and -.\n"
+          "Forbidden: imports, classes, async, destructuring, optional chaining.\n"
+          "Store results: rlm_set(\"answer\", <expr>);\n"
+          "Finish when done: rlm_set(\"Final\", true);\n"
+          "Return ONLY TypeScript code — no prose, no markdown fences.")
+        (str-concat
+          "\nGenerate ONE Lisp expression to execute. You can:\n"
+          "- Use (rlm-set key value) to store results (bare symbol keys, no quoting)\n"
+          "- Use (rlm-set Final t) and (rlm-set result <val>) when done\n"
+          "- Use (sub-rlm \"sub-task\") to delegate sub-problems\n"
+          "- Use (rlm-get prompt) to read the full prompt\n"
+          "- Use string functions to slice/inspect the prompt\n"
+          "Return ONLY valid Lisp code.")))))
 
 ;; ============================================================
 ;; 3. SINGLE STEP
@@ -322,10 +356,23 @@
 
 (define (exemplar-file-or f)
   (try (read-file f) (catch e "")))
+(define (tactics-for-task path tid)
+  ;; Task-scope tactics (2026-10-01): keep ONLY this task's tagged lines
+  ;; ("- For <task>: ...") plus untagged general advice. Cross-task
+  ;; scaffolds (prime? hints landing on lending tasks) were being
+  ;; copy-pasted by the small brain → 80-line paren-explosion spirals.
+  (let ((raw (exemplar-file-or path)))
+    (if (or (not (string? tid)) (= (str-length raw) 0)) raw
+      (str-join "\n"
+        (filter (lambda (l)
+                  (or (not (str-contains l "For "))
+                      (str-contains l (str-concat "For " tid ":"))))
+                (str-split raw "\n"))))))
 (define (build-prompt ctx)
   (let ((ex (exemplar-file-or
               (str-concat "scripts/rlm-tasks/exemplars/" (rlm-get __trace_id) ".txt")))
-        (tac (exemplar-file-or "scripts/rlm-tasks/tactics.txt")))
+        (tac (tactics-for-task "scripts/rlm-tasks/tactics.txt"
+                               (rlm-get __trace_id))))
     (str-concat GRAMMAR
       (if (> (str-length tac) 0)
         (str-concat "\n\nTACTICS — your own self-written advice, updated by the dream layer:\n" tac)
@@ -386,12 +433,34 @@
         (collect-defines (cdr forms) (cons (to-string (car (car (cdr f)))) acc))
         (collect-defines (cdr forms) acc)))))
 
+;; top-level forms are ALL defines → nothing ever executes (2026-10-01:
+;; t_lend_accrue brains wrote the perfect formula inside (define (main)
+;; ...) and never called it, 9 iterations dead). false = has a live
+;; top-level expression.
+(define (dangling-define? forms)
+  (if (= (len forms) 0) true
+    (if (and (list? (car forms)) (>= (len (car forms)) 1)
+             (equal? (car (car forms)) (quote define)))
+      (dangling-define? (cdr forms))
+      false)))
+
 (define (lint-phantom code)
   (known-fns!)
-  (let ((forms (try (read-all code) (catch e nil))))
-    (if (= (len forms) 0) false
-      (let ((defs (collect-defines forms (list))))
-        (lp forms defs)))))
+  ;; STORAGE LINT (2026-10-01): (set! answer v) is INVISIBLE outside the
+  ;; expression — snapshots don't keep env vars. t_lend_accrue it3 solved
+  ;; the math perfectly then lost the check to this. Bounces for free.
+  (let ((store-bad (and (str-contains code "set! answer")
+                        (not (str-contains code "rlm-set answer")))))
+    (if store-bad
+      "(set! answer ...) is INVISIBLE to the world — plain env vars vanish outside your expression; the checker reads the world key, not your local. Store the result with (rlm-set answer <value>)"
+      (let ((forms (try (read-all code) (catch e nil))))
+        (if (= (len forms) 0) false
+          ;; DANGLING-DEFINE LINT: all top-level forms are defines → the
+          ;; program never runs (no side effects, answer stays nil).
+          (if (dangling-define? forms)
+            "your submission is all (define ...) forms — defines NEVER execute on their own, so nothing runs and answer stays nil. Compute directly: (let ((p 1000)) (rlm-set answer (+ p ...)) (final true)) — or append the call after the define"
+            (let ((defs (collect-defines forms (list))))
+              (lp forms defs))))))))
 
 (define (rlm-step)
   (begin

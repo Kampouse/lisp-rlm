@@ -1161,18 +1161,23 @@ impl WasmEmitter {
             "near/return_str" => {
                 self.need_host(25);
                 let packed = self.expr(&a[0])?;
+                let raw = self.local_idx("__retstr_raw");
                 let mut v = Vec::new();
-                // Untag packed (ptr|len<<32), then extract len and ptr
-                v.extend(packed.clone());
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU); // len
+                // [fix 2026-10-02 double-eval] Emit the argument ONCE into a
+                // local, then extract len/ptr from the local. The old code
+                // re-extended `packed` for the pointer — any effectful
+                // argument (storage write, promise create) executed twice.
                 v.extend(packed);
                 v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(raw));
+                v.push(Instruction::LocalGet(raw));
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU); // len
+                v.push(Instruction::LocalGet(raw));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // ptr
                 v.push(Self::host_call(25)); // value_return
-                                             // Set return flag so export wrapper skips its value_return
+                // Set return flag so export wrapper skips its value_return
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::GlobalSet(RETURN_FLAG));
                 v.push(Instruction::I64Const(TAG_NIL));

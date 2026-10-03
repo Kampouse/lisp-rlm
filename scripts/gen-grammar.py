@@ -103,7 +103,9 @@ def build():
         "NO Common Lisp (no loop-for, no incf). Numbers are integers only. "
         "CRITICAL: store your result with (rlm-set answer <value>) — plain (set! x v) "
         "env vars are INVISIBLE outside; then finish with (final true). "
-        "Output ONE lisp form.\n\n"
+        "Output ONE lisp form. Defines alone NEVER execute — do NOT wrap your "
+        "solution in (define (main) ...); compute directly with a let/expression, "
+        "or append the call after the define.\n\n"
         "SPECIAL FORMS (exact shapes):\n- " + "\n- ".join(special) +
         "\n\nBUILTINS (signature — meaning):\n- " + "\n- ".join(lines)
     )

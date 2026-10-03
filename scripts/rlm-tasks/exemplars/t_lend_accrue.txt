@@ -1,0 +1,8 @@
+# hand
+;; Worked example — simple interest accrual with truncating integer
+;; division (per-10000 rate, same pattern as the task, DIFFERENT data).
+(let* ((principal 2500)
+       (rate 4)
+       (blocks 50))
+  (rlm-set answer (+ principal (quotient (* principal rate blocks) 10000)))
+  (final true))

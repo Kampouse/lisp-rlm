@@ -221,13 +221,24 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&cl(FN_OUTGOING_BODY_FINISH));
 
     // Handle → future handle at +8
+    // responder block: disc-error exits land here (graceful total_len=0 path
+    // for runtimes without egress — TEE hosts return result::err from handle)
+    func.instruction(&Instruction::Block(BlockType::Empty));
     func.instruction(&lg(6));
     func.instruction(&cst(0));
     func.instruction(&cst(0));
     func.instruction(&cst(SCRATCH_FUTURE_RESULT));
     func.instruction(&cl(FN_HANDLE));
+    // handle() result disc (≠0 = err) → reset total_len, exit responder
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_FUTURE_RESULT + 8));
+    func.instruction(&ls(13));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_FUTURE_RESULT));
+    func.instruction(&cst(0));
+    func.instruction(&Instruction::I32Ne);
+    func.instruction(&Instruction::BrIf(0));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_FUTURE_RESULT + 4));
     func.instruction(&ls(8)); // future handle
 
     // Subscribe → pollable on stack
@@ -251,13 +262,23 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&cst(SCRATCH_RESPONSE_RESULT));
     func.instruction(&cl(FN_FUTURE_GET));
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_RESPONSE_RESULT + 24));
+    func.instruction(&ld(SCRATCH_RESPONSE_RESULT));
+    func.instruction(&cst(0));
+    func.instruction(&Instruction::I32Ne);
+    func.instruction(&Instruction::BrIf(0));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_RESPONSE_RESULT + 4));
     func.instruction(&ls(10)); // incoming-response handle
 
     // Consume → incoming-body handle at +4
     func.instruction(&lg(10));
     func.instruction(&cst(SCRATCH_IBODY_RESULT));
     func.instruction(&cl(FN_INCOMING_RESPONSE_CONSUME));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_IBODY_RESULT));
+    func.instruction(&cst(0));
+    func.instruction(&Instruction::I32Ne);
+    func.instruction(&Instruction::BrIf(0));
     func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_IBODY_RESULT + 4));
     func.instruction(&ls(11)); // incoming-body handle
@@ -266,6 +287,11 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&lg(11));
     func.instruction(&cst(SCRATCH_STREAM_RESULT));
     func.instruction(&cl(FN_INCOMING_BODY_STREAM));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_STREAM_RESULT));
+    func.instruction(&cst(0));
+    func.instruction(&Instruction::I32Ne);
+    func.instruction(&Instruction::BrIf(0));
     func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_STREAM_RESULT + 4));
     func.instruction(&ls(12)); // input-stream handle
@@ -326,6 +352,7 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&Instruction::Br(0)); // loop back for more chunks
     func.instruction(&Instruction::End); // loop ends
     func.instruction(&Instruction::End); // block ends
+    func.instruction(&Instruction::End); // responder block ends
 
     // Store total_len at resp_len_ptr (local 4)
     func.instruction(&lg(4));
@@ -449,13 +476,23 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&cl(FN_OUTGOING_BODY_FINISH));
 
     // Handle → future handle at +8
+    // responder block (see GET emit) — disc-error exits are graceful
+    func.instruction(&Instruction::Block(BlockType::Empty));
     func.instruction(&lg(8));
     func.instruction(&cst(0));
     func.instruction(&cst(0));
     func.instruction(&cst(SCRATCH_FUTURE_RESULT));
     func.instruction(&cl(FN_HANDLE));
+    // handle() result disc (≠0 = err) → reset total_len, exit responder
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_FUTURE_RESULT + 8));
+    func.instruction(&ls(15));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_FUTURE_RESULT));
+    func.instruction(&cst(0));
+    func.instruction(&Instruction::I32Ne);
+    func.instruction(&Instruction::BrIf(0));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_FUTURE_RESULT + 4));
     func.instruction(&ls(10)); // future handle
 
     // Subscribe → pollable
@@ -479,13 +516,23 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&cst(SCRATCH_RESPONSE_RESULT));
     func.instruction(&cl(FN_FUTURE_GET));
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_RESPONSE_RESULT + 24));
+    func.instruction(&ld(SCRATCH_RESPONSE_RESULT));
+    func.instruction(&cst(0));
+    func.instruction(&Instruction::I32Ne);
+    func.instruction(&Instruction::BrIf(0));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_RESPONSE_RESULT + 4));
     func.instruction(&ls(12)); // incoming-response handle
 
     // Consume → incoming-body handle at +4
     func.instruction(&lg(12));
     func.instruction(&cst(SCRATCH_IBODY_RESULT));
     func.instruction(&cl(FN_INCOMING_RESPONSE_CONSUME));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_IBODY_RESULT));
+    func.instruction(&cst(0));
+    func.instruction(&Instruction::I32Ne);
+    func.instruction(&Instruction::BrIf(0));
     func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_IBODY_RESULT + 4));
     func.instruction(&ls(13)); // incoming-body handle
@@ -494,6 +541,11 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&lg(13));
     func.instruction(&cst(SCRATCH_STREAM_RESULT));
     func.instruction(&cl(FN_INCOMING_BODY_STREAM));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_STREAM_RESULT));
+    func.instruction(&cst(0));
+    func.instruction(&Instruction::I32Ne);
+    func.instruction(&Instruction::BrIf(0));
     func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_STREAM_RESULT + 4));
     func.instruction(&ls(14)); // input-stream handle
@@ -558,6 +610,7 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&Instruction::Br(0)); // continue read loop
     func.instruction(&Instruction::End); // loop
     func.instruction(&Instruction::End); // block
+    func.instruction(&Instruction::End); // responder block
 
     func.instruction(&lg(6)); // len_ptr (param 6)
     func.instruction(&lg(15)); // total_len

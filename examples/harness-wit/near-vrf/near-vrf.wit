@@ -1,0 +1,6 @@
+package near:vrf@0.1.0;
+
+interface api {
+    generate: func(user-seed: string) -> tuple<string, string, string, string>;
+    pubkey: func() -> tuple<string, string>;
+}

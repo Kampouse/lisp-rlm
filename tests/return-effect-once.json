@@ -1,0 +1,71 @@
+{
+ "name": "return-effect-once: effects in return/log positions execute exactly once",
+ "manifest": "probe=/tmp/reo.wasm",
+ "steps": [
+  {
+   "contract": "probe",
+   "method": "t-ret-str-direct"
+  },
+  {
+   "contract": "probe",
+   "method": "peek",
+   "view": true,
+   "args": {
+    "k": "a"
+   },
+   "expect": "1"
+  },
+  {
+   "contract": "probe",
+   "method": "t-ret-str-let"
+  },
+  {
+   "contract": "probe",
+   "method": "peek",
+   "view": true,
+   "args": {
+    "k": "b"
+   },
+   "expect": "1"
+  },
+  {
+   "contract": "probe",
+   "method": "t-ret-direct"
+  },
+  {
+   "contract": "probe",
+   "method": "peek",
+   "view": true,
+   "args": {
+    "k": "d"
+   },
+   "expect": "1"
+  },
+  {
+   "contract": "probe",
+   "method": "t-log-direct"
+  },
+  {
+   "contract": "probe",
+   "method": "peek",
+   "view": true,
+   "args": {
+    "k": "e"
+   },
+   "expect": "1"
+  },
+  {
+   "contract": "probe",
+   "method": "t-log-let"
+  },
+  {
+   "contract": "probe",
+   "method": "peek",
+   "view": true,
+   "args": {
+    "k": "f"
+   },
+   "expect": "1"
+  }
+ ]
+}
