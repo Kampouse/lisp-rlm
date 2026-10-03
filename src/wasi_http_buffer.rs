@@ -262,11 +262,6 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&cst(SCRATCH_RESPONSE_RESULT));
     func.instruction(&cl(FN_FUTURE_GET));
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_RESPONSE_RESULT));
-    func.instruction(&cst(0));
-    func.instruction(&Instruction::I32Ne);
-    func.instruction(&Instruction::BrIf(0));
-    func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_RESPONSE_RESULT + 24));
     func.instruction(&ls(10)); // incoming-response handle
 
@@ -275,11 +270,6 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&cst(SCRATCH_IBODY_RESULT));
     func.instruction(&cl(FN_INCOMING_RESPONSE_CONSUME));
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_IBODY_RESULT));
-    func.instruction(&cst(0));
-    func.instruction(&Instruction::I32Ne);
-    func.instruction(&Instruction::BrIf(0));
-    func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_IBODY_RESULT + 4));
     func.instruction(&ls(11)); // incoming-body handle
 
@@ -287,11 +277,6 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&lg(11));
     func.instruction(&cst(SCRATCH_STREAM_RESULT));
     func.instruction(&cl(FN_INCOMING_BODY_STREAM));
-    func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_STREAM_RESULT));
-    func.instruction(&cst(0));
-    func.instruction(&Instruction::I32Ne);
-    func.instruction(&Instruction::BrIf(0));
     func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_STREAM_RESULT + 4));
     func.instruction(&ls(12)); // input-stream handle
@@ -516,11 +501,6 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&cst(SCRATCH_RESPONSE_RESULT));
     func.instruction(&cl(FN_FUTURE_GET));
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_RESPONSE_RESULT));
-    func.instruction(&cst(0));
-    func.instruction(&Instruction::I32Ne);
-    func.instruction(&Instruction::BrIf(0));
-    func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_RESPONSE_RESULT + 24));
     func.instruction(&ls(12)); // incoming-response handle
 
@@ -529,11 +509,6 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&cst(SCRATCH_IBODY_RESULT));
     func.instruction(&cl(FN_INCOMING_RESPONSE_CONSUME));
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_IBODY_RESULT));
-    func.instruction(&cst(0));
-    func.instruction(&Instruction::I32Ne);
-    func.instruction(&Instruction::BrIf(0));
-    func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_IBODY_RESULT + 4));
     func.instruction(&ls(13)); // incoming-body handle
 
@@ -541,11 +516,6 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&lg(13));
     func.instruction(&cst(SCRATCH_STREAM_RESULT));
     func.instruction(&cl(FN_INCOMING_BODY_STREAM));
-    func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_STREAM_RESULT));
-    func.instruction(&cst(0));
-    func.instruction(&Instruction::I32Ne);
-    func.instruction(&Instruction::BrIf(0));
     func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_STREAM_RESULT + 4));
     func.instruction(&ls(14)); // input-stream handle
