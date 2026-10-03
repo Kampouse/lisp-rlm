@@ -1562,5 +1562,42 @@ mod comb_test {
         }
         println!("sign_pk WARM (cached pk, comb + euclid): {:?}/call", t0.elapsed() / n);
     }
+    #[test]
+    fn bench_phases() {
+        use std::time::Instant;
+        let sk = a32(h("0000000000000000000000000000000000000000000000000000000000000003"))
+            .try_into()
+            .unwrap();
+        let pk = schnorr_pubkey_33(&sk);
+        let msg = compute_sha256(b"bench phases");
+        let aux = [11u8; 32];
+        let n = 300u32;
+        // full warm sign
+        let _ = schnorr_sign_pk(&sk, &pk, &msg, &aux);
+        let t = Instant::now();
+        for i in 0..n {
+            let m = compute_sha256(&i.to_be_bytes());
+            let _ = schnorr_sign_pk(&sk, &pk, &m, &aux);
+        }
+        let full = t.elapsed() / n;
+        // hashing share: 3 tagged hashes + msg/aux sha
+        let t = Instant::now();
+        for i in 0..n {
+            let m = compute_sha256(&i.to_be_bytes());
+            let _ = tagged_hash(b"BIP0340/aux", &aux);
+            let _ = tagged_hash(b"BIP0340/nonce", &m);
+            let _ = tagged_hash(b"BIP0340/challenge", &m);
+        }
+        let hs = t.elapsed() / n;
+        // scalar mul mod n (montgomery)
+        let k = [3u64, 0, 0, 0];
+        let t = Instant::now();
+        for _ in 0..(n * 10) {
+            let _ = sc_mul_mod_n(k, k);
+        }
+        let sm = t.elapsed() / (n * 10);
+        // parity derive (the y of R)
+        println!("warm={full:?} hashes(4-sha)={hs:?} sc_mul×10={sm:?}");
+    }
 
 }

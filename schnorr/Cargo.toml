@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 [workspace]
 
 [profile.release]
-opt-level = "z"
+opt-level = 3
 overflow-checks = false
 lto = true
 codegen-units = 1
