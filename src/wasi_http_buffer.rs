@@ -238,7 +238,7 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&Instruction::I32Ne);
     func.instruction(&Instruction::BrIf(0));
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_FUTURE_RESULT + 4));
+    func.instruction(&ld(SCRATCH_FUTURE_RESULT + 8));
     func.instruction(&ls(8)); // future handle
 
     // Subscribe → pollable on stack
@@ -267,7 +267,7 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&Instruction::I32Ne);
     func.instruction(&Instruction::BrIf(0));
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_RESPONSE_RESULT + 4));
+    func.instruction(&ld(SCRATCH_RESPONSE_RESULT + 24));
     func.instruction(&ls(10)); // incoming-response handle
 
     // Consume → incoming-body handle at +4
@@ -492,7 +492,7 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&Instruction::I32Ne);
     func.instruction(&Instruction::BrIf(0));
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_FUTURE_RESULT + 4));
+    func.instruction(&ld(SCRATCH_FUTURE_RESULT + 8));
     func.instruction(&ls(10)); // future handle
 
     // Subscribe → pollable
@@ -521,7 +521,7 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&Instruction::I32Ne);
     func.instruction(&Instruction::BrIf(0));
     func.instruction(&cst(0));
-    func.instruction(&ld(SCRATCH_RESPONSE_RESULT + 4));
+    func.instruction(&ld(SCRATCH_RESPONSE_RESULT + 24));
     func.instruction(&ls(12)); // incoming-response handle
 
     // Consume → incoming-body handle at +4
