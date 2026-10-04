@@ -21,6 +21,19 @@
 //   - trade events: EVENT_JSON standard intear_launch event "trade"
 //   - buy()/quote_buy()/quote_sell() return JSON: {"gross","fee","net"}
 //
+// v3.7 (2026-10-03, TWAP — spot-manipulation resistance):
+//   every state-changing trade calls touch(): maintains a Uniswap-V2-style
+//   cumulative-price accumulator (pcum + price-timestamp + last-stamp, all
+//   per token, decimal strings). graduation requires BOTH spot reserve ≥ th
+//   AND time-weighted evidence over the last 60s (TWAP_MAX_AGE) — an atomic
+//   pump (same-block buy spam, ~0.024 TGas/swap in-call) moves spot but
+//   contributes ZERO weighted time, so migration cannot be triggered by a
+//   one-block flash attack. twap(token, window?) view for consumers;
+//   Views stay read-only: quotes cannot advance anchors (storage writes in
+//   view are prohibited on-chain), so only REAL trades (fee-paying) move
+//   the accumulator. Units: pcum/price in yoctoNEAR per whole token × 1e12
+//   (Q112-ish scale, exact decimal arithmetic); stamps in ns (u128).
+//
 // v3 (2026-09-28, internal balances — NEP-611 gas-key trading):
 //   A scoped gas key (GasKeyFunctionCall) can NEVER attach a deposit —
 //   nearcore verify_function_call_permission rejects deposit > 0 for
@@ -60,6 +73,14 @@ function feeTokKey(t: string): string { return "fees_tok:" + t; }
 function gradThKey(t: string): string { return "grad_th:" + t; }
 function gradKey(t: string): string { return "grad:" + t; }
 function migKey(t: string): string { return "migrated:" + t; }
+
+// v3.7 TWAP state (per token, decimal strings — never i64-parsed)
+function pcumKey(t: string): string { return "pcum:" + t; }   // cumulative Σ price·dt (scaled)
+function ptkKey(t: string): string { return "ptk:" + t; }     // price at last touch (scaled)
+function wstampKey(t: string): string { return "wstamp:" + t; } // last touch, ns
+
+const TWAP_MAX_AGE = "60000000000";  // 60s in ns (60 × 1e9): graduation window
+const TWAP_SCALE = "1000000000000";      // price scale 1e12: yN/token × 1e12 keeps 40-bit headroom
 
 // v3 internal ledgers: global NEAR pad (one per trader, crosses every token
 // curve) + per-token internal token ledger (gas-key trading)
@@ -348,6 +369,114 @@ function recordTrade(token: string, side: string, trader: string, nearAmt: strin
   return 0;
 }
 
+// ── v3.7 TWAP accumulator ──────────────────────────────────────────
+// spot = pn/pt in yN per WHOLE token (1e12-scaled), exact decimal math.
+// Pure-string path for the compare (cmpDec) — the u128 lane for the rest
+// (shape matches the GAPS.md 2026-09-28 safe matrix: flat statements,
+// loop-free, no nested u128 chains in loop-carried positions).
+function isZeroDec(s: string): number {
+  const t = trimZeros(s);
+  if (strLength(t) == 0) { return 1; }
+  if (t == "0") { return 1; }
+  return 0;
+}
+
+function spotScaled(pn: string, pt: string): string {
+  if (isZeroDec(pt) == 1) { return "0"; }
+  // flat: no call-in-operand-position (GAPS.md layout hazard)
+  const prod = bigMul(pn, TWAP_SCALE);
+  return bigDiv(prod, pt);
+}
+
+// advance the accumulator. ts = near.blockTimestamp() (ns decimal string).
+// prevPn/prevPt = reserves BEFORE this trade (call sites hold them as
+// locals — reserves are overwritten before touch runs); newPn/newPt after.
+// First touch (wstamp 0/absent): anchor at current spot, no dt credit.
+function touch(token: string, prevPn: string, prevPt: string,
+               newPn: string, newPt: string, ts: string): number {
+  const wRaw = near.storageGet(wstampKey(token)) ?? "0";
+  const spot = spotScaled(newPn, newPt);
+  if (wRaw == "0") {
+    near.storageSet(pcumKey(token), "0");
+    near.storageSet(ptkKey(token), spot);
+    near.storageSet(wstampKey(token), ts);
+    return 0;
+  }
+  // prev price = the one STORED at the last touch (ptk) — true segment price
+  const prev = near.storageGet(ptkKey(token)) ?? "0";
+  let dt = "0";
+  if (cmpDec(ts, wRaw) > 0) { dt = u128Sub(ts, wRaw); }
+  // Only the last W of history belongs in the accumulator: segments older
+  // than the window are dropped (dt ≥ W → fresh), and the current segment
+  // contributes min(dt, W) — this keeps pcum ≤ W·price, so the view formula
+  // (pcum + spot·dt)/W is a true trailing-window average, never overcounted.
+  let eff = dt;
+  if (cmpDec(dt, TWAP_MAX_AGE) > 0) { eff = TWAP_MAX_AGE; }
+  const pcum = near.storageGet(pcumKey(token)) ?? "0";
+  let base = pcum;
+  if (cmpDec(dt, TWAP_MAX_AGE) >= 0) { base = "0"; }
+  let term = "0";
+  if (isZeroDec(prev) == 0) {
+    // pcum units: (yN/token × 1e12)·ns — price_scaled × dt, NO further scaling
+    term = bigMul(prev, eff);
+  }
+  near.storageSet(pcumKey(token), u128Add(base, term));
+  near.storageSet(ptkKey(token), spot);
+  near.storageSet(wstampKey(token), ts);
+  return 0;
+}
+
+// time-weighted price over the trailing TWAP_MAX_AGE ns — a LOWER BOUND on
+// the true window TWAP: tw = (pcum + spot·dt) / W. Properties (the defense):
+//   - same-block flash pump: dt = 0 → contributes ZERO (tw = history avg)
+//   - price sustained for the full window: tw → that price (honest signal)
+//   - stale accumulator (>W since last touch): reset in touch(), fresh window
+// touch() resets pcum when dt > W, so pcum never holds more than W of history.
+// `window` arg dilutes (larger denominator = weaker bound); gate uses W.
+function twapRaw(token: string, window: string): string {
+  const spot = near.storageGet(ptkKey(token)) ?? "0";
+  const wRaw = near.storageGet(wstampKey(token)) ?? "0";
+  if (wRaw == "0") { return spot; }
+  const ts = near.blockTimestamp();
+  let dt = "0";
+  if (cmpDec(ts, wRaw) > 0) { dt = u128Sub(ts, wRaw); }
+  const pcum = near.storageGet(pcumKey(token)) ?? "0";
+  // flat statements — nested u128/big call in operand position loses chars
+  // (GAPS.md layout hazard; pool.ts house style, see bigDiv comment)
+  const spotDt = bigMul(spot, dt);
+  const acc = u128Add(pcum, spotDt);
+  return bigDiv(acc, window);
+}
+
+// graduation, gated on TWAP not spot. Fires from buy() only (the NEAR
+// reserve only grows there) — same single-fire + event contract as v2.
+// Two-stage gate (each stage is a LOWER bound, so this is strictly stronger
+// than v2's spot check — never graduates on less evidence):
+//   1. spot reserve < th → return (v2 hot path cost, no accumulator work)
+//   2. TIME-WEIGHTED evidence: twapReserve = ((pcum + spot·dt)/W)·pt/scale
+//      must ALSO be ≥ th. Flash pump: dt=0 and ptk = old price → twapReserve
+//      stays at the pre-pump level → gate refuses.
+// grad_th KEEPS ITS v2 UNITS (raw yoctoNEAR reserve): existing thresholds on
+// live pools keep their meaning; only the measurement changed (spot → both).
+function twapGatedGrad(token: string, pn: string, ptv: string): number {
+  if ((near.storageGet(gradKey(token)) ?? "") == "1") { return 0; }
+  const th = near.storageGet(gradThKey(token)) ?? "0";
+  if (th == "0") { return 0; }
+  if (u128Lt(pn, th)) { return 0; }
+  const tw = twapRaw(token, TWAP_MAX_AGE);
+  // flat statements (GAPS.md layout hazard) — bind before combining
+  const twPt = bigMul(tw, ptv);
+  const twRes = bigDiv(twPt, TWAP_SCALE);
+  if (u128Lt(twRes, th)) { return 0; }
+  near.storageSet(gradKey(token), "1");
+  const ev = jsonSet(
+    jsonSet(jsonSet(`{}`, "token_account_id", jsonQuote(token)),
+      "near", jsonQuote(pn)),
+    "twap", jsonQuote(twRes));
+  near.log("EVENT_JSON:" + `{"standard":"intear_launch","version":"1.0.0","event":"pool_graduated","data":${ev}}`);
+  return 0;
+}
+
 // ── pool lifecycle ─────────────────────────────────────────────────
 
 // init: owner = whoever deploys/initializes (the launchpad factory)
@@ -385,6 +514,9 @@ export function seed_pool(): number {
   th = trimZeros(th);
   if (allDigits(th) == 0) { near.abort("ERR_GRAD_TH"); return 0; }
   near.storageSet(gradThKey(token), th);
+  near.storageSet(pcumKey(token), "0");
+  near.storageSet(ptkKey(token), "0");
+  near.storageSet(wstampKey(token), "0");
   near.log(`seeded:${token}:${attached}`);
   return 0;
 }
@@ -487,6 +619,9 @@ export function migrate(): number {
   near.storageSet(pnKey(token), "0");
   near.storageSet(ptKey(token), "0");
   near.storageSet(migKey(token), "1");
+  near.storageRemove(pcumKey(token));
+  near.storageRemove(ptkKey(token));
+  near.storageRemove(wstampKey(token));
   near.transferU128(ref, pn);
   const ev = jsonSet(
     jsonSet(jsonSet(`{}`, "token_account_id", jsonQuote(token)),
@@ -611,8 +746,11 @@ export function sell_internal(): string {
   const minOut = near.jsonGetStr("min_near_out") ?? "0";
   if (!u128IsZero(minOut) && u128Lt(net, minOut)) { near.abort("ERR_SLIPPAGE"); return ""; }
   near.storageSet(tk, u128Sub(held, amount));
-  near.storageSet(ptKey(token), u128Add(pt, amount));
-  near.storageSet(pnKey(token), u128Sub(pn, gross));
+  const newPt = u128Add(pt, amount);
+  const newPn = u128Sub(pn, gross);
+  near.storageSet(ptKey(token), newPt);
+  near.storageSet(pnKey(token), newPn);
+  touch(token, pn, pt, newPn, newPt, near.blockTimestamp());
   if (!u128IsZero(fee)) {
     accrueNearFee(token, fee);
   }
@@ -652,8 +790,11 @@ export function sell(): string {
   const minOut = near.jsonGetStr("min_near_out") ?? "0";
   if (!u128IsZero(minOut) && u128Lt(net, minOut)) { near.abort("ERR_SLIPPAGE"); return ""; }
   near.storageSet(ik, u128Sub(held, amount));
-  near.storageSet(ptKey(token), u128Add(pt, amount));
-  near.storageSet(pnKey(token), u128Sub(pn, gross));
+  const newPt = u128Add(pt, amount);
+  const newPn = u128Sub(pn, gross);
+  near.storageSet(ptKey(token), newPt);
+  near.storageSet(pnKey(token), newPn);
+  touch(token, pn, pt, newPn, newPt, near.blockTimestamp());
   if (!u128IsZero(fee)) {
     accrueNearFee(token, fee);
   }
@@ -717,21 +858,7 @@ function tradingHalt(token: string): number {
   return 0;
 }
 
-// graduated? emits the standard event once (checked after buys — the NEAR
-// reserve only grows there)
-function checkGrad(token: string, pn: string): number {
-  if ((near.storageGet(gradKey(token)) ?? "") == "1") { return 0; }
-  const th = near.storageGet(gradThKey(token)) ?? "0";
-  if (th == "0") { return 0; }   // v3.1: exact string compare (ingress-normalized)
-  if (u128Lt(pn, th)) { return 0; }
-  near.storageSet(gradKey(token), "1");
-  const ev = jsonSet(
-    jsonSet(jsonSet(`{}`, "token_account_id", jsonQuote(token)),
-      "near", jsonQuote(pn)),
-    "threshold", jsonQuote(th));
-  near.log("EVENT_JSON:" + `{"standard":"intear_launch","version":"1.0.0","event":"pool_graduated","data":${ev}}`);
-  return 0;
-}
+// graduated? v3.7: see twapGatedGrad (spot check replaced by the TWAP gate)
 
 // buy: @payable — NEAR in → tokens out to the buyer (predecessor)
 // args: { token, min_tokens_out? }  (0/omitted = no slippage guard)
@@ -767,6 +894,7 @@ export function buy(): string {
   const newPn = u128Add(pn, nearIn);
   near.storageSet(ptKey(token), newPt);
   near.storageSet(pnKey(token), newPn);
+  touch(token, pn, pt, newPn, newPt, near.blockTimestamp());
   if (u128IsZero(attached)) {
     const nk = nbKey(tid);
     const padNow = near.storageGet(nk) ?? "0";
@@ -798,7 +926,7 @@ export function buy(): string {
   tradeEvent(token, "buy", trader, nearIn, net, fee);
   recordTrade(token, "buy", trader, nearIn, net);
   near.log(`buy:${trader}:${nearIn}:${net}`);
-  checkGrad(token, newPn);
+  twapGatedGrad(token, newPn, newPt);
   return `{"gross":${jsonQuote(gross)},"fee":${jsonQuote(fee)},"net":${jsonQuote(net)}}`;
 }
 
@@ -838,8 +966,11 @@ export function ft_on_transfer(): string {
     if (u128IsZero(net)) { near.abort("ERR_DUST"); return "0"; }
     const minOut = ci >= 0 ? strSlice(msg, ci + 1, strLength(msg)) : "0";
     if (!u128IsZero(minOut) && u128Lt(net, minOut)) { near.abort("ERR_SLIPPAGE"); return "0"; }
-    near.storageSet(ptKey(token), u128Add(pt, amount));
-    near.storageSet(pnKey(token), u128Sub(pn, gross));
+    const newPt = u128Add(pt, amount);
+    const newPn = u128Sub(pn, gross);
+    near.storageSet(ptKey(token), newPt);
+    near.storageSet(pnKey(token), newPn);
+    touch(token, pn, pt, newPn, newPt, near.blockTimestamp());
     if (!u128IsZero(fee)) {
       accrueNearFee(token, fee);
     }
@@ -867,7 +998,13 @@ export function get_pool(): string {
   if ((near.storageGet(gradKey(token)) ?? "") == "1") { grad = "true"; }
   let mig = "false";
   if ((near.storageGet(migKey(token)) ?? "") == "1") { mig = "true"; }
-  return `{"near":${jsonQuote(pn)},"tokens":${jsonQuote(near.storageGet(ptKey(token)) ?? "0")},"grad_th":${jsonQuote(gradTh)},"graduated":${grad},"migrated":${mig},"fees_tok":${jsonQuote(near.storageGet(feeTokKey(token)) ?? "0")}}`;
+  return `{"near":${jsonQuote(pn)},"tokens":${jsonQuote(near.storageGet(ptKey(token)) ?? "0")},"grad_th":${jsonQuote(gradTh)},"graduated":${grad},"migrated":${mig},"fees_tok":${jsonQuote(near.storageGet(feeTokKey(token)) ?? "0")},"twap":${jsonQuote(twapRaw(token, TWAP_MAX_AGE))},"spot_yN_per_tok":${jsonQuote(spotScaled(pn, near.storageGet(ptKey(token)) ?? "0"))}}`;
+}
+// v3.7: time-weighted price over `window?` ns (default 60s) — yN per token
+export function twap(): string {
+  const token = near.jsonGetStr("token") ?? "";
+  const w = near.jsonGetStr("window") ?? TWAP_MAX_AGE;
+  return `{"twap":${jsonQuote(twapRaw(token, w))},"window_ns":${jsonQuote(w)}}`;
 }
 export function get_fee(): string {
   let paused = "false";
