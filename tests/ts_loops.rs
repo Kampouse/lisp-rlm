@@ -91,3 +91,15 @@ fn function_while_return_still_lowers() {
     assert!(ir.contains("__wl_ret"), "exit protocol gone: {ir}");
     assert!(ir.contains("(while"), "got: {ir}");
 }
+
+/// Top-level for..of — the gap the brain hit live at 14:08 (cheatsheet
+/// advertised it, M1 catch rejected it). Reuses the function-body
+/// machinery via lower_prefix_around.
+#[test]
+fn top_level_for_of_lowers() {
+    let ir = lower(
+        "const xs: number[] = [1, 2, 3];\nlet s: number = 0;\nfor (const x of xs) { s = s + x; }\nrlm_set(\"total\", s);\n",
+    );
+    assert!(ir.contains("(while"), "got: {ir}");
+    assert!(ir.contains("vec-nth") || ir.contains("vec-length"), "iter machinery missing: {ir}");
+}

@@ -433,6 +433,17 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
             Statement::ForStatement(f) => {
                 out.push(lower_for_form(f, false)?);
             }
+            Statement::ForOfStatement(fo) => {
+                // M1.5+ (2026-10-05): top-level for..of — reuse the
+                // function-body machinery (self-contained flag lets);
+                // Num(0) tail, view=false. The brain hit this exact gap
+                // minutes after the counted-loop ship (t1_sumsq@ts 14:08).
+                out.push(lower_prefix_around(
+                    std::slice::from_ref(stmt),
+                    Num(0),
+                    false,
+                )?);
+            }
             Statement::EmptyStatement(_) => {}
             // `type X = { ... }` — data-shape declaration, compile-time
             // only: record the shape for object-param annotations, emit
