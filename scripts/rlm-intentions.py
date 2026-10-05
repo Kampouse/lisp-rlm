@@ -85,6 +85,14 @@ def main():
         if r["kind"] == "completable" and \
                 os.path.exists(os.path.join(TASKS_DIR, r["task"] + ".lisp")):
             draw.append(r["task"])
+    # cold-start admission (2026-09-30): task files with zero banked worlds
+    # can never enter via worlds_by_task — admit them at top priority so new
+    # curriculum stages actually get picked up (e.g. lending ladder t_lend_*)
+    have = {r["task"] for r in rows}
+    for p in sorted(glob.glob(os.path.join(TASKS_DIR, "t*.lisp"))):
+        name = os.path.basename(p)[:-5]
+        if name not in have:
+            draw.insert(0, name)
     # one mastered task for freshness (rotate by minute-of-hour)
     masters = [r["task"] for r in rows if r["kind"] == "perpetual"]
     if masters:
