@@ -856,6 +856,10 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
     // forward-scan bigint lets (CPS lowering means let-site registration
     // runs after statements that reference the binding — see scan_bigint_lets)
     scan_bigint_lets(&body.statements);
+    // F3: whole-function closure-safety analysis BEFORE lowering — the
+    // lowering hoists/reorders statements, so lowering-time checks see
+    // assignments/arrows out of order. Static pass sees the full body.
+    check_fn_closure_safety(&body.statements)?;
 
     // view convention: get_* functions' returns become json_return_str
     // (the define tail value alone does not call value_return)
@@ -3110,6 +3114,347 @@ fn expr_is_numberish(e: &Expression<'_>) -> bool {
         Expression::StaticMemberExpression(sm) => sm.property.name.as_str() == "length",
         _ => false,
     }
+}
+
+/// Collect every plain Identifier NAME appearing in an expression
+/// (member property names excluded — only value refs). Used by the F3
+/// closure-safety checks: capture detection (T4) and the dispatch-freeze
+/// scan on pipeline callback bodies. Deliberately over-approximates
+/// (shadowed params count too) — conservative hard errors only.
+fn expr_idents(e: &Expression<'_>, out: &mut Vec<String>) {
+    match e {
+        Expression::Identifier(id) => out.push(id.name.as_str().to_string()),
+        Expression::TemplateLiteral(t) => {
+            for x in &t.expressions {
+                expr_idents(x, out);
+            }
+        }
+        Expression::ArrayExpression(a) => {
+            for el in &a.elements {
+                if let Some(x) = el.as_expression() {
+                    expr_idents(x, out);
+                }
+            }
+        }
+        Expression::ObjectExpression(o) => {
+            for prop in &o.properties {
+                if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(pp) = prop {
+                    expr_idents(&pp.value, out);
+                }
+            }
+        }
+        Expression::BinaryExpression(b) => {
+            expr_idents(&b.left, out);
+            expr_idents(&b.right, out);
+        }
+        Expression::LogicalExpression(l) => {
+            expr_idents(&l.left, out);
+            expr_idents(&l.right, out);
+        }
+        Expression::UnaryExpression(u) => expr_idents(&u.argument, out),
+        Expression::UpdateExpression(_) => {}
+        Expression::ConditionalExpression(c) => {
+            expr_idents(&c.test, out);
+            expr_idents(&c.consequent, out);
+            expr_idents(&c.alternate, out);
+        }
+        Expression::ParenthesizedExpression(p) => expr_idents(&p.expression, out),
+        Expression::AwaitExpression(a) => expr_idents(&a.argument, out),
+        Expression::CallExpression(c) => {
+            expr_idents(&c.callee, out);
+            for a in &c.arguments {
+                if let Some(x) = a.as_expression() {
+                    expr_idents(x, out);
+                }
+            }
+        }
+        Expression::StaticMemberExpression(m) => expr_idents(&m.object, out),
+        Expression::ComputedMemberExpression(m) => {
+            expr_idents(&m.object, out);
+            expr_idents(&m.expression, out);
+        }
+        Expression::AssignmentExpression(a) => {
+            if let oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(id) = &a.left {
+                out.push(id.name.as_str().to_string());
+            }
+            expr_idents(&a.right, out);
+        }
+        Expression::ArrowFunctionExpression(_) => {
+            // lambda-lifted — its free vars were checked at its own site
+        }
+        _ => {}
+    }
+}
+
+fn stmt_exprs<'a>(st: &'a Statement<'a>, acc: &mut Vec<&'a Expression<'a>>) {
+    match st {
+        Statement::ReturnStatement(r) => {
+            if let Some(x) = &r.argument {
+                acc.push(x);
+            }
+        }
+        Statement::ExpressionStatement(x) => acc.push(&x.expression),
+        Statement::IfStatement(i) => {
+            acc.push(&i.test);
+            body_or_stmt(&i.consequent, acc);
+            if let Some(alt) = &i.alternate {
+                body_or_stmt(alt, acc);
+            }
+        }
+        Statement::BlockStatement(b) => stmts_exprs(&b.body, acc),
+        Statement::WhileStatement(w) => {
+            acc.push(&w.test);
+            body_or_stmt(&w.body, acc);
+        }
+        Statement::ForOfStatement(f) => {
+            acc.push(&f.right);
+            body_or_stmt(&f.body, acc);
+        }
+        Statement::VariableDeclaration(v) => {
+            for d in &v.declarations {
+                if let Some(x) = &d.init {
+                    acc.push(x);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn stmts_exprs<'a>(stmts: &'a [Statement<'a>], acc: &mut Vec<&'a Expression<'a>>) {
+    for st in stmts {
+        stmt_exprs(st, acc);
+    }
+}
+
+fn body_or_stmt<'a>(st: &'a Statement<'a>, acc: &mut Vec<&'a Expression<'a>>) {
+    match st {
+        Statement::BlockStatement(b) => stmts_exprs(&b.body, acc),
+        _ => stmt_exprs(st, acc),
+    }
+}
+
+/// All identifiers an arrow references beyond its params. Expression form
+/// walks directly; block form walks its statements' expressions (return/
+/// expr-stmt/if/while/for-of/decl inits cover the real body shapes).
+fn arrow_body_idents(a: &oxc_ast::ast::ArrowFunctionExpression<'_>) -> Vec<String> {
+    let mut out = Vec::new();
+    let params: Vec<String> = a
+        .params
+        .items
+        .iter()
+        .filter_map(|p| binding_name(&p.pattern).ok())
+        .collect();
+    if let Some(x) = a.get_expression() {
+        expr_idents(x, &mut out);
+    } else if let Some(fb) = a.get_function_body() {
+        let mut acc = Vec::new();
+        stmts_exprs(&fb.statements, &mut acc);
+        for x in acc {
+            expr_idents(x, &mut out);
+        }
+    }
+    out.retain(|n| !params.contains(n));
+    out
+}
+
+/// F3 (2026-10-04) — whole-function closure-safety analysis.
+///
+/// Run BEFORE lowering a function body, over the raw AST — the lowering
+/// pipeline hoists/reorders statements (impure-init prologue, early-return
+/// prefixes), so inline lowering-time checks see the sets in the wrong
+/// order. This static pass sees the complete picture:
+///
+/// - T4: an arrow capturing a local that is EVER assigned (`x = …`,
+///   `x += …`, `x++`) is a wasm landmine (closure cells are not
+///   per-invocation; bytecode fixed 2026-08-26, wasm NOT) → hard error
+///   naming the variable. Immutable capture is fine (probed end-to-end
+///   through wasm + interpreter 2026-10-04).
+/// - dispatch-freeze: a pipeline callback (.map/.filter/.reduce) that
+///   calls a lambda-initialized local emits an INVALID module (probed
+///   2026-10-04) → hard error suggesting inlining.
+/// - boundaries: an arrow literal as a direct call argument to a user
+///   fn can't cross function boundaries (unknown-function at emit) →
+///   hard error.
+///
+/// Deliberately over-approximate (nested shadowing not tracked) — every
+/// hit is a hard error, never a silent pass.
+struct ClosureScan {
+    assigned: Vec<String>,
+    lambda_init_locals: Vec<String>,
+    /// (free idents, is_pipeline_callback)
+    arrows: Vec<(Vec<String>, bool)>,
+    call_arg_arrow: bool,
+}
+
+fn scan_expr(e: &Expression<'_>, scan: &mut ClosureScan) {
+    match e {
+        Expression::AssignmentExpression(a) => {
+            if let oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(id) = &a.left {
+                scan.assigned.push(id.name.as_str().to_string());
+            }
+            scan_expr(&a.right, scan);
+        }
+        Expression::UpdateExpression(u) => {
+            if let oxc_ast::ast::SimpleAssignmentTarget::AssignmentTargetIdentifier(id) =
+                &u.argument
+            {
+                scan.assigned.push(id.name.as_str().to_string());
+            }
+        }
+        Expression::ArrowFunctionExpression(arrow) => {
+            scan.arrows.push((arrow_body_idents(arrow), false));
+            // nested content still contributes assignments/other arrows
+            if let Some(x) = arrow.get_expression() {
+                scan_expr(x, scan);
+            } else if let Some(fb) = arrow.get_function_body() {
+                scan_stmts_closure(&fb.statements, scan);
+            }
+        }
+        Expression::CallExpression(c) => {
+            scan_expr(&c.callee, scan);
+            let pipeline = match &c.callee {
+                Expression::StaticMemberExpression(sm) => matches!(
+                    sm.property.name.as_str(),
+                    "map" | "filter" | "reduce"
+                ),
+                _ => false,
+            };
+            for arg in &c.arguments {
+                let Some(ae) = arg.as_expression() else { continue };
+                match ae {
+                    Expression::ArrowFunctionExpression(arrow) => {
+                        if !pipeline {
+                            scan.call_arg_arrow = true;
+                        }
+                        scan.arrows.push((arrow_body_idents(arrow), pipeline));
+                        if let Some(x) = arrow.get_expression() {
+                            scan_expr(x, scan);
+                        } else if let Some(fb) = arrow.get_function_body() {
+                            scan_stmts_closure(&fb.statements, scan);
+                        }
+                    }
+                    _ => scan_expr(ae, scan),
+                }
+            }
+        }
+        Expression::BinaryExpression(b) => {
+            scan_expr(&b.left, scan);
+            scan_expr(&b.right, scan);
+        }
+        Expression::LogicalExpression(l) => {
+            scan_expr(&l.left, scan);
+            scan_expr(&l.right, scan);
+        }
+        Expression::UnaryExpression(u) => scan_expr(&u.argument, scan),
+        Expression::ConditionalExpression(cd) => {
+            scan_expr(&cd.test, scan);
+            scan_expr(&cd.consequent, scan);
+            scan_expr(&cd.alternate, scan);
+        }
+        Expression::ParenthesizedExpression(pe) => scan_expr(&pe.expression, scan),
+        Expression::AwaitExpression(a) => scan_expr(&a.argument, scan),
+        Expression::TemplateLiteral(t) => {
+            for x in &t.expressions {
+                scan_expr(x, scan);
+            }
+        }
+        Expression::ArrayExpression(a) => {
+            for el in &a.elements {
+                if let Some(x) = el.as_expression() {
+                    scan_expr(x, scan);
+                }
+            }
+        }
+        Expression::ObjectExpression(o) => {
+            for prop in &o.properties {
+                if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(pp) = prop {
+                    scan_expr(&pp.value, scan);
+                }
+            }
+        }
+        Expression::StaticMemberExpression(m) => scan_expr(&m.object, scan),
+        Expression::ComputedMemberExpression(m) => {
+            scan_expr(&m.object, scan);
+            scan_expr(&m.expression, scan);
+        }
+        _ => {}
+    }
+}
+
+fn scan_stmts_closure(stmts: &[Statement<'_>], scan: &mut ClosureScan) {
+    for st in stmts {
+        match st {
+            Statement::ExpressionStatement(x) => scan_expr(&x.expression, scan),
+            Statement::ReturnStatement(r) => {
+                if let Some(x) = &r.argument {
+                    scan_expr(x, scan);
+                }
+            }
+            Statement::VariableDeclaration(v) => {
+                for d in &v.declarations {
+                    if let (Some(init_e), Ok(name)) = (&d.init, binding_name(&d.id)) {
+                        if matches!(init_e, Expression::ArrowFunctionExpression(_)) {
+                            scan.lambda_init_locals.push(name.clone());
+                        }
+                        scan_expr(init_e, scan);
+                    }
+                }
+            }
+            _ => {
+                // if/while/for-of/blocks — generic statement-expression
+                // walker (assignment-statements surface as expression
+                // statements in oxc anyway).
+                let mut acc = Vec::new();
+                stmt_exprs(st, &mut acc);
+                for x in acc {
+                    scan_expr(x, scan);
+                }
+            }
+        }
+    }
+}
+
+/// Entry point: run all three F3 checks over a function body.
+fn check_fn_closure_safety(stmts: &[Statement<'_>]) -> Result<(), String> {
+    let mut scan = ClosureScan {
+        assigned: Vec::new(),
+        lambda_init_locals: Vec::new(),
+        arrows: Vec::new(),
+        call_arg_arrow: false,
+    };
+    scan_stmts_closure(stmts, &mut scan);
+
+    for (idents, is_callback) in &scan.arrows {
+        if *is_callback {
+            for n in idents {
+                if scan.lambda_init_locals.contains(n) {
+                    return Err(format!(
+                        "ts_frontend: pipeline callback calls lambda-valued local `{n}` — \
+dispatch-freeze landmine (emits invalid wasm). Inline the arrow's body or hoist the logic out"
+                    ));
+                }
+            }
+        } else {
+            for n in idents {
+                if scan.assigned.contains(n) {
+                    return Err(format!(
+                        "ts_frontend: arrow captures mutable local `{n}` — closure-over-set! is \
+unsupported on wasm (backend T4: cells not per-invocation). Copy it to a \
+fresh const before the arrow, or restructure"
+                    ));
+                }
+            }
+        }
+    }
+    if scan.call_arg_arrow {
+        return Err(
+            "ts_frontend: arrow as call argument unsupported — first-class \
+function values can't cross user-function boundaries (M1)"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 /// Does the expression contain any call? Used by lower_prefix_around_with_return
