@@ -280,6 +280,13 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
         if let Statement::VariableDeclaration(v) = stmt {
             for d in &v.declarations {
                 if let (Ok(name), Some(init)) = (binding_name(&d.id), d.init.as_ref()) {
+                    // `let` is mutable — with top-level loops (M1.5,
+                    // 2026-10-05) a folded `let s = 0` went stale inside the
+                    // loop body ((+ 0 (* i i)) while set! s wrote a shadow).
+                    // Only `const` folds; mutable decls emit real defines.
+                    if !matches!(v.kind, oxc_ast::ast::VariableDeclarationKind::Const) {
+                        continue;
+                    }
                     let mut is_bigint = false;
                     let literal = match init {
                         Expression::NumericLiteral(n) => Some(Num(n.value as i64)),
@@ -400,11 +407,16 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                         }
                         _ => None,
                     };
-                    if let Some(v) = literal {
+                    if let Some(lit) = literal {
                         if is_bigint {
                             BIGINT_CONSTS.with(|m| m.borrow_mut().push(name.clone()));
                         }
-                        CONST_FOLDS.with(|m| m.borrow_mut().push((name, v)));
+                        if matches!(v.kind, oxc_ast::ast::VariableDeclarationKind::Const) {
+                            CONST_FOLDS.with(|m| m.borrow_mut().push((name, lit)));
+                        } else {
+                            // mutable `let x = <literal>` — real define, no fold
+                            consts.push(list(vec![Sym("define"), Sym(name), lit]));
+                        }
                     } else {
                         consts.push(list(vec![Sym("define"), Sym(name), lower_expr(init)?]));
                     }
@@ -412,6 +424,14 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
             }
             Statement::ExpressionStatement(e) => {
                 out.push(lower_expr(&e.expression)?);
+            }
+            Statement::WhileStatement(w) => {
+                // M1.5 (2026-10-05): top-level loops (RLM brain code lives
+                // here — `let s = 0; for (...) {...}` module scripts).
+                out.push(lower_while_form(w, false)?);
+            }
+            Statement::ForStatement(f) => {
+                out.push(lower_for_form(f, false)?);
             }
             Statement::EmptyStatement(_) => {}
             // `type X = { ... }` — data-shape declaration, compile-time
@@ -963,6 +983,98 @@ fn has_return_inside_loop(stmts: &[Statement<'_>]) -> bool {
     stmts.iter().any(in_loop)
 }
 
+/// while/for bodies with break/continue/return are not lowered — the
+/// exit-protocol machinery exists only for for..of. Hard-error early so
+/// the author (or the brain) gets an actionable message instead of
+/// silently broken semantics (2026-10-05, M1.5 loops).
+fn reject_loop_exits(stmts: &[Statement<'_>]) -> Result<(), String> {
+    for s in stmts {
+        match s {
+            Statement::BreakStatement(_)
+            | Statement::ContinueStatement(_)
+            | Statement::ReturnStatement(_) => {
+                return Err("ts_frontend: break/continue/return inside while/for are not supported yet — use a flag variable or recursion".into())
+            }
+            Statement::BlockStatement(b) => reject_loop_exits(&b.body)?,
+            Statement::IfStatement(i) => {
+                reject_loop_exits(stmts_of(&i.consequent))?;
+                if let Some(alt) = &i.alternate {
+                    reject_loop_exits(stmts_of(alt))?;
+                }
+            }
+            Statement::WhileStatement(w) => reject_loop_exits(stmts_of(&w.body))?,
+            Statement::ForStatement(f) => reject_loop_exits(stmts_of(&f.body))?,
+            Statement::ForOfStatement(fo) => reject_loop_exits(stmts_of(&fo.body))?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Lower `while (test) { body }` (no break/continue/return — caller must
+/// reject_loop_exits first). Body lowers through lower_prefix_around with
+/// a nil tail — plain statement chaining, no __fn_done protocol (works at
+/// top level AND inside functions).
+fn lower_while_form(w: &oxc_ast::ast::WhileStatement<'_>, view: bool) -> Result<LispVal, String> {
+    reject_loop_exits(stmts_of(&w.body))?;
+    let body = lower_prefix_around(stmts_of(&w.body), Num(0), view)?;
+    Ok(list(vec![Sym("while"), truthy(&w.test)?, body]))
+}
+
+/// Lower `for (init; test; update) { body }` as
+/// `(begin pre... (let* binds (while test body... update)))`.
+/// let-scope covers the whole loop; the update runs as the loop's last
+/// statement each iteration.
+fn lower_for_form(f: &oxc_ast::ast::ForStatement<'_>, view: bool) -> Result<LispVal, String> {
+    reject_loop_exits(stmts_of(&f.body))?;
+    let mut binds: Vec<LispVal> = Vec::new();
+    let mut pre: Vec<LispVal> = Vec::new();
+    if let Some(init) = &f.init {
+        match init {
+            oxc_ast::ast::ForStatementInit::VariableDeclaration(v) => {
+                for d in &v.declarations {
+                    let name = binding_name(&d.id)?;
+                    let ie = d
+                        .init
+                        .as_ref()
+                        .ok_or("ts_frontend: for-loop declaration needs initializer")?;
+                    if expr_is_bigint(ie) {
+                        BIGINT_LOCALS.with(|s| s.borrow_mut().push(name.clone()));
+                    }
+                    if expr_is_stringy(ie) || expr_is_str_method_call(ie) {
+                        mark_string_local(&name);
+                    }
+                    binds.push(list(vec![Sym(name), lower_expr(ie)?]));
+                }
+            }
+            other => {
+                // INHERIT(Expression) — spread variants, use as_expression()
+                if let Some(e) = other.as_expression() {
+                    pre.push(effect_expr(e)?);
+                } else {
+                    return Err("ts_frontend: unsupported for-loop init (M1.5)".into());
+                }
+            }
+        }
+    }
+    let test = match &f.test {
+        Some(e) => truthy(e)?,
+        None => Num(1),
+    };
+    let mut body = lower_prefix_around(stmts_of(&f.body), Num(0), view)?;
+    if let Some(u) = &f.update {
+        body = list(vec![Sym("begin"), body, effect_expr(u)?]);
+    }
+    let mut while_form = list(vec![Sym("while"), test, body]);
+    if !binds.is_empty() {
+        while_form = list(vec![Sym("let*"), list(binds), while_form]);
+    }
+    let mut seq = vec![Sym("begin")];
+    seq.extend(pre);
+    seq.push(while_form);
+    Ok(list(seq))
+}
+
 /// Any `return` anywhere below these statements (loops, ifs, blocks).
 fn stmts_have_deep_return(stmts: &[Statement<'_>]) -> bool {
     fn deep(s: &Statement<'_>) -> bool {
@@ -1378,6 +1490,10 @@ fn lower_prefix_around(
     }
     let (init, last) = stmts.split_at(stmts.len() - 1);
     let inner = match &last[0] {
+        // NOTE: WhileStatement/ForStatement have dedicated exit-protocol
+        // arms lower in this match (lower_while_parts / lower_for_parts,
+        // break/continue/return capable) — top-level loops are the ones
+        // handled separately in lower_program (M1.5, 2026-10-05).
         Statement::VariableDeclaration(v) => {
             // JSON API v3: `const {..} = near.args<{..}>()`
             if let Some(res) = lower_args_destructuring(v) {
@@ -4816,8 +4932,15 @@ fn statically_bool(e: &Expression<'_>) -> bool {
         e,
         Expression::UnaryExpression(u) if matches!(u.operator, UnaryOperator::LogicalNot)
     );
+    // `while (true)` / `if (x === true)` — literal booleans are bool (the
+    // exit-path cond wrapper picks its false_e by this predicate; a missed
+    // literal made bool≠int branches and the checker rejected while(true)
+    // with break/continue — test_continue_keyword regression, fixed again
+    // 2026-10-05).
+    let bool_lit = matches!(e, Expression::BooleanLiteral(_));
     matches!(e, Expression::LogicalExpression(_))
         || is_not
+        || bool_lit
         || bool_call
         || matches!(
             e,

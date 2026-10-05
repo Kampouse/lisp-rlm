@@ -27,9 +27,12 @@ STRINGS:
 CONTROL:
   function f(x: number): number { return x; }   // recursion works
   const / let, if / else, template literals `...${x}...`, ternary x ? y : z
-  for (const x of arr) { ... }    // the ONLY loop — array iteration
-  NO while, NO for(let i...), NO break/continue — count with recursion:
-    function sum(n: number): number { if (n === 0) { return 0; } return n + sum(n - 1); }
+  for (let i = 0; i < n; i = i + 1) { ... }   // counted loops
+  while (i < n) { i = i + 1; }                // while loops
+  for (const x of arr) { ... }                // array iteration
+  // top-level loops: NO break/continue/return inside (hard error) —
+  // stop with a flag: for (let i=0; i<n; i=i+1) { if (done) { i = n; } }
+  // inside exported functions break/continue/return all work
 
 LOGGING:
   console.log(...)   // visible in the execution log you receive back
