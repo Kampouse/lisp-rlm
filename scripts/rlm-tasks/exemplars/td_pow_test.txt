@@ -1,0 +1,2 @@
+# auto — mined from own completed worlds
+(let ((ans (expt 2 8))) (rlm-set answer ans) (rlm-set Final t) (final true))

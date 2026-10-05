@@ -1,0 +1,2 @@
+### PAST ATTEMPTS ON ta_prime_sum_product-sub (agent memory — do NOT repeat these failures)
+- SOLVED ONCE WITH (complete): (begin (rlm-set answer 1060) (rlm-set Final true))

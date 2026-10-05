@@ -1,0 +1,7 @@
+# auto — mined from own completed worlds
+(let ((hf 8))
+  (rlm-set answer (cond ((>= hf 20) "high")
+                        ((>= hf 12) "medium")
+                        ((>= hf 10) "low")
+                        (else "liquidate")))
+  (final true))

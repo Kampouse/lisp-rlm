@@ -1,0 +1,2 @@
+### PAST ATTEMPTS ON td_pow_test (agent memory — do NOT repeat these failures)
+- SOLVED ONCE WITH (complete): (let ((ans (expt 2 8))) (rlm-set answer ans) (rlm-set Final t) (final true))

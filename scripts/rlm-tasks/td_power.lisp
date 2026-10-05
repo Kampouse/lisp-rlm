@@ -1,0 +1,21 @@
+;; DREAMED TASK — agent-authored, probe-verified (ref solves, poison fails)
+;; targets state: t4_pow@ts|runtime|run_program|rc0|es1|i1
+;; dreamed 1791177351.35145998
+(load-file "rlm_runtime.lisp")
+(load-file "scripts/rlm-tasks/policy.lisp")
+(load-file "scripts/rlm-tasks/q-table.lisp")
+(load-file "scripts/rlm-tasks/custom-actions.lisp")
+(rlm-set __policy POLICY_ID)
+(define (llm-code ctx)
+  (llm (build-prompt ctx)))
+(begin
+  (rlm-set __trace_id "td_power")
+  (define (task-verify a) (= a 81))
+  (run-rlm "Compute 3 raised to the power of 4; store the result via (rlm-set answer ...) then (rlm-set Final true).")
+  (if (task-verify (rlm-get answer)) nil (re-lesson))
+  (write-trace)
+  (println (str-concat "RLMDUMP task=td_power"))
+  (println (str-concat "RLMDUMP iterations=" (to-string (rlm-get iteration))))
+  (println (str-concat "RLMDUMP answer=" (to-string (rlm-get answer))))
+  (println (str-concat "RLMDUMP Final=" (to-string (rlm-get Final))))
+)

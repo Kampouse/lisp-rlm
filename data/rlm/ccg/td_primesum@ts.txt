@@ -1,0 +1,4 @@
+### PAST ATTEMPTS ON td_primesum@ts (agent memory — do NOT repeat these failures)
+- FAIL it7: <109-char failed attempt> → ERROR: read-all: parse error: unexpected `)` at line 2, col 
+- FAIL it8: <110-char failed attempt> → ERROR: run_program: compilation failed for define 'primes': 
+- SOLVED ONCE WITH (complete): (define (isPrime n) (let ((__fn_done 0) (__fn_res (quote nil))) (begin (if (= __fn_done 0) (if (< n 2) (begin (set! __fn_res false) (set! __fn_done 1)) (quote nil)) 0) (begin (if (= __fn_done 0) (if (if (= n 2) (= 1 1) (= n 3)) (begin (set! __fn_res true) (set

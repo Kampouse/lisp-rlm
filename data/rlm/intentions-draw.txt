@@ -1,2 +1,2 @@
-scripts/rlm-tasks/ta_prime_sum.lisp
-scripts/rlm-tasks/t2_reverse.lisp
+scripts/rlm-tasks/t4_pow@ts.lisp
+scripts/rlm-tasks/td_prime_sum.lisp

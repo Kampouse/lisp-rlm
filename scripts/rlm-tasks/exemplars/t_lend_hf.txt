@@ -1,0 +1,4 @@
+# auto — mined from own completed worlds
+(let ((c 125) (p 40) (cf 8) (d 1000))
+  (rlm-set answer (quotient (* c p cf) d))
+  (final true))

@@ -1,9 +1,9 @@
-;; dream-proposed 1790845601.8707480431
-;; scoped + de-CL'd 2026-10-01 (cross-task contamination fix — see
-;; rlm-scope-action in rlm_runtime.lisp; payload hints are task-family
-;; specific so they must not fire on lending tasks).
-(rlm-register-action "microguide" (lambda (rc)
-  (str-concat "\nFor vowel problems: Use (find (lambda (c) (member c (list \"a\" \"e\" \"i\" \"o\" \"u\"))) (str-split s \"\")) to check characters.\n"
-              "For prime problems: Create (define (prime? n) ...) checking divisibility up to (* i i) <= n.\n"
-              "Test helper functions individually before combining them.\n")))
-(rlm-scope-action "microguide" (list "ta_" "td_prime" "t5_"))
+;; dream-proposed 1791213581.2704160213
+(rlm-register-action "micro_decompose" (lambda (rc)
+  (str-concat "\nBreak down the problem into micro-steps:\n"
+  "1. Identify the core operation (prime check, power, vowel count)\n"
+  "2. Handle edge cases first (empty input, 0, 1)\n"
+  "3. Implement a helper for each sub-task\n"
+  "4. Example for prime sum: (defun is-prime (n) ...)\n"
+  "5. Example for power: (defun my-pow (base exp) ...)\n"
+  "6. Test with small examples before generalizing\n")))

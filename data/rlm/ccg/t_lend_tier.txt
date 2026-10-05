@@ -1,0 +1,3 @@
+### PAST ATTEMPTS ON t_lend_tier (agent memory — do NOT repeat these failures)
+- FAIL it0: <110-char scaffold defining prime? — structure was wrong, do not reuse> → ERROR: ~~QT~~run_program: compilation failed for define 'pri
+- SOLVED ONCE WITH (complete): (let ((hf 8))~~NL~~  (rlm-set answer (cond ((>= hf 20) ~~QT~~high~~QT~~)~~NL~~                        ((>= hf 12) ~~QT~~medium~~QT~~)~~NL~~                        ((>= hf 10) ~~QT~~low~~QT~~)~~NL~~                        (else ~~QT~~liquidate~~QT~~)))~~NL~~  (

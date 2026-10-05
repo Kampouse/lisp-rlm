@@ -1,3 +1,3 @@
 ### PAST ATTEMPTS ON t1_sumsq (agent memory — do NOT repeat these failures)
-- FAIL it2: (let* ((n 100)~~NL~~        (sum 0))~~NL~~  (dotimes ((i n) (+ 0 1))~~NL~~    (set! sum (+ sum (* i i))))~~NL~ → ERROR: ~~QT~~run_program: compilation failed for body expres
+- FAIL it2: <110-char failed attempt> → ERROR: ~~QT~~run_program: compilation failed for body expres
 - SOLVED ONCE WITH (complete): (let ((sum 0)~~NL~~      (i 1))~~NL~~  (while (<= i 100)~~NL~~    (set! sum (+ sum (* i i)))~~NL~~    (set! i (+ i 1)))~~NL~~  (rlm-set answer sum)~~NL~~  (final true))

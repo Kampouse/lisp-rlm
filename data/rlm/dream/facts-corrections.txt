@@ -1,0 +1,3 @@
+# your RECENT WRONG beliefs — machine-verified against the builtin docs. Correct these in tactics:
+
+- WRONG: 'requires the separator' refers to arg 2 of (str-join lst sep), not 'lst'  TRUE: (str-join lst sep)

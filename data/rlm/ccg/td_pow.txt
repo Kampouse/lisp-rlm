@@ -1,0 +1,4 @@
+### PAST ATTEMPTS ON td_pow (agent memory — do NOT repeat these failures)
+- FAIL it1: <110-char failed attempt> → ERROR: rlm-set: need symbol or string key~~NL~~    (fn [] . 
+- FAIL it3: <110-char failed attempt> → ERROR: run_program: compilation failed for body expression(s → CORRECTION: use *
+- SOLVED ONCE WITH (complete): (let ((pow (expt 3 4))) (rlm-set answer pow) (rlm-set Final t))

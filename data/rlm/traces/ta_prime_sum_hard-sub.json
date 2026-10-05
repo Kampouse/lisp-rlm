@@ -1,0 +1,1 @@
+{"task_id":"ta_prime_sum_hard-sub","ts":1789990139.0267510414,"policy":"nil","task":"sum of primes in (3 5 7 11 13)","completed":true,"iterations":1,"result":"nil","answer":"39","lesson":"nil","nodes":[{"i":1,"ok":true,"s":"ta_prime_sum_hard-sub|ok||rc0|es0|i1","a":"ladder","code":"(begin (rlm-set answer 39) (rlm-set Final true))","out":"true"}]}

@@ -1,4 +1,4 @@
 ### PAST ATTEMPTS ON ta_prime_sum (agent memory — do NOT repeat these failures)
-- FAIL it3: (sub-rlm ~~QT~~sum of all prime numbers less than 10~~QT~~)~~NL~~(let ((sum (reduce + 0 <arg1>)))~~NL~~  (set! → ERROR: ~~QT~~reduce: expected list or vec, got <arg1>~~NL~~ 
-- FAIL it0: (define (prime? n) (and (>= 2 n) (not (member n '(2 3 5 7 9)))))~~NL~~(define (sum-primes lst) (reduce + 0 (fi → ERROR: ~~QT~~cannot call char-downcase as a function (expect
+- FAIL it1: <109-char failed attempt> → ERROR: read-all: parse error: missing closing `)` at line 10
+- FAIL it3: <110-char scaffold defining prime? — structure was wrong, do not reuse> → ERROR: read-all: parse error: missing closing `)` at line 4,
 - SOLVED ONCE WITH (complete): (define (prime? n) (if (< n 2) nil (begin (define ok true) (dotimes (i (- n 2)) (if (zero? (mod n (+ i 2))) (set! ok nil))) ok)))~~NL~~(define (sum-primes lst) (reduce + 0 (filter prime? lst)))~~NL~~(let ((primes (filter prime? (list 2 3 4 5 6 7 8 9))))~~NL~~ 

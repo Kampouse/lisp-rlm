@@ -1,14 +1,6 @@
-# tactics gen · brain brain:glm-4.5-flash ·7 · lend-fix 2026-10-01 (task-scoped injection live)
-- Integer division: (/ a b) and (quotient a b) TRUNCATE toward zero on integers — use them for per-10000 / basis-point fixed-point math. Multiply FIRST, divide LAST. (/ 1000 3) is 333.
-- For ta_prime_sum: Create helper function (prime? n) that checks if n is prime
-- For ta_prime_sum: In (prime? n), handle edge cases: n≤1 (false), n=2 (true), even numbers >2 (false)
-- For ta_prime_sum: For (prime? n), check divisibility by testing (mod n i) for odd i from 3 to (sqrt n)
-- For ta_prime_sum: Use (filter prime? lst) to get primes from input list
-- For ta_prime_sum: Sum primes with (+ a b ...) or use (reduce + 0 (filter prime? lst))
-- For ta_prime_sum: Return 0 for empty input list
-- For t_lend_accrue: answer = principal + (quotient (* principal rate blocks) 10000) — multiply first, divide last, truncating
-- For t_lend_hf: health factor = (quotient (* collateral price collateral-factor-tenths) debt) — single integer division at the END
-- For t_lend_ltv: ltv basis points = (quotient (* borrowed 10000) total-value)
-- For t_lend_liq: repay = (quotient (* debt 50) 100), penalty = (quotient (* repay 5) 100), answer = repay + penalty
-- For t_lend_tier: cond ladder on hf (tenths): >=20 high, >=12 medium, >=10 low, else liquidate — store the STRING
-- For td_primesum: Sum primes using (reduce + 0 (filter prime? lst))
+# tactics gen · brain brain:glm-4.5-flash ·6
+- (str-join lst sep) joins list of strings with separator 'sep'
+- For t4_pow@ts, implement exponentiation with base cases: 0^exp=1, base^0=1, base^(-exp)=1/base^exp
+- For ta_prime_sum_product, optimize prime checking by testing divisibility only up to sqrt(n), then use (reduce) with a lambda that tracks both sum and product
+- Use (map) for element-wise operations and (filter) for pre-processing lists to reduce problem size
+- Leverage (reduce) with appropriate initial values: sum (0), product (1), and for complex operations, use a list or struct as accumulator

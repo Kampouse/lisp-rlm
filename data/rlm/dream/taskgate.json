@@ -453,6 +453,297 @@
   [
    "expired",
    "td_primeprod.lisp"
+  ],
+  [
+   "expired",
+   "ta_prime_sum.lisp"
+  ],
+  [
+   "installed",
+   "ta_prime_sum",
+   "2026-09-28 18:18:58"
+  ],
+  [
+   "installed",
+   "td_primesum",
+   "2026-09-29 02:33:09"
+  ],
+  [
+   "installed",
+   "td_primeprod",
+   "2026-09-29 03:23:39"
+  ],
+  [
+   "evicted-cap",
+   "td_primeproduct.lisp"
+  ],
+  [
+   "installed",
+   "td_primeprod",
+   "2026-09-29 04:46:28"
+  ],
+  [
+   "installed",
+   "td_primesum",
+   "2026-09-29 05:45:17"
+  ],
+  [
+   "installed",
+   "td_primeprod",
+   "2026-09-29 09:58:42"
+  ],
+  [
+   "expired",
+   "ta_prime_sum.lisp"
+  ],
+  [
+   "installed",
+   "ta_prime_sum",
+   "2026-09-29 21:33:54"
+  ],
+  [
+   "expired",
+   "ta_prime_sum.lisp"
+  ],
+  [
+   "installed",
+   "ta_prime_sum",
+   "2026-09-30 21:43:32"
+  ],
+  [
+   "installed",
+   "td_primeprod",
+   "2026-10-01 01:04:50"
+  ],
+  [
+   "expired",
+   "td_primesum.lisp"
+  ],
+  [
+   "installed",
+   "td_primesum",
+   "2026-10-01 10:34:22"
+  ],
+  [
+   "installed",
+   "ta_prime_sum",
+   "2026-10-01 15:25:33"
+  ],
+  [
+   "evicted-cap",
+   "td_primeprod.lisp"
+  ],
+  [
+   "installed",
+   "td_primesum",
+   "2026-10-02 13:06:24"
+  ],
+  [
+   "installed",
+   "td_primesum",
+   "2026-10-02 23:38:30"
+  ],
+  [
+   "installed",
+   "td_primesum",
+   "2026-10-03 02:28:10"
+  ],
+  [
+   "installed",
+   "td_prime_sum",
+   "2026-10-03 04:29:10"
+  ],
+  [
+   "evicted-cap",
+   "td_primesum@ts.lisp"
+  ],
+  [
+   "installed",
+   "td_power",
+   "2026-10-03 10:58:14"
+  ],
+  [
+   "evicted-cap",
+   "td_primesum.lisp"
+  ],
+  [
+   "expired",
+   "ta_prime_sum@ts.lisp"
+  ],
+  [
+   "installed",
+   "td_power_test",
+   "2026-10-03 14:31:45"
+  ],
+  [
+   "evicted-cap",
+   "td_prime_sum.lisp"
+  ],
+  [
+   "installed",
+   "td_powtest",
+   "2026-10-03 15:17:47"
+  ],
+  [
+   "evicted-cap",
+   "td_power.lisp"
+  ],
+  [
+   "installed",
+   "td_power_test",
+   "2026-10-03 17:30:27"
+  ],
+  [
+   "installed",
+   "td_pow_basic",
+   "2026-10-03 17:59:38"
+  ],
+  [
+   "evicted-cap",
+   "td_powtest.lisp"
+  ],
+  [
+   "installed",
+   "td_prime_sum",
+   "2026-10-03 20:57:55"
+  ],
+  [
+   "evicted-cap",
+   "td_power_test.lisp"
+  ],
+  [
+   "expired",
+   "ta_prime_sum.lisp"
+  ],
+  [
+   "installed",
+   "ta_prime_sum",
+   "2026-10-03 23:59:36"
+  ],
+  [
+   "installed",
+   "td_prime_sum",
+   "2026-10-04 01:42:06"
+  ],
+  [
+   "installed",
+   "td_prime_sum",
+   "2026-10-04 07:02:44"
+  ],
+  [
+   "installed",
+   "td_pow_test",
+   "2026-10-04 08:46:02"
+  ],
+  [
+   "evicted-cap",
+   "td_pow_basic.lisp"
+  ],
+  [
+   "installed",
+   "td_power_test",
+   "2026-10-04 09:40:37"
+  ],
+  [
+   "evicted-cap",
+   "td_prime_sum.lisp"
+  ],
+  [
+   "installed",
+   "td_power_test",
+   "2026-10-04 10:51:27"
+  ],
+  [
+   "installed",
+   "td_power",
+   "2026-10-04 13:29:01"
+  ],
+  [
+   "evicted-cap",
+   "td_pow_test.lisp"
+  ],
+  [
+   "installed",
+   "td_power_calc",
+   "2026-10-04 14:21:22"
+  ],
+  [
+   "evicted-cap",
+   "td_power_test.lisp"
+  ],
+  [
+   "installed",
+   "td_power_test",
+   "2026-10-04 14:36:17"
+  ],
+  [
+   "evicted-cap",
+   "td_power.lisp"
+  ],
+  [
+   "installed",
+   "td_pow_test",
+   "2026-10-04 17:31:49"
+  ],
+  [
+   "evicted-cap",
+   "td_power_calc.lisp"
+  ],
+  [
+   "installed",
+   "td_power_test",
+   "2026-10-04 17:58:41"
+  ],
+  [
+   "installed",
+   "td_power",
+   "2026-10-04 19:41:15"
+  ],
+  [
+   "evicted-cap",
+   "td_pow_test.lisp"
+  ],
+  [
+   "installed",
+   "td_power",
+   "2026-10-04 21:25:06"
+  ],
+  [
+   "installed",
+   "ta_prime_sum_product",
+   "2026-10-04 21:49:19"
+  ],
+  [
+   "installed",
+   "td_pow",
+   "2026-10-04 22:58:25"
+  ],
+  [
+   "evicted-cap",
+   "td_power_test.lisp"
+  ],
+  [
+   "expired",
+   "ta_prime_sum.lisp"
+  ],
+  [
+   "installed",
+   "td_power",
+   "2026-10-05 01:16:19"
+  ],
+  [
+   "installed",
+   "td_prime_sum",
+   "2026-10-05 04:22:02"
+  ],
+  [
+   "evicted-cap",
+   "td_pow.lisp"
+  ],
+  [
+   "installed",
+   "td_prime_sum",
+   "2026-10-05 07:20:52"
   ]
  ]
 }

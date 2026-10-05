@@ -1,0 +1,6 @@
+# auto — mined from own completed worlds
+(let* ((primes (list 2 3 5))
+        (prod (* 2 3 5))
+        (ans (rlm-set answer prod))
+        (fin (rlm-set Final t)))
+  (final true))

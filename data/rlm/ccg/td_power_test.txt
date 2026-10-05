@@ -1,0 +1,3 @@
+### PAST ATTEMPTS ON td_power_test (agent memory — do NOT repeat these failures)
+- FAIL it1: <110-char failed attempt> → ERROR: (set! answer ...) is INVISIBLE to the world — plain e
+- SOLVED ONCE WITH (complete): (let ((res (expt 3 4)) (final true)) (rlm-set answer res) (rlm-set Final final))

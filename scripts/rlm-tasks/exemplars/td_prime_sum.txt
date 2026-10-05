@@ -1,0 +1,6 @@
+# auto — mined from own completed worlds
+(let* ((primes '(2 3 5))
+        (sum (reduce (lambda (acc x) (+ acc x)) 0 primes))
+        (this-answer sum))
+  (rlm-set answer this-answer)
+  (rlm-set Final true))

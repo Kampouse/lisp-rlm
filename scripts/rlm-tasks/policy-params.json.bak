@@ -1,5 +1,5 @@
 {
- "max_iter": 6,
+ "max_iter": 8,
  "stop_errs": 0,
- "version": 4
+ "version": 5
 }

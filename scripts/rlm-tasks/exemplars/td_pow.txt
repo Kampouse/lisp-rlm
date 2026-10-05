@@ -1,0 +1,2 @@
+# auto — mined from own completed worlds
+(let ((pow (expt 3 4))) (rlm-set answer pow) (rlm-set Final t))

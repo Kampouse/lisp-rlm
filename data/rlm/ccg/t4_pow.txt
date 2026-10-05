@@ -1,3 +1,3 @@
 ### PAST ATTEMPTS ON t4_pow (agent memory — do NOT repeat these failures)
-- FAIL it2: (let* ((res (expt 2 16))~~NL~~       (r (dict/set (dict) res)))~~NL~~  (rlm-set answer (car r))~~NL~~  (final  → ERROR: ~~QT~~dict/set: need (map key value)~~NL~~    (fn [] 
+- FAIL it2: <109-char failed attempt> → ERROR: ~~QT~~dict/set: need (map key value)~~NL~~    (fn [] 
 - SOLVED ONCE WITH (complete): (define (pow base exp)~~NL~~  (if (= exp 0)~~NL~~      1~~NL~~      (* base (pow base (- exp 1)))))~~NL~~(let ((res (pow 2 16)))~~NL~~  (rlm-set answer res)~~NL~~  (final true))

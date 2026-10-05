@@ -1,0 +1,5 @@
+### PAST ATTEMPTS ON td_primeprod (agent memory — do NOT repeat these failures)
+- FAIL it1: <82-char failed attempt> → ERROR: (set! answer ...) is INVISIBLE to the world — plain e
+- FAIL it3: <110-char failed attempt> → ERROR: ~~QT~~run_program: compilation failed for body expres
+- FAIL it0: <109-char failed attempt> → ERROR: ~~QT~~rlm-set: need symbol or string key~~NL~~    (fn
+- SOLVED ONCE WITH (complete): (let* ((primes (list 2 3 5))~~NL~~        (prod (* 2 3 5))~~NL~~        (ans (rlm-set answer prod))~~NL~~        (fin (rlm-set Final t)))~~NL~~  (final true))
