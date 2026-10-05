@@ -367,7 +367,8 @@ declare const near: {
 
 // ── JS std shims (2026-08-30) ─────────────────────────────────────────
 // console.log → near/log (args space-joined, auto to-string'd).
-// Math.abs/max/min → abs/max/min (variadic, integer math).
+// Math.abs/max/min/sqrt/floor → same-named int builtins; Math.pow(a,b) →
+// (expt a b). Other Math.* hard-error at the frontend (2026-10-05).
 // JSON.stringify(scalar) → json-quote; JSON.parse: NOT NEEDED — tx args
 // arrive parsed; use typed params / near.jsonGet.
 // (console/Math/JSON value types come from lib — not redeclared here.)
