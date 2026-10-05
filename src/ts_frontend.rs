@@ -2984,7 +2984,14 @@ fn lower_assign_form(asg: &oxc_ast::ast::AssignmentExpression<'_>) -> Result<Lis
                     list(vec![Sym("vec-nth"), obj.clone(), idx.clone()]),
                     rhs,
                 ]),
-                _ => return Err("ts_frontend: element writes support only = / += / -=".into()),
+                _ => {
+                    return Err(
+                        "ts_frontend: element writes support only = / += / -= \
+                         (compound *= /= %= are plain-variable only; obj.prop \
+                         writes need jsonSet)"
+                            .into(),
+                    )
+                }
             };
             Ok(list(vec![Sym("vec-set!"), obj, idx, val]))
         }
@@ -3196,7 +3203,61 @@ fn lower_assignment(
             }
         }
         AssignmentOperator::Subtraction => list(vec![Sym("-"), Sym(v.clone()), rhs]),
-        _ => return Err("ts_frontend: only = / += / -= assignments supported".into()),
+        // Compound assigns (2026-10-04): *= /= expand to one op application;
+        // %= mirrors the binary `%` truncated-mod lowering (lisp `mod` is
+        // euclidean — wrong signs for negatives), binding the rhs ONCE via
+        // let (JS `x %= f()` runs f() exactly once).
+        AssignmentOperator::Multiplication => list(vec![Sym("*"), Sym(v.clone()), rhs]),
+        AssignmentOperator::Division => list(vec![Sym("/"), Sym(v.clone()), rhs]),
+        AssignmentOperator::Remainder => {
+            // lisp `mod` is euclidean (wrong signs for negatives) — mirror
+            // the binary `%` truncated form: v - rhs*(v/rhs). Bind-once via
+            // let when the rhs is impure (JS `x %= f()` runs f() once);
+            // a pure rhs may duplicate freely.
+            if expr_has_call(&asg.right) {
+                let r = format!("__mod_r_{}", v);
+                list(vec![
+                    Sym("let"),
+                    list(vec![list(vec![Sym(r.clone()), rhs])]),
+                    list(vec![
+                        Sym("-"),
+                        Sym(v.clone()),
+                        list(vec![
+                            Sym("*"),
+                            Sym(r.clone()),
+                            list(vec![Sym("/"), Sym(v.clone()), Sym(r)]),
+                        ]),
+                    ]),
+                ])
+            } else {
+                list(vec![
+                    Sym("-"),
+                    Sym(v.clone()),
+                    list(vec![
+                        Sym("*"),
+                        rhs.clone(),
+                        list(vec![Sym("/"), Sym(v.clone()), rhs]),
+                    ]),
+                ])
+            }
+        }
+        AssignmentOperator::Exponential => {
+            return Err(
+                "ts_frontend: **= unsupported — the NEAR typechecker/wasm \
+                 emitter have no power builtin (the interpreter-only `expt` \
+                 is not in the NEAR builtin set); use a helper with \
+                 repeated multiplication"
+                    .into(),
+            );
+        }
+        _ => {
+            return Err(
+                "ts_frontend: supported assignment operators: = += -= *= /= %= \
+                 (obj.prop compound writes stay unsupported — objects are \
+                 immutable JSON values; rebuild via jsonSet)"
+                    .into(),
+            )
+        }
     };
     Ok((v, out))
 }
@@ -4050,6 +4111,19 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 BinaryOperator::ShiftLeft => "shl",
                 BinaryOperator::ShiftRight => "shr",
                 BinaryOperator::ShiftRightZeroFill => "shr",
+                BinaryOperator::Exponential => {
+                    // No power builtin exists in the NEAR typechecker/wasm
+                    // emitter (the interpreter-only `expt` is not in the
+                    // NEAR builtin set — probe E, 2026-10-04). Hard error,
+                    // never a silent wrong lowering.
+                    return Err(
+                        "ts_frontend: `**` unsupported — no power builtin in the \
+                         NEAR typechecker/wasm emitter (interpreter-only `expt` is \
+                         not in the NEAR builtin set); use a helper with repeated \
+                         multiplication"
+                            .into(),
+                    );
+                }
                 _ => {
                     return Err(
                         "ts_frontend: exponent/assign-ops in expressions not supported".into(),
