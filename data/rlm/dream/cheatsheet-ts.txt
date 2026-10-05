@@ -1,0 +1,46 @@
+TS SURFACE CHEATSHEET (exact forms that work):
+
+STORE RESULTS / FINISH:
+  rlm_set("answer", <expr>);      // store the task answer
+  rlm_set("Final", true);         // finish — only when verified
+
+MATH (integer):
+  Math.abs(x)  Math.max(a, b)  Math.min(a, b)
+  Math.pow(a, b)                // exponentiation
+  Math.sqrt(x)  Math.floor(x)  Math.ceil(x)  Math.round(x)
+  // anything else in Math.* is a HARD ERROR — do not use it
+
+ARRAYS:
+  const a: number[] = [1, 2, 3];
+  a[i]          // index read
+  a.length      // element count (strings: use strLength(s), NOT s.length)
+  a.push(v)     // functional — rebinds: a = a.push(v) style update is automatic
+  a.map(x => x * 2)              // arrow callbacks allowed
+  a.filter(x => x > 1)
+  a.reduce((acc, x) => acc + x, 0)
+  a.join(",")
+
+STRINGS:
+  strSplit(s, ","), strJoin(",", parts), strLength(s),
+  strSubstring(s, i, j), strIndexOf(s, sub), strContains(s, sub)
+
+CONTROL:
+  function f(x: number): number { return x; }   // recursion works
+  const / let, if / else, template literals `...${x}...`, ternary x ? y : z
+  for (const x of arr) { ... }    // the ONLY loop — array iteration
+  NO while, NO for(let i...), NO break/continue — count with recursion:
+    function sum(n: number): number { if (n === 0) { return 0; } return n + sum(n - 1); }
+
+LOGGING:
+  console.log(...)   // visible in the execution log you receive back
+
+FORBIDDEN (hard errors):
+  imports, classes, async/await, destructuring, optional chaining (?.),
+  spread (...), try/catch, switch, Math.* beyond the list above
+
+COMPLETE EXAMPLE:
+  const xs: number[] = [3, 1, 4, 1, 5];
+  const total: number = xs.reduce((a: number, b: number): number => a + b, 0);
+  const answer: number = Math.pow(2, xs.length) + Math.floor(total / 3);
+  rlm_set("answer", answer);
+  rlm_set("Final", true);
