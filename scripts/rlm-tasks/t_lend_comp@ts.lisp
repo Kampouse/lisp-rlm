@@ -1,0 +1,23 @@
+;; AUTO-GENERATED @ts twin of t_lend_comp.lisp — edit the BASE task and
+;; regenerate: python3 scripts/gen-ts-twins.py  (do not hand-edit)
+;; RLM lending curriculum — stage 6: two-step compound accrual
+;; Open-goal ladder step (2026-09-30): pure-function DeFi math, no storage.
+(load-file "rlm_runtime.lisp")
+(load-file "scripts/rlm-tasks/policy.lisp")
+(load-file "scripts/rlm-tasks/q-table.lisp")
+(load-file "scripts/rlm-tasks/custom-actions.lisp")
+(load-file "scripts/rlm-tasks/rlm_ts.lisp")
+(rlm-set __policy POLICY_ID)
+(rlm-set __surface "ts")
+(rlm-set __trace_id "t_lend_comp@ts")
+(define (llm-code ctx)
+  (ts->lisp (strip-code-fences (llm (build-prompt-ts ctx)))))
+(define (task-verify a) (equal? a 1050))
+(run-rlm "Apply interest twice step by step: principal=1000, each step multiplies by 1025 then divides by 1000, truncating at EACH step (1000 -> 1025 -> 1050). Store the final integer 1050 as answer. When achieved, finish with rlm_set(\"Final\", true).")
+(retry-with-feedback task-verify "1050" 2)
+(if (task-verify (rlm-get answer)) nil (re-lesson))
+(write-trace)
+(println (str-concat "RLMDUMP task=t_lend_comp@ts"))
+(println (str-concat "RLMDUMP iterations=" (to-string (rlm-get iteration))))
+(println (str-concat "RLMDUMP answer=" (to-string (rlm-get answer))))
+(println (str-concat "RLMDUMP Final=" (to-string (rlm-get Final))))

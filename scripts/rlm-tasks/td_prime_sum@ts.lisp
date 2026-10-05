@@ -1,0 +1,25 @@
+;; AUTO-GENERATED @ts twin of td_prime_sum.lisp — edit the BASE task and
+;; regenerate: python3 scripts/gen-ts-twins.py  (do not hand-edit)
+;; DREAMED TASK — agent-authored, probe-verified (ref solves, poison fails)
+;; targets state: ta_prime_sum|ok||rc0|es0|i3
+;; dreamed 1791199205.6519949436
+(load-file "rlm_runtime.lisp")
+(load-file "scripts/rlm-tasks/policy.lisp")
+(load-file "scripts/rlm-tasks/q-table.lisp")
+(load-file "scripts/rlm-tasks/custom-actions.lisp")
+(load-file "scripts/rlm-tasks/rlm_ts.lisp")
+(rlm-set __policy POLICY_ID)
+(rlm-set __surface "ts")
+(define (llm-code ctx)
+  (ts->lisp (strip-code-fences (llm (build-prompt-ts ctx)))))
+(begin
+  (rlm-set __trace_id "td_prime_sum@ts")
+  (define (task-verify a) (= a 10))
+  (run-rlm "Calculate the sum of the first 3 prime numbers and store the result via rlm_set(\"answer\", v) then rlm_set(\"Final\", true).")
+  (if (task-verify (rlm-get answer)) nil (re-lesson))
+  (write-trace)
+  (println (str-concat "RLMDUMP task=td_prime_sum@ts"))
+  (println (str-concat "RLMDUMP iterations=" (to-string (rlm-get iteration))))
+  (println (str-concat "RLMDUMP answer=" (to-string (rlm-get answer))))
+  (println (str-concat "RLMDUMP Final=" (to-string (rlm-get Final))))
+)
