@@ -193,20 +193,32 @@ fn main() {
                     use std::io::Write as _;
                     let body_path = format!("/tmp/__outlayer_post_body_{}", std::process::id());
                     std::fs::write(&body_path, &body).ok();
-                    let resp = std::process::Command::new("curl")
-                        .args([
-                            "-s",
-                            "--max-time",
-                            "10",
-                            "-X",
-                            "POST",
-                            "-H",
-                            &format!("Content-Type: {ct}"),
-                            "--data-binary",
-                            &format!("@{body_path}"),
-                            &url,
-                        ])
-                        .output();
+                    // Header block: newline-separated "Name: value" lines.
+                    // Single line (no \n) = plain Content-Type — fully backward
+                    // compatible. Needed for Authorization: Bearer on OutLayer
+                    // wallet API (2026-10-05, solana sign test).
+                    let headers: Vec<String> = ct
+                        .split('\n')
+                        .map(|l| l.trim())
+                        .filter(|l| !l.is_empty())
+                        .map(|l| {
+                            if l.contains(':') && !l.to_ascii_lowercase().starts_with("content-type:") {
+                                l.to_string()
+                            } else if l.to_ascii_lowercase().starts_with("content-type:") {
+                                l.to_string()
+                            } else {
+                                format!("Content-Type: {l}")
+                            }
+                        })
+                        .collect();
+                    eprintln!("🧾 headers: {headers:?}");
+                    let mut cmd = std::process::Command::new("curl");
+                    cmd.args(["-s", "--max-time", "10", "-X", "POST"]);
+                    for h in &headers {
+                        cmd.arg("-H").arg(h);
+                    }
+                    cmd.arg("--data-binary").arg(&format!("@{body_path}")).arg(&url);
+                    let resp = cmd.output();
                     std::fs::remove_file(&body_path).ok();
                     let (err, out): (u32, Vec<u8>) = match resp {
                         Ok(o) if o.status.success() => (0, o.stdout),
