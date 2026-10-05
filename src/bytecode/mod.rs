@@ -7177,6 +7177,48 @@ pub fn eval_builtin(
         }
         "list" => Ok(LispVal::List(args.to_vec())),
         "vec" => Ok(LispVal::Vec(args.to_vec())),
+        // TAG_ARRAY heap block — wasm path constructs via call_list "array";
+        // the TS frontend lowers [a, b, ...] to (array ...) but the VM
+        // (run_program) path never had it. 2026-10-05: TS-arm traces
+        // (t4_pow@ts, td_primesum@ts) died on "unknown function or special
+        // form 'array'" — wasm tests stayed green, masking the gap.
+        "array" => Ok(LispVal::Vec(args.to_vec())),
+        // ts_frontend lowers `.length` to vec-length (polymorphic over
+        // vec/list/str — mirror of typing/checker.rs's vec-length contract;
+        // bytecode only had vec-len, which the frontend never emits).
+        "vec-length" => match args.get(0) {
+            Some(LispVal::Vec(v)) => Ok(LispVal::Num(v.len() as i64)),
+            Some(LispVal::List(l)) => Ok(LispVal::Num(l.len() as i64)),
+            Some(LispVal::Str(s)) => Ok(LispVal::Num(s.chars().count() as i64)),
+            Some(LispVal::Nil) => Ok(LispVal::Num(0)),
+            _ => Err("vec-length: need vec, list or string".into()),
+        },
+        // Math.pow lowering — mirrors dispatch_arithmetic::expt (f64 powf,
+        // Num when integral) so both interpreters agree on semantics.
+        "expt" => {
+            let base = match args.get(0) {
+                Some(LispVal::Num(n)) => *n as f64,
+                Some(LispVal::Float(f)) => *f,
+                _ => return Err("expt: need base".to_string()),
+            };
+            let exp = match args.get(1) {
+                Some(LispVal::Num(n)) => *n as f64,
+                Some(LispVal::Float(f)) => *f,
+                _ => return Err("expt: need exponent".to_string()),
+            };
+            let result = base.powf(exp);
+            if result == result.floor() && result.abs() < 1e18 {
+                Ok(LispVal::Num(result as i64))
+            } else {
+                Ok(LispVal::Float(result))
+            }
+        }
+        // Math.floor lowering — mirrors dispatch_arithmetic::floor.
+        "floor" => match args.get(0) {
+            Some(LispVal::Num(n)) => Ok(LispVal::Num(*n)),
+            Some(LispVal::Float(f)) => Ok(LispVal::Num(f.floor() as i64)),
+            _ => Err("floor: need number".to_string()),
+        },
         "vec?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Vec(_))))),
         "vec-nth" => match (args.get(0), args.get(1)) {
             (Some(LispVal::Vec(v)), Some(LispVal::Num(i)))

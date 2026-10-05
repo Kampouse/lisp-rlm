@@ -44,7 +44,8 @@ def load_pool(pool):
                 node[field] = (node.get(field, "")
                                .replace("~~BS~~", "\\")
                                .replace("~~NL~~", "\n")
-                               .replace("~~QT~~", '"'))
+                               .replace("~~QT~~", '"')
+                               .replace("~~TAB~~", "\t"))
         # dedup by filename — task-<HHMMSS>.json is unique per cycle; the
         # in-world "ts" field is set at runtime-load time and identical
         # across a task's runs, so (task_id, ts) collapses real worlds.

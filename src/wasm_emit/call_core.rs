@@ -202,6 +202,65 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
+            "expt" => {
+                // Math.pow lowering — integer square-and-multiply. Mirrors
+                // dispatch_arithmetic::expt for the integral case; negative
+                // exponents yield 0 in the wasm int path (no f64 here).
+                if a.len() != 2 {
+                    return Err("expt: need base and exponent".into());
+                }
+                let b_i = self.local_idx("__expt_b");
+                let e_i = self.local_idx("__expt_e");
+                let r_i = self.local_idx("__expt_r");
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(b_i));
+                v.extend(self.expr(&a[1])?);
+                v.extend(self.emit_untag());
+                v.push(Instruction::LocalSet(e_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::LocalSet(r_i));
+                // while e > 0 { if e & 1 { r *= b } b *= b; e >>= 1 }
+                v.push(Instruction::Block(BlockType::Empty));
+                v.push(Instruction::Loop(BlockType::Empty));
+                v.push(Instruction::LocalGet(e_i));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::BrIf(1));
+                v.push(Instruction::LocalGet(e_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64And);
+                v.push(Instruction::If(BlockType::Empty));
+                v.push(Instruction::LocalGet(r_i));
+                v.push(Instruction::LocalGet(b_i));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::LocalSet(r_i));
+                v.push(Instruction::End);
+                v.push(Instruction::LocalGet(b_i));
+                v.push(Instruction::LocalGet(b_i));
+                v.push(Instruction::I64Mul);
+                v.push(Instruction::LocalSet(b_i));
+                v.push(Instruction::LocalGet(e_i));
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::LocalSet(e_i));
+                v.push(Instruction::Br(0));
+                v.push(Instruction::End); // loop
+                v.push(Instruction::End); // block
+                v.push(Instruction::LocalGet(r_i));
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
+            "floor" => {
+                // Math.floor lowering — on the wasm int path floor of a
+                // tagged int is identity (untag → retag), matching the
+                // signed-untag treatment abs uses.
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.extend(self.emit_untag());
+                v.extend(self.emit_tag_num());
+                Ok(v)
+            }
             "max" => {
                 if a.len() == 1 {
                     return self.expr(&a[0]);

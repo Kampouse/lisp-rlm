@@ -20,6 +20,8 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "vec-nth",
     "vec-assoc",
     "vec-len",
+    "vec-length",
+    "array",
     "vec-conj",
     "vec-contains?",
     "vec-slice",

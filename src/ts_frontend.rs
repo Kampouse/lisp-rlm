@@ -3291,6 +3291,13 @@ fn member_fn_returns_non_string(obj: &str, prop: &str) -> bool {
         ),
         "u128" => matches!(prop, "lt" | "gt" | "eq" | "isZero" | "toI64"),
         "storage" => matches!(prop, "has" | "hasKey" | "set" | "write" | "del" | "remove"),
+        // Math.* always returns a number — without this, `Math.pow(2,16) + 1`
+        // type-probed as a string method call and the frontend folded `+`
+        // into (str-cat (to-string (expt 2 16)) (to-string 1)) (2026-10-05).
+        "Math" => matches!(
+            prop,
+            "abs" | "max" | "min" | "pow" | "sqrt" | "floor"
+        ),
         _ => false,
     }
 }
@@ -4215,7 +4222,11 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                             let joined = acc.unwrap_or(LispVal::Str(String::new()));
                             return Ok(list(vec![Sym("near/log"), joined]));
                         }
-                        ("Math", "abs") | ("Math", "max") | ("Math", "min") => {
+                        ("Math", "abs")
+                        | ("Math", "max")
+                        | ("Math", "min")
+                        | ("Math", "sqrt")
+                        | ("Math", "floor") => {
                             let op = sm.property.name.as_str();
                             if c.arguments.is_empty() {
                                 return Err(format!(
@@ -4231,6 +4242,34 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 items.push(lower_expr(e2)?);
                             }
                             return Ok(list(items));
+                        }
+                        ("Math", "pow") => {
+                            // Math.pow(a, b) → (expt a b): expt is the
+                            // runtime's power builtin; the old fallthrough
+                            // minted an unknown Math/pow symbol instead.
+                            if c.arguments.len() != 2 {
+                                return Err(
+                                    "ts_frontend: Math.pow takes exactly two arguments (M1)"
+                                        .into(),
+                                );
+                            }
+                            let mut items = vec![Sym("expt")];
+                            for a in &c.arguments {
+                                let e2 = a
+                                    .as_expression()
+                                    .ok_or("ts_frontend: unsupported Math.pow argument (M1)")?;
+                                items.push(lower_expr(e2)?);
+                            }
+                            return Ok(list(items));
+                        }
+                        ("Math", other) => {
+                            // Hard-error instead of minting Math/<name>
+                            // symbols no backend knows (t4_pow@ts root
+                            // cause — 0/38 on "unknown 'Math/pow'").
+                            return Err(format!(
+                                "ts_frontend: Math.{other} not supported \
+                                 (M1: abs/max/min/pow/sqrt/floor)"
+                            ));
                         }
                         ("JSON", "stringify") => {
                             if c.arguments.len() != 1 {

@@ -308,6 +308,31 @@ impl TcEnv {
             ),
         );
 
+        // expt : num → num → num (Math.pow lowering, 2026-10-05)
+        env.insert_mono(
+            "expt".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num), TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+        // floor : num → num (Math.floor lowering, 2026-10-05)
+        env.insert_mono(
+            "floor".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+        // sqrt : num → num (Math.sqrt lowering, 2026-10-05)
+        env.insert_mono(
+            "sqrt".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+
         // muldiv : num → num → num → num  (a*b/c with 128-bit intermediate)
         env.insert_mono(
             "muldiv".to_string(),

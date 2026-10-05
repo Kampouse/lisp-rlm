@@ -27,6 +27,54 @@ const SPECIAL_FORMS: &[&str] = &[
 /// wasm-harness-only. Keep this table honest: new drift goes here ONLY with
 /// a real reason, otherwise port the builtin.
 const WASM_ONLY_DOCUMENTED: &[(&str, &str)] = &[
+    // ── schnorr/vrf SIGNING ops: wasm comb-table reference only ──
+    // Verify + sha256 + tagged-hash ARE interpreter-ported (builtin_schnorr);
+    // sign/pubkey-derive/vrf live only in the wasm emitter, whose artifact
+    // (schnorr.wasm) is the reference implementation — differential-tested
+    // vs @noble/curves and BIP-340 vector-0 (f7a79886, 2026-10-02). Porting
+    // scalar-arithmetic signing into the tree-walker would duplicate crypto
+    // semantics with no consumer — deliberate verify-only interp surface.
+    (
+        "schnorr-pubkey",
+        "secp256k1 pubkey derive — wasm fixed-base comb path only; interp is
+         verify-only for schnorr (signing artifact is the tested reference)",
+    ),
+    (
+        "schnorr-pubkey33",
+        "x-only pubkey, 33-byte out — wasm emitter layout only; interp is
+         verify-only for schnorr",
+    ),
+    (
+        "schnorr-sign",
+        "BIP-340 sign — wasm comb-table reference (verified vs @noble +
+         BIP-340 vector-0); no tree-walker twin by design",
+    ),
+    (
+        "schnorr-sign-pk",
+        "BIP-340 sign with known pubkey — wasm comb-table reference; no
+         tree-walker twin by design",
+    ),
+    (
+        "schnorr_pubkey_bip340",
+        "snake_case twin of schnorr-pubkey — wasm-only reference",
+    ),
+    (
+        "schnorr_pubkey_bip340_33",
+        "snake_case twin of schnorr-pubkey33 — wasm-only reference",
+    ),
+    (
+        "schnorr_sign_bip340",
+        "snake_case twin of schnorr-sign — wasm-only reference",
+    ),
+    (
+        "schnorr_sign_bip340_pk",
+        "snake_case twin of schnorr-sign-pk — wasm-only reference",
+    ),
+    (
+        "vrf-generate",
+        "VRF prove — wasm-emitter crypto with no interpreter consumer;
+         verify-side parity only",
+    ),
     // ── input-reading ops: the interp has no tx input JSON ──
     (
         "json-extract-input",
