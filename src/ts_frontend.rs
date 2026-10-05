@@ -4137,16 +4137,44 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             ]))
         }
         Expression::LogicalExpression(l) => {
-            // Short-circuit, boolean-valued — NOT JS value semantics.
-            // Both arms lowered to bool type so the if-form is type-consistent.
-            let a = to_bool(&l.left)?;
-            let b = to_bool(&l.right)?;
+            // && / ||: JS VALUE semantics (2026-10-04) — `a || b` yields a
+            // when a is truthy else b; `a && b` yields b when a is truthy
+            // else a. The left operand is let-bound so it evaluates AT MOST
+            // once (`f() || x` runs f exactly once); the branch test is the
+            // RAW bound value — emit_cond_branch truthiness (falsy = {Bool
+            // false, Nil, Num 0}; STR — including "" — is truthy, the
+            // documented M2 boundary mirroring `if (s)`). Replaces the old
+            // always-0/1 boolean coercion.
+            let lv_and = |t: &str, a_val: LispVal, b_val: LispVal| {
+                list(vec![
+                    Sym("let"),
+                    list(vec![list(vec![Sym(t.to_string()), a_val])]),
+                    list(vec![
+                        Sym("if"),
+                        Sym(t.to_string()),
+                        b_val,
+                        Sym(t.to_string()),
+                    ]),
+                ])
+            };
             Ok(match l.operator {
-                LogicalOperator::And => {
-                    list(vec![Sym("if"), a, b, list(vec![Sym("="), Num(1), Num(0)])])
-                }
+                LogicalOperator::And => lv_and(
+                    &format!("__lv_and{}", l.span.start),
+                    lower_expr(&l.left)?,
+                    lower_expr(&l.right)?,
+                ),
                 LogicalOperator::Or => {
-                    list(vec![Sym("if"), a, list(vec![Sym("="), Num(1), Num(1)]), b])
+                    let t = format!("__lv_or{}", l.span.start);
+                    list(vec![
+                        Sym("let"),
+                        list(vec![list(vec![Sym(t.clone()), lower_expr(&l.left)?])]),
+                        list(vec![
+                            Sym("if"),
+                            Sym(t.clone()),
+                            Sym(t),
+                            lower_expr(&l.right)?,
+                        ]),
+                    ])
                 }
                 // `a ?? b` — value-level nil-handling: (default a b).
                 // JSON API v3 (2026-09-15): `handle.prop ?? fb` dispatches on
