@@ -416,9 +416,18 @@ fn print_outcome(o: &TxOutcome) {
         );
     }
     if let Some(d) = &o.return_data {
-        let s = String::from_utf8_lossy(d);
-        if !s.is_empty() {
-            println!("📄 {s}");
+        // 8-byte NON-printable returns are raw i64s (raw-i64 twin dispatch)
+        // — show the numeric view (plain-mode parity) instead of NUL-padded
+        // lossy bytes; NULs are valid UTF-8 so lossy "succeeds" and prints
+        // garbage like "*\0\0\0\0\0\0\0". Printable data keeps the bare line.
+        if d.len() == 8 && !d.iter().all(|b| (0x20..0x7f).contains(b)) {
+            let val = i64::from_le_bytes(d[..8].try_into().unwrap());
+            println!("📄 {} (raw i64, untagged: {})", val, val >> 3);
+        } else {
+            let s = String::from_utf8_lossy(d);
+            if !s.is_empty() {
+                println!("📄 {s}");
+            }
         }
     }
 }
@@ -2149,13 +2158,27 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
                         }
                     }
                 } else {
-                    // no promise: surface the entry's own return data
+                    // no promise: surface the entry's own return data.
+                    // 8-byte NON-printable returns are raw i64s (raw-i64
+                    // twin dispatch) — print the numeric view like the
+                    // plain-mode printer does, instead of NUL-padded lossy
+                    // bytes. Printable 8-byte strings keep the bare 📄 line
+                    // (existing substring asserts depend on it).
                     let st = state.lock().unwrap();
                     if let Some(ref data) = st.return_data {
-                        let s = String::from_utf8_lossy(data);
-                        if !s.is_empty() {
-                            println!("📄 {}", s);
-                            expect_out.push(s.into_owned());
+                        if data.len() == 8
+                            && !data.iter().all(|b| (0x20..0x7f).contains(b))
+                        {
+                            let val = i64::from_le_bytes(data[..8].try_into().unwrap());
+                            let line = format!("{} (raw i64, untagged: {})", val, val >> 3);
+                            println!("📄 {}", line);
+                            expect_out.push(line);
+                        } else {
+                            let s = String::from_utf8_lossy(data);
+                            if !s.is_empty() {
+                                println!("📄 {}", s);
+                                expect_out.push(s.into_owned());
+                            }
                         }
                     }
                 }
@@ -3371,9 +3394,19 @@ fn run_fork(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     } else if out.ok {
         println!("✅ Success");
         if let Some(data) = &out.return_data {
-            match std::str::from_utf8(data) {
-                Ok(s) => println!("📄 {s}"),
-                Err(_) => println!("📄 <{} binary bytes>", data.len()),
+            // 8-byte NON-printable returns are raw i64s (raw-i64 twin
+            // dispatch) — show the numeric view like plain-mode, not
+            // NUL-padded lossy bytes (NULs are valid UTF-8 so from_utf8
+            // "succeeds" and prints garbage). Printable data keeps the
+            // bare 📄 line (existing asserts depend on it).
+            if data.len() == 8 && !data.iter().all(|b| (0x20..0x7f).contains(b)) {
+                let val = i64::from_le_bytes(data[..8].try_into().unwrap());
+                println!("📄 {} (raw i64, untagged: {})", val, val >> 3);
+            } else {
+                match std::str::from_utf8(data) {
+                    Ok(s) => println!("📄 {s}"),
+                    Err(_) => println!("📄 <{} binary bytes>", data.len()),
+                }
             }
         }
         for l in &out.logs {
