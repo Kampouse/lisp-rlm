@@ -43,6 +43,18 @@ fn math_sqrt_floor_compile() {
     compile("function f(x: number): number { return Math.floor(Math.sqrt(x)); }");
 }
 
+/// ceil/round complete the rounding trio (ceil → ceiling builtin).
+#[test]
+fn math_ceil_round_compile() {
+    compile("function f(x: number): number { return Math.ceil(x) + Math.round(x / 2); }");
+}
+
+#[test]
+fn math_ceil_lowers_to_ceiling() {
+    let ir = lower("function f(x: number): number { return Math.ceil(x); }");
+    assert!(ir.contains("(ceiling "), "got: {ir}");
+}
+
 /// Unsupported Math CALLS hard-error at the frontend instead of minting
 /// unknown `Math/<name>` symbols that die later at compile time.
 /// (Plain member reads like Math.PI fall through to object-property
@@ -51,8 +63,8 @@ fn math_sqrt_floor_compile() {
 fn math_unknown_hard_errors() {
     let e = lower_err("function f(): number { return Math.cos(1); }");
     assert!(e.contains("Math.cos not supported"), "got: {e}");
-    let e = lower_err("function f(): number { return Math.round(2.7); }");
-    assert!(e.contains("Math.round not supported"), "got: {e}");
+    let e = lower_err("function f(): number { return Math.sign(2.7); }");
+    assert!(e.contains("Math.sign not supported"), "got: {e}");
 }
 
 /// Array literals lower to (array ...) and must be executable by BOTH
@@ -79,4 +91,19 @@ fn array_reduce_mathmax_pipeline_compiles() {
     compile(
         "function f(xs: number[]): number {\n  const a: number[] = [11, 13, 17, 19];\n  const sum: number = a.reduce((x: number, y: number): number => x + y, 0);\n  return Math.max(sum, xs.length);\n}\n",
     );
+}
+
+/// Free-function strJoin — declared in the d.ts since 2026-08-30 but never
+/// mapped (caught by ts_surface_dts_parity on its first run, 2026-10-05).
+#[test]
+fn strjoin_free_function_compiles() {
+    compile(
+        "function f(parts: string[]): string { return strJoin(\",\", parts); }",
+    );
+}
+
+/// near_* free functions — same catch class as strJoin.
+#[test]
+fn near_free_functions_compiles() {
+    compile("function f(): string { return near_predecessor_account_id(); }");
 }

@@ -251,9 +251,9 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
-            "floor" => {
-                // Math.floor lowering — on the wasm int path floor of a
-                // tagged int is identity (untag → retag), matching the
+            "floor" | "ceiling" | "round" => {
+                // Math.floor/ceil/round lowering — on the wasm int path these
+                // are identity on a tagged int (untag → retag), matching the
                 // signed-untag treatment abs uses.
                 let mut v = Vec::new();
                 v.extend(self.expr(&a[0])?);

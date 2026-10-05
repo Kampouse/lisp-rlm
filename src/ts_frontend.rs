@@ -3296,7 +3296,7 @@ fn member_fn_returns_non_string(obj: &str, prop: &str) -> bool {
         // into (str-cat (to-string (expt 2 16)) (to-string 1)) (2026-10-05).
         "Math" => matches!(
             prop,
-            "abs" | "max" | "min" | "pow" | "sqrt" | "floor"
+            "abs" | "max" | "min" | "pow" | "sqrt" | "floor" | "ceil" | "round"
         ),
         _ => false,
     }
@@ -4226,7 +4226,8 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                         | ("Math", "max")
                         | ("Math", "min")
                         | ("Math", "sqrt")
-                        | ("Math", "floor") => {
+                        | ("Math", "floor")
+                        | ("Math", "round") => {
                             let op = sm.property.name.as_str();
                             if c.arguments.is_empty() {
                                 return Err(format!(
@@ -4262,13 +4263,31 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                             }
                             return Ok(list(items));
                         }
+                        ("Math", "ceil") => {
+                            // Math.ceil(x) → (ceiling x) — the runtime builtin
+                            // is spelled `ceiling`.
+                            if c.arguments.is_empty() {
+                                return Err(
+                                    "ts_frontend: Math.ceil needs at least one argument (M1)"
+                                        .into(),
+                                );
+                            }
+                            let mut items = vec![Sym("ceiling")];
+                            for a in &c.arguments {
+                                let e2 = a
+                                    .as_expression()
+                                    .ok_or("ts_frontend: unsupported Math.ceil argument (M1)")?;
+                                items.push(lower_expr(e2)?);
+                            }
+                            return Ok(list(items));
+                        }
                         ("Math", other) => {
                             // Hard-error instead of minting Math/<name>
                             // symbols no backend knows (t4_pow@ts root
                             // cause — 0/38 on "unknown 'Math/pow'").
                             return Err(format!(
                                 "ts_frontend: Math.{other} not supported \
-                                 (M1: abs/max/min/pow/sqrt/floor)"
+                                 (M1: abs/max/min/pow/sqrt/floor/ceil/round)"
                             ));
                         }
                         ("JSON", "stringify") => {
@@ -5078,6 +5097,12 @@ fn map_builtin_call(name: &str) -> String {
         "jsonGetStr" => "json-get-str",
         "jsonExtract" => "json-extract-input",
         "strSplit" => "str-split",
+        "strJoin" => "str-join",
+        // near_* free functions (d.ts-declared since 2026-08-30, unmapped
+        // until the dts-parity test caught them 2026-10-05)
+        "near_storage_get" => "near/storage_get",
+        "near_storage_set" => "near/storage_set",
+        "near_predecessor_account_id" => "near/predecessor_account_id",
         "hexDecode" => "hex-decode",
         "hexEncode" => "hex-encode",
         "sha256Hash" => "sha256-hash",

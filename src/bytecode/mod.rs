@@ -7219,6 +7219,18 @@ pub fn eval_builtin(
             Some(LispVal::Float(f)) => Ok(LispVal::Num(f.floor() as i64)),
             _ => Err("floor: need number".to_string()),
         },
+        // Math.ceil lowering — mirrors dispatch_arithmetic::ceiling.
+        "ceiling" => match args.get(0) {
+            Some(LispVal::Num(n)) => Ok(LispVal::Num(*n)),
+            Some(LispVal::Float(f)) => Ok(LispVal::Num(f.ceil() as i64)),
+            _ => Err("ceiling: need number".to_string()),
+        },
+        // Math.round lowering — mirrors dispatch_arithmetic::round.
+        "round" => match args.get(0) {
+            Some(LispVal::Num(n)) => Ok(LispVal::Num(*n)),
+            Some(LispVal::Float(f)) => Ok(LispVal::Num(f.round() as i64)),
+            _ => Err("round: need number".to_string()),
+        },
         "vec?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Vec(_))))),
         "vec-nth" => match (args.get(0), args.get(1)) {
             (Some(LispVal::Vec(v)), Some(LispVal::Num(i)))

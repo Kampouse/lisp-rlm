@@ -311,9 +311,11 @@
       (if (= (rlm-get __surface) "ts")
         (str-concat
           "\nGenerate ONE TypeScript module. Allowed: function declarations,\n"
-          "const/let, if/else, return, for/while, template literals, number/string/bool\n"
+          "const/let, if/else, return, template literals, number/string/bool\n"
           "literals, array literals, .map/.filter/.reduce/.join/.push,\n"
-          "Math.abs/max/min/pow/sqrt/floor, unary ! and -.\n"
+          "Math.abs/max/min/pow/sqrt/floor/ceil/round, unary ! and -.\n"
+          "Loops: for (const x of arr) ONLY — plain for/while and\n"
+          "break/continue are NOT supported; count with recursion.\n"
           "Forbidden: imports, classes, async, destructuring, optional chaining.\n"
           "Store results: rlm_set(\"answer\", <expr>);\n"
           "Finish when done: rlm_set(\"Final\", true);\n"

@@ -324,6 +324,22 @@ impl TcEnv {
                 Box::new(TcType::Con(TcCon::Num)),
             ),
         );
+        // ceiling : num → num (Math.ceil lowering, 2026-10-05)
+        env.insert_mono(
+            "ceiling".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+        // round : num → num (Math.round lowering, 2026-10-05)
+        env.insert_mono(
+            "round".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
         // sqrt : num → num (Math.sqrt lowering, 2026-10-05)
         env.insert_mono(
             "sqrt".to_string(),
