@@ -78,6 +78,7 @@ fn ts_to_lisp_source_inner(src: &str) -> Result<String, String> {
     TYPE_ALIASES.with(|s| s.borrow_mut().clear());
     CONST_FOLDS.with(|s| s.borrow_mut().clear());
     BIGINT_CONSTS.with(|s| s.borrow_mut().clear());
+    USER_FNS.with(|m| m.borrow_mut().clear());
     let exprs = parse_ts(src)?;
     let mut out = String::new();
     for e in &exprs {
@@ -148,6 +149,13 @@ thread_local! {
     /// (2026-08-31) a value-define at top level emits a stub (known emitter
     /// limitation), so numeric/string consts INSTEAD substitute inline and
     /// emit nothing. Non-literal top-level consts keep the old path.
+    /// TS surface strictness (2026-10-05): every FunctionDeclaration name
+    /// (any nesting depth) collected before lowering — bare calls to names
+    /// outside this set, the builtin map, or the RLM runtime API are
+    /// rejected. The old unknown-name passthrough let brain-written lisp
+    /// (reduce/lambda/array…) compile as "TS" and game the checker.
+    static USER_FNS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
     static CONST_FOLDS: std::cell::RefCell<Vec<(String, LispVal)>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// Top-level `const K = <n-literal>;` names — bigint-shaped identifiers
@@ -259,7 +267,67 @@ pub fn ts_line_hint(map: &[(String, u32)], src: &str, name: &str) -> Option<Stri
 
 // ── Program / statements ──────────────────────────────────────────────────
 
+/// RLM runtime API callable from the TS surface (advertised in the
+/// cheatsheet COMPLETE EXAMPLE). Runtime defines loaded before eval.
+const RLM_RUNTIME_API: &[&str] = &["rlm_set", "rlm_get"];
+
+fn collect_user_fns(stmts: &[Statement<'_>], out: &mut std::collections::HashSet<String>) {
+    for s in stmts {
+        match s {
+            Statement::FunctionDeclaration(f) => {
+                if let Some(id) = &f.id {
+                    out.insert(id.name.as_str().to_string());
+                }
+                // NOTE: stmts_of() on a non-Block returns the statement
+                // itself — recursing through it here was an infinite loop
+                // (stack overflow, found by strict_gate_fn_hoisting).
+                if let Some(body) = &f.body {
+                    collect_user_fns(&body.statements, out);
+                }
+            }
+            Statement::ExportDeclaration(decl) => {
+                if let Declaration::FunctionDeclaration(f) = &decl.declaration {
+                    if let Some(id) = &f.id {
+                        out.insert(id.name.as_str().to_string());
+                    }
+                    if let Some(body) = &f.body {
+                        collect_user_fns(&body.statements, out);
+                    }
+                }
+            }
+            Statement::BlockStatement(b) => collect_user_fns(&b.body, out),
+            Statement::IfStatement(i) => {
+                collect_user_fns(stmts_of(&i.consequent), out);
+                if let Some(alt) = &i.alternate {
+                    collect_user_fns(stmts_of(alt), out);
+                }
+            }
+            Statement::WhileStatement(w) => collect_user_fns(stmts_of(&w.body), out),
+            Statement::ForStatement(f) => collect_user_fns(stmts_of(&f.body), out),
+            Statement::ForOfStatement(fo) => collect_user_fns(stmts_of(&fo.body), out),
+            Statement::DoWhileStatement(d) => collect_user_fns(stmts_of(&d.body), out),
+            Statement::SwitchStatement(sw) => {
+                for c in &sw.cases {
+                    collect_user_fns(&c.consequent, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn user_fn_or_runtime(name: &str) -> bool {
+    USER_FNS.with(|f| f.borrow().contains(name))
+        || RLM_RUNTIME_API.contains(&name)
+}
+
 fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
+    // strict surface: register all user functions before any lowering
+    USER_FNS.with(|m| {
+        let mut set = std::collections::HashSet::new();
+        collect_user_fns(&p.body, &mut set);
+        *m.borrow_mut() = set;
+    });
     // TypeScript hoists function declarations: a call may textually precede
     // the helper's definition. Lisp requires define-before-use, so we reorder:
     //   1. top-level consts (module-load-time, source order)
@@ -423,7 +491,9 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                 }
             }
             Statement::ExpressionStatement(e) => {
-                out.push(lower_expr(&e.expression)?);
+                // effect-position (M2+ 2026-10-05): assignments (incl.
+                // property writes o.x = v) are statements here too
+                out.push(effect_expr(&e.expression)?);
             }
             Statement::WhileStatement(w) => {
                 // M1.5 (2026-10-05): top-level loops (RLM brain code lives
@@ -443,6 +513,14 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                     Num(0),
                     false,
                 )?);
+            }
+            Statement::DoWhileStatement(d) => {
+                // M1.5+ (2026-10-05)
+                out.push(lower_do_while_form(d, false)?);
+            }
+            Statement::SwitchStatement(sw) => {
+                // M1.5+ (2026-10-05): all-break if-chain
+                out.push(lower_switch_form(sw, false)?);
             }
             Statement::EmptyStatement(_) => {}
             // `type X = { ... }` — data-shape declaration, compile-time
@@ -1086,6 +1164,83 @@ fn lower_for_form(f: &oxc_ast::ast::ForStatement<'_>, view: bool) -> Result<Lisp
     Ok(list(seq))
 }
 
+/// Lower `do { body } while (test);` → (begin body (while test body)).
+/// Body lowers twice (pre-run + loop) — semantics-faithful, no exit
+/// protocol (reject_loop_exits applies).
+fn lower_do_while_form(d: &oxc_ast::ast::DoWhileStatement<'_>, view: bool) -> Result<LispVal, String> {
+    reject_loop_exits(stmts_of(&d.body))?;
+    let body = lower_prefix_around(stmts_of(&d.body), Num(0), view)?;
+    let test = truthy(&d.test)?;
+    Ok(list(vec![
+        Sym("begin"),
+        body.clone(),
+        list(vec![Sym("while"), test, body]),
+    ]))
+}
+
+/// switch with all-break semantics (2026-10-05): lowers to an if-chain of
+/// (= disc test) comparisons; default (at most one) becomes the final
+/// else. Fallthrough is REJECTED — every non-empty case body must end in
+/// break; empty case bodies (case a: case b: …) are rejected too (write
+/// the body explicitly). return inside a case is rejected (use a flag
+/// variable, assign, then return after the switch).
+fn lower_switch_form(sw: &oxc_ast::ast::SwitchStatement<'_>, view: bool) -> Result<LispVal, String> {
+    let disc = lower_expr(&sw.discriminant)?;
+    let has_default = sw.cases.iter().any(|c| c.test.is_none());
+    // validate: exits, fallthrough, empties, dup defaults
+    let mut defaults = 0;
+    for c in &sw.cases {
+        if c.test.is_none() {
+            defaults += 1;
+            if defaults > 1 {
+                return Err("ts_frontend: switch: multiple default cases".into());
+            }
+        }
+        if c.consequent.is_empty() {
+            return Err(
+                "ts_frontend: switch: empty case body = fallthrough (not supported) — write the body explicitly in each case"
+                    .into(),
+            );
+        }
+        for st in &c.consequent {
+            if matches!(st, Statement::ReturnStatement(_)) {
+                return Err(
+                    "ts_frontend: switch: return inside a case is not supported — assign a result variable, break, then return after the switch"
+                        .into(),
+                );
+            }
+        }
+        let last_break = matches!(c.consequent.last(), Some(Statement::BreakStatement(_)));
+        if !last_break {
+            return Err(
+                "ts_frontend: switch: every case body must end with `break;` (fallthrough not supported)"
+                    .into(),
+            );
+        }
+    }
+    // build the chain from the LAST case backwards; default becomes else
+    let mut chain: Option<LispVal> = None;
+    for c in sw.cases.iter().rev() {
+        let body_stmts = &c.consequent[..c.consequent.len() - 1]; // strip trailing break
+        let body = lower_prefix_around(body_stmts, Num(0), view)?;
+        match &c.test {
+            Some(t) => {
+                let test = lower_expr(t)?;
+                let cond = list(vec![Sym("="), disc.clone(), test]);
+                let else_arm = chain.take().unwrap_or(Num(0));
+                chain = Some(list(vec![Sym("if"), cond, body, else_arm]));
+            }
+            None => {
+                // default: claims the final else position; later
+                // (higher-up) cases chain on top of it
+                chain = Some(body);
+            }
+        }
+    }
+    let _ = has_default;
+    Ok(chain.unwrap_or(Num(0)))
+}
+
 /// Any `return` anywhere below these statements (loops, ifs, blocks).
 fn stmts_have_deep_return(stmts: &[Statement<'_>]) -> bool {
     fn deep(s: &Statement<'_>) -> bool {
@@ -1505,6 +1660,16 @@ fn lower_prefix_around(
         // arms lower in this match (lower_while_parts / lower_for_parts,
         // break/continue/return capable) — top-level loops are the ones
         // handled separately in lower_program (M1.5, 2026-10-05).
+        Statement::DoWhileStatement(d) => {
+            // M1.5+ (2026-10-05)
+            let form = lower_do_while_form(d, view)?;
+            list(vec![Sym("begin"), form, tail])
+        }
+        Statement::SwitchStatement(sw) => {
+            // M1.5+ (2026-10-05): if-chain, no exit protocol
+            let form = lower_switch_form(sw, view)?;
+            list(vec![Sym("begin"), form, tail])
+        }
         Statement::VariableDeclaration(v) => {
             // JSON API v3: `const {..} = near.args<{..}>()`
             if let Some(res) = lower_args_destructuring(v) {
@@ -3046,11 +3211,37 @@ fn lower_assign_form(asg: &oxc_ast::ast::AssignmentExpression<'_>) -> Result<Lis
             let (v, expr) = lower_assignment(asg)?;
             Ok(list(vec![Sym("set!"), Sym(v), expr]))
         }
-        oxc_ast::ast::AssignmentTarget::StaticMemberExpression(_) => Err(
-            "ts_frontend: property assignment not supported — objects are immutable JSON values; \
-             rebuild with `o = jsonSet(o, \"key\", jsonQuote(v))` (numbers: toStr(v))"
-                .into(),
-        ),
+        oxc_ast::ast::AssignmentTarget::StaticMemberExpression(sm) => {
+            // M2+ (2026-10-05): `o.x = v` lowers to a REBINDING — objects
+            // are immutable JSON-string values, so the property write is
+            // (set! o (json-set o "x" <encoded v>)). Single-level only:
+            // dotted targets (o.a.b = v) need nested rebuilds — rejected.
+            if !matches!(asg.operator, AssignmentOperator::Assign) {
+                return Err(
+                    "ts_frontend: compound property assignment (o.x += v) not supported — read o.x, add, reassign"
+                        .into(),
+                );
+            }
+            // reject dotted chains: sm.object must be a plain identifier
+            let (obj_name, path) = match &sm.object {
+                Expression::Identifier(id) => (id.name.as_str().to_string(), sm.property.name.as_str().to_string()),
+                _ => return Err(
+                    "ts_frontend: only single-level property writes (o.x = v) are supported — nested (o.a.b = v) needs a manual jsonSet rebuild"
+                        .into(),
+                ),
+            };
+            let val = encode_json_value(&asg.right)?;
+            Ok(list(vec![
+                Sym("set!"),
+                Sym(obj_name.clone()),
+                list(vec![
+                    Sym("json-set"),
+                    Sym(obj_name),
+                    Str(path),
+                    val,
+                ]),
+            ]))
+        }
         oxc_ast::ast::AssignmentTarget::ComputedMemberExpression(cm) => {
             let obj = lower_expr(&cm.object)?;
             let idx = lower_expr(&cm.expression)?;
@@ -4776,6 +4967,25 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 head
             };
             let head = map_builtin_call(&head);
+            // strict surface: a BARE-IDENTIFIER callee whose RAW name
+            // survives every mapping unchanged (raw == final head) and is
+            // neither a user-defined function nor RLM runtime API is a
+            // lisp passthrough attempt — reject (2026-10-05). Raw-name
+            // comparison matters: callee_name already applies
+            // map_global_fn (strToNum → str->num), so comparing
+            // post-map heads false-positived known builtins. Member-call
+            // results (near.storageSet → near/storage_set) are Identifier-
+            // free and exempt: near.<member> lowering is its own
+            // (deliberately generic) path.
+            if let Expression::Identifier(id) = &c.callee {
+                let raw = id.name.as_str().to_string();
+                if raw == head && !user_fn_or_runtime(&raw) {
+                    return Err(format!(
+                        "ts_frontend: unknown function `{}` is not a TS-surface builtin (see cheatsheet) and not defined in this program; do NOT write lisp names",
+                        raw
+                    ));
+                }
+            }
             let mut items = vec![Sym(head.clone())];
             for a in &c.arguments {
                 if let Argument::SpreadElement(_) = a {
@@ -5225,7 +5435,7 @@ fn map_builtin_call(name: &str) -> String {
         "strSlice" => "str-slice",
         "strCat" => "str-cat",
         "strIndexOf" => "str-index-of",
-        "strToNum" => "str->num",
+        "strToNum" | "Number" | "parseInt" | "parseFloat" => "str->num",
         "toStr" | "toString" => "to-string",
         "jsonGet" => "json-get",
         "jsonGetStr" => "json-get-str",
@@ -5647,8 +5857,10 @@ fn expr_kind(e: &Expression<'_>) -> &'static str {
 mod ts_pos_tests {
     #[test]
     fn ts_ident_offsets_recorded_and_hints_resolve() {
-        let src =
-            "export function new_() {\n  let x = 1\n  let y = undefined_helper(x)\n  return y\n}\n";
+        // strict surface (2026-10-05): unknown bare calls are rejected, so
+        // the helper is DEFINED here — its call-site still records an
+        // ident offset for the line-hint machinery.
+        let src = "function undefined_helper(x: number): number { return x; }\nexport function new_() {\n  let x = 1\n  let y = undefined_helper(x)\n  return y\n}\n";
         let r = super::parse_ts(src).expect("parses");
         assert!(!r.is_empty());
         let map = super::take_ident_offsets();
@@ -5658,6 +5870,6 @@ mod ts_pos_tests {
             "undefined_helper should be in the ident map"
         );
         let line = super::ts_line_hint(&map, src, "undefined_helper").expect("hint");
-        assert_eq!(line, "3");
+        assert_eq!(line, "4");
     }
 }

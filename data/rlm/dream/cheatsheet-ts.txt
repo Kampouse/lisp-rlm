@@ -30,9 +30,24 @@ CONTROL:
   for (let i = 0; i < n; i = i + 1) { ... }   // counted loops
   while (i < n) { i = i + 1; }                // while loops
   for (const x of arr) { ... }                // array iteration
+  do { i = i + 1; } while (i < n);
+  switch (x) { case 1: fee = 10; break; default: fee = 1; break; }  // every case ends with break;
   // top-level loops: NO break/continue/return inside (hard error) —
   // stop with a flag: for (let i=0; i<n; i=i+1) { if (done) { i = n; } }
   // inside exported functions break/continue/return all work
+  // switch: no fallthrough, no empty cases, no return inside — assign + break
+
+OBJECTS (JSON values — strings that hold data):
+  const o: string = { votes: 5, name: "zed" };
+  o.name                 // read a property
+  o.votes = 9;           // write (rebinds) — single level only
+  us[i].name             // nested read from an array of objects
+  Number("42") / parseInt(s)   // string -> number (alias for strToNum)
+
+STRICT SURFACE:
+  Only cheatsheet builtins, Math.*, near.*, console.log, YOUR OWN functions,
+  and rlm_set() compile. Unknown names (reduce/array/vec-length/lambda…)
+  are HARD ERRORS — this is TypeScript, not lisp. Do not write lisp.
 
 LOGGING:
   console.log(...)   // visible in the execution log you receive back
