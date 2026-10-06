@@ -40,7 +40,7 @@
       (let ((to (json-get-str "receiver_id" inp)))
         (let ((amt (json-get-str "amount" inp)))
           (begin
-            (if (< (li-cmp (bal who) amt) 1)
+            (if (< (li-cmp (bal who) amt) 0)
                 (near/return "insufficient")
                 (begin
                   (near/log (str-cat (str-cat "@ft_transfer from:" who) (str-cat " to:" to)))
