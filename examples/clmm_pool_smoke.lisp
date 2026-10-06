@@ -1,0 +1,12 @@
+(define (run)
+  (let ((inp (near/input)))
+    (if (> (str-length inp) 2)
+      (near/return (str-cat (u128-muldiv (json-get-str "a" inp) (json-get-str "b" inp) (json-get-str "c" inp)) "/" (u128-mulmod (json-get-str "a" inp) (json-get-str "b" inp) (json-get-str "c" inp))))
+      (begin
+  (let ((c1 (list "500" "0" "0"))) (let ((c1 (clmm-step c1 "98" "100" "1000" 30))) (let ((c1 (clmm-step c1 "99" "100" "2000" 30))) (let ((c1 (clmm-step c1 "100" "100" "5000" 30))) (let ((c1 (clmm-step c1 "101" "100" "3000" 30))) (let ((c1 (clmm-step c1 "102" "100" "1500" 30)))
+  (let ((c2 (list "2500" "0" "0"))) (let ((c2 (clmm-step c2 "98" "100" "1000" 30))) (let ((c2 (clmm-step c2 "99" "100" "2000" 30))) (let ((c2 (clmm-step c2 "100" "100" "5000" 30))) (let ((c2 (clmm-step c2 "101" "100" "3000" 30))) (let ((c2 (clmm-step c2 "102" "100" "1500" 30)))
+  (let ((c3 (list "12500" "0" "0"))) (let ((c3 (clmm-step c3 "98" "100" "1000" 30))) (let ((c3 (clmm-step c3 "99" "100" "2000" 30))) (let ((c3 (clmm-step c3 "100" "100" "5000" 30))) (let ((c3 (clmm-step c3 "101" "100" "3000" 30))) (let ((c3 (clmm-step c3 "102" "100" "1500" 30)))
+  (let ((c4 (list "999999" "0" "0"))) (let ((c4 (clmm-step c4 "98" "100" "1000" 30))) (let ((c4 (clmm-step c4 "99" "100" "2000" 30))) (let ((c4 (clmm-step c4 "100" "100" "5000" 30))) (let ((c4 (clmm-step c4 "101" "100" "3000" 30))) (let ((c4 (clmm-step c4 "102" "100" "1500" 30)))
+  (let ((c5 (list "1" "0" "0"))) (let ((c5 (clmm-step c5 "98" "100" "1000" 30))) (let ((c5 (clmm-step c5 "99" "100" "2000" 30))) (let ((c5 (clmm-step c5 "100" "100" "5000" 30))) (let ((c5 (clmm-step c5 "101" "100" "3000" 30))) (let ((c5 (clmm-step c5 "102" "100" "1500" 30)))
+  (let ((c6 (list "3000000" "0" "0"))) (let ((c6 (clmm-step c6 "98" "100" "1000" 30))) (let ((c6 (clmm-step c6 "99" "100" "2000" 30))) (let ((c6 (clmm-step c6 "100" "100" "5000" 30))) (let ((c6 (clmm-step c6 "101" "100" "3000" 30))) (let ((c6 (clmm-step c6 "102" "100" "1500" 30)))
+ (near/return (str-cat "c1:" (car (cdr c1)) "/" (car c1) "/" (car (cdr (cdr c1))) "c2:" (car (cdr c2)) "/" (car c2) "/" (car (cdr (cdr c2))) "c3:" (car (cdr c3)) "/" (car c3) "/" (car (cdr (cdr c3))) "c4:" (car (cdr c4)) "/" (car c4) "/" (car (cdr (cdr c4))) "c5:" (car (cdr c5)) "/" (car c5) "/" (car (cdr (cdr c5))) "c6:" (car (cdr c6)) "/" (car c6) "/" (car (cdr (cdr c6)))))))))))))))))))))))))))))))))))))))))))))
