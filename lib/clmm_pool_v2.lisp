@@ -28,17 +28,16 @@
           (begin
             (pool-swap (json-get-str "amount" inp))
             (let ((dy (bz "DY")) (rem (bz "REM")))
-              (begin
-                ;; B-payout as a DETACHED promise (executes independently);
-                ;; receipt returns the unused-A refund as a direct value —
-                ;; deep promise_result values don't propagate through
-                ;; returned then-chains in our current emitter (chain-only
-                ;; divergence, bisected via dbg15/pz2 on 2026-10-06).
-                (let ((p (near/promise_batch_create (near/load-bytes "TOKB"))))
-                  (near/promise_batch_action_function_call p "ft_transfer"
-                    (json-set (json-set "{}" "receiver_id" sender) "amount" dy)
-                    "0" 40000000000000))
-                (near/return rem))))))))
+              (if (str= dy "0")
+                  (near/return rem)
+                  (let ((p (near/promise_batch_create (near/load-bytes "TOKB"))))
+                    (begin
+                      (near/promise_batch_action_function_call p "ft_transfer"
+                        (json-set (json-set "{}" "receiver_id" sender) "amount" dy)
+                        "0" 40000000000000)
+                      (near/promise_return
+                        (near/promise_then p (near/current_account_id) "pay_out"
+                          (json-set "{}" "r" rem) "0" 5000000000000)))))))))))
 
 (define (pay-out)
   (near/return (json-get-str "r" (near/input))))
