@@ -1305,6 +1305,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // ptr
+                self.need_host(29);
                 v.push(Self::host_call(29)); // log_utf16
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)

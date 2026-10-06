@@ -304,13 +304,16 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // data_ptr
                 v.push(Instruction::I64Const(0)); // register_id=0
+                self.need_host(21);
                 v.push(Self::host_call(21)); // sha256
                                              // read_register(0, TEMP_MEM)
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64Const(TEMP_MEM));
+                self.need_host(0);
                 v.push(Self::host_call(0));
                 // register_len(0)
                 v.push(Instruction::I64Const(0));
+                self.need_host(1);
                 v.push(Self::host_call(1));
                 // Pack: (len << 32) | TEMP_MEM — tag as Str
                 v.push(Instruction::I64Const(32));
@@ -336,13 +339,16 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // data_ptr
                 v.push(Instruction::I64Const(0)); // register_id=0
+                self.need_host(22);
                 v.push(Self::host_call(22)); // keccak256
                                              // read_register(0, TEMP_MEM)
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64Const(TEMP_MEM));
+                self.need_host(0);
                 v.push(Self::host_call(0));
                 // register_len(0)
                 v.push(Instruction::I64Const(0));
+                self.need_host(1);
                 v.push(Self::host_call(1));
                 // Pack: (len << 32) | TEMP_MEM — tag as Str
                 v.push(Instruction::I64Const(32));
@@ -390,6 +396,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // pk_ptr
+                self.need_host(24);
                 v.push(Self::host_call(24)); // ed25519_verify — returns u64 directly (1=valid, 0=invalid)
                                              // Tag result as Num
                 v.extend(self.emit_tag_num());
@@ -844,6 +851,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // pk_ptr
+                self.need_host(55);
                 v.push(Self::host_call(55)); // p256_verify — returns u64 directly (1=valid, 0=invalid)
                                              // Tag result as Num
                 v.extend(self.emit_tag_num());
@@ -865,11 +873,14 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // data_ptr
                 v.push(Instruction::I64Const(0)); // register_id=0
+                self.need_host(52);
                 v.push(Self::host_call(52));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64Const(TEMP_MEM));
+                self.need_host(0);
                 v.push(Self::host_call(0)); // read_register
                 v.push(Instruction::I64Const(0));
+                self.need_host(1);
                 v.push(Self::host_call(1)); // register_len
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
@@ -893,6 +904,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // data_ptr
                 v.push(Instruction::I64Const(0));
+                self.need_host(53);
                 v.push(Self::host_call(53));
                 // ALIASING FIX (2026-09-02, found by bls_msig): reading the
                 // register straight into TEMP_MEM returns a POINTER that the
@@ -901,12 +913,14 @@ impl WasmEmitter {
                 // runtime-heap buffer instead (call_near_iter.rs pattern).
                 let bls_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::I64Const(0));
+                self.need_host(1);
                 v.push(Self::host_call(1)); // register_len(0)
                 v.push(Instruction::LocalSet(bls_len));
                 let bls_buf = self.local_idx("__bls_rbuf");
                 v.extend(self.emit_rtheap_alloc(bls_buf, bls_len));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalGet(bls_buf));
+                self.need_host(0);
                 v.push(Self::host_call(0)); // read_register(0, buf)
                 v.push(Instruction::LocalGet(bls_len));
                 v.push(Instruction::I64Const(32));
@@ -979,9 +993,11 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(b_len));
                 v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
+                self.need_host(56);
                 v.push(Self::host_call(56));
                 // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
+                self.need_host(1);
                 v.push(Self::host_call(1)); // register_len(0)
                 let r_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::LocalSet(r_len));
@@ -989,6 +1005,7 @@ impl WasmEmitter {
                 v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalGet(r_ptr));
+                self.need_host(0);
                 v.push(Self::host_call(0)); // read_register(0, r_ptr)
                 v.extend(self.emit_hex_encode_to_str(r_len, r_ptr));
                 Ok(v)
@@ -1021,9 +1038,11 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(b_len));
                 v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
+                self.need_host(57);
                 v.push(Self::host_call(57));
                 // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
+                self.need_host(1);
                 v.push(Self::host_call(1)); // register_len(0)
                 let r_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::LocalSet(r_len));
@@ -1031,6 +1050,7 @@ impl WasmEmitter {
                 v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalGet(r_ptr));
+                self.need_host(0);
                 v.push(Self::host_call(0)); // read_register(0, r_ptr)
                 v.extend(self.emit_hex_encode_to_str(r_len, r_ptr));
                 Ok(v)
@@ -1063,6 +1083,7 @@ impl WasmEmitter {
                 // input is a HOST ERROR → trap, like the chain.
                 v.push(Instruction::LocalGet(b_len));
                 v.push(Instruction::LocalGet(b_ptr));
+                self.need_host(58);
                 v.push(Self::host_call(58));
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -1094,11 +1115,13 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(b_len));
                 v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
+                self.need_host(59);
                 v.push(Self::host_call(59));
                 let ret = self.local_idx("__bls_ret");
                 v.push(Instruction::LocalSet(ret));
                 // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
+                self.need_host(1);
                 v.push(Self::host_call(1)); // register_len(0)
                 let r_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::LocalSet(r_len));
@@ -1106,6 +1129,7 @@ impl WasmEmitter {
                 v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalGet(r_ptr));
+                self.need_host(0);
                 v.push(Self::host_call(0)); // read_register(0, r_ptr)
                                             // ret != 0 (invalid input/point) → empty string; callers
                                             // gate on length
@@ -1148,11 +1172,13 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(b_len));
                 v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
+                self.need_host(60);
                 v.push(Self::host_call(60));
                 let ret = self.local_idx("__bls_ret");
                 v.push(Instruction::LocalSet(ret));
                 // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
+                self.need_host(1);
                 v.push(Self::host_call(1)); // register_len(0)
                 let r_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::LocalSet(r_len));
@@ -1160,6 +1186,7 @@ impl WasmEmitter {
                 v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalGet(r_ptr));
+                self.need_host(0);
                 v.push(Self::host_call(0)); // read_register(0, r_ptr)
                                             // ret != 0 (invalid input/point) → empty string; callers
                                             // gate on length
@@ -1202,11 +1229,13 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(b_len));
                 v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
+                self.need_host(61);
                 v.push(Self::host_call(61));
                 let ret = self.local_idx("__bls_ret");
                 v.push(Instruction::LocalSet(ret));
                 // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
+                self.need_host(1);
                 v.push(Self::host_call(1)); // register_len(0)
                 let r_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::LocalSet(r_len));
@@ -1214,6 +1243,7 @@ impl WasmEmitter {
                 v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalGet(r_ptr));
+                self.need_host(0);
                 v.push(Self::host_call(0)); // read_register(0, r_ptr)
                                             // ret != 0 (invalid input/point) → empty string; callers
                                             // gate on length
@@ -1256,11 +1286,13 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(b_len));
                 v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
+                self.need_host(62);
                 v.push(Self::host_call(62));
                 let ret = self.local_idx("__bls_ret");
                 v.push(Instruction::LocalSet(ret));
                 // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
+                self.need_host(1);
                 v.push(Self::host_call(1)); // register_len(0)
                 let r_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::LocalSet(r_len));
@@ -1268,6 +1300,7 @@ impl WasmEmitter {
                 v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalGet(r_ptr));
+                self.need_host(0);
                 v.push(Self::host_call(0)); // read_register(0, r_ptr)
                                             // ret != 0 (invalid input/point) → empty string; callers
                                             // gate on length
@@ -1310,11 +1343,13 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(b_len));
                 v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
+                self.need_host(63);
                 v.push(Self::host_call(63));
                 let ret = self.local_idx("__bls_ret");
                 v.push(Instruction::LocalSet(ret));
                 // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
+                self.need_host(1);
                 v.push(Self::host_call(1)); // register_len(0)
                 let r_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::LocalSet(r_len));
@@ -1322,6 +1357,7 @@ impl WasmEmitter {
                 v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalGet(r_ptr));
+                self.need_host(0);
                 v.push(Self::host_call(0)); // read_register(0, r_ptr)
                                             // ret != 0 (invalid input/point) → empty string; callers
                                             // gate on length
@@ -1364,11 +1400,13 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(b_len));
                 v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
+                self.need_host(64);
                 v.push(Self::host_call(64));
                 let ret = self.local_idx("__bls_ret");
                 v.push(Instruction::LocalSet(ret));
                 // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
+                self.need_host(1);
                 v.push(Self::host_call(1)); // register_len(0)
                 let r_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::LocalSet(r_len));
@@ -1376,6 +1414,7 @@ impl WasmEmitter {
                 v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalGet(r_ptr));
+                self.need_host(0);
                 v.push(Self::host_call(0)); // read_register(0, r_ptr)
                                             // ret != 0 (invalid input/point) → empty string; callers
                                             // gate on length
@@ -1416,6 +1455,7 @@ impl WasmEmitter {
                 // point, 2 non-identity. Map to TS: 1 = valid, 0 = else.
                 v.push(Instruction::LocalGet(b_len));
                 v.push(Instruction::LocalGet(b_ptr));
+                self.need_host(65);
                 v.push(Self::host_call(65));
                 v.push(Instruction::I64Eqz);
                 v.push(Instruction::If(wasm_encoder::BlockType::Result(
@@ -1455,11 +1495,13 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(b_len));
                 v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
+                self.need_host(66);
                 v.push(Self::host_call(66));
                 let ret = self.local_idx("__bls_ret");
                 v.push(Instruction::LocalSet(ret));
                 // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
+                self.need_host(1);
                 v.push(Self::host_call(1)); // register_len(0)
                 let r_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::LocalSet(r_len));
@@ -1467,6 +1509,7 @@ impl WasmEmitter {
                 v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalGet(r_ptr));
+                self.need_host(0);
                 v.push(Self::host_call(0)); // read_register(0, r_ptr)
                                             // ret != 0 (invalid input/point) → empty string; callers
                                             // gate on length
@@ -1509,11 +1552,13 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(b_len));
                 v.push(Instruction::LocalGet(b_ptr));
                 v.push(Instruction::I64Const(0));
+                self.need_host(67);
                 v.push(Self::host_call(67));
                 let ret = self.local_idx("__bls_ret");
                 v.push(Instruction::LocalSet(ret));
                 // register 0 → (r_len, r_ptr) → hex-encoded tagged string
                 v.push(Instruction::I64Const(0));
+                self.need_host(1);
                 v.push(Self::host_call(1)); // register_len(0)
                 let r_len = self.local_idx("__bls_rlen");
                 v.push(Instruction::LocalSet(r_len));
@@ -1521,6 +1566,7 @@ impl WasmEmitter {
                 v.extend(self.emit_rtheap_alloc(r_ptr, r_len));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalGet(r_ptr));
+                self.need_host(0);
                 v.push(Self::host_call(0)); // read_register(0, r_ptr)
                                             // ret != 0 (invalid input/point) → empty string; callers
                                             // gate on length

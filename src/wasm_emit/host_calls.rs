@@ -18,6 +18,7 @@ impl WasmEmitter {
             v.push(Self::host_call(host_idx));
             // register_len(0) → save
             v.push(Instruction::I64Const(0));
+            self.need_host(1);
             v.push(Self::host_call(1));
             v.push(Instruction::LocalSet(len_i));
             // Allocate buf from mem[56] runtime heap
@@ -25,6 +26,7 @@ impl WasmEmitter {
             // read_register(0, buf)
             v.push(Instruction::I64Const(0));
             v.push(Instruction::LocalGet(buf_i));
+            self.need_host(0);
             v.push(Self::host_call(0));
             // Pack: (len << 32) | buf — tag as Str
             v.push(Instruction::LocalGet(len_i));
@@ -41,8 +43,10 @@ impl WasmEmitter {
             v.push(Self::host_call(host_idx));
             v.push(Instruction::I64Const(0));
             v.push(Instruction::I64Const(TEMP_MEM));
+            self.need_host(0);
             v.push(Self::host_call(0));
             v.push(Instruction::I64Const(0));
+            self.need_host(1);
             v.push(Self::host_call(1));
             v.push(Instruction::I64Const(32));
             v.push(Instruction::I64Shl);

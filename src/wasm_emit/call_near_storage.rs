@@ -626,6 +626,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(8));
                 v.push(Instruction::I64Const(STORAGE_BUF));
                 v.push(Instruction::I64Const(0));
+                self.need_host(17);
                 v.push(Self::host_call(17));
                 v.push(Instruction::Drop);
                 v.push(Instruction::I64Const(TAG_NIL));
@@ -646,6 +647,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(1));
+                self.need_host(18);
                 v.push(Self::host_call(18));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64Eq);
@@ -655,6 +657,7 @@ impl WasmEmitter {
                 v.push(Instruction::Else);
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::I64Const(STORAGE_BUF));
+                self.need_host(0);
                 v.push(Self::host_call(0));
                 v.push(Instruction::I32Const(STORAGE_BUF as i32));
                 v.push(Instruction::I64Load(MemArg {
@@ -680,6 +683,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
+                self.need_host(19);
                 v.push(Self::host_call(19));
                 v.push(Instruction::Drop);
                 v.push(Instruction::I64Const(TAG_NIL));
@@ -715,6 +719,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(8));
                 v.push(Instruction::I64Const(STORAGE_BUF));
                 v.push(Instruction::I64Const(0));
+                self.need_host(17);
                 v.push(Self::host_call(17));
                 v.push(Instruction::Drop);
                 v.push(Instruction::I64Const(TAG_NIL));
@@ -735,6 +740,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
+                self.need_host(18);
                 v.push(Self::host_call(18));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64Eq);
@@ -744,6 +750,7 @@ impl WasmEmitter {
                 v.push(Instruction::Else);
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64Const(STORAGE_BUF));
+                self.need_host(0);
                 v.push(Self::host_call(0));
                 v.push(Instruction::I32Const(STORAGE_BUF as i32));
                 v.push(Instruction::I64Load(MemArg {
@@ -768,6 +775,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                self.need_host(20);
                 v.push(Self::host_call(20));
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::I64And);
@@ -999,6 +1007,7 @@ impl WasmEmitter {
                 Ok(v)
             }
             "near/storage_usage" => {
+                self.need_host(11);
                 let mut v = vec![Self::host_call(11)];
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -1170,6 +1179,7 @@ impl WasmEmitter {
                 v.extend(self.emit_i32_to_i64()); // host expects i64
                 v.push(Instruction::I64Const(KEY_BUF as i64));
                 v.push(Instruction::I64Const(1)); // register 1
+                self.need_host(18);
                 v.push(Self::host_call(18)); // storage_read
 
                 // Check return value: 0 = not found, 1 = found
@@ -1183,6 +1193,7 @@ impl WasmEmitter {
                 // Found: read_register(1, STORAGE_BUF)
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::I64Const(STORAGE_BUF));
+                self.need_host(0);
                 v.push(Self::host_call(0)); // read_register
                 v.push(Instruction::I32Const(STORAGE_BUF as i32));
                 v.push(Instruction::I64Load(ma));
