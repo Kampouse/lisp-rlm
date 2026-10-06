@@ -14,17 +14,22 @@
 (define (bz k) (let ((v (near/load-bytes k))) (if (nil? v) "0" v)))
 (define (sh-key a) (str-cat "SH:" a))
 
+(define (self-call?) (str= (near/predecessor_account_id) (near/current_account_id)))
+
 (define (pool-init4)
-  (begin
-    (slot-set 0 "0") (slot-set 1 "0") (slot-set 2 "0")
-    (slot-set 3 "0") (slot-set 4 "0")
-    (near/store-bytes "F" "0")
-    (near/store-bytes "AB" "0")
-    (near/store-bytes "PB" "0")
-    (near/store-bytes "SHT" "0")
-    (near/store-bytes "TOKA" (json-get-str "toka" (near/input)))
-    (near/store-bytes "TOKB" (json-get-str "tokb" (near/input)))
-    "ok"))
+  ;; one-shot: a bound TOKA means already initialized — state untouched
+  (if (nil? (near/load-bytes "TOKA"))
+      (begin
+        (slot-set 0 "0") (slot-set 1 "0") (slot-set 2 "0")
+        (slot-set 3 "0") (slot-set 4 "0")
+        (near/store-bytes "F" "0")
+        (near/store-bytes "AB" "0")
+        (near/store-bytes "PB" "0")
+        (near/store-bytes "SHT" "0")
+        (near/store-bytes "TOKA" (json-get-str "toka" (near/input)))
+        (near/store-bytes "TOKB" (json-get-str "tokb" (near/input)))
+        "ok")
+      "already-initialized"))
 
 (define (slot-sum)
   (li-add (li-add (li-add (li-add (slot-get 0) (slot-get 1)) (slot-get 2)) (slot-get 3)) (slot-get 4)))
@@ -35,44 +40,49 @@
     (u128-muldiv (u128-muldiv amt base tot) "100" pnum))))
 
 (define (add-b-liq amt)
-  ;; returns the unused-B refund for ft_on_transfer: "0" on success
-  (let ((tot (slot-sum)))
-    (begin
-      (if (str= tot "0")
-          (begin (slot-widen 0 "1000" amt "12500" "98")
-                 (slot-widen 1 "2000" amt "12500" "99")
-                 (slot-widen 2 "5000" amt "12500" "100")
-                 (slot-widen 3 "3000" amt "12500" "101")
-                 (slot-widen 4 "1500" amt "12500" "102"))
-          (begin (slot-widen 0 (slot-get 0) amt tot "98")
-                 (slot-widen 1 (slot-get 1) amt tot "99")
-                 (slot-widen 2 (slot-get 2) amt tot "100")
-                 (slot-widen 3 (slot-get 3) amt tot "101")
-                 (slot-widen 4 (slot-get 4) amt tot "102")))
-      (let ((sh (if (str= (bz "SHT") "0")
-                    amt
-                    (u128-muldiv amt (bz "SHT") (bz "PB")))))
-        (if (str= sh "0")
-            amt  ;; full refund — dust deposit floors to zero shares
-            (begin
-              (near/store-bytes "SHT" (li-add (bz "SHT") sh))
-              (near/store-bytes "PB" (li-add (bz "PB") amt))
-              (near/store-bytes (sh-key (json-get-str "sender_id" (near/input)))
-                (li-add (bz (sh-key (json-get-str "sender_id" (near/input)))) sh))
-              "0"))))))
+  ;; returns the unused-B refund for ft_on_transfer: "0" on success.
+  ;; Validate BEFORE mutating: zero-share (dust) deposits refund untouched.
+  (let ((sh (if (str= (bz "SHT") "0")
+                amt
+                (u128-muldiv amt (bz "SHT") (bz "PB")))))
+    (if (str= sh "0")
+        amt  ;; full refund — dust deposit floors to zero shares
+        (let ((tot (slot-sum)))
+          (begin
+            (if (str= tot "0")
+                (begin (slot-widen 0 "1000" amt "12500" "98")
+                       (slot-widen 1 "2000" amt "12500" "99")
+                       (slot-widen 2 "5000" amt "12500" "100")
+                       (slot-widen 3 "3000" amt "12500" "101")
+                       (slot-widen 4 "1500" amt "12500" "102"))
+                (begin (slot-widen 0 (slot-get 0) amt tot "98")
+                       (slot-widen 1 (slot-get 1) amt tot "99")
+                       (slot-widen 2 (slot-get 2) amt tot "100")
+                       (slot-widen 3 (slot-get 3) amt tot "101")
+                       (slot-widen 4 (slot-get 4) amt tot "102")))
+            (near/store-bytes "SHT" (li-add (bz "SHT") sh))
+            (near/store-bytes "PB" (li-add (bz "PB") amt))
+            (near/store-bytes (sh-key (json-get-str "sender_id" (near/input)))
+              (li-add (bz (sh-key (json-get-str "sender_id" (near/input)))) sh))
+            "0")))))
 
 (define (pay-out)
-  (near/return (json-get-str "r" (near/input))))
+  ;; internal only — returns the swap refund value to the token resolve
+  (if (self-call?)
+      (near/return (json-get-str "r" (near/input)))
+      (near/return "forbidden")))
 
 (define (pay-b)
-  ;; callback leg 2 of withdrawal: pay out_B to r
-  (let ((inp (near/input)))
-    (let ((p (near/promise_batch_create (near/load-bytes "TOKB"))))
-      (begin
-        (near/promise_batch_action_function_call p "ft_transfer"
-          (json-set (json-set "{}" "receiver_id" (json-get-str "r" inp)) "amount" (json-get-str "b" inp))
-          "0" 40000000000000)
-        (near/promise_return p)))))
+  ;; callback leg 2 of withdrawal: pay out_B to r — internal only
+  (if (self-call?)
+      (let ((inp (near/input)))
+        (let ((p (near/promise_batch_create (near/load-bytes "TOKB"))))
+          (begin
+            (near/promise_batch_action_function_call p "ft_transfer"
+              (json-set (json-set "{}" "receiver_id" (json-get-str "r" inp)) "amount" (json-get-str "b" inp))
+              "0" 40000000000000)
+            (near/promise_return p))))
+      (near/return "forbidden")))
 
 (define (withdraw4)
   (let ((inp (near/input)))
@@ -96,7 +106,6 @@
                       (slot-set 2 (u128-muldiv (slot-get 2) (bz "PB") old-pb))
                       (slot-set 3 (u128-muldiv (slot-get 3) (bz "PB") old-pb))
                       (slot-set 4 (u128-muldiv (slot-get 4) (bz "PB") old-pb))))
-                  (near/store-bytes "WDB" out-b)
                   (if (str= out-a "0")
                       (let ((p2 (near/promise_batch_create (near/load-bytes "TOKB"))))
                         (begin
@@ -116,6 +125,12 @@
                               "0" 60000000000000))
                           "ok-ab")))))))))))
 
+(define (msg-min msg)
+  ;; "swap" → "0"; "swap:NNN" → NNN
+  (if (< (str-length msg) 6)
+      "0"
+      (str-substring msg 5 (str-length msg))))
+
 (define (ft-on-transfer4)
   (let ((inp (near/input)))
     (let ((sender (json-get-str "sender_id" inp)))
@@ -123,21 +138,32 @@
         (if (str= (near/predecessor_account_id) (near/load-bytes "TOKB"))
             (near/return (add-b-liq amt))
             (if (str= (near/predecessor_account_id) (near/load-bytes "TOKA"))
-                (begin
-                  (pool-swap amt)
-                  (let ((dy (bz "DY")) (rem (bz "REM")))
-                    (near/store-bytes "AB" (li-add (bz "AB") (li-sub amt rem)))
-                    (near/store-bytes "PB" (li-sub (bz "PB") dy))
-                    (if (str= dy "0")
-                        (near/return rem)
-                        (let ((p (near/promise_batch_create (near/load-bytes "TOKB"))))
+                (let ((min (msg-min (json-get-str "msg" inp))))
+                  (let ((f0 (fee-get))
+                        (s0v (slot-get 0)) (s1v (slot-get 1)) (s2v (slot-get 2))
+                        (s3v (slot-get 3)) (s4v (slot-get 4)))
+                    (pool-swap amt)
+                    (let ((dy (bz "DY")) (rem (bz "REM")))
+                      (if (< (li-cmp dy min) 0)
+                          ;; slippage guard: restore pre-walk state, refund all A
                           (begin
-                            (near/promise_batch_action_function_call p "ft_transfer"
-                              (json-set (json-set "{}" "receiver_id" sender) "amount" dy)
-                              "0" 40000000000000)
-                            (near/promise_return
-                              (near/promise_then p (near/current_account_id) "pay_out"
-                                (json-set "{}" "r" rem) "0" 5000000000000)))))))
+                            (slot-set 0 s0v) (slot-set 1 s1v) (slot-set 2 s2v)
+                            (slot-set 3 s3v) (slot-set 4 s4v)
+                            (near/store-bytes "F" f0)
+                            (near/return amt))
+                          (begin
+                            (near/store-bytes "AB" (li-add (bz "AB") (li-sub amt rem)))
+                            (near/store-bytes "PB" (li-sub (bz "PB") dy))
+                            (if (str= dy "0")
+                                (near/return rem)
+                                (let ((p (near/promise_batch_create (near/load-bytes "TOKB"))))
+                                  (begin
+                                    (near/promise_batch_action_function_call p "ft_transfer"
+                                      (json-set (json-set "{}" "receiver_id" sender) "amount" dy)
+                                      "0" 40000000000000)
+                                    (near/promise_return
+                                      (near/promise_then p (near/current_account_id) "pay_out"
+                                        (json-set "{}" "r" rem) "0" 5000000000000))))))))))
                 (near/return amt)))))))
 
 (export "ft_on_transfer" ft-on-transfer4)
