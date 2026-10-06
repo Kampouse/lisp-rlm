@@ -295,7 +295,7 @@ impl WasmEmitter {
 
     /// Allocate (or fetch) the runtime memo triple for a cached name:
     /// (flag, lo, hi) — flag defaults to 0 (invalid) in a fresh local.
-    fn parse_cache_alloc(&mut self, n: &str) -> (u32, u32, u32) {
+    pub(crate) fn parse_cache_alloc(&mut self, n: &str) -> (u32, u32, u32) {
         if let Some(&t) = self.parse_cache.get(n) {
             return t;
         }
@@ -315,6 +315,28 @@ impl WasmEmitter {
         n: &str,
     ) {
         if let Some(&(flag, _, _)) = self.parse_cache.get(n) {
+            v.push(Instruction::I64Const(0));
+            v.push(Instruction::LocalSet(flag));
+        }
+    }
+
+    /// Invalidate parse-cache memos for the given NAMES at a same-activation
+    /// loop-back (TC self-call / tc_let re-binding): wasm locals persist
+    /// across the branch-back, so memos for rebound names would keep serving
+    /// the FIRST iteration's limbs forever. Unlike emit_parse_cache_invalidate,
+    /// this FORCE-ALLOCATES the memo entry (stable per-name local indices) —
+    /// the cache may not have been used textually before the loop-back site,
+    /// but a later textual use in the same function shares the entry, so the
+    /// eager `flag = 0` write lands on the right local. A name never parsed
+    /// as u128 costs 3 dead locals — harmless. Found via accumulator-passing
+    /// tail recursion returning one byte (2026-10-06, u128 parity fuzz).
+    pub(crate) fn emit_parse_cache_invalidate_names(
+        &mut self,
+        v: &mut Vec<Instruction<'static>>,
+        names: &[String],
+    ) {
+        for n in names {
+            let (flag, _, _) = self.parse_cache_alloc(n);
             v.push(Instruction::I64Const(0));
             v.push(Instruction::LocalSet(flag));
         }

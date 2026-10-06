@@ -874,6 +874,14 @@ impl WasmEmitter {
                 let saved_while_id = self.while_id.get();
                 let saved_type_map = self.local_type_map.clone();
                 let saved_free_locals = self.free_locals.clone();
+                // parse_cache entries allocated inside the lifted __loop_N
+                // are numbered in ITS frame — the outer function's next use
+                // of a same-named var would emit LocalGet on an index out of
+                // the outer frame's range (wasm validate: "local variable out
+                // of range"). Same for current_param_names (cleared by
+                // emit_define, meaningless for the outer fn's tc sites).
+                let saved_parse_cache = self.parse_cache.clone();
+                let saved_param_names = self.current_param_names.clone();
 
                 self.emit_define(&loop_n, &all_params, &loop_body)?;
 
@@ -882,6 +890,8 @@ impl WasmEmitter {
                 self.next_local = saved_next_local;
                 self.local_type_map = saved_type_map;
                 self.free_locals = saved_free_locals;
+                self.parse_cache = saved_parse_cache;
+                self.current_param_names = saved_param_names;
                 self.current_func = saved_func;
                 self.current_param_count = saved_param_count;
                 self.gas_local = saved_gas_local;
