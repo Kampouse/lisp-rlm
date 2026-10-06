@@ -395,6 +395,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "near/sha256",
     "near/ed25519_verify",
     "near/ecdsa_verify",
+    "near/ecrecover_pk",
     "near/hmac_sha256",
     "near/iter_prefix",
     "near/iter_range",

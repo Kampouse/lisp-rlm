@@ -1,0 +1,9 @@
+;; smoke v2 — correct recid; bad-sig returns ""
+(define (good)
+  (let ((pk (near/ecrecover_pk (hex-decode "b0909574aecdac7ed33e4e446b4227b84c89fde10a1f5cc85de5b75494256bb6") (hex-decode "b79085be9417edc1a90506cafa56a915b1d2ef190b55b492c72af717e61a4067103a0c93984e3e9a11d46994dcaeed67dad955b2f5916aedd49aa1c5351d30b8") 1 0)))
+    (str-cat "LEN=" (itoa (str-len pk)) " MATCH=" (if (= pk (hex-decode "043c72addb4fdf09af94f0c94d7fe92a386a7e70cf8a1d85916386bb2535c7b1b13b306b0fe085665d8fc1b28ae1676cd3ad6e08eaeda225fe38d0da4de55703e0")) "YES" "NO"))))
+(define (bad)
+  (let ((pk (near/ecrecover_pk (hex-decode "b0909574aecdac7ed33e4e446b4227b84c89fde10a1f5cc85de5b75494256bb6") (hex-decode "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000") 0 0)))
+    (if (= pk "") "EMPTY-OK" "NOT-EMPTY")))
+(export "good" good)
+(export "bad" bad)

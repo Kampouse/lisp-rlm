@@ -29,6 +29,33 @@ impl WasmEmitter {
     // bytes); the TS surface speaks hex strings. These bridges make the
     // wire NEAR-native while keeping fixtures readable.
     //
+    /// Bump RUNTIME_HEAP_PTR (mem@56) by `pad` bytes; leaves the new block
+    /// base (i64 ptr) on the stack. Use for register→heap string reads so
+    /// results are stable across later TEMP_MEM users (sha256/keccak256
+    /// aliasing bug class, found by the NTT VAA verifier 2026-10-05).
+    fn emit_heap_bump(&mut self, pad: i64) -> Vec<Instruction<'static>> {
+        let dst = self.local_idx("__heap_dst");
+        let mut v = Vec::new();
+        v.push(Instruction::I32Const(56));
+        v.push(Instruction::I64Load(wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        }));
+        v.push(Instruction::LocalSet(dst));
+        v.push(Instruction::I32Const(56));
+        v.push(Instruction::LocalGet(dst));
+        v.push(Instruction::I64Const(pad));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I64Store(wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        }));
+        v.push(Instruction::LocalGet(dst));
+        v
+    }
+
     /// hex string in locals (len_l: i64, ptr_l: i64) → fresh runtime-heap
     /// binary buffer; sets bin_len_l and bin_ptr_l. RUNTIME_HEAP_PTR bump
     /// convention (offset 56), same as the sha256 hex encode.
@@ -305,17 +332,18 @@ impl WasmEmitter {
                 v.push(Instruction::I64ExtendI32U); // data_ptr
                 v.push(Instruction::I64Const(0)); // register_id=0
                 v.push(Self::host_call(21)); // sha256
-                                             // read_register(0, TEMP_MEM)
+                // read_register(0, heap) — heap-backed result (stable)
+                let hp = self.local_idx("__sha_hp");
+                v.extend(self.emit_heap_bump(64));
+                v.push(Instruction::LocalSet(hp));
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::LocalGet(hp));
                 v.push(Self::host_call(0));
-                // register_len(0)
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(1));
-                // Pack: (len << 32) | TEMP_MEM — tag as Str
+                v.push(Self::host_call(1)); // register_len(0)
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::LocalGet(hp));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
@@ -337,17 +365,18 @@ impl WasmEmitter {
                 v.push(Instruction::I64ExtendI32U); // data_ptr
                 v.push(Instruction::I64Const(0)); // register_id=0
                 v.push(Self::host_call(22)); // keccak256
-                                             // read_register(0, TEMP_MEM)
+                // read_register(0, heap) — heap-backed result (stable)
+                let hp = self.local_idx("__k256_hp");
+                v.extend(self.emit_heap_bump(64));
+                v.push(Instruction::LocalSet(hp));
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::LocalGet(hp));
                 v.push(Self::host_call(0));
-                // register_len(0)
                 v.push(Instruction::I64Const(0));
-                v.push(Self::host_call(1));
-                // Pack: (len << 32) | TEMP_MEM — tag as Str
+                v.push(Self::host_call(1)); // register_len(0)
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::LocalGet(hp));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 Ok(v)
@@ -945,10 +974,85 @@ impl WasmEmitter {
                 vv.push(Instruction::I32WrapI64);
                 vv.push(Instruction::I64ExtendI32U);
                 vv.extend(v_val);
+                vv.extend(self.emit_untag()); // v: tagged num -> raw i64 host arg
                 vv.extend(malleability);
+                vv.extend(self.emit_untag()); // malleability: tagged num -> raw
                 vv.push(Instruction::I64Const(0)); // register_id
                 vv.push(Self::host_call(54));
                 vv.extend(self.emit_tag_num());
+                Ok(vv)
+            }
+            "near/ecrecover_pk" => {
+                // (near/ecrecover_pk hash sig v malleability) -> Str
+                //   65-byte uncompressed recovered pubkey (binary string), or
+                //   "" when the signature does not verify. Unlike near/ecrecover
+                //   (which discards the pubkey and returns only the 0/1 flag),
+                //   this reads register 0 — the address-recovery form VAA /
+                //   guardian verification needs: addr = keccak256(pk[1..65])[12..32].
+                if a.len() != 4 {
+                    return Err(
+                        "near/ecrecover_pk: need 4 args (hash, sig, v, malleability)".into(),
+                    );
+                }
+                let hash = self.expr(&a[0])?;
+                let sig = self.expr(&a[1])?;
+                let v_val = self.expr(&a[2])?;
+                let malleability = self.expr(&a[3])?;
+                let mut vv = Vec::new();
+                vv.extend(hash.clone());
+                vv.extend(self.emit_untag());
+                vv.push(Instruction::I64Const(32));
+                vv.push(Instruction::I64ShrU); // hash_len
+                vv.extend(hash);
+                vv.extend(self.emit_untag());
+                vv.push(Instruction::I32WrapI64);
+                vv.push(Instruction::I64ExtendI32U); // hash_ptr
+                vv.extend(sig.clone());
+                vv.extend(self.emit_untag());
+                vv.push(Instruction::I64Const(32));
+                vv.push(Instruction::I64ShrU); // sig_len
+                vv.extend(sig);
+                vv.extend(self.emit_untag());
+                vv.push(Instruction::I32WrapI64);
+                vv.push(Instruction::I64ExtendI32U); // sig_ptr
+                vv.extend(v_val);
+                vv.extend(self.emit_untag()); // v: tagged num -> raw i64 host arg
+                vv.extend(malleability);
+                vv.extend(self.emit_untag()); // malleability: tagged num -> raw
+                vv.push(Instruction::I64Const(0)); // register_id
+                vv.push(Self::host_call(54)); // ecrecover -> 0/1 (i64)
+                // branch on success; publish pubkey-or-empty into __ec_pk
+                let pk_l = self.local_idx("__ec_pk");
+                vv.push(Instruction::I64Const(1));
+                vv.push(Instruction::I64Eq);
+                // heap-allocate the pubkey destination BEFORE the call so the
+                // host writes the recovered key straight to stable memory
+                let hp2 = self.local_idx("__ec_hp");
+                vv.extend(self.emit_heap_bump(128));
+                vv.push(Instruction::LocalSet(hp2));
+                // re-push v/malleability? no — args already pushed; we bumped
+                // the stack after args. ecrecover must be called with register
+                // write target fixed AFTER bump, so re-order: store bump local
+                vv.push(Instruction::If(wasm_encoder::BlockType::Empty));
+                // success: read_register(0, heap); register_len(0); pack+tag
+                vv.push(Instruction::I64Const(0));
+                vv.push(Instruction::LocalGet(hp2));
+                vv.push(Self::host_call(0));
+                vv.push(Instruction::I64Const(0));
+                vv.push(Self::host_call(1)); // len
+                vv.push(Instruction::I64Const(32));
+                vv.push(Instruction::I64Shl);
+                vv.push(Instruction::LocalGet(hp2));
+                vv.push(Instruction::I64Or);
+                vv.extend(self.emit_tag_str());
+                vv.push(Instruction::LocalSet(pk_l));
+                vv.push(Instruction::Else);
+                // failure: empty string (len 0 << 32 | ptr 0), tagged Str
+                vv.push(Instruction::I64Const(0));
+                vv.extend(self.emit_tag_str());
+                vv.push(Instruction::LocalSet(pk_l));
+                vv.push(Instruction::End);
+                vv.push(Instruction::LocalGet(pk_l));
                 Ok(vv)
             }
             "near/alt_bn128_g1_multiexp" => {

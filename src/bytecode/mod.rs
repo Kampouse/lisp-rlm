@@ -5078,7 +5078,7 @@ pub fn eval_near_builtin_match(name: &str) -> bool {
         | "near/signer_to_buf" | "near/write_amount"
         // ── near/* crypto ──
         | "near/sha256" | "near/keccak256" | "near/keccak512" | "near/ripemd160"
-        | "near/ecrecover" | "near/ed25519_verify" | "near/p256_verify" | "near/schnorr_verify"
+        | "near/ecrecover" | "near/ecrecover_pk" | "near/ed25519_verify" | "near/p256_verify" | "near/schnorr_verify"
         | "near/alt_bn128_g1_multiexp" | "near/alt_bn128_g1_sum" | "near/alt_bn128_pairing_check"
         | "near/bls12381_p1_sum"
         | "near/random_seed"
@@ -5942,6 +5942,7 @@ fn eval_near_builtin(
         "near/ed25519_verify" | "near/p256_verify" | "near/ecrecover" | "near/schnorr_verify" => {
             Some(Ok(LispVal::Num(1))) // mock: always valid
         }
+        "near/ecrecover_pk" => Some(Ok(LispVal::Str(String::new()))), // mock: empty pk
         "near/random_seed" => Some(Ok(ctx_get(state, "random_seed", LispVal::Num(42)))),
         // Alt BN128
         "near/alt_bn128_g1_multiexp" | "near/alt_bn128_g1_sum" | "near/alt_bn128_pairing_check" => {

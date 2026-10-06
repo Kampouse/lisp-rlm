@@ -115,6 +115,7 @@ const KNOWN_NEAR_FUNCS: &[&str] = &[
     "random_seed",
     "ripemd160",
     "ecrecover",
+    "ecrecover_pk",
     "alt_bn128_g1_multiexp",
     "alt_bn128_g1_sum",
     "alt_bn128_pairing_check",
@@ -1443,6 +1444,21 @@ impl TcEnv {
             TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
         );
         // near/iter_prefix : str → int (iterator id)
+        // near/ecrecover_pk : str → str → int → int → str
+        //   (hash-32B, sig-64B, v, malleability) → 65B uncompressed pubkey
+        //   binary string, "" when the signature does not verify.
+        env.insert_mono(
+            "near/ecrecover_pk".into(),
+            TcType::Arrow(
+                vec![
+                    str_ty.clone(),
+                    str_ty.clone(),
+                    int_ty.clone(),
+                    int_ty.clone(),
+                ],
+                Box::new(str_ty.clone()),
+            ),
+        );
         env.insert_mono(
             "near/iter_prefix".into(),
             TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())),
