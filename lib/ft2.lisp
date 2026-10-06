@@ -11,6 +11,18 @@
 ;; heap-allocating inits (seen on-chain 2026-10-06: bal/amt slots aliased,
 ;; li-cmp read garbage → "insufficient" with a valid balance).
 
+(define (num-ok? s)
+  ;; <=40 digits, ASCII only — OOB-parse guard
+  (if (> (str-length s) 40)
+      "0"
+      (loop ((i 0))
+        (if (>= i (str-length s))
+            "1"
+            (let ((d (- (byte-at s i) 48)))
+              (if (or (< d 0) (> d 9))
+                  "0"
+                  (recur (+ i 1))))))))
+
 (define (bz k) (let ((v (near/load-bytes k))) (if (nil? v) "0" v)))
 (define (bkey who) (str-cat "b:" who))
 (define (bal who) (bz (bkey who)))
@@ -25,9 +37,14 @@
     (if (str= (near/predecessor_account_id) (bz "own"))
         (let ((to (json-get-str "to" inp)))
           (let ((amt (json-get-str "amt" inp)))
-            (begin (add-bal to amt)
-                   (near/store-bytes "sup" (li-add (bz "sup") amt))
-                   (near/return "ok"))))
+            (if (str= (num-ok? amt) "0")
+                (near/return "bad-amt")
+                (if (> (li-cmp (li-add (bz "sup") amt) "1000000") 0)
+                    (near/return "cap")
+                    (begin
+                      (add-bal to amt)
+                      (near/store-bytes "sup" (li-add (bz "sup") amt))
+                      (near/return "ok"))))))
         (near/return "not-owner"))))
 
 (define (f-balance)
@@ -39,12 +56,14 @@
     (let ((who (near/predecessor_account_id)))
       (let ((to (json-get-str "receiver_id" inp)))
         (let ((amt (json-get-str "amount" inp)))
+          (if (str= (num-ok? amt) "0")
+              (near/return "bad-amt")
           (begin
             (if (< (li-cmp (bal who) amt) 0)
                 (near/return "insufficient")
                 (begin
                   (near/log (str-cat (str-cat "@ft_transfer from:" who) (str-cat " to:" to)))
-                  (sub-bal who amt) (add-bal to amt) (near/return "ok")))))))))
+                  (sub-bal who amt) (add-bal to amt) (near/return "ok"))))))))))
 
 ;; NEP-141 ft_transfer_call: debit, promise→receiver.ft_on_transfer,
 ;; callback here gets the receiver's refund string via promise_result(0).
@@ -54,6 +73,8 @@
     (let ((sender (near/predecessor_account_id)))
       (let ((recv (json-get-str "receiver_id" inp)))
         (let ((amt (json-get-str "amount" inp)))
+          (if (str= (num-ok? amt) "0")
+              (near/return "bad-amt")
           (if (< (li-cmp (bal sender) amt) 0)
               (near/return "insufficient")
               (begin
@@ -68,7 +89,7 @@
                     (near/promise_return
                       (near/promise_then p (near/current_account_id) "ft_resolve_transfer"
                         (json-set (json-set (json-set "{}" "sender_id" sender) "receiver_id" recv) "amount" amt)
-                        "0" 30000000000000)))))))))))
+                        "0" 30000000000000))))))))))))
 
 ;; callback: {"sender_id","receiver_id","amount"} — receiver was credited
 ;; upfront; move the refund slice back (empty result = failed → full refund).

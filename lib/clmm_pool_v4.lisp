@@ -16,6 +16,18 @@
 
 (define (self-call?) (str= (near/predecessor_account_id) (near/current_account_id)))
 
+(define (num-ok? s)
+  ;; <=40 digits, ASCII only — OOB-parse & u128-scale guard (Cetus-class)
+  (if (> (str-length s) 40)
+      "0"
+      (loop ((i 0))
+        (if (>= i (str-length s))
+            "1"
+            (let ((d (- (byte-at s i) 48)))
+              (if (or (< d 0) (> d 9))
+                  "0"
+                  (recur (+ i 1))))))))
+
 (define (pool-init4)
   ;; one-shot: a bound TOKA means already initialized — state untouched
   (if (nil? (near/load-bytes "TOKA"))
@@ -41,8 +53,10 @@
 
 (define (add-b-liq amt)
   ;; returns the unused-B refund for ft_on_transfer: "0" on success.
-  ;; Validate BEFORE mutating: zero-share (dust) deposits refund untouched.
-  (let ((sh (if (str= (bz "SHT") "0")
+  ;; Validate BEFORE mutating: dust / zero-share / bad-amount all refund untouched.
+  (if (< (li-cmp amt "10") 0)
+      amt  ;; below min deposit (10): refund, no state write (sybil/DoS guard)
+      (let ((sh (if (str= (bz "SHT") "0")
                 amt
                 (u128-muldiv amt (bz "SHT") (bz "PB")))))
     (if (str= sh "0")
@@ -64,7 +78,7 @@
             (near/store-bytes "PB" (li-add (bz "PB") amt))
             (near/store-bytes (sh-key (json-get-str "sender_id" (near/input)))
               (li-add (bz (sh-key (json-get-str "sender_id" (near/input)))) sh))
-            "0")))))
+            "0"))))))
 
 (define (pay-out)
   ;; internal only — returns the swap refund value to the token resolve
@@ -88,6 +102,8 @@
   (let ((inp (near/input)))
     (let ((who (near/predecessor_account_id)))
       (let ((sh (json-get-str "sh" inp)))
+        (if (str= (num-ok? sh) "0")
+            "bad-sh"
         (if (< (li-cmp (bz (sh-key who)) sh) 0)
             (str-cat "insufficient-shares-have:" (bz (sh-key who)))
             (let ((ab (bz "AB")) (pb (bz "PB")) (sht (bz "SHT")))
@@ -123,7 +139,7 @@
                             (near/promise_then p (near/current_account_id) "pay_b"
                               (json-set (json-set "{}" "r" who) "b" out-b)
                               "0" 60000000000000))
-                          "ok-ab")))))))))))
+                          "ok-ab"))))))))))))
 
 (define (msg-min msg)
   ;; "swap" → "0"; "swap:NNN" → NNN
@@ -135,10 +151,14 @@
   (let ((inp (near/input)))
     (let ((sender (json-get-str "sender_id" inp)))
       (let ((amt (json-get-str "amount" inp)))
-        (if (str= (near/predecessor_account_id) (near/load-bytes "TOKB"))
+        (if (str= (num-ok? amt) "0")
+            (near/return amt)
+            (if (str= (near/predecessor_account_id) (near/load-bytes "TOKB"))
             (near/return (add-b-liq amt))
             (if (str= (near/predecessor_account_id) (near/load-bytes "TOKA"))
                 (let ((min (msg-min (json-get-str "msg" inp))))
+                  (if (str= (num-ok? min) "0")
+                      (near/return amt)
                   (let ((f0 (fee-get))
                         (s0v (slot-get 0)) (s1v (slot-get 1)) (s2v (slot-get 2))
                         (s3v (slot-get 3)) (s4v (slot-get 4)))
@@ -163,8 +183,8 @@
                                       "0" 40000000000000)
                                     (near/promise_return
                                       (near/promise_then p (near/current_account_id) "pay_out"
-                                        (json-set "{}" "r" rem) "0" 5000000000000))))))))))
-                (near/return amt)))))))
+                                        (json-set "{}" "r" rem) "0" 5000000000000)))))))))))
+                (near/return amt))))))))
 
 (export "ft_on_transfer" ft-on-transfer4)
 (export "pay_out" pay-out)
