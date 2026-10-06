@@ -1,5 +1,5 @@
 {
- "updated": "2026-10-05 11:30:23",
+ "updated": "2026-10-06 14:20:46",
  "archived": [
   "t1_sumsq",
   "t4_pow",
@@ -24,7 +24,15 @@
   "td_power",
   "td_power_calc",
   "td_pow",
-  "ta_prime_sum_product"
+  "ta_prime_sum_product",
+  "t4_pow@ts",
+  "t_lend_tier@ts",
+  "t_lend_comp@ts",
+  "td_reverse_list",
+  "t5_vowels@ts",
+  "t_lend_ltv@ts",
+  "td_reverse",
+  "td_reverse_practice"
  ],
  "intentions": [
   {
@@ -33,14 +41,6 @@
    "rate": 0.0,
    "n": 1026,
    "stagnation": 477,
-   "priority": 2.0
-  },
-  {
-   "task": "t4_pow@ts",
-   "kind": "completable",
-   "rate": 0.0,
-   "n": 189,
-   "stagnation": 187,
    "priority": 2.0
   },
   {
@@ -57,6 +57,46 @@
    "rate": 0.0,
    "n": 94,
    "stagnation": 94,
+   "priority": 2.0
+  },
+  {
+   "task": "t3_fib@ts",
+   "kind": "completable",
+   "rate": 0.0,
+   "n": 89,
+   "stagnation": 89,
+   "priority": 2.0
+  },
+  {
+   "task": "t1_sumsq@ts",
+   "kind": "completable",
+   "rate": 0.0,
+   "n": 89,
+   "stagnation": 89,
+   "priority": 2.0
+  },
+  {
+   "task": "t2_reverse@ts",
+   "kind": "completable",
+   "rate": 0.0,
+   "n": 87,
+   "stagnation": 87,
+   "priority": 2.0
+  },
+  {
+   "task": "t_lend_hf@ts",
+   "kind": "completable",
+   "rate": 0.0,
+   "n": 88,
+   "stagnation": 88,
+   "priority": 2.0
+  },
+  {
+   "task": "t_lend_liq@ts",
+   "kind": "completable",
+   "rate": 0.0,
+   "n": 88,
+   "stagnation": 88,
    "priority": 2.0
   },
   {
@@ -111,7 +151,7 @@
    "task": "t5_vowels",
    "kind": "perpetual",
    "rate": 1.0,
-   "n": 426,
+   "n": 427,
    "stagnation": 0,
    "priority": 0.0
   },
@@ -119,7 +159,7 @@
    "task": "t1_sumsq",
    "kind": "perpetual",
    "rate": 1.0,
-   "n": 168,
+   "n": 170,
    "stagnation": 0,
    "priority": 0.0
   },
@@ -127,7 +167,7 @@
    "task": "t4_pow",
    "kind": "perpetual",
    "rate": 1.0,
-   "n": 165,
+   "n": 166,
    "stagnation": 0,
    "priority": 0.0
   },
@@ -135,7 +175,7 @@
    "task": "t2_reverse",
    "kind": "perpetual",
    "rate": 1.0,
-   "n": 203,
+   "n": 205,
    "stagnation": 0,
    "priority": 0.0
   },
@@ -143,7 +183,7 @@
    "task": "t3_fib",
    "kind": "perpetual",
    "rate": 1.0,
-   "n": 217,
+   "n": 221,
    "stagnation": 0,
    "priority": 0.0
   },
@@ -156,10 +196,18 @@
    "priority": 0.0
   },
   {
+   "task": "t4_pow@ts",
+   "kind": "perpetual",
+   "rate": 1.0,
+   "n": 203,
+   "stagnation": 0,
+   "priority": 0.0
+  },
+  {
    "task": "td_prime_sum",
    "kind": "perpetual",
    "rate": 1.0,
-   "n": 23,
+   "n": 24,
    "stagnation": 0,
    "priority": 0.0
   },
@@ -167,7 +215,7 @@
    "task": "t_lend_tier",
    "kind": "perpetual",
    "rate": 1.0,
-   "n": 20,
+   "n": 21,
    "stagnation": 0,
    "priority": 0.0
   },
@@ -183,7 +231,7 @@
    "task": "t_lend_comp",
    "kind": "perpetual",
    "rate": 1.0,
-   "n": 24,
+   "n": 25,
    "stagnation": 0,
    "priority": 0.0
   },
@@ -191,7 +239,7 @@
    "task": "ta_prime_sum_product",
    "kind": "perpetual",
    "rate": 1.0,
-   "n": 20,
+   "n": 23,
    "stagnation": 0,
    "priority": 0.0
   },
@@ -199,7 +247,7 @@
    "task": "t_lend_accrue@ts",
    "kind": "perpetual",
    "rate": 1.0,
-   "n": 33,
+   "n": 36,
    "stagnation": 0,
    "priority": 0.0
   },
@@ -215,7 +263,7 @@
    "task": "t_lend_accrue",
    "kind": "perpetual",
    "rate": 1.0,
-   "n": 36,
+   "n": 39,
    "stagnation": 0,
    "priority": 0.0
   },
@@ -239,7 +287,7 @@
    "task": "td_power",
    "kind": "perpetual",
    "rate": 1.0,
-   "n": 13,
+   "n": 14,
    "stagnation": 0,
    "priority": 0.0
   },
@@ -255,7 +303,7 @@
    "task": "t_lend_liq",
    "kind": "perpetual",
    "rate": 1.0,
-   "n": 28,
+   "n": 34,
    "stagnation": 0,
    "priority": 0.0
   },
@@ -264,6 +312,70 @@
    "kind": "perpetual",
    "rate": 1.0,
    "n": 25,
+   "stagnation": 0,
+   "priority": 0.0
+  },
+  {
+   "task": "t_lend_tier@ts",
+   "kind": "perpetual",
+   "rate": 1.0,
+   "n": 13,
+   "stagnation": 0,
+   "priority": 0.0
+  },
+  {
+   "task": "t_lend_comp@ts",
+   "kind": "perpetual",
+   "rate": 1.0,
+   "n": 12,
+   "stagnation": 0,
+   "priority": 0.0
+  },
+  {
+   "task": "td_reverse_list",
+   "kind": "perpetual",
+   "rate": 1.0,
+   "n": 10,
+   "stagnation": 0,
+   "priority": 0.0
+  },
+  {
+   "task": "t5_vowels@ts",
+   "kind": "perpetual",
+   "rate": 1.0,
+   "n": 21,
+   "stagnation": 0,
+   "priority": 0.0
+  },
+  {
+   "task": "t_lend_ltv@ts",
+   "kind": "perpetual",
+   "rate": 1.0,
+   "n": 11,
+   "stagnation": 0,
+   "priority": 0.0
+  },
+  {
+   "task": "td_prime_sum@ts",
+   "kind": "completable",
+   "rate": 1.0,
+   "n": 1,
+   "stagnation": 0,
+   "priority": 0.0
+  },
+  {
+   "task": "td_power@ts",
+   "kind": "completable",
+   "rate": 1.0,
+   "n": 1,
+   "stagnation": 0,
+   "priority": 0.0
+  },
+  {
+   "task": "td_reverse",
+   "kind": "perpetual",
+   "rate": 1.0,
+   "n": 10,
    "stagnation": 0,
    "priority": 0.0
   },
@@ -280,6 +392,14 @@
    "kind": "perpetual",
    "rate": 1.0,
    "n": 23,
+   "stagnation": 0,
+   "priority": 0.0
+  },
+  {
+   "task": "td_reverse_practice",
+   "kind": "perpetual",
+   "rate": 1.0,
+   "n": 10,
    "stagnation": 0,
    "priority": 0.0
   }

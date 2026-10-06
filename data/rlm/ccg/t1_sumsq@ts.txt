@@ -1,0 +1,2 @@
+### PAST ATTEMPTS ON t1_sumsq@ts (agent memory — do NOT repeat these failures)
+- FAIL it2: <110-char failed attempt> → ERROR: run_program: compilation failed for define 'sum': unk → CORRECTION: use vec-slice

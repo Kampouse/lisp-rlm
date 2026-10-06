@@ -1,0 +1,5 @@
+# auto — mined from own completed worlds
+(define tier (if (>= 8 20) "high" (if (>= 8 12) "medium" (if (>= 8 10) "low" "liquidate"))))
+(rlm_set "answer" tier)
+(rlm_set "Final" true)
+

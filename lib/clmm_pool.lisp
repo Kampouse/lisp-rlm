@@ -50,6 +50,8 @@
                 (slot-set 4 (car (cdr (cdr (cdr s4)))))
                 (near/store-bytes "F"
                   (li-add (fee-get) (car (cdr (cdr s4)))))
+                (near/store-bytes "DY" (car (cdr s4)))
+                (near/store-bytes "REM" (car s4))
                 (str-cat (car (cdr s4)) "/" (car s4))))))))))
 
 (define (pool-state)

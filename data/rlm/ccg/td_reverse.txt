@@ -1,0 +1,2 @@
+### PAST ATTEMPTS ON td_reverse (agent memory — do NOT repeat these failures)
+- SOLVED ONCE WITH (complete): (let ((lst (list 1 2 3 4)))~~NL~~  (rlm-set answer (reverse lst))~~NL~~  (rlm-set Final t))

@@ -1,4 +1,4 @@
 ### PAST ATTEMPTS ON ta_prime_sum (agent memory — do NOT repeat these failures)
-- FAIL it1: <109-char failed attempt> → ERROR: read-all: parse error: missing closing `)` at line 10
 - FAIL it3: <110-char scaffold defining prime? — structure was wrong, do not reuse> → ERROR: read-all: parse error: missing closing `)` at line 4,
+- FAIL it0: <110-char failed attempt> → ERROR: read-all: parse error: missing closing `)` at line 2,
 - SOLVED ONCE WITH (complete): (define (prime? n) (if (< n 2) nil (begin (define ok true) (dotimes (i (- n 2)) (if (zero? (mod n (+ i 2))) (set! ok nil))) ok)))~~NL~~(define (sum-primes lst) (reduce + 0 (filter prime? lst)))~~NL~~(let ((primes (filter prime? (list 2 3 4 5 6 7 8 9))))~~NL~~ 

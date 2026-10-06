@@ -4248,6 +4248,13 @@ impl WasmEmitter {
                 let key = self.expr(&a[0])?;
                 let len_i = self.local_idx("__lb_len");
                 let buf_i = self.local_idx("__lb_buf");
+                // storage_read's RETURN VALUE is the miss flag (2026-10-06):
+                // on a miss NEAR does NOT clear/touch the target register, so
+                // register_len(reg) can read a STALE value from an earlier
+                // successful load in the same call (chain-only divergence:
+                // the mock cleared registers on miss and masked this).
+                // Branch on ret==0 | register_len==-1 (belt and suspenders).
+                let ret_i = self.local_idx("__lb_ret");
                 let mut v = Vec::new();
                 // storage_read(key_len, key_ptr, register_id=1)
                 v.extend(key.clone());
@@ -4260,15 +4267,18 @@ impl WasmEmitter {
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(1));
                 v.push(Self::host_call(18));
-                v.push(Instruction::Drop);
+                v.push(Instruction::LocalSet(ret_i));
                 // register_len(1) → save to local
                 v.push(Instruction::I64Const(1));
                 v.push(Self::host_call(1));
                 v.push(Instruction::LocalSet(len_i));
-                // Check if -1 (not found)
+                // miss = (ret == 0) | (len == -1)
                 v.push(Instruction::LocalGet(len_i));
                 v.push(Instruction::I64Const(-1i64 as u64 as i64));
                 v.push(Instruction::I64Eq);
+                v.push(Instruction::LocalGet(ret_i));
+                v.push(Instruction::I64Eqz);
+                v.push(Instruction::I32Or);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 // Not found: return nil
                 v.push(Instruction::I64Const(TAG_NIL));

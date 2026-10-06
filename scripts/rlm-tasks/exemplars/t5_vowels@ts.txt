@@ -1,0 +1,7 @@
+# auto — mined from own completed worlds
+(define lowerWord (str-downcase "precaution"))
+(define split (str-split lowerWord ""))
+(define count (vec-length (filter (lambda (char) (str-contains "aeiou" char)) split)))
+(rlm_set "answer" count)
+(rlm_set "Final" true)
+

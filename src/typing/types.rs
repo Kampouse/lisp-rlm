@@ -1584,7 +1584,9 @@ impl TcEnv {
                 Box::new(int_ty.clone()),
             ),
         );
-        // near/promise_then : int → str → str → str → int → int → int
+        // near/promise_then : int → str → str → str → str → int → int
+        // (idx, account, method, args, deposit u128 decimal STR, gas int)
+        // deposit is a decimal u128 string at runtime (emitter truth).
         env.insert_mono(
             "near/promise_then".into(),
             TcType::Arrow(
@@ -1593,7 +1595,7 @@ impl TcEnv {
                     str_ty.clone(),
                     str_ty.clone(),
                     str_ty.clone(),
-                    int_ty.clone(),
+                    str_ty.clone(),
                     int_ty.clone(),
                 ],
                 Box::new(int_ty.clone()),
@@ -1641,6 +1643,8 @@ impl TcEnv {
                     int_ty.clone(),
                     str_ty.clone(),
                     str_ty.clone(),
+                    // deposit is a decimal u128 STRING (emitter parses it via
+                    // u128 str helpers — "deposit_le16"); typer mirrors runtime.
                     str_ty.clone(),
                     int_ty.clone(),
                 ],

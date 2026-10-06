@@ -1,5 +1,5 @@
 {
- "updated": "2026-10-05 11:31:10",
+ "updated": "2026-10-06 14:30:59",
  "claims": [
   {
    "source": "lesson",
@@ -15,7 +15,7 @@
    "verdict": "right",
    "claim": "(str-join lst sep)",
    "truth": "(str-join lst sep)",
-   "text": "# tactics gen \u00b7 brain brain:glm-4.5-flash \u00b76\n- (str-join lst sep) joins list of strings with separator 'sep'\n- For t4_po"
+   "text": "# tactics gen \u00b7 brain brain:glm-4.5-flash \u00b7N\n- (str-join lst sep) joins list of strings with separator\n- For t_lend_liq@"
   }
  ]
 }

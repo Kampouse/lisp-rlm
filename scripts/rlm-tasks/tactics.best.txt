@@ -1,6 +1,7 @@
-# tactics gen · brain brain:glm-4.5-flash ·6
-- (str-join lst sep) joins list of strings with separator 'sep'
-- For t4_pow@ts, implement exponentiation with base cases: 0^exp=1, base^0=1, base^(-exp)=1/base^exp
-- For ta_prime_sum_product, optimize prime checking by testing divisibility only up to sqrt(n), then use (reduce) with a lambda that tracks both sum and product
-- Use (map) for element-wise operations and (filter) for pre-processing lists to reduce problem size
-- Leverage (reduce) with appropriate initial values: sum (0), product (1), and for complex operations, use a list or struct as accumulator
+# tactics gen · brain brain:glm-4.5-flash ·N
+- (str-join lst sep) joins list of strings with separator
+- For t_lend_liq@ts, validate inputs with (number?) before processing
+- For t_lend_liq@ts, use (reduce) to accumulate results when processing multiple items
+- For t_lend_liq@ts, handle edge cases like empty lists or zero values
+- Use (some) and (every) for efficient predicate checking
+- For t_lend_liq@ts, ensure proper error handling for division operations

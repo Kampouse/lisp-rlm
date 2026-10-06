@@ -744,6 +744,44 @@
    "installed",
    "td_prime_sum",
    "2026-10-05 07:20:52"
+  ],
+  [
+   "installed",
+   "td_reverse_list",
+   "2026-10-06 12:38:33"
+  ],
+  [
+   "installed",
+   "td_reverse_list",
+   "2026-10-06 13:27:11"
+  ],
+  [
+   "installed",
+   "td_reverse",
+   "2026-10-06 13:56:29"
+  ],
+  [
+   "expired",
+   "ta_prime_sum_product.lisp"
+  ],
+  [
+   "installed",
+   "ta_prime_sum_product",
+   "2026-10-06 13:56:29"
+  ],
+  [
+   "evicted-cap",
+   "td_reverse_practice.lisp"
+  ],
+  [
+   "installed",
+   "td_reverse",
+   "2026-10-06 14:13:11"
+  ],
+  [
+   "installed",
+   "ta_prime_sum",
+   "2026-10-06 14:13:11"
   ]
  ]
 }

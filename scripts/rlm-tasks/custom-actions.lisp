@@ -1,8 +1,11 @@
-;; dream-proposed 1791205897.1770870686
-(rlm-register-action "microdebug" (lambda (rc)
-  (str-concat "\nMICRODEBUG: Try these concrete approaches:\n"
-              "For runtime errors: Add (print \"Input:\" x) before each operation.\n"
-              "For power: Use (dotimes (i exp) (setq result (* result base))).\n"
-              "For prime sums: First write (is-prime n) checking divisibility up to sqrt(n).\n"
-              "For vowels: Compare each char against '(#\\a #\\e #\\i #\\o #\\u) using member.\n"
-              "Test each small function separately before combining them.\n")))
+;; dream-proposed 1791303624.8922929764
+(rlm-register-action "microsteps" (lambda (rc)
+  (str-concat "\nTry breaking down the problem into micro-steps.\n"
+              "For each algorithm:\n"
+              "1. Write pseudocode first\n"
+              "2. Implement one step at a time\n"
+              "3. Test after each step\n"
+              "For reverse: build a new list by appending elements in reverse order\n"
+              "For power: multiply base 'exponent' times\n"
+              "For prime sum: check each number for primality before adding\n"
+              "For vowels: check each character against a vowel list\n")))

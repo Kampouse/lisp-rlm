@@ -1,0 +1,2 @@
+### PAST ATTEMPTS ON t_lend_tier@ts (agent memory — do NOT repeat these failures)
+- SOLVED ONCE WITH (complete): (define tier (if (>= 8 20) ~~QT~~high~~QT~~ (if (>= 8 12) ~~QT~~medium~~QT~~ (if (>= 8 10) ~~QT~~low~~QT~~ ~~QT~~liquidate~~QT~~))))~~NL~~(rlm_set ~~QT~~answer~~QT~~ tier)~~NL~~(rlm_set ~~QT~~Final~~QT~~ true)~~NL~~

@@ -1,6 +1,6 @@
+t2_reverse@ts|ok||rc0|es0|i1 — best Q: -0.25
 t4_pow@ts|runtime|run_program|rc0|es1|i1 — best Q: -0.25
+t_lend_liq@ts|ok||rc0|es0|i1 — best Q: -0.25
 ta_prime_sum|runtime||rc0|es3|i3 — best Q: -0.25
 ta_prime_sum|ok||rc0|es0|i3 — best Q: -0.25
 t5_vowels|ok||rc1|es0|i2 — best Q: -0.25
-ta_prime_sum|runtime||rc0|es2|i2 — best Q: -0.25
-ta_prime_sum@ts|ok||rc0|es0|i3 — best Q: -0.24

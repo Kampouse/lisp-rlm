@@ -1,0 +1,4 @@
+### PAST ATTEMPTS ON t2_reverse@ts (agent memory — do NOT repeat these failures)
+- FAIL it3: <110-char failed attempt> → ERROR: run_program: compilation failed for body expression(s
+- FAIL it6: <110-char failed attempt> → ERROR: run_program: compilation failed for body expression(s
+- FAIL it9: <110-char failed attempt> → ERROR: run_program: compilation failed for define 'reversed'
