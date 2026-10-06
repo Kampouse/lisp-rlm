@@ -22,13 +22,14 @@
   // reference via /// <reference path>. Canonical copy lives at ts/.
   // @ts-ignore -- vite ?raw (no vite-env.d.ts typing needed at runtime)
   import lispRlmDts from '../../../../ts/lisp-rlm.d.ts?raw';
-  import { initCompiler, compile, runPure, runNear, compileP2Core, toHexDump, getNearStorage, clearNearStorage, getNearContext, setNearContext, resetNearContext, decodeReturnValue, formatGas, lowerTs, type CompileTarget, type CompileResult, type NearContext, type SourceLang } from './lib/compiler.ts';
+  import { initCompiler, compile, compileWithFallback, runPure, runNear, compileP2Core, toHexDump, getNearStorage, clearNearStorage, getNearContext, setNearContext, resetNearContext, decodeReturnValue, formatGas, lowerTs, type CompileTarget, type CompileResult, type NearContext, type SourceLang } from './lib/compiler.ts';
   import { runWasiWithWorker } from './lib/runWasiWithWorker.ts';
   import { examples } from './lib/examples.ts';
   import { runMulti } from './lib/contracts-runtime.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
   import { parseTests, buildTestCode, type TestRunResult } from './lib/test-runner.ts';
-  import { Play, Box, Cloud, Zap, Link, FlaskConical, Wallet, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X, BookOpen, CheckCircle, XCircle, Hammer, Database, Trash2, FolderOpen, FileCode, ChevronRight } from '@lucide/svelte';
+  import { compressToBase64Url, decompressFromBase64Url } from './lib/share.ts';
+  import { Play, Box, Cloud, Zap, Link, FlaskConical, Wallet, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X, BookOpen, CheckCircle, Check, XCircle, Hammer, Database, Trash2, FolderOpen, FileCode, ChevronRight } from '@lucide/svelte';
 
   // ============================================
   // Code Outline
@@ -441,6 +442,8 @@
 
   // Feature 5: Auto-compile toggle
   let autoCompile: boolean = $state(true);
+  let shareCopied: boolean = $state(false);
+  let wasmSha256: string = $state('');
   let compileDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Feature 9: REPL mode
@@ -689,11 +692,10 @@
   // ============================================
   function updateUrlHash() {
     try {
+      // Live URL stays lean: target + example only. Source travels via the
+      // Share button (deflate-compressed `c=`) or localStorage — embedding
+      // btoa'd source per keystroke bloated the address bar 2-3x.
       const params = new URLSearchParams();
-      if (source && source !== examples[activeExample]?.source) {
-        // Custom source - encode it
-        params.set('code', btoa(encodeURIComponent(source)));
-      }
       params.set('target', target);
       if (activeExample > 0) params.set('example', String(activeExample));
       const hash = '#' + params.toString();
@@ -705,7 +707,7 @@
     }
   }
 
-  function loadFromUrl(): { source?: string; target?: CompileTarget; example?: number } {
+  function loadFromUrl(): { source?: string; target?: CompileTarget; example?: number; shared?: boolean } {
     try {
       const hash = window.location.hash.slice(1);
       if (!hash) return {};
@@ -713,6 +715,12 @@
       const result: { source?: string; target?: CompileTarget; example?: number } = {};
       if (params.has('code')) {
         result.source = decodeURIComponent(atob(params.get('code')!));
+      }
+      if (params.has('c')) {
+        // v2 share links: deflate-raw + base64url (share.ts). Decoded
+        // asynchronously during boot via replaySharedCode — here we only
+        // flag presence so legacy branches don't clobber the hash state.
+        result.shared = true;
       }
       if (params.has('target')) {
         result.target = params.get('target') as CompileTarget;
@@ -1040,7 +1048,7 @@
     clearMonacoMarkers();
     await new Promise(r => setTimeout(r, 50));
     try {
-      result = compile(source, target, sourceLang);
+      result = await compileWithFallback(source, target, sourceLang);
       if (result.success && sourceLang === 'ts') {
         try { lispIr = lowerTs(source); } catch { lispIr = null; }
       } else {
@@ -1385,6 +1393,13 @@
       try {
         await initCompiler();
         wasmReady = true;
+        // Build badge: sha256 of the exact wasm the site is serving
+        try {
+          const resp = await fetch(`${import.meta.env.BASE_URL}wasm/lisp_rlm_browser_bg.wasm`);
+          const buf = await resp.arrayBuffer();
+          const digest = await crypto.subtle.digest('SHA-256', buf);
+          wasmSha256 = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).slice(0, 8).join('');
+        } catch { wasmSha256 = ''; }
       } catch (err) {
         console.error('Failed to initialize WASM:', err);
       }
@@ -1461,6 +1476,11 @@
     // Feature 5: Global keyboard shortcut
     document.addEventListener('keydown', handleGlobalKeydown);
 
+    // v2 shared links decode async — replay after the sync bootstrap
+    if (urlState.shared) {
+      void replaySharedCode(true, urlState.target);
+    }
+
     return () => {
       editorInstance?.dispose();
       document.removeEventListener('keydown', handleGlobalKeydown);
@@ -1483,16 +1503,56 @@
     return `${(ms / 1000).toFixed(2)} s`;
   }
 
-  // Feature 7: Copy share URL
+  // Feature 7: Copy share URL (v2: deflate-compressed `c=` param — 3-5x
+  // shorter than the legacy btoa chain, survives chat-app URL truncation)
   async function copyShareUrl() {
-    updateUrlHash();
-    const url = window.location.href;
     try {
+      const params = new URLSearchParams();
+      if (source && source !== examples[activeExample]?.source) {
+        params.set('c', await compressToBase64Url(source));
+      }
+      params.set('target', target);
+      if (activeExample > 0) params.set('example', String(activeExample));
+      const url = `${window.location.origin}${window.location.pathname}#${params.toString()}`;
+      history.replaceState(null, '', `#${params.toString()}`);
       await navigator.clipboard.writeText(url);
-      // Could add a toast notification here
+      shareCopied = true;
+      setTimeout(() => { shareCopied = false; }, 1500);
     } catch {
-      // Fallback: show URL in prompt
-      prompt('Share this URL:', url);
+      // Fallback: prompt with whatever we can build synchronously
+      updateUrlHash();
+      prompt('Share this URL:', window.location.href);
+    }
+  }
+
+  // v2 shared links (`#c=...`) decode asynchronously after the sync bootstrap.
+  // Replays the example-load branch of onMount with the decoded source, then
+  // clears the hash so a reload falls back to localStorage instead of
+  // re-importing shared code over local edits.
+  async function replaySharedCode(shared: boolean, urlTarget?: CompileTarget) {
+    if (!shared) return;
+    try {
+      const params = new URLSearchParams(window.location.hash.slice(1));
+      const data = params.get('c');
+      if (!data) return;
+      const decoded = await decompressFromBase64Url(data);
+      source = decoded;
+      if (urlTarget) target = urlTarget;
+      activeExample = -1;
+      if (editorInstance) {
+        editorInstance.setValue(source);
+        const model = editorInstance.getModel();
+        if (model) monaco.editor.setModelLanguage(model, 'lisp-rlm');
+      }
+      const file: VFile = { id: generateId(), name: 'shared.lisp', source, target, updatedAt: Date.now() };
+      files = [file];
+      activeFileId = file.id;
+      saveFiles();
+      saveState();
+      history.replaceState(null, '', window.location.pathname);
+      setTimeout(() => handleCompile(true), 100);
+    } catch (err) {
+      console.error('Failed to decode shared code:', err);
     }
   }
 </script>
@@ -1637,10 +1697,11 @@
 
     <button
       class="header-icon-btn"
+      class:copied={shareCopied}
       onclick={copyShareUrl}
       title="Copy shareable URL"
     >
-      <Link size={16} />
+      {#if shareCopied}<Check size={16} />{:else}<Link size={16} />{/if}
     </button>
 
     <!-- Network toggle -->
@@ -2544,7 +2605,13 @@
   </main>
 
   <footer class="footer">
-    Lisp RLM — Write Lisp, Deploy Smart Contracts
+    <span>Lisp RLM — Write Lisp, Deploy Smart Contracts</span>
+    <span
+      class="build-badge"
+      title={`${__BUILD_INFO__.time} —${__BUILD_INFO__.dirty ? ' dirty working tree' : ' clean'}`}
+    >
+      {__BUILD_INFO__.rev}{__BUILD_INFO__.dirty ? '*' : ''} · {wasmSha256}
+    </span>
   </footer>
 </div>
 
@@ -3291,6 +3358,46 @@
     height: 100%;
   }
 
+  .header-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-surface);
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .header-icon-btn:hover {
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
+  }
+  .header-icon-btn.copied {
+    color: #39ff8e;
+    border-color: #39ff8e;
+  }
+
+  .footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 16px;
+    border-top: 1px solid var(--color-border);
+    font-size: 11px;
+    color: var(--color-text-secondary);
+  }
+  .build-badge {
+    font-family: var(--font-mono, monospace);
+    font-size: 10px;
+    opacity: 0.75;
+    user-select: text;
+  }
+
   /* Mobile styles */
   @media (max-width: 767px) {
     .header-title {
@@ -3312,15 +3419,36 @@
     .wallet-btn {
       display: none;
     }
+    /* Touch targets: 44px+ (design standard) */
     .pill-tab {
-      padding: 6px 10px;
+      padding: 6px 12px;
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+    }
+    .lang-btn {
+      padding: 8px 12px;
+      min-height: 44px;
+    }
+    .header-run-btn,
+    .header-test-btn {
+      min-height: 44px;
+    }
+    /* Share stays available on phones (was display:none) */
+    .header-icon-btn {
+      display: inline-flex;
+      width: 44px;
+      height: 44px;
     }
     .header {
       gap: 8px;
       padding: 6px 8px;
     }
+    /* Bottom Output toggle: bar is shown, so its button must be too
+       (was display:none — rendered a dead 25px strip) */
     .mobile-toggle-btn {
-      display: none;
+      display: flex;
+      min-height: 44px;
     }
     .mobile-toggle-bar {
       display: block;

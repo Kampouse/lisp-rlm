@@ -356,8 +356,6 @@ declare const near: {
   promiseBatchActionDeleteAccount(p: number, beneficiaryId: string): void;
   /** Return a promise as this call's outcome (async return pattern). */
   promiseReturn(p: number): void;
-  /** Number of promise results readable in this callback. */
-  promiseResultCount(): number;
   /** Whether promise result idx succeeded (1/0) — callbacks only. */
   promiseSucceeded(idx: number): number;
   // Raw-ABI forms (ptr/len pairs, not strings) also exist for stake,

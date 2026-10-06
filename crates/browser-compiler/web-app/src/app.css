@@ -1640,7 +1640,7 @@ body {
   .pill-tab {
     padding: 6px 10px;
     font-size: 11px;
-    min-height: 34px;
+    min-height: 44px;
   }
 
   .pill-container {
@@ -1650,7 +1650,7 @@ body {
   .header-compile-btn {
     padding: 0 12px;
     font-size: 12px;
-    min-height: 36px;
+    min-height: 44px;
   }
 
   .wallet-btn:not(.connected) {
@@ -1661,7 +1661,7 @@ body {
   .example-btn {
     padding: 8px 10px;
     font-size: 11px;
-    min-height: 38px;
+    min-height: 44px;
   }
 
   .editor-pane {

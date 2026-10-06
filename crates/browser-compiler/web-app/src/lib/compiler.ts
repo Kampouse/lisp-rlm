@@ -1,4 +1,6 @@
 import init, { compile_p1, compile_p2, compile_p2_core, compile_pure, compile_ts, ts_to_lisp, disassemble_wasm } from '../../public/wasm/lisp_rlm_browser.js';
+import { annotateErrorLines } from './errorLines.ts';
+import { compileViaWorker } from './compileWorkerClient.ts';
 
 let initialized = false;
 let initPromise: Promise<void> | null = null;
@@ -30,6 +32,64 @@ export async function initCompiler(): Promise<void> {
 
 export function isInitialized(): boolean {
   return initialized;
+}
+
+/**
+ * Compile via the dedicated worker (crash isolation for wasm32 stack
+ * overflows / hangs) with typed fallback:
+ *
+ *   - normal compile error  -> surfaced as { success:false, error } (the
+ *     worker stays alive; annotateErrorLines ran worker-side and again
+ *     here is a no-op thanks to its `line N` guard).
+ *   - WORKER_CRASHED / WORKER_TIMEOUT -> returned as a failed result with
+ *     a clear message; NO main-thread re-run (same poison would freeze
+ *     the tab). Fresh worker spawns automatically for the next compile.
+ *   - WORKER_UNSUPPORTED (no worker support / CSP) -> transparent
+ *     main-thread compile, identical UX.
+ */
+export async function compileWithFallback(
+  source: string,
+  target: CompileTarget,
+  lang: SourceLang = 'lisp',
+): Promise<CompileResult> {
+  try {
+    const r = await compileViaWorker({ source, target, lang });
+    return {
+      success: true,
+      wasmBytes: r.wasmBytes,
+      size: r.size,
+      timeMs: r.timeMs,
+      error: null,
+      wat: r.wat,
+      exports: extractExportsSafe(r.wat),
+      runResult: null,
+    };
+  } catch (workerErr: unknown) {
+    const msg = workerErr instanceof Error ? workerErr.message : String(workerErr);
+    if (msg.startsWith('WORKER_UNSUPPORTED:')) {
+      // Environment can't run workers — old path, same behavior as before.
+      return compile(source, target, lang);
+    }
+    return {
+      success: false,
+      wasmBytes: null,
+      size: 0,
+      timeMs: 0,
+      error: msg.startsWith('WORKER_') ? msg : msg,
+      wat: null,
+      exports: [],
+      runResult: null,
+    };
+  }
+}
+
+function extractExportsSafe(wat: string | null): string[] {
+  if (!wat) return [];
+  try {
+    return extractExports(wat);
+  } catch {
+    return [];
+  }
 }
 
 export function compile(source: string, target: CompileTarget, lang: SourceLang = 'lisp'): CompileResult {
@@ -73,7 +133,7 @@ export function compile(source: string, target: CompileTarget, lang: SourceLang 
     };
   } catch (err: unknown) {
     const timeMs = performance.now() - start;
-    const message = err instanceof Error ? err.message : String(err);
+    const message = annotateErrorLines(err instanceof Error ? err.message : String(err), source);
 
     return {
       success: false,
