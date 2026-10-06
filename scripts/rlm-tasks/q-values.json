@@ -543,7 +543,7 @@
 "decompose": 0.0
 },
 "ta_prime_sum|ok||rc0|es0|i1": {
-"none": -0.31078932274813253,
+"none": -0.1274959465226132,
 "temp08": -0.44985713432786395,
 "temp10": -0.24985889810159406,
 "doc": 0.0,
@@ -1584,7 +1584,7 @@
 "ban": 0.0,
 "budget2": 0.0,
 "stop": 0.0,
-"ladder": -0.19999999999146675,
+"ladder": -0.19999999999640006,
 "decompose": 0.0,
 "(~~QT~~stop~~QT~~)": 0.0,
 "decsmoke_reverse": 0.0,
@@ -1644,7 +1644,7 @@
 "(~~QT~~ladder~~QT~~)": 0.0
 },
 "td_reverse_simple|ok||rc0|es0|i1": {
-"none": 0.0,
+"none": 0.25,
 "temp08": 0.0,
 "temp10": 0.0,
 "doc": 0.0,
@@ -2150,7 +2150,7 @@
 "ban": 0.0,
 "budget2": 0.0,
 "stop": 0.0,
-"ladder": 0.25,
+"ladder": 0.86651611328125,
 "decompose": 0.0,
 "(~~QT~~stop~~QT~~)": 0.0,
 "decsmoke_reverse": 0.0,
@@ -5467,7 +5467,7 @@
 "hint": -0.24985889810159406,
 "ban": -0.4496789504441161,
 "budget2": -0.3999999283249153,
-"stop": -0.20000000000000007,
+"stop": -0.2163155843853019,
 "ladder": -0.2999224771742307,
 "decompose": -0.4949887021211907,
 "micro-example": -0.24749435106059536,
@@ -9242,7 +9242,7 @@
 "decsmoke_reverse": 0.0
 },
 "t_lend_liq@ts|ok||rc0|es0|i1": {
-"none": -0.2522615915863234,
+"none": -0.2718754006085351,
 "temp08": -0.2994648579853049,
 "temp10": -0.2994648579853049,
 "doc": -0.2994648579853049,
@@ -9431,7 +9431,7 @@
 "decsmoke_reverse": 0.0
 },
 "t5_vowels@ts|ok||rc0|es0|i1": {
-"none": 0.9999999997987057,
+"none": 0.9999999999641739,
 "temp08": 0.0,
 "temp10": 0.0,
 "doc": 0.0,
@@ -9726,7 +9726,7 @@
 "decsmoke_reverse": 0.0
 },
 "t2_reverse@ts|ok||rc0|es0|i1": {
-"none": -0.27035448601251644,
+"none": -0.46875020469662204,
 "temp08": -0.6990635014742835,
 "temp10": -0.6704354047775268,
 "doc": -0.5267706751823426,
@@ -9768,11 +9768,11 @@
 "decsmoke_reverse": -0.299698982616734
 },
 "t2_reverse@ts|ok||rc0|es0|i3": {
-"none": -0.3237203598022461,
+"none": -0.3389132767915726,
 "temp08": 0.0,
-"temp10": 0.0,
-"doc": 0.0,
-"hint": -0.46245765686035156,
+"temp10": -0.08750000000000001,
+"doc": -0.22812500000000002,
+"hint": -0.4841618239879608,
 "ban": -0.3639201931774627,
 "budget2": -0.3437637181952596,
 "stop": -0.23944121599197388,
@@ -9866,8 +9866,8 @@
 "(~~QT~~ladder~~QT~~)": -0.23944121599197388,
 "reverse_hint": -0.23944121599197388,
 "microguide": -0.23944121599197388,
-"(~~QT~~none~~QT~~)": -0.23944121599197388,
-"microexample": -0.2492071970152665,
+"(~~QT~~none~~QT~~)": -0.2420809119939804,
+"microexample": -0.24974915218061167,
 "(~~QT~~stop~~QT~~)": -0.24966553624081556,
 "structured_approach": -0.24985889810159406,
 "decsmoke_reverse": -0.24985889810159406
@@ -10317,8 +10317,8 @@
 "none": 0.0,
 "temp08": 0.0,
 "temp10": 0.0,
-"doc": 0.0,
-"hint": -0.601194953918457,
+"doc": -0.175,
+"hint": -0.6294103711843491,
 "ban": -0.580994188785553,
 "budget2": -0.39287282079458236,
 "stop": -0.19643641039729118,
@@ -10369,8 +10369,8 @@
 "micro-example": 0.0,
 "(~~QT~~ladder~~QT~~)": 0.0,
 "reverse_hint": 0.0,
-"microguide": 0.0,
-"(~~QT~~none~~QT~~)": -0.3125138625357067,
+"microguide": -0.1375,
+"(~~QT~~none~~QT~~)": -0.3139703627413404,
 "microexample": -0.26402053230521805,
 "(~~QT~~stop~~QT~~)": -0.24554551299661398,
 "structured_approach": -0.33521770238876347,
@@ -10414,8 +10414,8 @@
 "microguide": -0.33521770238876347,
 "(~~QT~~none~~QT~~)": 0.0,
 "microexample": 0.0,
-"(~~QT~~stop~~QT~~)": 0.0,
-"structured_approach": -0.3714643120727231,
+"(~~QT~~stop~~QT~~)": -0.05,
+"structured_approach": -0.3716098100834939,
 "decsmoke_reverse": -0.40641659298005667
 },
 "t2_reverse@ts|type|type error|rc0|es2|i3": {
@@ -10773,8 +10773,8 @@
 "(~~QT~~none~~QT~~)": 0.0,
 "microexample": 0.0,
 "(~~QT~~stop~~QT~~)": 0.0,
-"structured_approach": 0.0,
-"decsmoke_reverse": -0.5087034225463867
+"structured_approach": -0.15000000000000002,
+"decsmoke_reverse": -0.5325780063867569
 },
 "t2_reverse@ts|runtime||rc0|es1|i3": {
 "none": 0.0,
@@ -10794,7 +10794,7 @@
 "(~~QT~~none~~QT~~)": 0.0,
 "microexample": 0.0,
 "(~~QT~~stop~~QT~~)": 0.0,
-"structured_approach": 0.0,
+"structured_approach": -0.1,
 "decsmoke_reverse": -0.3389132767915726
 },
 "t_lend_hf@ts|type|type error|rc0|es1|i2": {
@@ -10974,7 +10974,7 @@
 "ban": 0.0,
 "budget2": 0.0,
 "stop": 0.0,
-"ladder": -0.08750000000000001,
+"ladder": -0.1799774169921875,
 "decompose": 0.0,
 "micro-example": 0.0,
 "(~~QT~~ladder~~QT~~)": 0.0,
@@ -11031,7 +11031,7 @@
 "microdebug": 0.0
 },
 "td_reverse_practice|ok||rc0|es0|i1": {
-"none": 0.9999999999997594,
+"none": 0.9999999999999998,
 "temp08": 0.0,
 "temp10": 0.0,
 "doc": 0.0,
@@ -11040,6 +11040,28 @@
 "budget2": 0.0,
 "stop": 0.0,
 "ladder": 0.0,
+"decompose": 0.0,
+"micro-example": 0.0,
+"(~~QT~~ladder~~QT~~)": 0.0,
+"reverse_hint": 0.0,
+"microguide": 0.0,
+"(~~QT~~none~~QT~~)": 0.0,
+"microexample": 0.0,
+"(~~QT~~stop~~QT~~)": 0.0,
+"structured_approach": 0.0,
+"decsmoke_reverse": 0.0,
+"microdebug": 0.0
+},
+"t2_reverse@ts|runtime|your submission is all (define ...) forms \u2014 defines NEVER execute on their own, so nothing runs and answer stays nil. Compute directly|rc2|es0|i2": {
+"none": 0.0,
+"temp08": 0.0,
+"temp10": 0.0,
+"doc": 0.0,
+"hint": 0.0,
+"ban": 0.0,
+"budget2": 0.0,
+"stop": 0.0,
+"ladder": -0.1375,
 "decompose": 0.0,
 "micro-example": 0.0,
 "(~~QT~~ladder~~QT~~)": 0.0,

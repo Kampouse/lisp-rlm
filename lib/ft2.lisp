@@ -54,10 +54,11 @@
     (let ((sender (near/predecessor_account_id)))
       (let ((recv (json-get-str "receiver_id" inp)))
         (let ((amt (json-get-str "amount" inp)))
-          (if (< (li-cmp (bal sender) amt) 1)
+          (if (< (li-cmp (bal sender) amt) 0)
               (near/return "insufficient")
               (begin
                 (sub-bal sender amt)
+                (add-bal recv amt)
                 (let ((p (near/promise_batch_create recv)))
                   (begin
                     (near/promise_batch_action_function_call p "ft_on_transfer"
@@ -66,18 +67,21 @@
                       "0" 100000000000000)
                     (near/promise_return
                       (near/promise_then p (near/current_account_id) "ft_resolve_transfer"
-                        (json-set (json-set "{}" "sender_id" sender) "amount" amt)
-                        "0" 15000000000000)))))))))))
+                        (json-set (json-set (json-set "{}" "sender_id" sender) "receiver_id" recv) "amount" amt)
+                        "0" 30000000000000)))))))))))
 
-;; callback: {"sender_id","amount"} — re-credit refund (empty = failed → full)
+;; callback: {"sender_id","receiver_id","amount"} — receiver was credited
+;; upfront; move the refund slice back (empty result = failed → full refund).
 (define (f-resolve)
   (let ((inp (near/input)))
     (let ((sender (json-get-str "sender_id" inp)))
-      (let ((amt (json-get-str "amount" inp)))
-        (let ((res (near/promise_result 0)))
-          (let ((refund (if (< (str-length res) 1) amt res)))
-            (begin (add-bal sender refund)
-                   (near/return (str-cat "used:" (li-sub amt refund))))))))))
+      (let ((recv (json-get-str "receiver_id" inp)))
+        (let ((amt (json-get-str "amount" inp)))
+          (let ((res (near/promise_result 0)))
+            (let ((refund (if (< (str-length res) 1) amt res)))
+              (begin (add-bal sender refund)
+                     (sub-bal recv refund)
+                     (near/return (str-cat "used:" (li-sub amt refund)))))))))))
 
 (export "new" f-new)
 (export "mint" f-mint)

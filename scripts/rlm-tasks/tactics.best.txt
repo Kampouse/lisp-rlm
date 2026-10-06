@@ -1,7 +1,7 @@
 # tactics gen · brain brain:glm-4.5-flash ·N
 - (str-join lst sep) joins list of strings with separator
-- For t_lend_liq@ts, validate inputs with (number?) before processing
-- For t_lend_liq@ts, use (reduce) to accumulate results when processing multiple items
-- For t_lend_liq@ts, handle edge cases like empty lists or zero values
+- For t_lend_liq@ts, validate inputs with (number?) and handle edge cases
+- For t_lend_liq@ts, use (reduce) with (+) for accumulating values
+- For ta_prime_sum, use (mod) for efficient prime detection
+- For ta_prime_sum, implement trial division up to sqrt(n)
 - Use (some) and (every) for efficient predicate checking
-- For t_lend_liq@ts, ensure proper error handling for division operations

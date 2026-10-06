@@ -3163,3 +3163,24 @@
 {"ts": 1791311457.7104661, "event": "evolve", "gen": 456, "channel": "tactics", "fitness": 1.0}
 {"event": "qlearn", "ts": 1791311457.9543009, "states": 621, "episodes_seen": 3601}
 {"event": "ccg", "ts": 1791311458.443265, "nodes": 8443, "edges": 2984, "new_nodes": 12, "new_edges": 6}
+{"ts": 1791312774.5690491, "event": "evolve", "gen": 457, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1791312774.785429, "states": 621, "episodes_seen": 3607}
+{"event": "ccg", "ts": 1791312775.19546, "nodes": 8454, "edges": 2990, "new_nodes": 11, "new_edges": 6}
+{"ts": 1791313723.1521049, "event": "evolve", "gen": 458, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1791313723.4183779, "states": 621, "episodes_seen": 3614}
+{"event": "ccg", "ts": 1791313724.006679, "nodes": 8465, "edges": 2992, "new_nodes": 11, "new_edges": 2}
+{"ts": 1791314849.268973, "event": "evolve", "gen": 459, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1791314849.5127082, "states": 621, "episodes_seen": 3620}
+{"event": "ccg", "ts": 1791314849.94257, "nodes": 8477, "edges": 2996, "new_nodes": 12, "new_edges": 4}
+{"ts": 1791315985.080603, "event": "evolve", "gen": 460, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1791315985.486201, "states": 621, "episodes_seen": 3626}
+{"event": "ccg", "ts": 1791315986.338839, "nodes": 8489, "edges": 2999, "new_nodes": 12, "new_edges": 3}
+{"ts": 1791317090.195075, "event": "evolve", "gen": 461, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1791317090.408502, "states": 621, "episodes_seen": 3633}
+{"event": "ccg", "ts": 1791317090.835454, "nodes": 8501, "edges": 3002, "new_nodes": 12, "new_edges": 3}
+{"ts": 1791317140.658557, "event": "ab_reject", "rate_on": 0.461, "rate_off": 0.459}
+{"ts": 1791318627.608495, "event": "evolve", "gen": 462, "channel": "actions", "fitness": 1.0}
+{"ts": 1791318627.608591, "event": "evolve", "gen": 463, "channel": "tactics", "fitness": 1.0}
+{"event": "qlearn", "ts": 1791318627.884, "states": 622, "episodes_seen": 3639}
+{"event": "ccg", "ts": 1791318628.363713, "nodes": 8524, "edges": 3012, "new_nodes": 23, "new_edges": 10}
+{"ts": 1791318679.4673002, "event": "ab_install", "action": ";; dream-proposed 1791316024.9744050503\n(rlm-register-action \"microexample\" (lam"}

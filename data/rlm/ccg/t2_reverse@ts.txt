@@ -1,4 +1,4 @@
 ### PAST ATTEMPTS ON t2_reverse@ts (agent memory — do NOT repeat these failures)
-- FAIL it3: <110-char failed attempt> → ERROR: run_program: compilation failed for body expression(s
-- FAIL it6: <110-char failed attempt> → ERROR: run_program: compilation failed for body expression(s
-- FAIL it9: <110-char failed attempt> → ERROR: run_program: compilation failed for define 'reversed'
+- FAIL it11: <110-char failed attempt> → ERROR: expected string, got (~~QT~~s~~QT~~ ~~QT~~t~~QT~~ ~~Q
+- FAIL it3: <110-char failed attempt> → ERROR: your submission is all (define ...) forms — defines N
+- FAIL it7: <110-char failed attempt> → ERROR: expected string, got []~~NL~~    (fn [] . . .) ×3~~NL

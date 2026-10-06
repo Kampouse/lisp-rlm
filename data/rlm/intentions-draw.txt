@@ -1,7 +1,7 @@
-scripts/rlm-tasks/ta_prime_sum.lisp
+scripts/rlm-tasks/td_reverse_simple.lisp
 scripts/rlm-tasks/t3_fib@ts.lisp
 scripts/rlm-tasks/t1_sumsq@ts.lisp
 scripts/rlm-tasks/t2_reverse@ts.lisp
 scripts/rlm-tasks/t_lend_hf@ts.lisp
 scripts/rlm-tasks/t_lend_liq@ts.lisp
-scripts/rlm-tasks/td_pow.lisp
+scripts/rlm-tasks/ta_prime_sum.lisp

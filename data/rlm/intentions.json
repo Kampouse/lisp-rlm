@@ -1,5 +1,5 @@
 {
- "updated": "2026-10-06 14:20:46",
+ "updated": "2026-10-06 16:14:32",
  "archived": [
   "t1_sumsq",
   "t4_pow",
@@ -36,14 +36,6 @@
  ],
  "intentions": [
   {
-   "task": "ta_prime_sum",
-   "kind": "completable",
-   "rate": 0.0,
-   "n": 1026,
-   "stagnation": 477,
-   "priority": 2.0
-  },
-  {
    "task": "ta_prime_sum@ts",
    "kind": "completable",
    "rate": 0.0,
@@ -63,40 +55,40 @@
    "task": "t3_fib@ts",
    "kind": "completable",
    "rate": 0.0,
-   "n": 89,
-   "stagnation": 89,
+   "n": 95,
+   "stagnation": 95,
    "priority": 2.0
   },
   {
    "task": "t1_sumsq@ts",
    "kind": "completable",
    "rate": 0.0,
-   "n": 89,
-   "stagnation": 89,
+   "n": 95,
+   "stagnation": 95,
    "priority": 2.0
   },
   {
    "task": "t2_reverse@ts",
    "kind": "completable",
    "rate": 0.0,
-   "n": 87,
-   "stagnation": 87,
+   "n": 93,
+   "stagnation": 93,
    "priority": 2.0
   },
   {
    "task": "t_lend_hf@ts",
    "kind": "completable",
    "rate": 0.0,
-   "n": 88,
-   "stagnation": 88,
+   "n": 94,
+   "stagnation": 94,
    "priority": 2.0
   },
   {
    "task": "t_lend_liq@ts",
    "kind": "completable",
    "rate": 0.0,
-   "n": 88,
-   "stagnation": 88,
+   "n": 94,
+   "stagnation": 94,
    "priority": 2.0
   },
   {
@@ -106,6 +98,14 @@
    "n": 1,
    "stagnation": 1,
    "priority": 1.033
+  },
+  {
+   "task": "ta_prime_sum",
+   "kind": "completable",
+   "rate": 0.1,
+   "n": 1032,
+   "stagnation": 3,
+   "priority": 0.99
   },
   {
    "task": "td_primesum@ts",
@@ -231,7 +231,7 @@
    "task": "t_lend_comp",
    "kind": "perpetual",
    "rate": 1.0,
-   "n": 25,
+   "n": 26,
    "stagnation": 0,
    "priority": 0.0
   },
@@ -319,7 +319,7 @@
    "task": "t_lend_tier@ts",
    "kind": "perpetual",
    "rate": 1.0,
-   "n": 13,
+   "n": 14,
    "stagnation": 0,
    "priority": 0.0
   },
@@ -335,7 +335,7 @@
    "task": "td_reverse_list",
    "kind": "perpetual",
    "rate": 1.0,
-   "n": 10,
+   "n": 11,
    "stagnation": 0,
    "priority": 0.0
   },
