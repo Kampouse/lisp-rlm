@@ -1578,6 +1578,54 @@
         </button>
       </div>
       <div class="drawer-content">
+        <!-- Mobile-only controls (decluttered from the header ≤767px) -->
+        <div class="drawer-mobile-section">
+          <div class="drawer-section-label">Controls</div>
+          <div class="drawer-lang-row" role="group" aria-label="Source language">
+            <button
+              class="drawer-lang-btn"
+              class:active={sourceLang === 'lisp'}
+              onclick={() => setSourceLang('lisp')}
+            >LISP</button>
+            <button
+              class="drawer-lang-btn"
+              class:active={sourceLang === 'ts'}
+              onclick={() => setSourceLang('ts')}
+            >TS</button>
+          </div>
+          <button
+            class="drawer-item"
+            class:active={autoCompile}
+            onclick={() => { autoCompile = !autoCompile; saveState(); }}
+          >
+            <Zap size={16} />
+            Auto-compile: {autoCompile ? 'On' : 'Off'}
+          </button>
+          <button
+            class="drawer-item"
+            class:active={shareCopied}
+            onclick={copyShareUrl}
+          >
+            {#if shareCopied}<Check size={16} />{:else}<Link size={16} />{/if}
+            {shareCopied ? 'Link copied!' : 'Share link'}
+          </button>
+          <button
+            class="drawer-item"
+            onclick={() => { network = network === 'testnet' ? 'mainnet' : 'testnet'; }}
+          >
+            <FlaskConical size={16} />
+            Network: {network}
+          </button>
+          <button
+            class="drawer-item"
+            disabled={!result?.success || testing || sourceLang === 'ts'}
+            onclick={handleRunTests}
+          >
+            {#if testing}<Loader2 size={16} class="spinner-icon" />{:else}<CheckCircle size={16} />{/if}
+            Run tests
+          </button>
+        </div>
+        <div class="drawer-divider"></div>
         {#each examples as example, i}
           <button
             class="drawer-item"
@@ -3341,6 +3389,52 @@
     background: var(--color-border);
     margin: var(--space-sm) var(--space-md);
   }
+  /* Drawer Controls section (mobile declutter: moved from header ≤767px) */
+  .drawer-section-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-text-secondary);
+    padding: 14px var(--space-md) 6px;
+  }
+  .drawer-lang-row {
+    display: flex;
+    gap: 8px;
+    padding: 4px var(--space-md) 10px;
+  }
+  .drawer-lang-btn {
+    flex: 1;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    color: var(--color-text-secondary);
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .drawer-lang-btn.active {
+    color: var(--color-accent);
+    border-color: var(--color-accent);
+    background: rgba(57, 255, 142, 0.08);
+  }
+  .drawer-item:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  /* Controls section is mobile-only (desktop header already has these) */
+  @media (min-width: 768px) {
+    .drawer-mobile-section,
+    .drawer-mobile-section + .drawer-divider {
+      display: none;
+    }
+  }
   .output-section {
     height: 100%;
     overflow-y: auto;
@@ -3406,18 +3500,15 @@
     .pill-label {
       display: none;
     }
-    .header-toggle {
-      display: none;
-    }
-    .header-icon-btn {
-      display: none;
-    }
-    .network-badge {
-      font-size: 11px;
-      padding: 4px 6px;
-    }
-    .wallet-btn {
-      display: none;
+    /* --- Nav declutter (≤767px): header = ☰ · brand · pills · Run · Compile.
+       Everything else lives in the ☰ drawer's Controls section. --- */
+    .header-toggle,
+    .header-icon-btn,
+    .network-badge,
+    .wallet-btn,
+    .lang-toggle,
+    .header-test-btn {
+      display: none !important;
     }
     /* Touch targets: 44px+ (design standard) */
     .pill-tab {
@@ -3426,19 +3517,10 @@
       display: inline-flex;
       align-items: center;
     }
-    .lang-btn {
-      padding: 8px 12px;
-      min-height: 44px;
-    }
     .header-run-btn,
-    .header-test-btn {
+    .header-compile-btn {
       min-height: 44px;
-    }
-    /* Share stays available on phones (was display:none) */
-    .header-icon-btn {
-      display: inline-flex;
-      width: 44px;
-      height: 44px;
+      min-width: 44px;
     }
     .header {
       gap: 8px;
