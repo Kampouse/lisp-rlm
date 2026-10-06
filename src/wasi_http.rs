@@ -650,7 +650,7 @@ pub fn build_combined_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser:
     }
     #[cfg(target_arch = "wasm32")]
     {
-        crate::wit_embed::build_http_wit_metadata_embedded()
+        crate::wit_embed::build_combined_wit_metadata_embedded()
     }
 }
 
