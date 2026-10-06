@@ -1106,11 +1106,22 @@ pub fn clear_type_registry() {
 /// thread stack overflows (found compiling the PLONK verifier inside a
 /// cargo-test thread — abort, not a catchable panic). 256 MiB of VIRTUAL
 /// reservation costs nothing until touched.
+#[cfg(not(target_arch = "wasm32"))]
 const DEEP_STACK_BYTES: usize = 256 * 1024 * 1024;
 
 /// Run `f` on a dedicated big-stack thread (scoped — borrows non-'static
 /// data). Panics inside propagate to the caller on join, preserving error
 /// reporting. Every public compile entry point runs through this.
+///
+/// wasm32: std threads are unsupported there ("operation not supported on
+/// this platform" — 0a9b8de broke every browser-pkg compile), so run inline
+/// on the calling stack (pre-0a9b8de browser behavior).
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn run_deep<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    f()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn run_deep<T: Send>(f: impl FnOnce() -> T + Send) -> T {
     std::thread::scope(|s| {
         std::thread::Builder::new()

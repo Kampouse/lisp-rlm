@@ -53,10 +53,11 @@ pub fn build_http_wit_metadata_embedded(
     fn build_group(files: &[(&str, &str)]) -> Result<wit_parser::UnresolvedPackageGroup, String> {
         let mut map = SourceMap::default();
         for &(path, contents) in files {
-            map.push_str(path, contents);
+            // wit-parser 0.244: push takes a &Path (push_str is 0.248-only) and
+            // parse returns a plain anyhow Result (no (map, error) tuple).
+            map.push(std::path::Path::new(path), contents);
         }
-        map.parse()
-            .map_err(|(map, e)| format!("WIT parse error: {}", e.highlight(&map)))
+        map.parse().map_err(|e| format!("WIT parse error: {e}"))
     }
     // Load deps in topological order (io has no deps, everything else depends on it)
     let pkg_deps_io = build_group(&[
