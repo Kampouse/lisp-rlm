@@ -611,6 +611,15 @@ impl WasmEmitter {
                 v.extend(idx);
                 v.extend(self.emit_untag());
                 v.push(Self::host_call(35));
+                // Set return flag so the export wrapper skips its trailing
+                // value_return — that call OVERWRITES the host-side
+                // ReturnData::ReceiptIndex with Value(body-result), killing
+                // promise following (awaiter's promise_result then reads
+                // Successful("")). Found on-chain 2026-10-06 via pz2/d2b
+                // bisection: every returned then-chain resolved empty while
+                // value-returning receipts read fine. Mirrors near/return.
+                v.push(Instruction::I64Const(1));
+                v.push(Instruction::GlobalSet(RETURN_FLAG));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
             }
