@@ -81,21 +81,55 @@
             "0"))))))
 
 (define (pay-out)
-  ;; internal only — returns the swap refund value to the token resolve
+  ;; internal only. Checks the B payout: on failure, reverses THIS swap's
+  ;; deltas (slots+Fees+Abook+Bbook, all linear so concurrent swaps compose)
+  ;; and refunds the trader's full amount.
   (if (self-call?)
-      (near/return (json-get-str "r" (near/input)))
+      (let ((inp (near/input)))
+        (let ((res (near/promise_result 0)))
+          (if (< (str-length res) 1)
+              (begin
+                (slot-set 0 (li-add (slot-get 0) (json-get-str "c0" inp)))
+                (slot-set 1 (li-add (slot-get 1) (json-get-str "c1" inp)))
+                (slot-set 2 (li-add (slot-get 2) (json-get-str "c2" inp)))
+                (slot-set 3 (li-add (slot-get 3) (json-get-str "c3" inp)))
+                (slot-set 4 (li-add (slot-get 4) (json-get-str "c4" inp)))
+                (near/store-bytes "F" (li-sub (fee-get) (json-get-str "f" inp)))
+                (near/store-bytes "AB" (li-sub (bz "AB") (json-get-str "u" inp)))
+                (near/store-bytes "PB" (li-add (bz "PB") (json-get-str "d" inp)))
+                (near/return (json-get-str "a" inp)))
+              (near/return (json-get-str "r" inp)))))
       (near/return "forbidden")))
 
 (define (pay-b)
-  ;; callback leg 2 of withdrawal: pay out_B to r — internal only
+  ;; withdraw payout gate (internal only). result(0) = the awaited payout:
+  ;;   g=1 two-leg: leg1 (A) — on fail reverse all deltas, no B paid;
+  ;;                on success pay leg2 (B).
+  ;;   g=0 single-leg: B already paid by the awaited promise — check only.
   (if (self-call?)
       (let ((inp (near/input)))
-        (let ((p (near/promise_batch_create (near/load-bytes "TOKB"))))
-          (begin
-            (near/promise_batch_action_function_call p "ft_transfer"
-              (json-set (json-set "{}" "receiver_id" (json-get-str "r" inp)) "amount" (json-get-str "b" inp))
-              "0" 40000000000000)
-            (near/promise_return p))))
+        (let ((res (near/promise_result 0)))
+          (if (< (str-length res) 1)
+              (begin
+                (slot-set 0 (li-add (slot-get 0) (json-get-str "x0" inp)))
+                (slot-set 1 (li-add (slot-get 1) (json-get-str "x1" inp)))
+                (slot-set 2 (li-add (slot-get 2) (json-get-str "x2" inp)))
+                (slot-set 3 (li-add (slot-get 3) (json-get-str "x3" inp)))
+                (slot-set 4 (li-add (slot-get 4) (json-get-str "x4" inp)))
+                (near/store-bytes "SHT" (li-add (bz "SHT") (json-get-str "s" inp)))
+                (near/store-bytes (sh-key (json-get-str "w" inp))
+                  (li-add (bz (sh-key (json-get-str "w" inp))) (json-get-str "s" inp)))
+                (near/store-bytes "AB" (li-add (bz "AB") (json-get-str "a" inp)))
+                (near/store-bytes "PB" (li-add (bz "PB") (json-get-str "b" inp)))
+                (near/return "wd-failed"))
+              (if (str= (json-get-str "g" inp) "1")
+                  (let ((p (near/promise_batch_create (near/load-bytes "TOKB"))))
+                    (begin
+                      (near/promise_batch_action_function_call p "ft_transfer"
+                        (json-set (json-set "{}" "receiver_id" (json-get-str "r" inp)) "amount" (json-get-str "b" inp))
+                        "0" 40000000000000)
+                      (near/promise_return p)))
+                  (near/return "wd-ok")))))
       (near/return "forbidden")))
 
 (define (withdraw4)
@@ -109,38 +143,43 @@
             (let ((ab (bz "AB")) (pb (bz "PB")) (sht (bz "SHT")))
               (let ((out-a (u128-muldiv sh ab sht))
                     (out-b (u128-muldiv sh pb sht)))
-                (begin
-                  (near/store-bytes "SHT" (li-sub sht sh))
-                  (near/store-bytes (sh-key who) (li-sub (bz (sh-key who)) sh))
-                  (near/store-bytes "AB" (li-sub ab out-a))
-                  (near/store-bytes "PB" (li-sub pb out-b))
-                  ;; shrink slots by withdrawn-B fraction (floor = safe side)
-                  (let ((old-pb (li-add (bz "PB") out-b)))
-                    (begin
-                      (slot-set 0 (u128-muldiv (slot-get 0) (bz "PB") old-pb))
-                      (slot-set 1 (u128-muldiv (slot-get 1) (bz "PB") old-pb))
-                      (slot-set 2 (u128-muldiv (slot-get 2) (bz "PB") old-pb))
-                      (slot-set 3 (u128-muldiv (slot-get 3) (bz "PB") old-pb))
-                      (slot-set 4 (u128-muldiv (slot-get 4) (bz "PB") old-pb))))
-                  (if (str= out-a "0")
-                      (let ((p2 (near/promise_batch_create (near/load-bytes "TOKB"))))
-                        (begin
-                          (near/promise_batch_action_function_call p2 "ft_transfer"
-                            (json-set (json-set "{}" "receiver_id" who) "amount" out-b)
-                            "0" 40000000000000)
-                          (near/promise_return p2)
-                          "ok-b"))
-                      (let ((p (near/promise_batch_create (near/load-bytes "TOKA"))))
-                        (begin
-                          (near/promise_batch_action_function_call p "ft_transfer"
-                            (json-set (json-set "{}" "receiver_id" who) "amount" out-a)
-                            "0" 40000000000000)
-                          (near/promise_return
-                            (near/promise_then p (near/current_account_id) "pay_b"
-                              (json-set (json-set "{}" "r" who) "b" out-b)
-                              "0" 60000000000000))
-                          "ok-ab"))))))))))))
-
+                (let ((o0 (slot-get 0)) (o1 (slot-get 1)) (o2 (slot-get 2))
+                      (o3 (slot-get 3)) (o4 (slot-get 4)))
+                  (begin
+                    (near/store-bytes "SHT" (li-sub sht sh))
+                    (near/store-bytes (sh-key who) (li-sub (bz (sh-key who)) sh))
+                    (near/store-bytes "AB" (li-sub ab out-a))
+                    (near/store-bytes "PB" (li-sub pb out-b))
+                    (slot-set 0 (u128-muldiv o0 (bz "PB") pb))
+                    (slot-set 1 (u128-muldiv o1 (bz "PB") pb))
+                    (slot-set 2 (u128-muldiv o2 (bz "PB") pb))
+                    (slot-set 3 (u128-muldiv o3 (bz "PB") pb))
+                    (slot-set 4 (u128-muldiv o4 (bz "PB") pb))
+                    (let ((args (json-set (json-set (json-set (json-set (json-set (json-set
+                                  (json-set "{}" "r" who) "b" out-b) "w" who) "s" sh) "a" out-a) "g" "1")
+                                  "x0" (li-sub o0 (slot-get 0)))))
+                      (let ((args (json-set (json-set (json-set (json-set args
+                                  "x1" (li-sub o1 (slot-get 1))) "x2" (li-sub o2 (slot-get 2)))
+                                  "x3" (li-sub o3 (slot-get 3))) "x4" (li-sub o4 (slot-get 4)))))
+                        (if (str= out-a "0")
+                            (let ((p (near/promise_batch_create (near/load-bytes "TOKB"))))
+                              (begin
+                                (near/promise_batch_action_function_call p "ft_transfer"
+                                  (json-set (json-set "{}" "receiver_id" who) "amount" out-b)
+                                  "0" 40000000000000)
+                                (near/promise_return
+                                  (near/promise_then p (near/current_account_id) "pay_b"
+                                    (json-set args "g" "0") "0" 60000000000000))
+                                "wd-queued"))
+                            (let ((p (near/promise_batch_create (near/load-bytes "TOKA"))))
+                              (begin
+                                (near/promise_batch_action_function_call p "ft_transfer"
+                                  (json-set (json-set "{}" "receiver_id" who) "amount" out-a)
+                                  "0" 40000000000000)
+                                (near/promise_return
+                                  (near/promise_then p (near/current_account_id) "pay_b"
+                                    args "0" 60000000000000))
+                                "wd-queued")))))))))))))))
 (define (msg-min msg)
   ;; "swap" → "0"; "swap:NNN" → NNN
   (if (< (str-length msg) 6)
@@ -177,13 +216,19 @@
                             (if (str= dy "0")
                                 (near/return rem)
                                 (let ((p (near/promise_batch_create (near/load-bytes "TOKB"))))
-                                  (begin
-                                    (near/promise_batch_action_function_call p "ft_transfer"
-                                      (json-set (json-set "{}" "receiver_id" sender) "amount" dy)
-                                      "0" 40000000000000)
-                                    (near/promise_return
-                                      (near/promise_then p (near/current_account_id) "pay_out"
-                                        (json-set "{}" "r" rem) "0" 5000000000000)))))))))))
+                                  (let ((args (json-set (json-set (json-set (json-set (json-set "{}" "r" rem) "a" amt)
+                                                    "u" (li-sub amt rem)) "d" dy) "f" (li-sub (fee-get) f0))))
+                                    (let ((args (json-set (json-set (json-set (json-set (json-set args
+                                                    "c0" (li-sub s0v (slot-get 0))) "c1" (li-sub s1v (slot-get 1)))
+                                                    "c2" (li-sub s2v (slot-get 2))) "c3" (li-sub s3v (slot-get 3)))
+                                                    "c4" (li-sub s4v (slot-get 4)))))
+                                      (begin
+                                        (near/promise_batch_action_function_call p "ft_transfer"
+                                          (json-set (json-set "{}" "receiver_id" sender) "amount" dy)
+                                          "0" 40000000000000)
+                                        (near/promise_return
+                                          (near/promise_then p (near/current_account_id) "pay_out"
+                                            args "0" 5000000000000)))))))))))))
                 (near/return amt))))))))
 
 (export "ft_on_transfer" ft-on-transfer4)
