@@ -21,7 +21,7 @@ function nonceKey(account: string): string {
 }
 
 function readBalance(account: string, base: string): number {
-  const raw = near_storage_get(balKey(account, base));
+  const raw = near.storageGet(balKey(account, base));
   if (raw === "") {
     return 0;
   }
@@ -29,13 +29,13 @@ function readBalance(account: string, base: string): number {
 }
 
 function writeBalance(account: string, base: string, amount: number): void {
-  near_storage_set(balKey(account, base), toStr(amount));
+  near.storageSet(balKey(account, base), toStr(amount));
 }
 
 // -- Nonce helpers --
 
 function getNonce(account: string): number {
-  const raw = near_storage_get(nonceKey(account));
+  const raw = near.storageGet(nonceKey(account));
   if (raw === "") {
     return 0;
   }
@@ -43,7 +43,7 @@ function getNonce(account: string): number {
 }
 
 function setNonce(account: string, n: number): void {
-  near_storage_set(nonceKey(account), toStr(n));
+  near.storageSet(nonceKey(account), toStr(n));
 }
 
 // -- Views --
@@ -59,7 +59,7 @@ export function getNonceView(account: string): number {
 // -- Deposit / Withdraw --
 
 export function deposit(base: string, amount: string): string {
-  const caller = near_predecessor_account_id();
+  const caller = near.predecessorAccountId();
   const amt = strToNum(amount);
   const current = readBalance(caller, base);
   const new_bal = current + amt;
@@ -68,7 +68,7 @@ export function deposit(base: string, amount: string): string {
 }
 
 export function withdraw(base: string, amount: string): string {
-  const caller = near_predecessor_account_id();
+  const caller = near.predecessorAccountId();
   const amt = strToNum(amount);
   const current = readBalance(caller, base);
   if (current < amt) {
@@ -99,7 +99,7 @@ export function fill_order(
   // 2. Parse order params
   const px = strToNum(price);
   const sz = strToNum(size);
-  const taker = near_predecessor_account_id();
+  const taker = near.predecessorAccountId();
   const quote = strCat(base, "-USDC");
   const total_cost = sz * px;
 
