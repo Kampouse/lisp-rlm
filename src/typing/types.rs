@@ -153,6 +153,15 @@ const KNOWN_NEAR_FUNCS: &[&str] = &[
     "promise_batch_action_state_init",
     "promise_batch_action_state_init_by_account_id",
     "promise_batch_action_transfer_to_gas_key",
+    // Promise-batch sugar (call_near_promise.rs:954) — was missing here,
+    // so factory.lisp's (near/batch ...) failed the scope check even
+    // though the emitter implements it. 2026-10.
+    "batch",
+    "batch-add-key",
+    "batch-call",
+    "batch-create-account",
+    "batch-deploy",
+    "batch-transfer",
     "call",
     "log_utf8",
     "log_utf16",
@@ -743,23 +752,30 @@ impl TcEnv {
             );
         }
 
-        // JSON path accessors
-        // json-get: (str, str) → num  — extracts numeric value at dot-path
+        // JSON path accessors — 2-arg forms scan an arbitrary tagged string
+        // buffer and return a dynamically-typed tagged value (str OR num).
+        // The emitter resolves the type at runtime (call_json.rs: tagged
+        // auto), so the honest checker type is Any. Typing them (str,str)→Int
+        // broke real programs (btc_avg.lisp: "type mismatch: str ≠ int",
+        // 2026-10). The 1-arg input-read variants below are KEPT so old
+        // sources produce a clean arity error instead of slipping through
+        // the `json` wildcard as Any (the emitter removed them — the WASI
+        // entry fn receives stdin as its parameter; NEAR reads (near/input)).
         env.insert_mono(
             "json-get".to_string(),
             TcType::Arrow(
                 vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
-                Box::new(TcType::Con(TcCon::Int)),
+                Box::new(TcType::Con(TcCon::Any)),
             ),
         );
-        // json-get-str: (str, str) → str  — extracts string value at dot-path
         env.insert_mono(
             "json-get-str".to_string(),
             TcType::Arrow(
                 vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
-                Box::new(TcType::Con(TcCon::Str)),
+                Box::new(TcType::Con(TcCon::Any)),
             ),
         );
+
         // json-get-str? (2026-09-15, JSON v3): NIL-on-miss variant for
         // `o.a.b ?? fb` on input handles. NOT explicitly typed — the
         // `json` prefix wildcard types it Any, which is what lets

@@ -1225,44 +1225,12 @@ fn infer_let(
     supply: &mut VarSupply,
     subst: &mut Subst,
 ) -> Result<TcType, String> {
-    let bindings_list = parts.first().ok_or("let: missing bindings")?;
-    let body = parts.get(1).cloned().unwrap_or(LispVal::Nil);
-
-    let bindings = match bindings_list {
-        LispVal::List(l) => l,
-        other => return Err(format!("let: bindings must be list, got {}", other)),
-    };
-
-    let mut new_env = env.clone();
-    for binding in bindings {
-        let pair = match binding {
-            LispVal::List(l) if l.len() == 2 => l,
-            other => return Err(format!("let: binding must be (name val), got {:?}", other)),
-        };
-        let name = match &pair[0] {
-            LispVal::Sym(s) => s.clone(),
-            other => return Err(format!("let: binding name must be symbol, got {:?}", other)),
-        };
-        let val_type = infer(&pair[1], env, supply, subst)?;
-        new_env.insert_mono(name, subst.apply(&val_type));
-    }
-
-    // Multi-statement let bodies: check ALL statements (2026-09-02 —
-    // nostr-gov shipped a dead payout branch because parts.get(1) only
-    // checked the FIRST body form; everything after compiled unchecked,
-    // a mixed-kind `=` slipped through and the emitter silently dropped
-    // the branch). Type is the LAST statement's.
-    if parts.len() < 2 {
-        return Ok(TcType::Con(TcCon::Nil));
-    }
-    if parts.len() == 2 {
-        return infer(&parts[1], &new_env, supply, subst);
-    }
-    let mut last_ty = TcType::Con(TcCon::Nil);
-    for stmt in &parts[1..] {
-        last_ty = infer(stmt, &new_env, supply, subst)?;
-    }
-    Ok(last_ty)
+    // The WASM emitter treats `let` and `let*` IDENTICALLY — sequential
+    // bindings, later ones see earlier ones (wasm_emit let lowering).
+    // The checker used to infer `let` with parallel scoping, rejecting
+    // valid programs (wallet.lisp: `sig_end` "undefined", 2026-10).
+    // Delegate so the checker always matches emitter truth.
+    infer_let_star(parts, env, supply, subst)
 }
 
 fn infer_let_star(

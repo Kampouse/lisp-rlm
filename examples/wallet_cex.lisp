@@ -10,9 +10,9 @@
       acc
       (count-wallets sub (+ idx 1) (+ acc 1)))))
 
-(define (do-register)
+(define (do-register input)
   (let* ((_ver (str-cat "" "v2"))
-         (sub-raw (json-get-str "google_sub"))
+         (sub-raw (json-get-str "google_sub" input))
          (sub (str-cat sub-raw ""))
          (existing (storage-get (wallet-api-key sub 0))))
     (if (not (nil? existing))
@@ -27,8 +27,8 @@
           (storage-set (wallet-acct sub 0) near-acct)
           (str-cat "{\"status\":\"ok\",\"api_key\":\"" api-key "\",\"near_account_id\":\"" near-acct "\"}"))))))
 
-(define (do-balance)
-  (let* ((sub-raw (json-get-str "google_sub"))
+(define (do-balance input)
+  (let* ((sub-raw (json-get-str "google_sub" input))
          (sub (str-cat sub-raw ""))
          (near-acct-raw (storage-get (wallet-acct sub 0))))
     (if (nil? near-acct-raw)
@@ -46,19 +46,19 @@
               "{\"status\":\"error\",\"message\":\"account not found on chain\"}"
               (str-cat "{\"status\":\"ok\",\"balance\":\"" amount "\",\"account\":\"" near-acct "\"}"))))))))
 
-(define (do-check)
-  (let* ((sub-raw (json-get-str "google_sub"))
+(define (do-check input)
+  (let* ((sub-raw (json-get-str "google_sub" input))
          (sub (str-cat sub-raw ""))
          (cnt (count-wallets sub 0 0)))
     (if (= cnt 0)
       "{\"status\":\"ok\",\"exists\":false}"
       (str-cat "{\"status\":\"ok\",\"exists\":true,\"wallet_count\":" (to-string cnt) "}"))))
 
-(define (do-link)
-  (let* ((sub-raw (json-get-str "google_sub"))
+(define (do-link input)
+  (let* ((sub-raw (json-get-str "google_sub" input))
          (sub (str-cat sub-raw ""))
-         (api-key (str-cat (json-get-str "api_key") ""))
-         (near-acct (str-cat (json-get-str "near_account_id") "")))
+         (api-key (str-cat (json-get-str "api_key" input) ""))
+         (near-acct (str-cat (json-get-str "near_account_id" input) "")))
     (if (or (nil? api-key) (nil? near-acct))
       "{\"status\":\"error\",\"message\":\"missing api_key or near_account_id\"}"
       (let* ((cnt (count-wallets sub 0 0))
@@ -78,8 +78,8 @@
       (clear-wallets sub (+ idx 1)))))
 
 ;; unlink wallet by index
-(define (do-unlink)
-  (let* ((sub-raw (json-get-str "google_sub"))
+(define (do-unlink input)
+  (let* ((sub-raw (json-get-str "google_sub" input))
          (sub (str-cat sub-raw ""))
          (idx-raw (json-get "wallet_index"))
          (idx (if (nil? idx-raw) 0 idx-raw))
@@ -92,12 +92,12 @@
         (storage-set (wallet-label sub idx) "")
         "{\"status\":\"ok\",\"unlinked\":true}"))))
 
-(define (do-set-label)
-  (let* ((sub-raw (json-get-str "google_sub"))
+(define (do-set-label input)
+  (let* ((sub-raw (json-get-str "google_sub" input))
          (sub (str-cat sub-raw ""))
          (idx-raw (json-get "wallet_index"))
          (idx (if (nil? idx-raw) 0 idx-raw))
-         (label (str-cat (json-get-str "label") "")))
+         (label (str-cat (json-get-str "label" input) "")))
     (if (nil? label)
       "{\"status\":\"error\",\"message\":\"missing label\"}"
       (begin
@@ -120,8 +120,8 @@
         (scan-labels sub (+ idx 1) need-comma acc)
         (scan-labels sub (+ idx 1) true (str-cat acc entry))))))
 
-(define (do-get-labels)
-  (let* ((sub-raw (json-get-str "google_sub"))
+(define (do-get-labels input)
+  (let* ((sub-raw (json-get-str "google_sub" input))
          (sub (str-cat sub-raw "")))
     (str-cat "{\"status\":\"ok\",\"labels\":[" (scan-labels sub 0 false "") "]}")))
 
@@ -146,22 +146,22 @@
         (scan-wallets sub (+ idx 1) need-comma acc)
         (scan-wallets sub (+ idx 1) true (str-cat acc entry))))))
 
-(define (do-list-wallets)
-  (let* ((sub-raw (json-get-str "google_sub"))
+(define (do-list-wallets input)
+  (let* ((sub-raw (json-get-str "google_sub" input))
          (sub (str-cat sub-raw "")))
     (str-cat "{\"status\":\"ok\",\"wallets\":[" (scan-wallets sub 0 false "") "]}")))
 
 (define (run input)
-  (let ((action-num (json-get "action_num")))
+  (let ((action-num (json-get "action_num" input)))
     (cond
-      ((= action-num 1) (do-register))
-      ((= action-num 2) (do-balance))
-      ((= action-num 3) (do-check))
-      ((= action-num 4) (do-link))
-      ((= action-num 5) (do-unlink))
-      ((= action-num 6) (do-set-label))
-      ((= action-num 7) (do-get-labels))
-      ((= action-num 8) (do-list-wallets))
+      ((= action-num 1) (do-register input))
+      ((= action-num 2) (do-balance input))
+      ((= action-num 3) (do-check input))
+      ((= action-num 4) (do-link input))
+      ((= action-num 5) (do-unlink input))
+      ((= action-num 6) (do-set-label input))
+      ((= action-num 7) (do-get-labels input))
+      ((= action-num 8) (do-list-wallets input))
       (true "{\"status\":\"error\",\"message\":\"unknown action\"}"))))
 
 
