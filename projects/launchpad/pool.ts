@@ -1,3 +1,4 @@
+/// <reference path="../../ts/lisp-rlm.d.ts" />
 // pool.ts — one-sided xyk pool (pump-style) for lisp-rlm launchpad tokens.
 //
 // One pool per token, keyed by the token's account id. The launchpad seeds
@@ -160,6 +161,8 @@ function autoRefuel(tid: string, pk: string): void {
   const pad = near.storageGet(nk) ?? "0";
   if (u128Lt(pad, refuelAmt)) { return; }
   near.storageSet(nk, u128Sub(pad, refuelAmt));
+  nbSumSub(refuelAmt); // pad NEAR genuinely leaves the contract -> the key
+  floatSub(refuelAmt); // shadow float tracks the outbound transfer
   near.storageSet(gfKey(pk), u128Add(funded, refuelAmt)); // refuel raises est
   const idx = near.promiseBatchCreate(near.currentAccountId());
   // host fn wants the RAW 33-byte borsh key at public_key_ptr — pk is our
@@ -172,6 +175,61 @@ function autoRefuel(tid: string, pk: string): void {
 // "fees_near" stays as a MAINTAINED RUNNING TOTAL (view-only; claims
 // decrement it), since on-chain storage iteration is unavailable.
 function feeNearKey(t: string): string { return "fees_near:" + t; }
+
+// ── v3.8 solvency invariant ────────────────────────────────────────
+// Pads are demand liabilities payable 1:1 on withdraw(); they share the
+// contract's NEAR with AMM reserves, accrued fees and a safety margin.
+// Maintained running totals (storage iteration unavailable):
+//   nbsum = Σ all pad balances   pnsum = Σ all pool NEAR reserves
+// float_bal = exact shadow of NEAR held by the contract, maintained at
+// every NEAR boundary (attach in / transfer out). We do NOT read
+// near.accountBalance() here: the TS surface lowers to the host's low-64
+// read and wraps on u128-scale balances (types.rs account_balance → int).
+// Enforced at every pad credit: nbsum + attached ≤ floatBal − pnsum − fees.
+function floatAdd(delta: string): void {
+  near.storageSet("float_bal", u128Add(near.storageGet("float_bal") ?? "0", delta));
+}
+function floatSub(delta: string): void {
+  near.storageSet("float_bal", u128Sub(near.storageGet("float_bal") ?? "0", delta));
+}
+function padBacking(): string {
+  const flt = near.storageGet("float_bal") ?? "0";
+  const pnSum = near.storageGet("pnsum") ?? "0";
+  const fees = near.storageGet("fees_near") ?? "0";
+  const owed = u128Add(pnSum, fees);
+  if (u128Lt(flt, owed)) { return "0"; }
+  return u128Sub(flt, owed);
+}
+function nbSumAdd(delta: string): void {
+  near.storageSet("nbsum", u128Add(near.storageGet("nbsum") ?? "0", delta));
+}
+function nbSumSub(delta: string): void {
+  near.storageSet("nbsum", u128Sub(near.storageGet("nbsum") ?? "0", delta));
+}
+function pnSumAdd(delta: string): void {
+  near.storageSet("pnsum", u128Add(near.storageGet("pnsum") ?? "0", delta));
+}
+function pnSumSub(delta: string): void {
+  near.storageSet("pnsum", u128Sub(near.storageGet("pnsum") ?? "0", delta));
+}
+// full backing: every pad 1:1 (equality-preserving across deposit/trade/
+// withdraw paths — no margin, so regression scenarios size deposits 1:1)
+// hex-validation for gas-key identity args (deposit/fund_gas/
+// register_gas_key take pk hex; garbage would poison own:/nb: keys).
+// Pure hex, even length 64–128: covers raw-borsh hex (66) AND the mock's
+// hex(signer-pk-string) form. NOT length-pinned to 66 — the mock identity
+// derives traderId from hexEncode(signerAccountPk()) and must round-trip.
+function isPkHex(s: string): number {
+  const n = strLength(s);
+  if (n < 64 || n > 128 || (n % 2) != 0) { return 0; }
+  let i = 0;
+  while (i < n) {
+    const c = strSlice(s, i, i + 1);
+    if (strIndexOf("0123456789abcdef", c) < 0 && strIndexOf("0123456789ABCDEF", c) < 0) { return 0; }
+    i = i + 1;
+  }
+  return 1;
+}
 
 // single-char digit test via proven builtins only (strIndexOf) — strict,
 // no i64 parse anywhere near u128-scale input
@@ -486,6 +544,9 @@ export function new_(): number {
   near.storageSet("owner", near.predecessorAccountId());
   near.storageSet("fee_bps", "100");            // 1% default
   near.storageSet("fees_near", "0");
+  near.storageSet("nbsum", "0");
+  near.storageSet("pnsum", "0");
+  near.storageSet("float_bal", "0");
   near.log(`pool_init:${near.predecessorAccountId()}`);
   return 0;
 }
@@ -502,6 +563,8 @@ export function seed_pool(): number {
   // anyone front-run the factory with a dust reserve and own the curve
   if (isOwner() == 0) { near.abort("ERR_OWNER_ONLY"); return 0; }
   near.storageSet(pnKey(token), attached);
+  pnSumAdd(attached); // reserve asset total (for the solvency invariant)
+  floatAdd(attached); // attached NEAR physically arrived
   near.storageSet(ptKey(token), "0");
   // the token CONTRACT id — the predecessor here is the launchpad (the
   // caller), not the token; buy() needs the contract to call ftTransfer on
@@ -594,6 +657,7 @@ export function claim_fees(): number {
   if (!u128IsZero(feesNear)) {
     near.storageSet(fk, "0");
     near.storageSet("fees_near", u128Sub(near.storageGet("fees_near") ?? "0", feesNear));
+    floatSub(feesNear); // NEAR fee leaves the contract to the claimant
     near.transferU128(to, feesNear);
   }
   if (!u128IsZero(feesTok)) {
@@ -617,6 +681,8 @@ export function migrate(): number {
   const ref = near.storageGet("ref:acct") ?? "";
   if (strLength(ref) == 0) { near.abort("ERR_NO_REF"); return 0; }
   near.storageSet(pnKey(token), "0");
+  pnSumSub(pn); // reserve leaves the contract to the Ref target
+  floatSub(pn); // shadow float tracks the outbound transfer
   near.storageSet(ptKey(token), "0");
   near.storageSet(migKey(token), "1");
   near.storageRemove(pcumKey(token));
@@ -641,12 +707,19 @@ export function deposit(): number {
   if (u128IsZero(attached)) { near.abort("ERR_ZERO"); return 0; }
   const pkArg = near.jsonGetStr("pk") ?? "";
   if (pkArg != "") {
+    // strict identity check: garbage pk would poison own:/nb: storage keys
+    if (isPkHex(pkArg) == 0) { near.abort("ERR_PK"); return 0; }
     const own = near.jsonGetStr("owner") ?? "";
     if (own != "") { near.storageSet(ownKey(pkArg), own); }
   }
   const k = pkArg != "" ? nbKey("pk:" + pkArg) : nbKey(near.predecessorAccountId());
   const cur = near.storageGet(k) ?? "0";
   near.storageSet(k, u128Add(cur, attached));
+  nbSumAdd(attached);
+  floatAdd(attached); // attached NEAR physically arrived (shadow tracks it)
+  // NB: no backing guard here — a deposit carries its own backing (float
+  // and pad liabilities grow by the same amount), so it can never deepen
+  // insolvency. The invariant to police is visibility: get_solvency().
   near.log(`deposit:${near.predecessorAccountId()}:${attached}${pkArg != "" ? ":pk:" + pkArg : ""}`);
   return 0;
 }
@@ -661,8 +734,14 @@ export function fund_gas(): number {
   if (u128IsZero(attached)) { near.abort("ERR_ZERO"); return 0; }
   const pk = near.jsonGetStr("pk") ?? "";
   if (pk == "") { near.abort("ERR_PK"); return 0; }
+  // strict 66-char hex check BEFORE touching ledgers or firing promises:
+  // a garbage pk would set gf: ledger NEAR the key can never spend (the
+  // TransferToGasKey promise fails + refunds, ledger keeps lying)
+  if (isPkHex(pk) == 0) { near.abort("ERR_PK_FORMAT"); return 0; }
   const own = near.jsonGetStr("owner") ?? "";
   if (own != "") { near.storageSet(ownKey(pk), own); }
+  // NOTE: no solvency guard here — attached NEAR passes straight through to
+  // the gas key (promise), the contract never holds it as a liability.
   const k = gfKey(pk);
   near.storageSet(k, u128Add(near.storageGet(k) ?? "0", attached));
   const idx = near.promiseBatchCreate(near.currentAccountId());
@@ -680,6 +759,8 @@ export function register_gas_key(): number {
   if (u128IsZero(attached)) { near.abort("ERR_ZERO"); return 0; }
   const pk = near.jsonGetStr("pk") ?? "";
   if (pk == "") { near.abort("ERR_PK"); return 0; }
+  // same strict pk check as fund_gas (ledger + both promises downstream)
+  if (isPkHex(pk) == 0) { near.abort("ERR_PK_FORMAT"); return 0; }
   const own = near.jsonGetStr("owner") ?? near.predecessorAccountId();
   near.storageSet(ownKey(pk), own);
   const k = gfKey(pk);
@@ -695,6 +776,31 @@ export function register_gas_key(): number {
   near.promiseBatchActionTransferToGasKey(idx, near.hexDecode(pk), attached);
   near.log(`register_gas_key:${pk}:${attached}:${own}`);
   return 0;
+}
+
+// v3.8: public solvency view — liabilities the contract owes on demand
+// (pads + gas-key floats via nbsum) vs the NEAR actually held, net of
+// reserves, fees and the storage/gas margin. coverage < 100% = pads are
+// fractional-reserve and withdraw() may bounce at bank-run scale.
+export function get_solvency(): string {
+  const bal = near.storageGet("float_bal") ?? "0"; // exact shadow (u128-safe)
+  const nbSum = near.storageGet("nbsum") ?? "0";
+  const pnSum = near.storageGet("pnsum") ?? "0";
+  const backed = padBacking();
+  // coverage = bal / nbsum in percent (×100), floor; "∞" when nbsum=0.
+  // Kept as exact u128 string (no i64 conversion) — capped at 100000%.
+  let cov = "∞";
+  if (!u128IsZero(nbSum)) {
+    cov = u128Div(u128Mul(bal, "100"), nbSum);
+    if (u128Gt(cov, "100000")) { cov = "100000"; }
+    cov = trimZeros(cov);
+  }
+  return "{\"balance\":\"" + bal
+    + "\",\"pad_liabilities\":\"" + nbSum
+    + "\",\"reserves\":\"" + pnSum
+    + "\",\"fees\":\"" + (near.storageGet("fees_near") ?? "0")
+    + "\",\"unbacked_capacity\":\"" + backed
+    + "\",\"coverage_pct\":\"" + cov + "\"}";
 }
 
 // view: gas-key status for dashboards/bots — {funded, burn_gas, est}
@@ -717,6 +823,8 @@ export function withdraw(): number {
   const bal = near.storageGet(k) ?? "0";
   if (u128IsZero(bal)) { near.abort("ERR_EMPTY_PAD"); return 0; }
   near.storageSet(k, "0");
+  nbSumSub(bal); // effects before the transfer (CEI)
+  floatSub(bal); // shadow float tracks the outbound transfer
   near.transferU128(near.predecessorAccountId(), bal);
   near.log(`withdraw:${near.predecessorAccountId()}:${bal}`);
   return 0;
@@ -750,6 +858,7 @@ export function sell_internal(): string {
   const newPn = u128Sub(pn, gross);
   near.storageSet(ptKey(token), newPt);
   near.storageSet(pnKey(token), newPn);
+  pnSumSub(gross);
   touch(token, pn, pt, newPn, newPt, near.blockTimestamp());
   if (!u128IsZero(fee)) {
     accrueNearFee(token, fee);
@@ -757,6 +866,8 @@ export function sell_internal(): string {
   const nk = nbKey(trader);
   const padNow = near.storageGet(nk) ?? "0";
   near.storageSet(nk, u128Add(padNow, net));
+  // backing came out of pn (freed by pnSumSub above; net ≤ gross) — no guard
+  nbSumAdd(net);
   autoRefuel(trader, gkPk);
   tradeEvent(token, "sell", trader, net, amount, fee);
   recordTrade(token, "sell", trader, net, amount);
@@ -794,6 +905,7 @@ export function sell(): string {
   const newPn = u128Sub(pn, gross);
   near.storageSet(ptKey(token), newPt);
   near.storageSet(pnKey(token), newPn);
+  pnSumSub(gross);
   touch(token, pn, pt, newPn, newPt, near.blockTimestamp());
   if (!u128IsZero(fee)) {
     accrueNearFee(token, fee);
@@ -804,8 +916,11 @@ export function sell(): string {
   if (toPad) {
     const nk = nbKey(trader);
     near.storageSet(nk, u128Add(near.storageGet(nk) ?? "0", net));
+    // backing came out of pn (freed by pnSumSub above; net ≤ gross) — no guard
+    nbSumAdd(net);
   } else {
     near.transferU128(rcpt, net);
+    floatSub(net); // NEAR out to the seller's wallet
   }
   autoRefuel(trader, gkPk);
   tradeEvent(token, "sell", trader, net, amount, fee);
@@ -881,6 +996,9 @@ export function buy(): string {
     if (u128Lt(pad, want)) { near.abort("ERR_BALANCE"); return ""; }
     nearIn = want;
   }
+  // NOTE: no backing guard needed at buy() — a pad-funded buy converts pad
+  // NEAR into reserves (nbsum down, pnsum up), which only IMPROVES the
+  // solvency invariant; attached buys grow balance and reserves equally.
   const pt = near.storageGet(ptKey(token)) ?? "0";
   if (u128IsZero(pt)) { near.abort("ERR_NO_TOKENS"); return ""; }
   const trader = near.predecessorAccountId();
@@ -894,12 +1012,14 @@ export function buy(): string {
   const newPn = u128Add(pn, nearIn);
   near.storageSet(ptKey(token), newPt);
   near.storageSet(pnKey(token), newPn);
+  pnSumAdd(nearIn);
   touch(token, pn, pt, newPn, newPt, near.blockTimestamp());
   if (u128IsZero(attached)) {
     const nk = nbKey(tid);
     const padNow = near.storageGet(nk) ?? "0";
     const padAfter = u128Sub(padNow, nearIn);
     near.storageSet(nk, padAfter);
+    nbSumSub(nearIn);
     autoRefuel(tid, gkPk);
   }
   if (!u128IsZero(fee)) {
@@ -970,11 +1090,13 @@ export function ft_on_transfer(): string {
     const newPn = u128Sub(pn, gross);
     near.storageSet(ptKey(token), newPt);
     near.storageSet(pnKey(token), newPn);
+    pnSumSub(gross);
     touch(token, pn, pt, newPn, newPt, near.blockTimestamp());
     if (!u128IsZero(fee)) {
       accrueNearFee(token, fee);
     }
     near.transferU128(sender, net);
+    floatSub(net); // NEAR out to the seller
     tradeEvent(token, "sell", sender, net, amount, fee);
     recordTrade(token, "sell", sender, net, amount);
     near.log(`sell:${sender}:${amount}:${net}`);
