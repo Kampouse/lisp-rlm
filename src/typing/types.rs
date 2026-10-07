@@ -1507,6 +1507,25 @@ impl TcEnv {
             "schnorr-pubkey".into(),
             TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
         );
+        // schnorr-pubkey33 : str -> str (SEC1 02/03 prefix + x — cacheable
+        // form consumed by schnorr-sign-pk; wasm call_near_crypto.rs)
+        env.insert_mono(
+            "schnorr-pubkey33".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        // schnorr-sign-pk : str -> str -> str -> str -> str (cached-pk sign)
+        env.insert_mono(
+            "schnorr-sign-pk".into(),
+            TcType::Arrow(
+                vec![
+                    str_ty.clone(),
+                    str_ty.clone(),
+                    str_ty.clone(),
+                    str_ty.clone(),
+                ],
+                Box::new(str_ty.clone()),
+            ),
+        );
         // near/schnorr_verify : str -> str -> str -> int (BIP-340 secp256k1, stitched WASM)
         env.insert_mono(
             "near/schnorr_verify".into(),

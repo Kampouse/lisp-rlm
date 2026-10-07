@@ -454,6 +454,10 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "sha256",
     "tagged-hash",
     "schnorr-verify",
+    "schnorr-sign",
+    "schnorr-sign-pk",
+    "schnorr-pubkey",
+    "schnorr-pubkey33",
     "ed25519-verify",
 ];
 

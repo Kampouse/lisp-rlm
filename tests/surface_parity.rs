@@ -27,6 +27,12 @@ const SPECIAL_FORMS: &[&str] = &[
 /// wasm-harness-only. Keep this table honest: new drift goes here ONLY with
 /// a real reason, otherwise port the builtin.
 const WASM_ONLY_DOCUMENTED: &[(&str, &str)] = &[
+    // ── TEE-backed ops: the interp has no OutLayer/TEE runtime ──
+    (
+        "vrf-generate",
+        "outlayer import #26 (TEE VRF) — randomness only exists inside the
+         TEE; interp would have to fake entropy, which defeats the op",
+    ),
     // ── input-reading ops: the interp has no tx input JSON ──
     (
         "json-extract-input",
@@ -97,12 +103,7 @@ const WASM_ONLY_DOCUMENTED: &[(&str, &str)] = &[
     ("byte-at", "raw buffer byte read (wasm memory)"),
     ("bytes-to-u32", "raw buffer word read (wasm memory)"),
     ("u32-to-bytes", "raw buffer word write (wasm memory)"),
-    ("sha256_hash", "C-ABI sha256 into raw buffer (wasm memory)"),
     ("sha256-hash", "C-ABI sha256 into raw buffer (wasm memory)"),
-    (
-        "schnorr_verify_bip340",
-        "C-ABI verify over raw buffers (wasm memory)",
-    ),
     ("str_to_int", "C-ABI parse from raw buffer (wasm memory)"),
     ("str-slice", "C-ABI slice into raw buffer (wasm memory)"),
     ("arr_new", "array-in-linear-memory family (wasm layout)"),
@@ -431,7 +432,16 @@ fn extract_wasm_ops() -> BTreeSet<String> {
     files.sort();
     for path in files {
         let src = fs::read_to_string(&path).expect("read emitter file");
+        let mut prev_ended_with_import_opener = false;
         for line in src.lines() {
+            // `need_wasm_import(` splits its args across lines; a quoted
+            // string on the next line is the HOST IMPORT SYMBOL argument,
+            // not a user-facing op arm — skip it.
+            let skip_arm = prev_ended_with_import_opener;
+            prev_ended_with_import_opener = line.trim_end().ends_with("need_wasm_import(");
+            if skip_arm {
+                continue;
+            }
             for m in arm.captures_iter(line) {
                 names.insert(m[1].to_string());
             }
