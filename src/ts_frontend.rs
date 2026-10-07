@@ -330,11 +330,100 @@ pub fn ts_line_hint(map: &[(String, u32)], src: &str, name: &str) -> Option<Stri
     })
 }
 
+/// Locate WHICH top-level form a checker error comes from, with its TS
+/// source position (2026-10-06). The checker is sequential (defines build
+/// the env in order), so the first failing prefix identifies the culprit
+/// form exactly — no spans needed on LispVal. Returns
+/// "in function 'name' (ts line N)" plus the source line, or None when
+/// the whole program checks clean / the culprit can't be named.
+///
+/// Use on the error path only: O(n) checker passes over a program of n
+/// top-level forms. Offsets come from the fresh parse_ts walk (call right
+/// after it drains IDENT_OFFSETS).
+pub fn locate_form_error(
+    exprs: &[LispVal],
+    ident_map: &[(String, u32)],
+    src: &str,
+    orig_err: &str,
+) -> Option<String> {
+    // find first failing prefix
+    let mut culprit: Option<&LispVal> = None;
+    for k in 1..=exprs.len() {
+        if crate::typing::type_check_program(&exprs[..k], true).is_err() {
+            culprit = Some(&exprs[k - 1]);
+            break;
+        }
+    }
+    let form = culprit?;
+    // extract the defined/exported name: (define (name ...) …) or
+    // (export "x" name) — for exports, prefer the referenced define's
+    // own name so the hint lands on its definition
+    let sym_at = |v: &LispVal| -> Option<String> {
+        match v {
+            LispVal::Sym(s) => Some(s.clone()),
+            _ => None,
+        }
+    };
+    let mut name: Option<String> = None;
+    if let LispVal::List(items) = form {
+        let head = items.first().and_then(sym_at).unwrap_or_default();
+        if head == "define" {
+            if let Some(LispVal::List(sig)) = items.get(1) {
+                name = sig.first().and_then(sym_at); // (define (name args…) …)
+            } else {
+                name = items.get(1).and_then(sym_at); // (define name value)
+            }
+        } else if head == "export" {
+            if let Some(LispVal::Str(s)) = items.get(1) {
+                name = Some(s.clone()); // exported display name
+            }
+        }
+    }
+    let name = name?;
+    // prefer the DEFINITION offset (ident_map first-occurrence often points
+    // at a call site above the def under hoisted lowering order)
+    let line_no = ident_map
+        .iter()
+        .find(|(n, _)| n == &name)
+        .map(|(_, off)| line_col(src, *off).0 as u32);
+    let line_no = line_no?;
+    let excerpt = src_excerpt(src, line_no);
+    Some(format!(
+        "in function `{}` (ts line {}) — first error:\n  {}\n{}",
+        name,
+        line_no,
+        orig_err.lines().next().unwrap_or(orig_err),
+        excerpt
+    ))
+}
+
 // ── Program / statements ──────────────────────────────────────────────────
 
 /// RLM runtime API callable from the TS surface (advertised in the
 /// cheatsheet COMPLETE EXAMPLE). Runtime defines loaded before eval.
 const RLM_RUNTIME_API: &[&str] = &["rlm_set", "rlm_get"];
+
+/// Definition sites (name, byte-offset) recorded during collect_user_fns —
+/// unlike IDENT_OFFSETS (first occurrence, often a call above the def in
+/// hoisted lowering order) these always land ON the definition for
+/// locate_form_error.
+thread_local! {
+    static FN_DEF_OFFSETS: std::cell::RefCell<Vec<(String, u32)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn note_fn_def(name: &str, span_start: u32) {
+    FN_DEF_OFFSETS.with(|m| {
+        let mut b = m.borrow_mut();
+        if !b.iter().any(|(n, _)| n == name) {
+            b.push((name.to_string(), span_start));
+        }
+    });
+}
+
+pub fn take_fn_def_offsets() -> Vec<(String, u32)> {
+    FN_DEF_OFFSETS.with(|m| std::mem::take(&mut *m.borrow_mut()))
+}
 
 fn collect_user_fns(stmts: &[Statement<'_>], out: &mut std::collections::HashSet<String>) {
     for s in stmts {
@@ -342,6 +431,7 @@ fn collect_user_fns(stmts: &[Statement<'_>], out: &mut std::collections::HashSet
             Statement::FunctionDeclaration(f) => {
                 if let Some(id) = &f.id {
                     out.insert(id.name.as_str().to_string());
+                    note_fn_def(id.name.as_str(), id.span.start);
                 }
                 // NOTE: stmts_of() on a non-Block returns the statement
                 // itself — recursing through it here was an infinite loop
@@ -354,6 +444,7 @@ fn collect_user_fns(stmts: &[Statement<'_>], out: &mut std::collections::HashSet
                 if let Declaration::FunctionDeclaration(f) = &decl.declaration {
                     if let Some(id) = &f.id {
                         out.insert(id.name.as_str().to_string());
+                        note_fn_def(id.name.as_str(), id.span.start);
                     }
                     if let Some(body) = &f.body {
                         collect_user_fns(&body.statements, out);
