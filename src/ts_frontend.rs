@@ -299,11 +299,7 @@ fn discard_normalize(v: &LispVal) -> LispVal {
                     return LispVal::List(vec![
                         items[0].clone(),
                         items[1].clone(),
-                        LispVal::List(vec![
-                            LispVal::Sym("begin".into()),
-                            body,
-                            LispVal::Num(0),
-                        ]),
+                        LispVal::List(vec![LispVal::Sym("begin".into()), body, LispVal::Num(0)]),
                         LispVal::Num(0),
                     ]);
                 }
@@ -499,8 +495,7 @@ fn collect_arrow_decls(
 }
 
 fn user_fn_or_runtime(name: &str) -> bool {
-    USER_FNS.with(|f| f.borrow().contains(name))
-        || RLM_RUNTIME_API.contains(&name)
+    USER_FNS.with(|f| f.borrow().contains(name)) || RLM_RUNTIME_API.contains(&name)
 }
 
 fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
@@ -1397,7 +1392,10 @@ fn lower_for_form(f: &oxc_ast::ast::ForStatement<'_>, view: bool) -> Result<Lisp
 /// Lower `do { body } while (test);` → (begin body (while test body)).
 /// Body lowers twice (pre-run + loop) — semantics-faithful, no exit
 /// protocol (reject_loop_exits applies).
-fn lower_do_while_form(d: &oxc_ast::ast::DoWhileStatement<'_>, view: bool) -> Result<LispVal, String> {
+fn lower_do_while_form(
+    d: &oxc_ast::ast::DoWhileStatement<'_>,
+    view: bool,
+) -> Result<LispVal, String> {
     reject_loop_exits(stmts_of(&d.body))?;
     let body = lower_prefix_around(stmts_of(&d.body), Num(0), view)?;
     let test = truthy(&d.test)?;
@@ -1414,7 +1412,10 @@ fn lower_do_while_form(d: &oxc_ast::ast::DoWhileStatement<'_>, view: bool) -> Re
 /// break; empty case bodies (case a: case b: …) are rejected too (write
 /// the body explicitly). return inside a case is rejected (use a flag
 /// variable, assign, then return after the switch).
-fn lower_switch_form(sw: &oxc_ast::ast::SwitchStatement<'_>, view: bool) -> Result<LispVal, String> {
+fn lower_switch_form(
+    sw: &oxc_ast::ast::SwitchStatement<'_>,
+    view: bool,
+) -> Result<LispVal, String> {
     let disc = lower_expr(&sw.discriminant)?;
     let has_default = sw.cases.iter().any(|c| c.test.is_none());
     // validate: exits, fallthrough, empties, dup defaults
@@ -1670,8 +1671,10 @@ fn lower_prefix_around_with_return(
             // the lowering hole). Force the blanket when the branch ENDS
             // in a direct return: the branch is a guaranteed return, and
             // the tail commit survives via the __fn_done guard.
-            let then_tail_return =
-                matches!(stmts_of(&i.consequent).last(), Some(Statement::ReturnStatement(_)));
+            let then_tail_return = matches!(
+                stmts_of(&i.consequent).last(),
+                Some(Statement::ReturnStatement(_))
+            );
             if (stmt_has_return(&i.consequent) && !is_commit_form(&then_e)) || then_tail_return {
                 // branch value becomes the function result
                 then_e = list(vec![
@@ -3478,12 +3481,7 @@ fn lower_assign_form(asg: &oxc_ast::ast::AssignmentExpression<'_>) -> Result<Lis
             Ok(list(vec![
                 Sym("set!"),
                 Sym(obj_name.clone()),
-                list(vec![
-                    Sym("json-set"),
-                    Sym(obj_name),
-                    Str(path),
-                    val,
-                ]),
+                list(vec![Sym("json-set"), Sym(obj_name), Str(path), val]),
             ]))
         }
         oxc_ast::ast::AssignmentTarget::ComputedMemberExpression(cm) => {
@@ -5250,8 +5248,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                             // minted an unknown Math/pow symbol instead.
                             if c.arguments.len() != 2 {
                                 return Err(
-                                    "ts_frontend: Math.pow takes exactly two arguments (M1)"
-                                        .into(),
+                                    "ts_frontend: Math.pow takes exactly two arguments (M1)".into(),
                                 );
                             }
                             let mut items = vec![Sym("expt")];
@@ -5926,56 +5923,136 @@ fn callee_name(e: &Expression<'_>) -> Result<String, String> {
     }
 }
 
+/// The known near.* member surface — DATA, not a hand-rolled matches!().
+/// Enforced byte-for-byte against ts/lisp-rlm.d.ts's `declare const near`
+/// block by tests/ts_surface_dts_parity.rs (both directions). Adding a
+/// builtin means: d.ts entry + this table in the same commit, or the
+/// parity test fails. Keep order alphabetical within each group.
+pub const KNOWN_NEAR_MEMBERS: &[&str] = &[
+    // input/args
+    "jsonGetStr",
+    "jsonGetInt",
+    "jsonGetArr",
+    "jsonArr",
+    "jsonGet",
+    "jsonSet",
+    "jsonQuote",
+    "jsonExtract",
+    "jsonReturnStr",
+    "jsonReturnInt",
+    // identity / env
+    "predecessorAccountId",
+    "signerAccountId",
+    "currentAccountId",
+    "signerAccountPk",
+    "blockIndex",
+    "blockHeight",
+    "blockTimestamp",
+    "blockTimestampNum",
+    "prepaidGas",
+    "usedGas",
+    "storageUsage",
+    "accountBalance",
+    "attachedDeposit",
+    "attachedDepositLow",
+    "attachedDepositHigh",
+    "attachedDepositU128",
+    "depositGte",
+    "input",
+    // storage
+    "storageGet",
+    "storageSet",
+    "storageRemove",
+    "storageHas",
+    "storageHasKey",
+    "iterPrefix",
+    "iterNext",
+    // returns / control
+    "returnStr",
+    "log",
+    "logNum",
+    "panic",
+    "abort",
+    // money
+    "transfer",
+    "transferU128",
+    "storeU128",
+    "readU128",
+    "loadU128",
+    // hashes / crypto (precompiles)
+    "sha256",
+    "keccak256",
+    "keccak512",
+    "ripemd160",
+    "randomSeed",
+    "hexDecode",
+    "hexEncode",
+    "sha256Hash",
+    "keccak256Hash",
+    "ed25519Verify",
+    "ecrecover",
+    "vrfGenerate",
+    "schnorrVerify",
+    "schnorrSign",
+    "schnorrSignPk",
+    "schnorrPubkey",
+    "schnorrPubkey33",
+    "p256Verify",
+    "altBn128PairingCheck",
+    "altBn128G1Sum",
+    "altBn128G1Multiexp",
+    "altBn128G2Sum",
+    "bls12381PairingCheck",
+    "bls12381P1Sum",
+    "bls12381P2Sum",
+    "bls12381G1Multiexp",
+    "bls12381G2Multiexp",
+    "bls12381MapFpToG1",
+    "bls12381MapFp2ToG2",
+    "bls12381P1Decompress",
+    "bls12381P2Decompress",
+    "blsG1Sum",
+    "blsG2Sum",
+    // promises
+    "promiseCreate",
+    "promiseThen",
+    "promiseAnd",
+    "promiseReturn",
+    "promiseResult",
+    "promiseSucceeded",
+    "promiseResultsCount",
+    "promiseBatchCreate",
+    "promiseBatchThen",
+    "promiseBatchActionTransfer",
+    "promiseBatchActionFunctionCall",
+    "promiseBatchActionFunctionCallWeight",
+    "promiseBatchActionCreateAccount",
+    "promiseBatchActionDeployGlobalContract",
+    "promiseBatchActionDeployGlobalContractByAccountId",
+    "promiseBatchActionUseGlobalContract",
+    "promiseBatchActionUseGlobalContractByAccountId",
+    "promiseBatchActionAddKeyWithFullAccess",
+    "promiseBatchActionAddGasKeyWithFullAccess",
+    "promiseBatchActionAddKeyWithFunctionCall",
+    "promiseBatchActionAddGasKeyWithFunctionCall",
+    "promiseBatchActionTransferToGasKey",
+    "promiseBatchActionDeleteKey",
+    "promiseBatchActionStake",
+    "promiseBatchActionDeleteAccount",
+    "promiseYieldCreate",
+    "promiseYieldResume",
+    "yieldCreate",
+    "yieldResume",
+    "callAwait",
+    "call",
+];
+
 /// The known near.* member surface (keep in sync with ts/lisp-rlm.d.ts —
-/// the warning above only exists to catch typos, not to close the door on
-/// undocumented host ops).
+/// parity is ENFORCED by tests/ts_surface_dts_parity.rs; the warning below
+/// only exists to catch typos, not to close the door on undocumented host
+/// ops).
 fn known_near_member(p: &str) -> bool {
-    matches!(
-        p,
-        // input/args
-        "jsonGetStr" | "jsonGetInt" | "jsonGetArr" | "jsonArr" | "jsonGet" | "jsonSet"
-            | "jsonQuote" | "jsonExtract" | "jsonReturnStr" | "jsonReturnInt"
-        // identity / env
-            | "predecessorAccountId" | "signerAccountId" | "currentAccountId"
-            | "signerAccountPk" | "blockIndex" | "blockHeight" | "blockTimestamp"
-            | "blockTimestampNum" | "prepaidGas" | "usedGas" | "storageUsage"
-            | "accountBalance" | "attachedDepositLow" | "attachedDepositHigh"
-            | "depositGte"
-        // storage
-            | "storageGet" | "storageSet" | "storageRemove" | "storageHas"
-            | "storageHasKey" | "iterPrefix"
-        // returns / control
-            | "returnStr" | "log" | "logNum" | "panic" | "abort"
-        // money
-            | "transfer" | "transferU128" | "storeU128" | "readU128"
-        // promises
-            | "promiseCreate" | "promiseThen" | "promiseAnd" | "promiseReturn"
-            | "promiseResult" | "promiseSucceeded" | "promiseResultsCount"
-            | "promiseBatchCreate" | "promiseBatchThen"
-            | "promiseBatchActionTransfer" | "promiseBatchActionFunctionCall"
-            | "promiseBatchActionFunctionCallWeight"
-            | "promiseBatchActionCreateAccount"
-            | "promiseBatchActionDeployGlobalContract"
-            | "promiseBatchActionDeployGlobalContractByAccountId"
-            | "promiseBatchActionUseGlobalContract"
-            | "promiseBatchActionUseGlobalContractByAccountId"
-            | "promiseBatchActionAddKeyWithFullAccess"
-            | "promiseBatchActionAddGasKeyWithFullAccess"
-            | "promiseBatchActionAddKeyWithFunctionCall"
-            | "promiseBatchActionAddGasKeyWithFunctionCall"
-            | "promiseBatchActionTransferToGasKey"
-            | "promiseBatchActionDeleteKey" | "promiseBatchActionStake"
-            | "promiseBatchActionDeleteAccount"
-            | "promiseYieldCreate" | "promiseYieldResume"
-            | "yieldCreate" | "yieldResume"
-            | "callAwait" | "call"
-        // crypto
-            | "sha256Hash" | "keccak256Hash" | "hexDecode" | "hexEncode"
-            | "ed25519Verify" | "schnorrVerify" | "schnorrSign" | "schnorrSignPk"
-            | "schnorrPubkey" | "schnorrPubkey33" | "vrfGenerate"
-            | "p256Verify" | "altBn128PairingCheck" | "bls12381PairingCheck"
-            | "altBn128G1Sum" | "altBn128G2Sum" | "blsG1Sum" | "blsG2Sum"
-    )
+    KNOWN_NEAR_MEMBERS.contains(&p)
 }
 
 /// Bare getter calls that yield NIL on a miss (jsonGetStr / near.jsonGetStr /

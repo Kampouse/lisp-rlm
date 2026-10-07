@@ -39,7 +39,8 @@ fn math_names_frontend(src: &str) -> Vec<&str> {
 fn math_surface_is_documented_in_dts_and_cheatsheet() {
     let fe = fs::read_to_string(FRONTEND).expect("ts_frontend.rs readable");
     let dts = fs::read_to_string(DTS).expect("d.ts readable");
-    let cheat = fs::read_to_string(CHEATSHEET).expect("cheatsheet-ts.txt readable (run scripts/gen-cheatsheet-ts.py)");
+    let cheat = fs::read_to_string(CHEATSHEET)
+        .expect("cheatsheet-ts.txt readable (run scripts/gen-cheatsheet-ts.py)");
 
     let math = math_names_frontend(&fe);
     assert!(
@@ -82,6 +83,125 @@ fn dts_free_functions_exist_in_frontend() {
             fe.contains(&f),
             "d.ts declares `{f}` but ts_frontend.rs never mentions it — \
              removed builtin, stale d.ts, or missing lowering"
+        );
+    }
+}
+
+/// The near-compile crate embeds its own copy of the contract
+/// (include_str!("../skills/ts-template-lisp-rlm.d.ts"), scaffolded into
+/// new projects). Two copies drift in both directions — the skills copy
+/// still said `promiseThen(deposit: number)` after the str-deposit
+/// migration (caught 2026-10-07). Root is the source of truth.
+#[test]
+fn dts_copies_are_identical() {
+    let root = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ts/lisp-rlm.d.ts"))
+        .expect("ts/lisp-rlm.d.ts readable");
+    let skills = fs::read_to_string(DTS).expect("skills d.ts readable");
+    assert_eq!(
+        root, skills,
+        "ts/lisp-rlm.d.ts and crates/near-compile/skills/ts-template-lisp-rlm.d.ts \
+         diverged — root is the source of truth: `cp ts/lisp-rlm.d.ts \
+         crates/near-compile/skills/ts-template-lisp-rlm.d.ts`"
+    );
+}
+
+/// Every method on the d.ts `near` object must sit in the frontend's
+/// KNOWN_NEAR_MEMBERS gate, and vice versa — both directions, no silent
+/// drift. (Before this was enforced the gate was missing ALL the
+/// BLS/EC-precompile members → spurious typo-warnings for documented
+/// calls, while 27 accepted members were undocumented.)
+#[test]
+fn near_member_surface_matches_gate() {
+    let fe = fs::read_to_string(FRONTEND).expect("ts_frontend.rs readable");
+    let dts = fs::read_to_string(DTS).expect("d.ts readable");
+
+    // d.ts side: `  name(` lines inside the `declare const near: { … }` block
+    let block = dts
+        .split("declare const near: {")
+        .nth(1)
+        .expect("d.ts has a `declare const near` block")
+        .split("\n};")
+        .next()
+        .unwrap();
+    let mut documented: Vec<String> = Vec::new();
+    for line in block.lines() {
+        let l = line.trim_start();
+        if l.starts_with("//") {
+            continue;
+        }
+        if let Some(paren) = l.find('(') {
+            let name = &l[..paren];
+            // method signature: `name(args…): ret;` — name is a bare
+            // camelCase identifier (rejects `key: string` param lines,
+            // which contain ": " BEFORE the paren, and index signatures)
+            if !name.is_empty()
+                && !name.contains(':')
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && name.chars().next().map_or(false, |c| c.is_lowercase())
+            {
+                documented.push(name.to_string());
+            }
+        }
+    }
+    assert!(
+        documented.len() >= 80,
+        "expected the full near.* surface (~100), parsed {} — parser drift? got {documented:?}",
+        documented.len()
+    );
+
+    // frontend side: strings in the KNOWN_NEAR_MEMBERS table
+    let table = fe
+        .split("pub const KNOWN_NEAR_MEMBERS: &[&str] = &[\n")
+        .nth(1)
+        .expect("KNOWN_NEAR_MEMBERS table present")
+        .split("\n];")
+        .next()
+        .unwrap();
+    let mut gated: Vec<String> = Vec::new();
+    // Parse line-wise: a `// group` comment line must not swallow the
+    // first entry of the next line (token-wise `split("//")` ate it —
+    // first entry after every comment went missing).
+    for line in table.lines() {
+        let l = line.trim();
+        if l.is_empty() || l.starts_with("//") {
+            continue;
+        }
+        for tok in l.trim_end_matches(',').split(',') {
+            let t = tok.trim();
+            let t = t.strip_prefix('"').unwrap_or(t);
+            let t = t.strip_suffix('"').unwrap_or(t);
+            if !t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                gated.push(t.to_string());
+            }
+        }
+    }
+    assert!(!gated.is_empty(), "gate table parsed empty");
+
+    // dedupe, keep order-stable
+    fn uniq(v: Vec<String>) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for x in v {
+            if !out.contains(&x) {
+                out.push(x);
+            }
+        }
+        out
+    }
+    let documented = uniq(documented);
+    let gated = uniq(gated);
+
+    for m in &documented {
+        assert!(
+            gated.contains(m),
+            "d.ts documents near.{m} but KNOWN_NEAR_MEMBERS omits it — \
+             documented calls must not raise the typo warning"
+        );
+    }
+    for m in &gated {
+        assert!(
+            documented.contains(m),
+            "KNOWN_NEAR_MEMBERS accepts near.{m} but the d.ts never documents it — \
+             add a d.ts entry in the same commit (the gate is derived data now)"
         );
     }
 }

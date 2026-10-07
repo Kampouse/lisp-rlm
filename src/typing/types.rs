@@ -1640,7 +1640,12 @@ impl TcEnv {
             "near/panic".into(),
             TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())),
         );
-        // near/promise_create : str → str → str → int → int → int
+        // near/promise_create : str → str → str → str → int → int
+        // (account, method, args, deposit u128 decimal STR, gas int)
+        // Deposit unified to decimal string 2026-10-07 — same ABI truth as
+        // promise_then / batch_action_function_call; the old int form made
+        // `number` mean three things at the TS surface and let the fixture
+        // attach 20T yocto as a deposit (slot-swap bug).
         env.insert_mono(
             "near/promise_create".into(),
             TcType::Arrow(
@@ -1648,7 +1653,7 @@ impl TcEnv {
                     str_ty.clone(),
                     str_ty.clone(),
                     str_ty.clone(),
-                    int_ty.clone(),
+                    str_ty.clone(),
                     int_ty.clone(),
                 ],
                 Box::new(int_ty.clone()),

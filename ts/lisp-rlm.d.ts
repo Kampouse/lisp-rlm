@@ -39,7 +39,13 @@ declare function strJoin(separator: string, parts: LispArr<string>): string;
 // absent), nested `o.a.b` lowers to one dot-path call. Numeric reads need strToNum;
 // rebuild via jsonSet with an ENCODED value (jsonQuote(s) for strings,
 // toStr(n) for numbers — object literals self-encode).
+// `o.x = v;` (statement) rebinds: o = jsonSet(o, "x", encoded v) — single level.
 declare type LispObj = string;
+
+// NOTE: `Number(s)` also lowers to str->num (map_builtin_call) but is NOT
+// redeclared here — it would collide with the JS global (TS 2300).
+declare function parseInt(s: string): number;
+declare function parseFloat(s: string): number;
 
 // ── JSON API v3 (2026-09-15) — the JS-like layer ────────────────────────
 // READING ARGS, the 10-line story:
@@ -204,6 +210,16 @@ declare const near: {
   jsonGetInt(key: string, json: string): number | null;
   jsonReturnStr(v: string): void;
   jsonReturnInt(v: number): void;
+  /** Free-function parity as near.* members — all of these lower to the
+   *  same lisp builtins as their bare-name forms. */
+  jsonQuote(s: string): string;
+  jsonSet(obj: LispObj, key: string, value: any): any;
+  jsonGet(key: string, json: string): string;
+  jsonGetArr(key: string): LispArr<string>;
+  jsonExtract(...keys: string[]): LispArr<string>;
+  hexDecode(hex: string): string;
+  hexEncode(bytes: string): string;
+  keccak256Hash(msg: string): string;
 
   /** RAW value_return (lisp near/return_str parity): bytes go to the
    *  caller exactly as-is — no {"result": ...} wrap. Needed when a
@@ -231,12 +247,15 @@ declare const near: {
   /** Raw numeric ns (lattice Num) — prefer blockTimestamp() unless you
    *  actually need arithmetic on the value. */
   blockTimestampNum(): number;
+  blockHeight(): number;
 
   // money (u128 scale → decimal strings)
   attachedDeposit(): string;
   attachedDepositU128(): string;
   /** High 64 bits of the attached deposit as i64 (raw-ABI pairing with attachedDeposit). */
   attachedDepositHigh(): number;
+  /** Legacy low-64 form (pairs with attachedDepositHigh; prefer attachedDeposit). */
+  attachedDepositLow(): number;
   accountBalance(): string;
   // compile-time u128 constant as (lo64, hi64) split — see wasm_emit
   // deposit check: writes attached_deposit to TEMP_MEM, compares u128.
@@ -252,11 +271,22 @@ declare const near: {
   transferU128(toAccountId: string, amount: string): void;
   storeU128(key: string, value: string): void;
   loadU128(key: string): string;
+  /** Read a u128 storage value → decimal string ("" if missing). */
+  readU128(key: string): string;
 
   // misc
   log(s: string): void;
   logNum(n: number): void;
   abort(msg: string): void;
+  /** schnorr/EC precompile parity as near.* members — same lowering as
+   *  the bare schnorrVerify(...) free function. */
+  schnorrVerify(pubkeyHex: string, sigHex: string, msgHashHex: string): number;
+  schnorrSign(skHex: string, msgHashHex: string, auxHex: string): string;
+  schnorrSignPk(skHex: string, msgHashHex: string, auxHex: string): string;
+  schnorrPubkey(skHex: string): string;
+  schnorrPubkey33(skHex: string): string;
+  /** Verifiable-function randomness (NEP-364 style VRF). */
+  vrfGenerate(inputHex: string): string;
   // ── cross-contract (async promise machinery) ──
   // callAwait: schedule an async call on `target`, then invoke `callback`
   // (an exported fn on THIS contract) with the callee's result readable
@@ -279,6 +309,9 @@ declare const near: {
   yieldCreate(method: string, argsJson: string, gas: number, weight: number): number;
   // yieldResume: resume a yielded promise — (dataId, payload).
   yieldResume(dataId: string, payload: string): number;
+  /** promiseYield* are the raw near.* spellings of yieldCreate/yieldResume. */
+  promiseYieldCreate(method: string, argsJson: string, gas: number, weight: number): number;
+  promiseYieldResume(dataId: string, payload: string): number;
 
   // ── crypto / hashing (host functions; all compile-verified) ──
   /** SHA-256 of a byte string → hex digest (64 hex chars). */
@@ -313,6 +346,11 @@ declare const near: {
   bls12381MapFp2ToG2(fp2: string): string;
   bls12381P1Decompress(g1: string): string;
   bls12381P2Decompress(g2: string): string;
+  /** Shorter aliases for the G1/G2 point sums. */
+  blsG1Sum(buf: string): string;
+  blsG2Sum(buf: string): string;
+  /** BN254 G2 point sum (pairs with altBn128G1Sum). */
+  altBn128G2Sum(buf: string): string;
 
   // ── context / gas ──
   /** Full signer public key (hex) — pairs with ed25519Verify. */
@@ -325,8 +363,12 @@ declare const near: {
   panic(msg: string): void;
 
   // ── raw promises (lower-level than callAwait) ──
-  /** All three take deposit as i64 (use 0) BEFORE gas. Return promise idx. */
-  promiseCreate(target: string, method: string, argsJson: string, deposit: number, gas: number): number;
+  /**
+   * Start a cross-contract call. Deposit is a u128 decimal STRing
+   * ("0" for none) — yocto values overflow JS `number`; ALL promise
+   * deposits are strings, matching promiseThen and the batch forms.
+   */
+  promiseCreate(target: string, method: string, argsJson: string, deposit: string, gas: number): number;
   promiseThen(p: number, target: string, method: string, argsJson: string, deposit: string, gas: number): number;
   promiseAnd(p1: number, p2: number, p3?: number): number;
 
@@ -359,6 +401,15 @@ declare const near: {
   promiseReturn(p: number): void;
   /** Whether promise result idx succeeded (1/0) — callbacks only. */
   promiseSucceeded(idx: number): number;
+  /** How many promise results are readable in this callback. */
+  promiseResultsCount(): number;
+  /** Gas-key delegation (NEP-611): batch actions need the gas-key batch
+   *  variants — full access, function-call scoped, and direct transfers. */
+  promiseBatchActionAddGasKeyWithFullAccess(p: number, publicKey: string): void;
+  promiseBatchActionAddGasKeyWithFunctionCall(p: number, publicKey: string, allowance: string, receiverId: string, methodNames: string[]): void;
+  promiseBatchActionTransferToGasKey(p: number, yoctoAmount: string): void;
+  /** Adopt an existing global contract under this account (by account id). */
+  promiseBatchActionUseGlobalContractByAccountId(p: number, accountId: string): void;
   // Raw-ABI forms (ptr/len pairs, not strings) also exist for stake,
   // addKeyWithFullAccess, addKeyWithFunctionCall, deleteKey, deleteAccount,
   // deployContract — awkward from TS; reach for them only if you must.
@@ -366,7 +417,9 @@ declare const near: {
 
 // ── JS std shims (2026-08-30) ─────────────────────────────────────────
 // console.log → near/log (args space-joined, auto to-string'd).
-// Math.abs/max/min → abs/max/min (variadic, integer math).
+// Math.abs, Math.max, Math.min, Math.sqrt, Math.floor, Math.round,
+// Math.ceil → same-named int builtins; Math.pow(a, b) → (expt a b).
+// Other Math.* hard-errors at the frontend (2026-10-05).
 // JSON.stringify(scalar) → json-quote; JSON.parse: NOT NEEDED — tx args
 // arrive parsed; use typed params / near.jsonGet.
 // (console/Math/JSON value types come from lib — not redeclared here.)

@@ -10,8 +10,11 @@ const ZERO = 0n;
 
 export function portfolioTotal(user: string): string {
   near.storageSet("__pf:user", user);
-  let pa = near.promiseCreate(TOK_A, "ftBalanceRaw", "{\"who\":\"" + user + "\"}", GAS, 0);
-  let pb = near.promiseCreate(TOK_B, "ftBalanceRaw", "{\"who\":\"" + user + "\"}", GAS, 0);
+  // promiseCreate(p, target, method, args, deposit: string, gas) — deposit
+  // is a u128 decimal STR (unified ABI 2026-10-07); "0" deposit, GAS gas
+  // (the old literals had them swapped: 20T yocto deposit, 0 gas).
+  let pa = near.promiseCreate(TOK_A, "ftBalanceRaw", "{\"who\":\"" + user + "\"}", "0", GAS);
+  let pb = near.promiseCreate(TOK_B, "ftBalanceRaw", "{\"who\":\"" + user + "\"}", "0", GAS);
   let both = near.promiseAnd(pa, pb);
   // promiseThen(p, target, method, args, deposit: string, gas) — deposit is
   // a u128 decimal STR (typing/emitter truth since the a0b05952 batch);

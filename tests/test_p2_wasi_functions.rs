@@ -150,24 +150,24 @@ near_host_test!(near_log_utf16, r#"(near/log_utf16 "hello")"#);
 //             promise_results_count(33), promise_result(34), promise_return(35)
 near_host_test!(
     near_promise_create,
-    r#"(near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)"#
+    r#"(near/promise_create "wrap.near" "ft_balance_of" (near/input) "0" 0)"#
 );
 near_host_test!(
     near_promise_then,
-    r#"(let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)))
+    r#"(let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) "0" 0)))
        (near/promise_then p "callback.contract" "on_result" (near/input) 0 0))"#
 );
 near_host_test!(
     near_promise_and,
-    r#"(let ((p1 (near/promise_create "a.near" "method1" (near/input) 0 0))
-               (p2 (near/promise_create "b.near" "method2" (near/input) 0 0)))
+    r#"(let ((p1 (near/promise_create "a.near" "method1" (near/input) "0" 0))
+               (p2 (near/promise_create "b.near" "method2" (near/input) "0" 0)))
        (near/promise_and p1 p2))"#
 );
 near_host_test!(near_promise_results_count, "(near/promise_results_count)");
 near_host_test!(near_promise_result, "(near/promise_result 0)");
 near_host_test!(
     near_promise_return,
-    r#"(let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)))
+    r#"(let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) "0" 0)))
         (near/promise_result 0)
        (near/promise_return p))"#
 );
@@ -175,7 +175,7 @@ near_host_test!(
 // A10. Combined: cross-contract call with result
 near_host_test!(
     near_cc_full_flow,
-    r#"(let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)))
+    r#"(let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) "0" 0)))
        (near/promise_result 0))"#
 );
 
@@ -556,7 +556,7 @@ fn kitchen_sink() {
 fn promise_chain_create_result_return() {
     let src = r#"(memory 2)
 (define (test)
-  (let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)))
+  (let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) "0" 0)))
     (near/promise_result 0)
     (near/promise_return p)))
 (export "test" test true)"#;

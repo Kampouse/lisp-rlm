@@ -670,7 +670,7 @@ fn storage_missing_key_read_parity() {
 #[test]
 fn promise_create_raw_parity() {
     run_diff(
-        r#"(define (run) (near/promise_create "pool.near" "quote" "{\"a\":1}" 0 50000000000000))"#,
+        r#"(define (run) (near/promise_create "pool.near" "quote" "{\"a\":1}" "0" 50000000000000))"#,
     )
     .unwrap();
 }
@@ -685,7 +685,7 @@ fn near_call_sugar_parity() {
 fn promise_then_parity() {
     run_diff(
         r#"(define (run)
-          (let ((p (near/promise_create "pool.near" "borrow" "{}" 0 50000000000000)))
+          (let ((p (near/promise_create "pool.near" "borrow" "{}" "0" 50000000000000)))
             (near/promise_then p "self.test.near" "on_borrow" "{}" "0" 20000000000000)))"#,
     )
     .unwrap();
@@ -695,8 +695,8 @@ fn promise_then_parity() {
 fn promise_and_parity() {
     run_diff(
         r#"(define (run)
-          (let ((a (near/promise_create "x.near" "m1" "{}" 0 10000000000000))
-                (b (near/promise_create "y.near" "m2" "{}" 0 10000000000000)))
+          (let ((a (near/promise_create "x.near" "m1" "{}" "0" 10000000000000))
+                (b (near/promise_create "y.near" "m2" "{}" "0" 10000000000000)))
             (near/promise_and a b)))"#,
     )
     .unwrap();
@@ -893,23 +893,22 @@ fn storage_and_promise_together() {
     run_diff(
         r#"(define (run)
           (near/storage_set "state" "pending")
-          (near/promise_create "oracle.near" "fetch" "{}" 0 30000000000000))"#,
+          (near/promise_create "oracle.near" "fetch" "{}" "0" 30000000000000))"#,
     )
     .unwrap();
 }
 
 #[test]
 fn deposit_nonzero_parity() {
-    // u128 deposits exceed the 61-bit tagged Num range — the supported path
-    // is DECIMAL STRINGS via near/call and the batch forms (u128-str helper,
-    // same machinery as transfer_u128). Raw promise_create only stores the
-    // low-64 of a Num — checker correctly types its deposit int. Both paths
-    // checked here: str deposit via near/call, small Num via promise_create.
+    // u128 deposits cross as DECIMAL STRINGS everywhere — near/call,
+    // promise_create and promise_then share the u128-str helper (str path →
+    // TEMP_MEM u128 LE; tagged-Num inputs keep the legacy low-64 path).
+    // Both paths exercised: str deposit (full u128) and small Num.
     run_diff(
         r#"(define (run) (near/call "sale.near" "buy" "{}" 30000000000000 "1000000000000000000000000"))"#,
     )
     .unwrap();
-    run_diff(r#"(define (run) (near/promise_create "sale.near" "buy" "{}" 1000 30000000000000))"#)
+    run_diff(r#"(define (run) (near/promise_create "sale.near" "buy" "{}" "1000" 30000000000000))"#)
         .unwrap();
 }
 
@@ -917,7 +916,7 @@ fn deposit_nonzero_parity() {
 // harness's own failure mode (disabled; enable to smoke-test the reporter).
 // #[test]
 // fn harness_selfcheck_reports_mismatch() {
-//     expect_err_contains("(define (run) (near/promise_create \"t\" \"m\" \"{}\" 30000000000000 0))", "MISMATCH");
+//     expect_err_contains("(define (run) (near/promise_create \"t\" \"m\" \"{}\" \"30000000000000\" \"0\"))", "MISMATCH");
 // }
 
 #[test]

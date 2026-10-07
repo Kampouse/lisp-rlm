@@ -316,6 +316,52 @@ impl WasmEmitter {
                 let amount = self.expr(&a[3])?;
                 let gas = self.expr(&a[4])?;
                 let mut v = Vec::new();
+                // Deposit: Num OR u128 decimal string — same dual-path as
+                // promise_then / near/call (typing now requires str; the
+                // raw tagged-int store here was the last int-deposit ABI).
+                let h = self.ensure_u128_str_helpers();
+                let dep_local = self.local_idx("__pc_dep");
+                v.extend(amount);
+                v.push(Instruction::LocalSet(dep_local));
+                v.push(Instruction::LocalGet(dep_local));
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                // — str path: decimal → u128 LE at TEMP_MEM —
+                v.push(Instruction::LocalGet(dep_local));
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::call_user(h.parse));
+                v.push(Instruction::Drop);
+                v.push(Instruction::Else);
+                // — num path (back-compat with old int ABI): untagged i64 —
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 8,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(dep_local));
+                v.extend(self.emit_untag()); // local holds the TAGGED value
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::End);
                 // account_id: untag → len >> 32, ptr & 0xFFFF_FFFF
                 v.extend(account.clone());
                 v.extend(self.emit_untag());
@@ -343,17 +389,9 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
-                // amount: untag, store at mem[0], pass ptr=0
-                v.push(Instruction::I32Const(0));
-                v.extend(amount.clone());
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Store(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                }));
-                v.push(Instruction::I64Const(0)); // amount_ptr
-                                                  // gas: untag for host
+                // amount_ptr (TEMP_MEM — u128 LE limbs written above)
+                v.push(Instruction::I64Const(TEMP_MEM));
+                // gas: untag for host
                 v.extend(gas);
                 v.extend(self.emit_untag());
                 self.need_host(30);

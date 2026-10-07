@@ -1863,7 +1863,7 @@ mod tests {
     fn test_near_input_compiles() {
         let src = r#"(memory 1)
 (define (query)
-  (let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)))
+  (let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) "0" 0)))
     (near/promise_result 0)))
 (export "query" query true)"#;
         let wat = compile_near_to_wat(src).expect("compile near/input");
