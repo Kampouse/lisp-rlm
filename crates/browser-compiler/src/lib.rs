@@ -20,6 +20,14 @@ pub fn compile_p1(source: &str) -> Result<Vec<u8>, JsValue> {
     let mut exprs = lisp_rlm_wasm::parse_all(source)
         .map_err(|e| JsValue::from_str(&format!("Parse error: {}", e)))?;
     lisp_rlm_wasm::clojure::desugar(&mut exprs);
+    // typecheck runs inside compile_near_from_exprs without source context —
+    // pre-run it here WITH source so errors get exact "(near line N)" pins
+    let annotated = lisp_rlm_wasm::typing::type_check_program(&exprs, true)
+        .err()
+        .map(|e| lisp_rlm_wasm::annotate_type_error(&e, source));
+    if let Some(msg) = annotated {
+        return Err(JsValue::from_str(&format!("Compile error: {}", msg)));
+    }
     lisp_rlm_wasm::compile_near_from_exprs(&exprs)
         .map_err(|e| JsValue::from_str(&format!("Compile error: {}", e)))
 }
@@ -58,6 +66,13 @@ pub fn compile_ts(source: &str) -> Result<Vec<u8>, JsValue> {
         .map_err(|e| JsValue::from_str(&format!("TS lowering error: {}", e)))?;
     let mut exprs = lisp_rlm_wasm::parse_all(&lisp_src)
         .map_err(|e| JsValue::from_str(&format!("Parse error: {}", e)))?;
+    if let Err(e) = lisp_rlm_wasm::typing::type_check_program(&exprs, true) {
+        // checker errors carries no spans — annotate against the lowered lisp
+        // IR (annotate_type_error no-ops when nothing matches); the TS-side
+        // hint (augment_with_ts_line in the CLI) is unavailable browser-side.
+        let annotated = lisp_rlm_wasm::annotate_type_error_label(&e, &lisp_src, "ir");
+        return Err(JsValue::from_str(&format!("Compile error: {}", annotated)));
+    }
     lisp_rlm_wasm::clojure::desugar(&mut exprs);
     lisp_rlm_wasm::compile_near_from_exprs(&exprs)
         .map_err(|e| JsValue::from_str(&format!("Compile error: {}", e)))

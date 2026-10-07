@@ -417,7 +417,15 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
     };
     let wasm_bytes = match lisp_rlm_wasm::wasm_emit::compile_near(&effective_source) {
         Ok(b) => b,
-        Err(e) => return Err(augment_with_ts_line(e, &ident_map, &source)),
+        Err(e) => {
+            // two-layer annotation: TS projects get the ts-line hint from the
+            // ident map; .lisp sources (and map misses) get a tokenizer line
+            // from the real source. annotate_type_error no-ops when the
+            // message already carries a line, so the layers never double-pin.
+            let e = augment_with_ts_line(e, &ident_map, &source);
+            let e = lisp_rlm_wasm::annotate_type_error(&e, &effective_source);
+            return Err(e);
+        }
     };
     let func_names: Vec<String> = extract_func_names(&effective_source).unwrap_or_default();
 
@@ -2313,7 +2321,8 @@ fn run_compile(args: &[String]) {
     let src = fs::read_to_string(src_path).expect("read input");
 
     // TS frontend: lower TypeScript source to lisp before the normal pipeline
-    let src = if src_path.ends_with(".ts") || src_path.ends_with(".mts") {
+    let src_is_lowered_ts = src_path.ends_with(".ts") || src_path.ends_with(".mts");
+    let src = if src_is_lowered_ts {
         match lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(&src) {
             Ok(l) => l,
             Err(e) => {
@@ -2361,13 +2370,23 @@ fn run_compile(args: &[String]) {
         }
     };
     let wasm_bytes = match target.as_str() {
-        "near" => match lisp_rlm_wasm::wasm_emit::compile_near(&src) {
+        "near" => {
+            let compiled = if src_is_lowered_ts {
+                lisp_rlm_wasm::wasm_emit::compile_near_labelled_ir(&src)
+            } else {
+                lisp_rlm_wasm::wasm_emit::compile_near(&src)
+            };
+            match compiled {
             Ok(w) => w,
             Err(e) => {
+                // ts-line hints (augment_with_ts_line layer at project path)
+                // aren't wired on this single-file branch; the ir/near label
+                // comes from compile_near_labelled_ir vs compile_near itself.
                 eprintln!("❌ Compile error: {}", e);
                 std::process::exit(1);
             }
-        },
+        }
+        }
         "outlayer" | "wasi" | "wasi-p1" => match lisp_rlm_wasm::wasi::compile_outlayer(&src) {
             Ok(w) => w,
             Err(e) => {

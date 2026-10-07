@@ -66,6 +66,8 @@ pub use dispatch::llm_provider::{GenericProvider, LlmProvider, LlmResponse};
 pub use helpers::{is_builtin_name, is_truthy, split_define_annotation};
 pub use parser::parse_all;
 pub use parser::parse_all_spanned;
+pub use parser::annotate_type_error;
+pub use parser::annotate_type_error_label;
 pub use parser::Spanned;
 pub use program::run_program;
 pub use types::DEFAULT_EVAL_BUDGET;
@@ -76,7 +78,7 @@ pub use wasi::{
 };
 pub use wasm_emit::{
     compile_fuzz, compile_near, compile_near_from_exprs, compile_near_to_wat_from_exprs,
-    compile_near_untyped, compile_pure,
+    compile_near_untyped, compile_near_labelled_ir, compile_pure,
 };
 
 /// WASM-friendly: eval a Lisp string, returns ptr to UTF-8 result + writes length to out_len.

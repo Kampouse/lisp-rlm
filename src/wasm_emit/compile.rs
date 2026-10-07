@@ -731,7 +731,14 @@ stitched module region at 1MiB. Split literals or shrink allocations",
 }
 
 fn parse_and_compile(source: &str, near: bool) -> Result<WasmEmitter, String> {
-    parse_and_compile_opts(source, near, true)
+    parse_and_compile_labelled(source, near, "near")
+}
+
+/// line-label variant: .ts inputs lower to lisp IR first, so source-line
+/// pins on them refer to the IR ("ir line N"), never the author's TS file —
+/// TS-line resolution is augment_with_ts_line's job (CLI, ident map).
+fn parse_and_compile_labelled(source: &str, near: bool, label: &str) -> Result<WasmEmitter, String> {
+    parse_and_compile_opts_labelled(source, near, true, label)
 }
 
 fn parse_and_compile_opts(
@@ -739,13 +746,23 @@ fn parse_and_compile_opts(
     near: bool,
     typecheck: bool,
 ) -> Result<WasmEmitter, String> {
+    parse_and_compile_opts_labelled(source, near, typecheck, "near")
+}
+
+fn parse_and_compile_opts_labelled(
+    source: &str,
+    near: bool,
+    typecheck: bool,
+    label: &str,
+) -> Result<WasmEmitter, String> {
     let exprs = crate::parser::parse_all(source)?;
     let mut exprs = exprs;
     crate::clojure::desugar(&mut exprs);
 
     // Type check pass — catches undefined vars, arity mismatches, type errors
     if typecheck {
-        crate::typing::type_check_program(&exprs, near)?;
+        crate::typing::type_check_program(&exprs, near)
+            .map_err(|e| crate::parser::annotate_type_error_label(&e, source, label))?;
     }
 
     // Storage schema validation — warns about reads without matching writes
@@ -1257,14 +1274,30 @@ fn compile_fuzz_inner(source: &str) -> Result<Vec<u8>, String> {
 /// tree-shaking. Keyed by NAME (not index), so it stays valid across the
 /// schnorr stitch and wasm-opt renumbering. `compile_near` delegates here.
 pub fn compile_near_with_map(source: &str) -> Result<(Vec<u8>, serde_json::Value), String> {
+    compile_near_with_map_labelled(source, "near")
+}
+
+/// labelled variant: see compile_near_labelled_ir
+pub fn compile_near_with_map_labelled(
+    source: &str,
+    label: &str,
+) -> Result<(Vec<u8>, serde_json::Value), String> {
     // big-stack: see run_deep (emit recursion — the PLONK verifier needed
     // 4+ MiB; the default 2 MiB thread stack aborts)
-    crate::helpers::run_deep(move || compile_near_with_map_inner(source))
+    let owned = label.to_string();
+    crate::helpers::run_deep(move || compile_near_with_map_inner_labelled(source, &owned))
 }
 
 fn compile_near_with_map_inner(source: &str) -> Result<(Vec<u8>, serde_json::Value), String> {
+    compile_near_with_map_inner_labelled(source, "near")
+}
+
+fn compile_near_with_map_inner_labelled(
+    source: &str,
+    label: &str,
+) -> Result<(Vec<u8>, serde_json::Value), String> {
     let resolved = resolve_modules(source, std::path::Path::new("."))?;
-    let mut em = parse_and_compile(&resolved, true)?;
+    let mut em = parse_and_compile_labelled(&resolved, true, label)?;
     if std::env::var("DEBUG_FUNCS").is_ok() {
         eprintln!(
             "FUNCS: {:?}",
@@ -1296,7 +1329,15 @@ fn compile_near_with_map_inner(source: &str) -> Result<(Vec<u8>, serde_json::Val
 }
 
 pub fn compile_near(source: &str) -> Result<Vec<u8>, String> {
-    Ok(compile_near_with_map(source)?.0)
+    Ok(compile_near_with_map_labelled(source, "near")?.0)
+}
+
+/// line-label variant for dialect frontends whose source is REALLY lowered
+/// IR (.ts): error-line pins then read "(ir line N)" so users don't hunt a
+/// TS file with a line number that isn't a TS line (TS-line hints come from
+/// augment_with_ts_line / ident offsets first; this is the fallback).
+pub fn compile_near_labelled_ir(source: &str) -> Result<Vec<u8>, String> {
+    Ok(compile_near_with_map_labelled(source, "ir")?.0)
 }
 
 /// Compile NEAR WASM from source, skipping type checking.
@@ -1336,7 +1377,9 @@ pub fn compile_near_from_exprs_with_map(
 fn compile_near_from_exprs_with_map_inner(
     exprs: &[LispVal],
 ) -> Result<(Vec<u8>, serde_json::Value), String> {
-    // Type check pass
+    // Type check pass (source-less path: caller passes exprs; errors get no
+    // line annotation here — annotate_type_error needs the source text and
+    // runs at the source-level choke points instead)
     crate::typing::type_check_program(exprs, true)?;
 
     // Storage schema validation
