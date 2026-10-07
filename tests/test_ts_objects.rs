@@ -131,11 +131,25 @@ fn object_read_and_rebuild_compiles() {
 // ── errors ───────────────────────────────────────────────────────────────
 
 #[test]
-fn property_assignment_hard_errors() {
-    let err = ts_to_lisp_source("export function f(u: string): void {\n  u.k = \"x\";\n}")
-        .expect_err("member assignment must hard-error");
+fn property_assignment_low_cow_rebuild() {
+    // 8135ebff: single-level writes LOWER now — copy-on-write json-set
+    // rebuild (set! u (json-set u "k" val)). The old contract was a
+    // hard-error; compound (+=/nested) targets still hard-error below.
+    let out =
+        ts_to_lisp_source("export function f(u: string): string {\n  u.k = \"x\";\n  return u;\n}")
+            .expect("single-level property write lowers");
     assert!(
-        err.contains("property assignment not supported"),
+        out.contains("(json-set u"),
+        "write → cow json-set rebuild: {out}"
+    );
+}
+
+#[test]
+fn compound_property_assignment_hard_errors() {
+    let err = ts_to_lisp_source("export function f(u: string): void {\n  u.k += \"x\";\n}")
+        .expect_err("compound member assignment must hard-error");
+    assert!(
+        err.contains("compound property assignment"),
         "helpful message: {err}"
     );
 }
