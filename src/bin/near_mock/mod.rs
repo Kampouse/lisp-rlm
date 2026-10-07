@@ -1830,6 +1830,89 @@ pub(crate) fn credit_attach(
 ///   expect_same_storage_as (storage must equal a snapshot — branch compare),
 ///   expect: "trap" requires the entry call to trap.
 /// Compatible with examples/ft/tests/scenarios/*.json (name/steps/method/args/view/expect).
+// asset assertions (v3.8): machine-check shadow accounting against ground
+// truth. Two checks, both u128-exact and contract-agnostic:
+//   assert_bal_matches: <key> — a storage ledger key (e.g. float_bal)
+//     must EQUAL the contract's REAL near-bal (\0near-bal). Catches any
+//     missing floatAdd/floatSub at a NEAR boundary (attach/transfer).
+//   assert_sum_matches: {prefix, total} — Σ of u128 values under a storage
+//     prefix (e.g. nb:) must EQUAL the maintained running-total key
+//     (e.g. nbsum). Catches any per-key write that forgot its total.
+// Returns true when an assertion failed (caller marks the step failed).
+pub(crate) fn run_asset_asserts(
+    state: &Arc<Mutex<MockState>>,
+    contract: &str,
+    step: &serde_json::Value,
+    i: usize,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let mut failed = false;
+    if let Some(want) = step.get("assert_bal_matches").and_then(|a| a.as_str()) {
+        let real = prefixed_key(contract, b"\x00near-bal");
+        let led = prefixed_key(contract, want.as_bytes());
+        let (led_v, real_v) = {
+            let st = state.lock().unwrap();
+            (
+                st.storage
+                    .get(&led)
+                    .map(|v| String::from_utf8_lossy(v).trim().to_string()),
+                st.storage
+                    .get(&real)
+                    .map(|v| String::from_utf8_lossy(v).trim().to_string()),
+            )
+        };
+        match (&led_v, &real_v) {
+            (Some(l), Some(r)) if l == r => {
+                println!("✓ assert_bal_matches {} == {} ✓", want, r);
+            }
+            _ => {
+                println!(
+                    "✗ assert_bal_matches {} — ledger {:?} vs real near-bal {:?}",
+                    want, led_v, real_v
+                );
+                failed = true;
+            }
+        }
+    }
+    if let Some(cfg) = step.get("assert_sum_matches").and_then(|a| a.as_object()) {
+        let prefix = cfg.get("prefix").and_then(|p| p.as_str()).unwrap_or("");
+        let total_key = cfg.get("total").and_then(|t| t.as_str()).unwrap_or("");
+        if prefix.is_empty() || total_key.is_empty() {
+            return Err(format!(
+                "step {}: assert_sum_matches needs {{prefix, total}}",
+                i
+            )
+            .into());
+        }
+        let pre = prefixed_key(contract, prefix.as_bytes());
+        let sum: u128 = {
+            let st = state.lock().unwrap();
+            st.storage
+                .iter()
+                .filter(|(k, _)| k.starts_with(&pre))
+                .filter_map(|(_, v)| String::from_utf8_lossy(v).trim().parse::<u128>().ok())
+                .sum()
+        };
+        let tk = prefixed_key(contract, total_key.as_bytes());
+        let total: u128 = {
+            let st = state.lock().unwrap();
+            st.storage
+                .get(&tk)
+                .and_then(|v| String::from_utf8_lossy(v).trim().parse().ok())
+                .unwrap_or(0)
+        };
+        if sum == total {
+            println!("✓ assert_sum_matches Σ{}({}) == {} ✓", prefix, sum, total_key);
+        } else {
+            println!(
+                "✗ assert_sum_matches Σ{} = {} ≠ {} = {}",
+                prefix, sum, total_key, total
+            );
+            failed = true;
+        }
+    }
+    Ok(failed)
+}
+
 pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let spec: serde_json::Value =
         serde_json::from_slice(&std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?)
@@ -1924,6 +2007,17 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
                     println!("  ✓ storage identical to snapshot '{}'", other);
                 } else {
                     println!("  ✗ storage DIVERGED from snapshot '{}'", other);
+                    fail += 1;
+                }
+                did = true;
+            }
+            // asset assertions can run without a method (post-check a prior
+            // step's settled state, incl. promises/refunds)
+            if step.get("assert_bal_matches").is_some()
+                || step.get("assert_sum_matches").is_some()
+            {
+                let failed = run_asset_asserts(&state, &default_acct, step, i)?;
+                if failed {
                     fail += 1;
                 }
                 did = true;
@@ -2289,6 +2383,15 @@ pub(crate) fn run_scenario(path: &str) -> Result<(), Box<dyn std::error::Error>>
                 println!("✓ contains '{}' ✓", want);
             } else {
                 println!("✗ contains '{}' — storage: {:?}", want, stored);
+                step_failed = true;
+            }
+        }
+        // asset assertions (v3.8): machine-check shadow accounting against
+        // ground truth — work as bookkeeping-only steps (no method) AND as
+        // post-checks on method steps.
+        if step.get("assert_bal_matches").is_some() || step.get("assert_sum_matches").is_some() {
+            let failed = run_asset_asserts(&state, &contract, step, i)?;
+            if failed {
                 step_failed = true;
             }
         }

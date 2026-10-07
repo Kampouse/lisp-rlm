@@ -1021,6 +1021,9 @@ export function buy(): string {
     near.storageSet(nk, padAfter);
     nbSumSub(nearIn);
     autoRefuel(tid, gkPk);
+  } else {
+    // attached buys: NEAR physically arrived — shadow float must track it
+    floatAdd(nearIn);
   }
   if (!u128IsZero(fee)) {
     const feeKey = feeTokKey(token);
