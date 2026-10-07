@@ -405,6 +405,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "u128/add",
     "u128/sub",
     "u128/mul",
+    "u128/muldiv",
     "u128/div",
     "u128/mod",
     "u128/lt",

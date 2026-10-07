@@ -2989,12 +2989,10 @@ fn lower_assign_form(asg: &oxc_ast::ast::AssignmentExpression<'_>) -> Result<Lis
                     rhs,
                 ]),
                 _ => {
-                    return Err(
-                        "ts_frontend: element writes support only = / += / -= \
+                    return Err("ts_frontend: element writes support only = / += / -= \
                          (compound *= /= %= are plain-variable only; obj.prop \
                          writes need jsonSet)"
-                            .into(),
-                    )
+                        .into())
                 }
             };
             Ok(list(vec![Sym("vec-set!"), obj, idx, val]))
@@ -3314,14 +3312,15 @@ fn scan_expr(e: &Expression<'_>, scan: &mut ClosureScan) {
         Expression::CallExpression(c) => {
             scan_expr(&c.callee, scan);
             let pipeline = match &c.callee {
-                Expression::StaticMemberExpression(sm) => matches!(
-                    sm.property.name.as_str(),
-                    "map" | "filter" | "reduce"
-                ),
+                Expression::StaticMemberExpression(sm) => {
+                    matches!(sm.property.name.as_str(), "map" | "filter" | "reduce")
+                }
                 _ => false,
             };
             for arg in &c.arguments {
-                let Some(ae) = arg.as_expression() else { continue };
+                let Some(ae) = arg.as_expression() else {
+                    continue;
+                };
                 match ae {
                     Expression::ArrowFunctionExpression(arrow) => {
                         if !pipeline {
@@ -3587,13 +3586,11 @@ fn lower_assignment(
             }
         }
         AssignmentOperator::Exponential => {
-            return Err(
-                "ts_frontend: **= unsupported — the NEAR typechecker/wasm \
+            return Err("ts_frontend: **= unsupported — the NEAR typechecker/wasm \
                  emitter have no power builtin (the interpreter-only `expt` \
                  is not in the NEAR builtin set); use a helper with \
                  repeated multiplication"
-                    .into(),
-            );
+                .into());
         }
         _ => {
             return Err(
@@ -4461,13 +4458,11 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     // emitter (the interpreter-only `expt` is not in the
                     // NEAR builtin set — probe E, 2026-10-04). Hard error,
                     // never a silent wrong lowering.
-                    return Err(
-                        "ts_frontend: `**` unsupported — no power builtin in the \
+                    return Err("ts_frontend: `**` unsupported — no power builtin in the \
                          NEAR typechecker/wasm emitter (interpreter-only `expt` is \
                          not in the NEAR builtin set); use a helper with repeated \
                          multiplication"
-                            .into(),
-                    );
+                        .into());
                 }
                 _ => {
                     return Err(
@@ -5045,9 +5040,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     (&sm.object, sm.property.name.as_str())
                 {
                     if o.name == "near" && c.arguments.len() == 1 {
-                        let a = c
-                            .arguments
-                            [0]
+                        let a = c.arguments[0]
                             .as_expression()
                             .ok_or("ts_frontend: bad depositGte arg")?;
                         if let Expression::BigIntLiteral(b) = a {
@@ -5057,7 +5050,8 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 .map(|s| s.as_str().trim_end_matches('n'))
                                 .unwrap_or_default();
                             let v = raw.parse::<u128>().map_err(|_| {
-                                "ts_frontend: depositGte bigint literal out of u128 range".to_string()
+                                "ts_frontend: depositGte bigint literal out of u128 range"
+                                    .to_string()
                             })?;
                             return Ok(list(vec![
                                 Sym("near/deposit-gte"),
@@ -5065,11 +5059,9 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 Num((v >> 64) as i64),
                             ]));
                         }
-                        return Err(
-                            "ts_frontend: depositGte takes (lo64, hi64) numbers or ONE \
+                        return Err("ts_frontend: depositGte takes (lo64, hi64) numbers or ONE \
                              bigint literal, e.g. depositGte(12000000000000000000000n)"
-                                .into(),
-                        );
+                            .into());
                     }
                 }
             }
@@ -5110,11 +5102,8 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             {
                 if let Some(a) = c.arguments[0].as_expression() {
                     if expr_is_missable_getter(a) {
-                        let shielded = list(vec![
-                            Sym("default"),
-                            items[1].clone(),
-                            Str(String::new()),
-                        ]);
+                        let shielded =
+                            list(vec![Sym("default"), items[1].clone(), Str(String::new())]);
                         items[1] = shielded;
                     }
                 }
@@ -5548,6 +5537,7 @@ fn map_builtin_call(name: &str) -> String {
         "u128Add" => "u128/add",
         "u128Sub" => "u128/sub",
         "u128Mul" => "u128/mul",
+        "u128MulDiv" => "u128/muldiv",
         "u128Div" => "u128/div",
         "u128Mod" => "u128/mod",
         "u128Lt" => "u128/lt",

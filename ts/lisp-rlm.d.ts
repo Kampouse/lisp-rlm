@@ -115,6 +115,7 @@ declare const u128: {
 declare function u128Add(a: any, b: any): string;
 declare function u128Sub(a: any, b: any): string;
 declare function u128Mul(a: any, b: any): string;
+declare function u128MulDiv(a: any, b: any, d: any): string;
 declare function u128Div(a: any, b: any): string;
 declare function u128Mod(a: any, b: any): string;
 // comparisons lower to u128/lt|gt|eq : (str,str) → bool — use directly in

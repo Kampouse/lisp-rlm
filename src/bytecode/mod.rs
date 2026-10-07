@@ -6011,13 +6011,14 @@ fn eval_near_builtin(
         // SORTED (deterministic across runs — HashMap order is unstable)
         // and iter-next SKIPS keys deleted since the snapshot, so the
         // cleaner loop (next → remove → next …) drains storage exactly.
-        "near/storage_iter_prefix"
-        | "storage-iter-prefix"
-        | "storage_iter_prefix" => {
+        "near/storage_iter_prefix" | "storage-iter-prefix" | "storage_iter_prefix" => {
             let prefix = key_of(args, 0);
-            let mut keys: Vec<String> = state.near_storage.keys()
+            let mut keys: Vec<String> = state
+                .near_storage
+                .keys()
                 .filter(|k| k.starts_with(&prefix))
-                .cloned().collect();
+                .cloned()
+                .collect();
             keys.sort();
             let id = state.near_iter_next_id;
             state.near_iter_next_id += 1;
@@ -6025,9 +6026,7 @@ fn eval_near_builtin(
             state.near_iter_cursors.insert(id, 0);
             Some(Ok(LispVal::Num(id)))
         }
-        "near/storage_iter_next"
-        | "storage-iter-next"
-        | "storage_iter_next" => {
+        "near/storage_iter_next" | "storage-iter-next" | "storage_iter_next" => {
             let id = extract_num(args, 0).unwrap_or(-1);
             if let Some(keys) = state.near_iter_prefixes.get(&id) {
                 let cursor = state.near_iter_cursors.entry(id).or_insert(0);
@@ -6553,7 +6552,7 @@ pub fn eval_builtin(
         // u128 values are STRINGS in lisp land (matches NEAR's JSON API).
         // All failures (bad parse, overflow, wrong type) are hard errors.
         "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod" | "u128/lt" | "u128/gt"
-        | "u128/eq" | "u128/from-i64" | "u128/to-i64" | "u128/is-zero" => {
+        | "u128/eq" | "u128/muldiv" | "u128/from-i64" | "u128/to-i64" | "u128/is-zero" => {
             fn parse_u128_arg(builtin: &str, arg: Option<&LispVal>) -> Result<u128, String> {
                 match arg {
                     Some(LispVal::Str(s)) => s
@@ -6592,6 +6591,68 @@ pub fn eval_builtin(
                         Some(v) => Ok(LispVal::Str(v.to_string())),
                         None => Err(format!("{}: u128 overflow", name)),
                     }
+                }
+                "u128/muldiv" => {
+                    // q = a * b / d over the full 256-bit product — the CLMM
+                    // core (pool swap math, liquidity×sqrtPrice/2^64). Same
+                    // contract as the wasm helper: d == 0 or q ≥ 2^128 error.
+                    if args.len() != 3 {
+                        return Err("u128/muldiv: need 3 args (a, b, d)".into());
+                    }
+                    let a = parse_u128_arg(name, args.get(0))?;
+                    let b = parse_u128_arg(name, args.get(1))?;
+                    let d = parse_u128_arg(name, args.get(2))?;
+                    if d == 0 {
+                        return Err(format!("{}: division by zero", name));
+                    }
+                    // 256-bit product: 4 limbs base 2^64. The middle sum is
+                    // assembled in 64-bit halves — a naive `c1 + l01 + l10`
+                    // in u128 WRAPS (~1.5·2^128 for near-max operands; the
+                    // wrap ate the carry and corrupted p2/p3, release builds
+                    // don't check). Every partial sum here is ≤ ~2^66.
+                    let (a0, a1) = (a as u64 as u128, a >> 64);
+                    let (b0, b1) = (b as u64 as u128, b >> 64);
+                    let l00 = a0 * b0; // < 2^128 ✓
+                    let l01 = a0 * b1;
+                    let l10 = a1 * b0;
+                    let l11 = a1 * b1;
+                    let p0 = l00 as u64 as u128;
+                    let c1 = l00 >> 64;
+                    let mid_lo = c1 + (l01 as u64 as u128) + (l10 as u64 as u128);
+                    let p1 = mid_lo as u64 as u128;
+                    let mid_hi = (l01 >> 64) + (l10 >> 64) + (mid_lo >> 64);
+                    let hi_lo = (l11 as u64 as u128) + (mid_hi as u64 as u128);
+                    let p2 = hi_lo as u64 as u128;
+                    let p3 = (l11 >> 64) + (mid_hi >> 64) + (hi_lo >> 64);
+                    // Bit-by-bit restoring division of the 256-bit
+                    // product by d (MSB first). r carries the ≤129-bit
+                    // remainder state (129th bit = "falling"); the
+                    // quotient collects into q_lo (low 128 bits) with
+                    // q_fell as the overflow flag — any dropped 1 bit means
+                    // q ≥ 2^128, the same contract the wasm helper enforces.
+                    let mut q_lo: u128 = 0;
+                    let mut q_fell = false;
+                    let mut r: u128 = 0;
+                    for position in (0..256u32).rev() {
+                        let pb = match position {
+                            0..=63 => p0 & (1u128 << position) != 0,
+                            64..=127 => p1 & (1u128 << (position - 64)) != 0,
+                            128..=191 => p2 & (1u128 << (position - 128)) != 0,
+                            _ => p3 & (1u128 << (position - 192)) != 0,
+                        };
+                        let falling = (r >> 127) & 1 == 1;
+                        r = (r << 1) | (pb as u128);
+                        if falling || r >= d {
+                            r = r.wrapping_sub(d);
+                            (q_lo, q_fell) = (q_lo << 1 | 1, q_fell || (q_lo >> 127) & 1 == 1);
+                        } else {
+                            (q_lo, q_fell) = (q_lo << 1, q_fell || (q_lo >> 127) & 1 == 1);
+                        }
+                    }
+                    if q_fell {
+                        return Err(format!("{}: quotient overflows u128", name));
+                    }
+                    Ok(LispVal::Str(q_lo.to_string()))
                 }
                 "u128/lt" | "u128/gt" | "u128/eq" => {
                     let a = parse_u128_arg(name, args.get(0))?;

@@ -1076,7 +1076,14 @@ impl TcEnv {
             let str_ty = TcType::Con(TcCon::Str);
             let int_ty = TcType::Con(TcCon::Int);
             let bool_ty = TcType::Con(TcCon::Bool);
-            for name in &["u128/add", "u128/sub", "u128/mul", "u128/div", "u128/mod"] {
+            for name in &[
+                "u128/add",
+                "u128/sub",
+                "u128/mul",
+                "u128/muldiv",
+                "u128/div",
+                "u128/mod",
+            ] {
                 env.insert_mono(
                     name.to_string(),
                     TcType::Arrow(
@@ -1085,6 +1092,16 @@ impl TcEnv {
                     ),
                 );
             }
+            // muldiv = CLMM core (a·b over the full 256-bit product / d):
+            // 3 operands (str, str, str) → str
+            env.insert_mono(
+                "u128/muldiv".to_string(),
+                TcType::Arrow(
+                    vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+                    Box::new(str_ty.clone()),
+                ),
+            );
+
             for name in &["u128/lt", "u128/gt", "u128/eq"] {
                 env.insert_mono(
                     name.to_string(),
@@ -1131,10 +1148,7 @@ impl TcEnv {
                 opaque_host.into(),
                 Scheme {
                     vars: vec![0],
-                    ty: TcType::Arrow(
-                        vec![TcType::Var(0); arity],
-                        Box::new(TcType::Var(0)),
-                    ),
+                    ty: TcType::Arrow(vec![TcType::Var(0); arity], Box::new(TcType::Var(0))),
                 },
             );
         }
@@ -2146,7 +2160,14 @@ impl TcEnv {
 
         // ── u128 builtins (string-based decimal values) ──
         // Arithmetic: str → str → str
-        for name in &["u128/add", "u128/sub", "u128/mul", "u128/div", "u128/mod"] {
+        for name in &[
+            "u128/add",
+            "u128/sub",
+            "u128/mul",
+            "u128/muldiv",
+            "u128/div",
+            "u128/mod",
+        ] {
             env.insert_mono(
                 name.to_string(),
                 TcType::Arrow(
@@ -2155,6 +2176,16 @@ impl TcEnv {
                 ),
             );
         }
+        // muldiv = CLMM core (a·b over the full 256-bit product / d):
+        // 3 operands (str, str, str) → str
+        env.insert_mono(
+            "u128/muldiv".to_string(),
+            TcType::Arrow(
+                vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+                Box::new(str_ty.clone()),
+            ),
+        );
+
         // Comparisons: str → str → bool
         for name in &["u128/lt", "u128/gt", "u128/eq"] {
             env.insert_mono(
@@ -2234,7 +2265,11 @@ impl std::fmt::Display for TcCon {
 fn builtin_signatures_parses() {
     let s = TcEnv::builtin_signatures();
     let lines: Vec<&str> = s.lines().collect();
-    assert!(lines.len() > 50, "suspiciously few builtins: {}", lines.len());
+    assert!(
+        lines.len() > 50,
+        "suspiciously few builtins: {}",
+        lines.len()
+    );
     // format: name<TAB>signature, sorted
     for l in &lines {
         let tab = l.find('\t').expect("no tab");
@@ -2246,5 +2281,8 @@ fn builtin_signatures_parses() {
     sorted.sort();
     assert_eq!(names, sorted, "not sorted");
     assert!(names.contains(&"str-cat"), "missing str-cat");
-    assert!(names.iter().any(|n| n.starts_with("near/")), "missing near/*");
+    assert!(
+        names.iter().any(|n| n.starts_with("near/")),
+        "missing near/*"
+    );
 }

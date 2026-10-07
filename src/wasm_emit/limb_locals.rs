@@ -29,7 +29,7 @@
 //! CANONICAL decimal form — a literal like "007" reads back as "7".
 
 use super::*;
-use crate::wasm_emit::call_u128_str::{ma8, U128_A, U128_B, U128_R};
+use crate::wasm_emit::call_u128_str::{ma8, U128_A, U128_B, U128_C, U128_Q, U128_R};
 use std::collections::{HashMap, HashSet};
 
 /// u128-pure initializer/store forms. `sym_eligible` resolves copies of
@@ -47,7 +47,7 @@ fn store_is_limb_pure(e: &LispVal, eligible: &HashSet<String>) -> bool {
             };
             matches!(
                 head.as_str(),
-                "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod"
+                "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod" | "u128/muldiv"
             ) && items.len() == 3
         }
         _ => false,
@@ -234,7 +234,7 @@ impl WasmEmitter {
                     items.first(),
                     Some(LispVal::Sym(h)) if matches!(
                         h.as_str(),
-                        "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod"
+                        "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod" | "u128/muldiv"
                     )
                 ) && items.len() == 3 =>
             {
@@ -341,6 +341,32 @@ impl WasmEmitter {
         let blo = self.local_idx(&format!("__u128lb_{gen}"));
         let bhi = self.local_idx(&format!("__u128hb_{gen}"));
         let mut v = Vec::new();
+        if op == "u128/muldiv" {
+            // 3-operand limb fast path: q = a*b/d, result limbs (lo, hi).
+            // Remainder is discarded here — CLMM swap math doesn't need it.
+            let clo = self.local_idx(&format!("__u128lc_{gen}"));
+            let chi = self.local_idx(&format!("__u128hc_{gen}"));
+            self.emit_u128_operand(&mut v, &items[1], alo, ahi)?;
+            self.emit_u128_operand(&mut v, &items[2], blo, bhi)?;
+            self.emit_u128_operand(&mut v, &items[3], clo, chi)?;
+            v.extend(self.limb_pair_store(alo, ahi, U128_A));
+            v.extend(self.limb_pair_store(blo, bhi, U128_B));
+            v.extend(self.limb_pair_store(clo, chi, U128_C));
+            v.push(Instruction::I64Const(U128_A));
+            v.push(Instruction::I64Const(U128_B));
+            v.push(Instruction::I64Const(U128_C));
+            v.push(Instruction::I64Const(U128_Q));
+            v.push(Instruction::I64Const(0)); // remainder discarded
+            if self.try_stack.is_empty() {
+                v.push(Self::call_user(h.muldiv));
+                v.push(Instruction::Drop);
+            } else {
+                let call = Self::call_user(h.muldiv_ck);
+                self.ck_guarded(&mut v, call, "u128: muldiv overflow");
+            }
+            v.extend(self.limb_pair_load(U128_Q, lo, hi));
+            return Ok(v);
+        }
         self.emit_u128_operand(&mut v, &items[1], alo, ahi)?;
         self.emit_u128_operand(&mut v, &items[2], blo, bhi)?;
         v.extend(self.limb_pair_store(alo, ahi, U128_A));
@@ -402,7 +428,7 @@ impl WasmEmitter {
                     items.first(),
                     Some(LispVal::Sym(h)) if matches!(
                         h.as_str(),
-                        "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod"
+                        "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod" | "u128/muldiv"
                     )
                 ) && items.len() == 3 =>
             {
