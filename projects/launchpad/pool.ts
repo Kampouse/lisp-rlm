@@ -819,6 +819,9 @@ export function get_gas_status(): string {
 export function withdraw(): number {
   const attached = near.attachedDepositU128();
   if (attached != "1") { near.abort("ERR_YOCTO"); return 0; }
+  // the lock yocto physically stays in the contract (dust sink, second
+  // lock) — the shadow float must count it or drift by 1 yocto/withdraw
+  floatAdd(attached);
   const k = nbKey(near.predecessorAccountId());
   const bal = near.storageGet(k) ?? "0";
   if (u128IsZero(bal)) { near.abort("ERR_EMPTY_PAD"); return 0; }
