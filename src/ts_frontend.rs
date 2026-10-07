@@ -5241,6 +5241,7 @@ fn statically_bool(e: &Expression<'_>) -> bool {
     matches!(e, Expression::LogicalExpression(_))
         || is_not
         || bool_call
+        || matches!(e, Expression::BooleanLiteral(_))
         || matches!(
             e,
             Expression::BinaryExpression(b) if matches!(
