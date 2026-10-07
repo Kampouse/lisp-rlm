@@ -179,6 +179,10 @@ def main():
     ap.add_argument("--fault-rate", type=float, default=0.0)
     ap.add_argument("--state", default=None)
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--edge", action="store_true",
+                    help="empty-liquidity boot + deterministic edge battery"
+                         " (empty-ladder swap, shareless withdraw, AB=0"
+                         " single-leg withdraw) before the random ops")
     args = ap.parse_args()
 
     rng = random.Random(args.seed)
@@ -194,10 +198,58 @@ def main():
     h.call("tB", "mint", {"to": "bob", "amt": "4000"}, "owner")
     h.call("tB", "mint", {"to": "carol", "amt": "2000"}, "owner")
     h.call("pool", "_run", {"op": "init", "toka": "tA", "tokb": "tB"}, "alice")
-    h.call("tB", "ft_transfer_call",
-           {"receiver_id": "pool", "amount": "10000", "msg": "add_liq"}, "alice")
+    if not args.edge:  # edge battery starts from ZERO liquidity
+        h.call("tB", "ft_transfer_call",
+               {"receiver_id": "pool", "amount": "10000", "msg": "add_liq"}, "alice")
     snap = h.snapshot()
     h.check_invariants(snap, "boot")
+
+    def run_op(idx, tok, method, margs, signer):
+        """One op through the full check machinery (edge battery + fuzz)."""
+        pre = h.snapshot()
+        ret = h.call(tok, method, margs, signer)
+        post = h.snapshot()
+        if ret is None:
+            h.stats["leg2_faults"] += 1
+            drift = int(post[1]["tB"].get("pool", "0")) - int(post[0].get("PB", "0"))
+            if drift < h.stats["orphan_b"]:
+                h.failures.append(
+                    f"{idx} leg2-fault: orphan drift DECREASED "
+                    f"{h.stats['orphan_b']} → {drift}")
+            h.stats["orphan_b"] = drift
+        h.check_invariants(post, idx, h.stats["orphan_b"])
+        if ret is not None and h.is_noop(ret, margs, method):
+            h.stats["rollbacks"] += 1
+            if not h.same(pre, post):
+                h.failures.append(
+                    f"{idx} I5 ROLLBACK VIOLATION {tok}.{method} {margs}"
+                    f" → {ret!r}:\n{h.diff(pre, post)}")
+        return ret
+
+    if args.edge:
+        battery = [
+            ("e1 empty-ladder swap (full refund)",
+             "tA", "ft_transfer_call",
+             {"receiver_id": "pool", "amount": "500", "msg": "swap:0"}, "alice"),
+            ("e2 shareless withdraw",
+             "pool", "_run", {"op": "withdraw", "sh": "100"}, "alice"),
+            ("e3 zero-sh withdraw",
+             "pool", "_run", {"op": "withdraw", "sh": "0"}, "bob"),
+            ("e4 bootstrap liquidity (bob = first LP)",
+             "tB", "ft_transfer_call",
+             {"receiver_id": "pool", "amount": "1000", "msg": "add_liq"}, "bob"),
+            ("e5 AB=0 withdraw (g=0 single-leg)",
+             "pool", "_run", {"op": "withdraw", "sh": "400"}, "bob"),
+            ("e6 first swap on thin ladder",
+             "tA", "ft_transfer_call",
+             {"receiver_id": "pool", "amount": "50", "msg": "swap:0"}, "carol"),
+            ("e7 full-balance withdraw after swap",
+             "pool", "_run", {"op": "withdraw", "sh": "600"}, "bob"),
+        ]
+        for tag, tok, method, margs, signer in battery:
+            ret = run_op(tag, tok, method, margs, signer)
+            if not args.quiet:
+                print(f"  · {tag} → {ret!r}")
 
     for i in range(args.ops):
         # fault toggles: fire before the op, restore after — rollback
@@ -207,31 +259,12 @@ def main():
         if args.fault_rate > 0 and rng.random() < args.fault_rate:
             fault_tok = rng.choice(["tA", "tB"])
             h.call(fault_tok, "toggle_fail", {"on": "1"}, "owner")
-        pre = h.snapshot()
         tok, method, margs, signer, must_rollback = gen_op(rng)
-        ret = h.call(tok, method, margs, signer)
+        run_op(f"op{i}", tok, method, margs, signer)
         h.stats["ops"] += 1
         if fault_tok:
             h.call(fault_tok, "toggle_fail", {"on": "0"}, "owner")
-        post = h.snapshot()
-        if ret is None:
-            # leg2-fault: B-payout leg faulted after A-side committed.
-            # Quantify the new orphan: drift may grow, never shrink.
-            h.stats["leg2_faults"] += 1
-            drift = int(post[1]["tB"].get("pool", "0")) - int(post[0].get("PB", "0"))
-            if drift < h.stats["orphan_b"]:
-                h.failures.append(
-                    f"op{i} leg2-fault: orphan drift DECREASED "
-                    f"{h.stats['orphan_b']} → {drift} (double-count / theft?)")
-            h.stats["orphan_b"] = drift
-        h.check_invariants(post, f"op{i}", h.stats["orphan_b"])
-        noop = h.is_noop(ret, margs, method) if ret is not None else False
-        if must_rollback or noop:
-            h.stats["rollbacks"] += 1
-            if not h.same(pre, post):
-                h.failures.append(
-                    f"op{i} I5 ROLLBACK VIOLATION {tok}.{method} {margs}"
-                    f" → {ret!r}:\n{h.diff(pre, post)}")
+
         if not args.quiet and (i + 1) % 50 == 0:
             print(f"  … {i+1}/{args.ops} ops, {h.stats['rollbacks']} rollbacks"
                   f" verified, {len(h.failures)} failures")
