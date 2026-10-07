@@ -138,6 +138,8 @@
       (let ((sh (json-get-str "sh" inp)))
         (if (str= (num-ok? sh) "0")
             "bad-sh"
+        (if (< (li-cmp sh "1") 0)
+            "no-shares"
         (if (< (li-cmp (bz (sh-key who)) sh) 0)
             (str-cat "insufficient-shares-have:" (bz (sh-key who)))
             (let ((ab (bz "AB")) (pb (bz "PB")) (sht (bz "SHT")))
@@ -179,7 +181,7 @@
                                 (near/promise_return
                                   (near/promise_then p (near/current_account_id) "pay_b"
                                     args "0" 60000000000000))
-                                "wd-queued")))))))))))))))
+                                "wd-queued"))))))))))))))))
 (define (msg-min msg)
   ;; "swap" → "0"; "swap:NNN" → NNN
   (if (< (str-length msg) 6)

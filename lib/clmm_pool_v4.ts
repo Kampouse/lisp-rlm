@@ -223,6 +223,7 @@ function withdraw4(): string {
   const who = near.predecessorAccountId();
   const sh = near.jsonGetStr("sh") ?? "";
   if (!numOk(sh)) { return "bad-sh"; }
+  if (u128Lt(sh, "1")) { return "no-shares"; }
   const have = bz(shKey(who));
   if (u128Lt(have, sh)) { return strCat("insufficient-shares-have:", have); }
   const ab = bz("AB");
