@@ -450,7 +450,19 @@ fn collect_user_fns(stmts: &[Statement<'_>], out: &mut std::collections::HashSet
                         collect_user_fns(&body.statements, out);
                     }
                 }
+                // `export const f = (…) => …` — F3 exported arrow: lowered
+                // to a define + export pair and CALLED BY NAME, so the
+                // strict-surface gate must whitelist it too.
+                if let Declaration::VariableDeclaration(v) = &decl.declaration {
+                    collect_arrow_decls(v, out);
+                }
             }
+            // F3 scoped closures: `const f = (…) => …` locals bind a lambda
+            // called by name — register them or the strict gate (2026-10-05)
+            // rejects `f(s)` as a lisp passthrough before the F3 lowering
+            // ever runs (surfaced when the local F3 line met the pushed
+            // strict-surface line in the 2026-10-07 merge).
+            Statement::VariableDeclaration(v) => collect_arrow_decls(v, out),
             Statement::BlockStatement(b) => collect_user_fns(&b.body, out),
             Statement::IfStatement(i) => {
                 collect_user_fns(stmts_of(&i.consequent), out);
@@ -468,6 +480,20 @@ fn collect_user_fns(stmts: &[Statement<'_>], out: &mut std::collections::HashSet
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// Register `const name = (…) => …` declarators (F3 callable arrows).
+fn collect_arrow_decls(
+    v: &oxc_ast::ast::VariableDeclaration<'_>,
+    out: &mut std::collections::HashSet<String>,
+) {
+    for d in &v.declarations {
+        if matches!(d.init, Some(Expression::ArrowFunctionExpression(_))) {
+            if let Ok(name) = binding_name(&d.id) {
+                out.insert(name);
+            }
         }
     }
 }

@@ -686,7 +686,7 @@ fn promise_then_parity() {
     run_diff(
         r#"(define (run)
           (let ((p (near/promise_create "pool.near" "borrow" "{}" 0 50000000000000)))
-            (near/promise_then p "self.test.near" "on_borrow" "{}" 0 20000000000000)))"#,
+            (near/promise_then p "self.test.near" "on_borrow" "{}" "0" 20000000000000)))"#,
     )
     .unwrap();
 }

@@ -369,6 +369,54 @@ impl WasmEmitter {
                 let amount = self.expr(&a[4])?;
                 let gas = self.expr(&a[5])?;
                 let mut v = Vec::new();
+                // Deposit: Num OR u128 decimal string — same dual-path as the
+                // near/call sugar (typing promises str-deposit; the raw store
+                // here wrote the TAGGED STRING BITS as the amount — the host
+                // read descriptor bytes as yocto, caught by the promise
+                // differential harness 2026-10-07).
+                let h = self.ensure_u128_str_helpers();
+                let dep_local = self.local_idx("__pt_dep");
+                v.extend(amount);
+                v.push(Instruction::LocalSet(dep_local));
+                v.push(Instruction::LocalGet(dep_local));
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                // — str path: decimal → u128 LE at TEMP_MEM —
+                v.push(Instruction::LocalGet(dep_local));
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::call_user(h.parse));
+                v.push(Instruction::Drop);
+                v.push(Instruction::Else);
+                // — num path (old behavior): zero high 64, store low 64 —
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 8,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(dep_local));
+                v.extend(self.emit_untag()); // local holds the TAGGED value
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::End);
                 v.extend(pidx);
                 v.extend(self.emit_untag()); // untag promise idx
                 v.extend(account.clone());
@@ -395,14 +443,8 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I32Const(0));
-                v.extend(amount.clone());
-                v.push(Instruction::I64Store(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                }));
-                v.push(Instruction::I64Const(0));
+                // amount_ptr (TEMP_MEM — u128 LE limbs written above)
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.extend(gas);
                 v.extend(self.emit_untag()); // BUG FIX 2026-09-10: gas reached the
                                              // host still 3-bit-TAGGED (8× the intended value — found by the
