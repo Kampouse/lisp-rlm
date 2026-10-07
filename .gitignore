@@ -31,3 +31,6 @@ node_modules/
 fuzz/corpus/
 fuzz/results/
 scripts/gaskey/node_modules/
+
+# hardening subagent build dir (separate from target/)
+/target-hardening/
