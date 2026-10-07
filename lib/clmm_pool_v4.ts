@@ -234,7 +234,14 @@ function withdraw4(): string {
   const o0 = slotGet(0); const o1 = slotGet(1); const o2 = slotGet(2);
   const o3 = slotGet(3); const o4 = slotGet(4);
   near.storageSet("SHT", u128Sub(sht, sh));
-  near.storageSet(shKey(who), u128Sub(have, sh));
+  const shLeft = u128Sub(have, sh);
+  if (shLeft === "0") {
+    // full exit: drop the key — releases the pool's storage stake and
+    // stops the "million cheap LPs" grief from accumulating forever
+    near.storageRemove(shKey(who));
+  } else {
+    near.storageSet(shKey(who), shLeft);
+  }
   near.storageSet("AB", u128Sub(ab, outA));
   near.storageSet("PB", u128Sub(pb, outB));
   slotSet(0, u128Div(u128Mul(o0, bz("PB")), pb));

@@ -53,6 +53,9 @@ class Harness:
         self.failures = []
         self.stats = {"ops": 0, "rollbacks": 0, "checks": 0,
                       "leg2_faults": 0, "orphan_b": 0}
+        # system-wide wealth conservation (I7): Σ balances per token changes
+        # ONLY via owner mints — nothing in the system burns or creates value
+        self.minted = {"tA": 0, "tB": 0}
 
     def call(self, contract, method, args, signer):
         env = dict(os.environ)
@@ -95,7 +98,7 @@ class Harness:
         bp = bal["tB"].get("pool", "0")
         ap = bal["tA"].get("pool", "0")
         sh_sum = sum(int(pool[k]) for k in pool if k.startswith("SH:"))
-        self.stats["checks"] += 5
+        self.stats["checks"] += 6
         for name, got, want in (
             ("I1 bal_tB(pool)==PB+orphanB", bp, str(int(pb) + orphan_ok)),
             ("I3 bal_tA(pool)==AB", ap, ab),
@@ -107,6 +110,14 @@ class Harness:
                if k in pool and int(pool[k] or "0") < 0]
         if neg:
             self.failures.append(f"{ctx}: I4 negative book values: {neg}")
+        # I7 wealth conservation: any leak (token-side weirdness, rounding
+        # extraction, double-credit) trips this even when every per-key
+        # book invariant holds.
+        for tok in ("tA", "tB"):
+            tot = sum(int(v) for v in bal[tok].values())
+            if tot != self.minted[tok]:
+                self.failures.append(
+                    f"{ctx}: I7 {tok} wealth: Σ{tot} != minted {self.minted[tok]}")
         # I6 ladder-liquidity: slots are B-denominated sellable quotes —
         # they must never sum above the pool's ACTUAL B (bp, incl. orphaned
         # residue). A breach = ladder advertising undeliverable liquidity
@@ -192,6 +203,8 @@ def main():
     # ---- deterministic boot ----
     for tok in ("tA", "tB"):
         h.call(tok, "new", {}, "owner")
+    h.minted["tA"] += 5000 * len(LPS)
+    h.minted["tB"] += 12000 + 4000 + 2000
     for who in LPS:
         h.call("tA", "mint", {"to": who, "amt": "5000"}, "owner")
     h.call("tB", "mint", {"to": "alice", "amt": "12000"}, "owner")
@@ -260,6 +273,8 @@ def main():
             fault_tok = rng.choice(["tA", "tB"])
             h.call(fault_tok, "toggle_fail", {"on": "1"}, "owner")
         tok, method, margs, signer, must_rollback = gen_op(rng)
+        if method == "mint":
+            h.minted[tok] += int(margs["amt"])
         run_op(f"op{i}", tok, method, margs, signer)
         h.stats["ops"] += 1
         if fault_tok:

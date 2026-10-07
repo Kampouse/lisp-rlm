@@ -149,7 +149,10 @@
                       (o3 (slot-get 3)) (o4 (slot-get 4)))
                   (begin
                     (near/store-bytes "SHT" (li-sub sht sh))
-                    (near/store-bytes (sh-key who) (li-sub (bz (sh-key who)) sh))
+                    (let ((sh-left (li-sub (bz (sh-key who)) sh)))
+                      (if (str= sh-left "0")
+                          (near/storage_remove (sh-key who))
+                          (near/store-bytes (sh-key who) sh-left)))
                     (near/store-bytes "AB" (li-sub ab out-a))
                     (near/store-bytes "PB" (li-sub pb out-b))
                     (slot-set 0 (u128-muldiv o0 (bz "PB") pb))
