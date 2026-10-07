@@ -88,8 +88,10 @@
 ")
 (define (json-safe s)
   (let ((t (if (string? s) s (to-string s))))
+    ;; TAB: brain-written TS is tab-indented; a raw tab inside a JSON
+    ;; string is invalid JSON and corrupted ta_prime_sum@ts.json (2026-10-05).
     (str-replace
-      (str-replace (str-replace t NL "~~NL~~") "\"" "~~QT~~")
+      (str-replace (str-replace (str-replace t NL "~~NL~~") "	" "~~TAB~~") "\"" "~~QT~~")
       "\\" "~~BS~~")))
 (define (trace-node-json i code ok out s a)
   (str-concat "{\"i\":" (to-string i)
@@ -309,8 +311,11 @@
       (if (= (rlm-get __surface) "ts")
         (str-concat
           "\nGenerate ONE TypeScript module. Allowed: function declarations,\n"
-          "const/let, if/else, return, for/while, template literals, number/string/bool\n"
-          "literals, .map/.filter/.reduce/.join/.push, Math.*, unary ! and -.\n"
+          "const/let, if/else, return, template literals, number/string/bool\n"
+          "literals, array literals, .map/.filter/.reduce/.join/.push,\n"
+          "Math.abs/max/min/pow/sqrt/floor/ceil/round, unary ! and -.\n"
+          "Loops: for (const x of arr) ONLY — plain for/while and\n"
+          "break/continue are NOT supported; count with recursion.\n"
           "Forbidden: imports, classes, async, destructuring, optional chaining.\n"
           "Store results: rlm_set(\"answer\", <expr>);\n"
           "Finish when done: rlm_set(\"Final\", true);\n"

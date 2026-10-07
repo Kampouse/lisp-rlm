@@ -1,0 +1,4 @@
+### PAST ATTEMPTS ON ta_prime_sum_product (agent memory — do NOT repeat these failures)
+- FAIL it6: <109-char failed attempt> → ERROR: read-all: parse error: missing closing `)` at line 1,
+- FAIL it7: <109-char failed attempt> → ERROR: read-all: parse error: unexpected `)` at line 1, col 
+- SOLVED ONCE WITH (complete): (let* ((primes (list 2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59 61 67 71 73 79 83 89 97)) (sum (reduce + 0 primes)) (count (len primes)) (final-product (* sum count))) (rlm-set answer final-product) (final true))

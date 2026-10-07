@@ -1,5 +1,5 @@
 {
- "worlds": 1697,
+ "worlds": 3618,
  "policies": {
   "p3-grammar-shapes": {
    "n": 2,
@@ -27,9 +27,9 @@
    "avg_iters": 4.33
   },
   "p5-8x0-91b-g3": {
-   "n": 853,
-   "completed": 380,
-   "avg_iters": 1.37
+   "n": 1573,
+   "completed": 655,
+   "avg_iters": 1.82
   },
   "p5-8x0-91b-g3l": {
    "n": 127,
@@ -40,10 +40,15 @@
    "n": 577,
    "completed": 176,
    "avg_iters": 2.07
+  },
+  "p5-10x0-91b-g3": {
+   "n": 1201,
+   "completed": 343,
+   "avg_iters": 2.25
   }
  },
  "incumbent": {
-  "max_iter": 8,
+  "max_iter": 10,
   "stop_errs": 0
  }
 }

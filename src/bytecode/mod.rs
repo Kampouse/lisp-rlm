@@ -5078,7 +5078,7 @@ pub fn eval_near_builtin_match(name: &str) -> bool {
         | "near/signer_to_buf" | "near/write_amount"
         // ── near/* crypto ──
         | "near/sha256" | "near/keccak256" | "near/keccak512" | "near/ripemd160"
-        | "near/ecrecover" | "near/ed25519_verify" | "near/p256_verify" | "near/schnorr_verify"
+        | "near/ecrecover" | "near/ecrecover_pk" | "near/ed25519_verify" | "near/p256_verify" | "near/schnorr_verify"
         | "near/alt_bn128_g1_multiexp" | "near/alt_bn128_g1_sum" | "near/alt_bn128_pairing_check"
         | "near/bls12381_p1_sum"
         | "near/random_seed"
@@ -5942,6 +5942,7 @@ fn eval_near_builtin(
         "near/ed25519_verify" | "near/p256_verify" | "near/ecrecover" | "near/schnorr_verify" => {
             Some(Ok(LispVal::Num(1))) // mock: always valid
         }
+        "near/ecrecover_pk" => Some(Ok(LispVal::Str(String::new()))), // mock: empty pk
         "near/random_seed" => Some(Ok(ctx_get(state, "random_seed", LispVal::Num(42)))),
         // Alt BN128
         "near/alt_bn128_g1_multiexp" | "near/alt_bn128_g1_sum" | "near/alt_bn128_pairing_check" => {
@@ -7238,6 +7239,60 @@ pub fn eval_builtin(
         }
         "list" => Ok(LispVal::List(args.to_vec())),
         "vec" => Ok(LispVal::Vec(args.to_vec())),
+        // TAG_ARRAY heap block — wasm path constructs via call_list "array";
+        // the TS frontend lowers [a, b, ...] to (array ...) but the VM
+        // (run_program) path never had it. 2026-10-05: TS-arm traces
+        // (t4_pow@ts, td_primesum@ts) died on "unknown function or special
+        // form 'array'" — wasm tests stayed green, masking the gap.
+        "array" => Ok(LispVal::Vec(args.to_vec())),
+        // ts_frontend lowers `.length` to vec-length (polymorphic over
+        // vec/list/str — mirror of typing/checker.rs's vec-length contract;
+        // bytecode only had vec-len, which the frontend never emits).
+        "vec-length" => match args.get(0) {
+            Some(LispVal::Vec(v)) => Ok(LispVal::Num(v.len() as i64)),
+            Some(LispVal::List(l)) => Ok(LispVal::Num(l.len() as i64)),
+            Some(LispVal::Str(s)) => Ok(LispVal::Num(s.chars().count() as i64)),
+            Some(LispVal::Nil) => Ok(LispVal::Num(0)),
+            _ => Err("vec-length: need vec, list or string".into()),
+        },
+        // Math.pow lowering — mirrors dispatch_arithmetic::expt (f64 powf,
+        // Num when integral) so both interpreters agree on semantics.
+        "expt" => {
+            let base = match args.get(0) {
+                Some(LispVal::Num(n)) => *n as f64,
+                Some(LispVal::Float(f)) => *f,
+                _ => return Err("expt: need base".to_string()),
+            };
+            let exp = match args.get(1) {
+                Some(LispVal::Num(n)) => *n as f64,
+                Some(LispVal::Float(f)) => *f,
+                _ => return Err("expt: need exponent".to_string()),
+            };
+            let result = base.powf(exp);
+            if result == result.floor() && result.abs() < 1e18 {
+                Ok(LispVal::Num(result as i64))
+            } else {
+                Ok(LispVal::Float(result))
+            }
+        }
+        // Math.floor lowering — mirrors dispatch_arithmetic::floor.
+        "floor" => match args.get(0) {
+            Some(LispVal::Num(n)) => Ok(LispVal::Num(*n)),
+            Some(LispVal::Float(f)) => Ok(LispVal::Num(f.floor() as i64)),
+            _ => Err("floor: need number".to_string()),
+        },
+        // Math.ceil lowering — mirrors dispatch_arithmetic::ceiling.
+        "ceiling" => match args.get(0) {
+            Some(LispVal::Num(n)) => Ok(LispVal::Num(*n)),
+            Some(LispVal::Float(f)) => Ok(LispVal::Num(f.ceil() as i64)),
+            _ => Err("ceiling: need number".to_string()),
+        },
+        // Math.round lowering — mirrors dispatch_arithmetic::round.
+        "round" => match args.get(0) {
+            Some(LispVal::Num(n)) => Ok(LispVal::Num(*n)),
+            Some(LispVal::Float(f)) => Ok(LispVal::Num(f.round() as i64)),
+            _ => Err("round: need number".to_string()),
+        },
         "vec?" => Ok(LispVal::Bool(matches!(args.get(0), Some(LispVal::Vec(_))))),
         "vec-nth" => match (args.get(0), args.get(1)) {
             (Some(LispVal::Vec(v)), Some(LispVal::Num(i)))

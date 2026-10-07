@@ -36,7 +36,7 @@ def load_worlds():
         task, hhmm = m.group(1), m.group(2)
         codes = [n.get("code", "") for n in w.get("nodes", [])]
         ans = str(w.get("answer", "") or "")
-        for k, v in (("~~NL~~", " "), ("~~QT~~", '"'), ("~~BS~~", "\\")):
+        for k, v in (("~~NL~~", " "), ("~~QT~~", '"'), ("~~BS~~", "\\"), ("~~TAB~~", "\t")):
             ans = ans.replace(k, v)
         ws.append({
             "ts": m2ts(hhmm), "task": task,

@@ -1,0 +1,23 @@
+;; AUTO-GENERATED @ts twin of t_lend_liq.lisp — edit the BASE task and
+;; regenerate: python3 scripts/gen-ts-twins.py  (do not hand-edit)
+;; RLM lending curriculum — stage 2: liquidation take
+;; Open-goal ladder step (2026-09-30): pure-function DeFi math, no storage.
+(load-file "rlm_runtime.lisp")
+(load-file "scripts/rlm-tasks/policy.lisp")
+(load-file "scripts/rlm-tasks/q-table.lisp")
+(load-file "scripts/rlm-tasks/custom-actions.lisp")
+(load-file "scripts/rlm-tasks/rlm_ts.lisp")
+(rlm-set __policy POLICY_ID)
+(rlm-set __surface "ts")
+(rlm-set __trace_id "t_lend_liq@ts")
+(define (llm-code ctx)
+  (ts->lisp (strip-code-fences (llm (build-prompt-ts ctx)))))
+(define (task-verify a) (equal? a 4200))
+(run-rlm "A position with debt=8000 is under-collateralized. Max repay is half the debt (close factor 50 percent), and the liquidator earns a 5 percent penalty on what they repay. Compute max_repay + penalty (a single integer; repay=4000, penalty=200, total=4200). Store it as answer. When achieved, finish with rlm_set(\"Final\", true).")
+(retry-with-feedback task-verify "4200" 2)
+(if (task-verify (rlm-get answer)) nil (re-lesson))
+(write-trace)
+(println (str-concat "RLMDUMP task=t_lend_liq@ts"))
+(println (str-concat "RLMDUMP iterations=" (to-string (rlm-get iteration))))
+(println (str-concat "RLMDUMP answer=" (to-string (rlm-get answer))))
+(println (str-concat "RLMDUMP Final=" (to-string (rlm-get Final))))

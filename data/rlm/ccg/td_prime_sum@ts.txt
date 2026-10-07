@@ -1,0 +1,2 @@
+### PAST ATTEMPTS ON td_prime_sum@ts (agent memory — do NOT repeat these failures)
+- SOLVED ONCE WITH (complete): (define primes (array 2 3 5))~~NL~~(define sum (reduce (lambda (acc x) (+ acc x)) 0 primes))~~NL~~(rlm_set ~~QT~~answer~~QT~~ sum)~~NL~~(rlm_set ~~QT~~Final~~QT~~ true)~~NL~~

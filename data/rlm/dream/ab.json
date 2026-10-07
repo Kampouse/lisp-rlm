@@ -1,11 +1,10 @@
 {
  "phase": "on",
- "cycles_on": 6,
- "cycles_off": 5,
- "solved_on": 1243,
- "n_on": 2725,
- "solved_off": 1032,
- "n_off": 2270,
- "started": 1790594994.925986,
- "last_arm": "on"
+ "cycles_on": 0,
+ "cycles_off": 0,
+ "solved_on": 0,
+ "n_on": 0,
+ "solved_off": 0,
+ "n_off": 0,
+ "started": 1791318679.467136
 }

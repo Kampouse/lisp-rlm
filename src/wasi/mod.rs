@@ -1931,6 +1931,29 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     } else {
         u32::MAX
     };
+    // http-post import (canonical 7-param ABI) — only when the emitter
+    // produced POST sentinels Call(200+url_idx). P1 maps ALL literal-URL
+    // POST calls to this single import; the per-URL core helpers exist
+    // only in the P2 combined builder (build_p2_with_wasi_http). Without
+    // this mapping the P1 module fails validation with "unknown function
+    // 200" (suite 03_rpc_post red since the P1/P2 split).
+    let http_post_used = em
+        .funcs
+        .iter()
+        .any(|f| f.instrs.iter().any(|i| matches!(i, Instruction::Call(n) if (200..300).contains(n))));
+    let http_post_import_idx = if http_post_used {
+        let hf = &outlayer_imports()[4]; // http-post: (url ptr/len, body ptr/len, ct ptr/len, ret_area) -> ()
+        let idx = total_imports;
+        imports.import(
+            hf.module,
+            hf.name,
+            EntityType::Function(ol_type_map_full[4]),
+        );
+        total_imports += 1;
+        idx
+    } else {
+        u32::MAX
+    };
     // NEAR host stubs as imports from "env" — same as NEAR target
     // This lets the existing NEAR-style instruction emission work unchanged
     let mut near_host_idx: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
@@ -2108,6 +2131,20 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
                 if http_get_used && http_shim_fn_idx != u32::MAX {
                     for i in 0..http_url_count {
                         ol_map.insert(103 + i, http_shim_fn_idx);
+                    }
+                }
+                // HTTP POST sentinels Call(200+url_idx) → the single canonical
+                // outlayer:api/host http-post import (call sites already push
+                // the 7 canonical ABI params + ret_area).
+                if http_post_used && http_post_import_idx != u32::MAX {
+                    for f in &em.funcs {
+                        for i in &f.instrs {
+                            if let Instruction::Call(n) = i {
+                                if (200..300).contains(n) {
+                                    ol_map.insert(*n, http_post_import_idx);
+                                }
+                            }
+                        }
                     }
                 }
             }

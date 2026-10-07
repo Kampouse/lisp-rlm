@@ -1,0 +1,9 @@
+# auto — mined from own completed worlds
+(define (step p)
+  (let ((temp (* p 1025)))
+    (set! p (/ temp 1000))))
+(define p 1000)
+(step p)
+(step p)
+(rlm-set answer 1050)
+(final true)

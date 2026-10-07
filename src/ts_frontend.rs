@@ -78,6 +78,7 @@ fn ts_to_lisp_source_inner(src: &str) -> Result<String, String> {
     TYPE_ALIASES.with(|s| s.borrow_mut().clear());
     CONST_FOLDS.with(|s| s.borrow_mut().clear());
     BIGINT_CONSTS.with(|s| s.borrow_mut().clear());
+    USER_FNS.with(|m| m.borrow_mut().clear());
     let exprs = parse_ts(src)?;
     let mut out = String::new();
     for e in &exprs {
@@ -148,6 +149,13 @@ thread_local! {
     /// (2026-08-31) a value-define at top level emits a stub (known emitter
     /// limitation), so numeric/string consts INSTEAD substitute inline and
     /// emit nothing. Non-literal top-level consts keep the old path.
+    /// TS surface strictness (2026-10-05): every FunctionDeclaration name
+    /// (any nesting depth) collected before lowering — bare calls to names
+    /// outside this set, the builtin map, or the RLM runtime API are
+    /// rejected. The old unknown-name passthrough let brain-written lisp
+    /// (reduce/lambda/array…) compile as "TS" and game the checker.
+    static USER_FNS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
     static CONST_FOLDS: std::cell::RefCell<Vec<(String, LispVal)>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// Top-level `const K = <n-literal>;` names — bigint-shaped identifiers
@@ -239,7 +247,72 @@ pub fn parse_ts(src: &str) -> Result<Vec<LispVal>, String> {
     IDENT_OFFSETS.with(|m| m.borrow_mut().clear());
     // on success (or error) the map holds first-occurrence offsets for every
     // identifier seen during the walk — drained by take_ident_offsets()
-    lower_program(&ret.program)
+    let mut forms = lower_program(&ret.program)?;
+    for f in forms.iter_mut() {
+        *f = discard_normalize(f);
+    }
+    Ok(forms)
+}
+
+/// Post-lowering normalization (2026-10-06): the __fn_done/__wl_* statement
+/// guards wrap arbitrary statement bodies as `(if (= FLAG 0) BODY 0)`.
+/// When BODY's TYPE is a str — a bare str-returning call like
+/// `poolSwap(amt);`, or a statement-if whose branches type str — the
+/// checker's branch unification rejects it as `str ≠ int` even though the
+/// statement position discards the value entirely. Fix: rewrite to
+/// `(if (= FLAG 0) (begin BODY 0) 0)` — the same discard idiom the loop
+/// lowering has always used (`list(vec![Sym("begin"), e, Num(0)])`).
+/// Semantics-neutral: effects and evaluation order preserved, value 0.
+/// Found live while porting the CLMM pool to TS (bisected via probe files:
+/// statement CALLS, nested guard-ifs, and if-branches with str tails all
+/// hit the one pattern — one root cause, one rewrite).
+fn discard_normalize(v: &LispVal) -> LispVal {
+    match v {
+        LispVal::List(items) => {
+            // don't descend into quoted DATA — it is not code
+            if let Some(LispVal::Sym(s)) = items.first() {
+                if s == "quote" {
+                    return v.clone();
+                }
+            }
+            // rewrite matching guard-wraps
+            if items.len() == 4 {
+                let is_flag_test = matches!(
+                    &items[0],
+                    LispVal::Sym(s) if s == "if"
+                ) && matches!(
+                    &items[1],
+                    LispVal::List(t) if t.len() == 3
+                        && matches!(&t[0], LispVal::Sym(op) if op == "=")
+                        && matches!(&t[1], LispVal::Sym(flag)
+                            if flag == "__fn_done" || flag.starts_with("__wl_"))
+                        && matches!(&t[2], LispVal::Num(n) if *n == 0)
+                ) && matches!(&items[3], LispVal::Num(n) if *n == 0);
+                let already_discarding = matches!(
+                    &items[2],
+                    LispVal::List(b) if !b.is_empty()
+                        && matches!(b.first(), Some(LispVal::Sym(s)) if s == "begin")
+                        && matches!(b.last(), Some(LispVal::Num(n)) if *n == 0)
+                );
+                if is_flag_test && !already_discarding {
+                    let body = discard_normalize(&items[2]);
+                    return LispVal::List(vec![
+                        items[0].clone(),
+                        items[1].clone(),
+                        LispVal::List(vec![
+                            LispVal::Sym("begin".into()),
+                            body,
+                            LispVal::Num(0),
+                        ]),
+                        LispVal::Num(0),
+                    ]);
+                }
+            }
+            // recurse
+            LispVal::List(items.iter().map(discard_normalize).collect())
+        }
+        other => other.clone(),
+    }
 }
 
 /// Parse + retain the ident→offset map (for augmenting downstream errors).
@@ -257,9 +330,160 @@ pub fn ts_line_hint(map: &[(String, u32)], src: &str, name: &str) -> Option<Stri
     })
 }
 
+/// Locate WHICH top-level form a checker error comes from, with its TS
+/// source position (2026-10-06). The checker is sequential (defines build
+/// the env in order), so the first failing prefix identifies the culprit
+/// form exactly — no spans needed on LispVal. Returns
+/// "in function 'name' (ts line N)" plus the source line, or None when
+/// the whole program checks clean / the culprit can't be named.
+///
+/// Use on the error path only: O(n) checker passes over a program of n
+/// top-level forms. Offsets come from the fresh parse_ts walk (call right
+/// after it drains IDENT_OFFSETS).
+pub fn locate_form_error(
+    exprs: &[LispVal],
+    ident_map: &[(String, u32)],
+    src: &str,
+    orig_err: &str,
+) -> Option<String> {
+    // find first failing prefix
+    let mut culprit: Option<&LispVal> = None;
+    for k in 1..=exprs.len() {
+        if crate::typing::type_check_program(&exprs[..k], true).is_err() {
+            culprit = Some(&exprs[k - 1]);
+            break;
+        }
+    }
+    let form = culprit?;
+    // extract the defined/exported name: (define (name ...) …) or
+    // (export "x" name) — for exports, prefer the referenced define's
+    // own name so the hint lands on its definition
+    let sym_at = |v: &LispVal| -> Option<String> {
+        match v {
+            LispVal::Sym(s) => Some(s.clone()),
+            _ => None,
+        }
+    };
+    let mut name: Option<String> = None;
+    if let LispVal::List(items) = form {
+        let head = items.first().and_then(sym_at).unwrap_or_default();
+        if head == "define" {
+            if let Some(LispVal::List(sig)) = items.get(1) {
+                name = sig.first().and_then(sym_at); // (define (name args…) …)
+            } else {
+                name = items.get(1).and_then(sym_at); // (define name value)
+            }
+        } else if head == "export" {
+            if let Some(LispVal::Str(s)) = items.get(1) {
+                name = Some(s.clone()); // exported display name
+            }
+        }
+    }
+    let name = name?;
+    // prefer the DEFINITION offset (ident_map first-occurrence often points
+    // at a call site above the def under hoisted lowering order)
+    let line_no = ident_map
+        .iter()
+        .find(|(n, _)| n == &name)
+        .map(|(_, off)| line_col(src, *off).0 as u32);
+    let line_no = line_no?;
+    let excerpt = src_excerpt(src, line_no);
+    Some(format!(
+        "in function `{}` (ts line {}) — first error:\n  {}\n{}",
+        name,
+        line_no,
+        orig_err.lines().next().unwrap_or(orig_err),
+        excerpt
+    ))
+}
+
 // ── Program / statements ──────────────────────────────────────────────────
 
+/// RLM runtime API callable from the TS surface (advertised in the
+/// cheatsheet COMPLETE EXAMPLE). Runtime defines loaded before eval.
+const RLM_RUNTIME_API: &[&str] = &["rlm_set", "rlm_get"];
+
+/// Definition sites (name, byte-offset) recorded during collect_user_fns —
+/// unlike IDENT_OFFSETS (first occurrence, often a call above the def in
+/// hoisted lowering order) these always land ON the definition for
+/// locate_form_error.
+thread_local! {
+    static FN_DEF_OFFSETS: std::cell::RefCell<Vec<(String, u32)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn note_fn_def(name: &str, span_start: u32) {
+    FN_DEF_OFFSETS.with(|m| {
+        let mut b = m.borrow_mut();
+        if !b.iter().any(|(n, _)| n == name) {
+            b.push((name.to_string(), span_start));
+        }
+    });
+}
+
+pub fn take_fn_def_offsets() -> Vec<(String, u32)> {
+    FN_DEF_OFFSETS.with(|m| std::mem::take(&mut *m.borrow_mut()))
+}
+
+fn collect_user_fns(stmts: &[Statement<'_>], out: &mut std::collections::HashSet<String>) {
+    for s in stmts {
+        match s {
+            Statement::FunctionDeclaration(f) => {
+                if let Some(id) = &f.id {
+                    out.insert(id.name.as_str().to_string());
+                    note_fn_def(id.name.as_str(), id.span.start);
+                }
+                // NOTE: stmts_of() on a non-Block returns the statement
+                // itself — recursing through it here was an infinite loop
+                // (stack overflow, found by strict_gate_fn_hoisting).
+                if let Some(body) = &f.body {
+                    collect_user_fns(&body.statements, out);
+                }
+            }
+            Statement::ExportDeclaration(decl) => {
+                if let Declaration::FunctionDeclaration(f) = &decl.declaration {
+                    if let Some(id) = &f.id {
+                        out.insert(id.name.as_str().to_string());
+                        note_fn_def(id.name.as_str(), id.span.start);
+                    }
+                    if let Some(body) = &f.body {
+                        collect_user_fns(&body.statements, out);
+                    }
+                }
+            }
+            Statement::BlockStatement(b) => collect_user_fns(&b.body, out),
+            Statement::IfStatement(i) => {
+                collect_user_fns(stmts_of(&i.consequent), out);
+                if let Some(alt) = &i.alternate {
+                    collect_user_fns(stmts_of(alt), out);
+                }
+            }
+            Statement::WhileStatement(w) => collect_user_fns(stmts_of(&w.body), out),
+            Statement::ForStatement(f) => collect_user_fns(stmts_of(&f.body), out),
+            Statement::ForOfStatement(fo) => collect_user_fns(stmts_of(&fo.body), out),
+            Statement::DoWhileStatement(d) => collect_user_fns(stmts_of(&d.body), out),
+            Statement::SwitchStatement(sw) => {
+                for c in &sw.cases {
+                    collect_user_fns(&c.consequent, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn user_fn_or_runtime(name: &str) -> bool {
+    USER_FNS.with(|f| f.borrow().contains(name))
+        || RLM_RUNTIME_API.contains(&name)
+}
+
 fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
+    // strict surface: register all user functions before any lowering
+    USER_FNS.with(|m| {
+        let mut set = std::collections::HashSet::new();
+        collect_user_fns(&p.body, &mut set);
+        *m.borrow_mut() = set;
+    });
     // TypeScript hoists function declarations: a call may textually precede
     // the helper's definition. Lisp requires define-before-use, so we reorder:
     //   1. top-level consts (module-load-time, source order)
@@ -280,6 +504,13 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
         if let Statement::VariableDeclaration(v) = stmt {
             for d in &v.declarations {
                 if let (Ok(name), Some(init)) = (binding_name(&d.id), d.init.as_ref()) {
+                    // `let` is mutable — with top-level loops (M1.5,
+                    // 2026-10-05) a folded `let s = 0` went stale inside the
+                    // loop body ((+ 0 (* i i)) while set! s wrote a shadow).
+                    // Only `const` folds; mutable decls emit real defines.
+                    if !matches!(v.kind, oxc_ast::ast::VariableDeclarationKind::Const) {
+                        continue;
+                    }
                     let mut is_bigint = false;
                     let literal = match init {
                         Expression::NumericLiteral(n) => Some(Num(n.value as i64)),
@@ -404,18 +635,52 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                         }
                         _ => None,
                     };
-                    if let Some(v) = literal {
+                    if let Some(lit) = literal {
                         if is_bigint {
                             BIGINT_CONSTS.with(|m| m.borrow_mut().push(name.clone()));
                         }
-                        CONST_FOLDS.with(|m| m.borrow_mut().push((name, v)));
+                        if matches!(v.kind, oxc_ast::ast::VariableDeclarationKind::Const) {
+                            CONST_FOLDS.with(|m| m.borrow_mut().push((name, lit)));
+                        } else {
+                            // mutable `let x = <literal>` — real define, no fold
+                            consts.push(list(vec![Sym("define"), Sym(name), lit]));
+                        }
                     } else {
                         consts.push(list(vec![Sym("define"), Sym(name), lower_expr(init)?]));
                     }
                 }
             }
             Statement::ExpressionStatement(e) => {
-                out.push(lower_expr(&e.expression)?);
+                // effect-position (M2+ 2026-10-05): assignments (incl.
+                // property writes o.x = v) are statements here too
+                out.push(effect_expr(&e.expression)?);
+            }
+            Statement::WhileStatement(w) => {
+                // M1.5 (2026-10-05): top-level loops (RLM brain code lives
+                // here — `let s = 0; for (...) {...}` module scripts).
+                out.push(lower_while_form(w, false)?);
+            }
+            Statement::ForStatement(f) => {
+                out.push(lower_for_form(f, false)?);
+            }
+            Statement::ForOfStatement(fo) => {
+                // M1.5+ (2026-10-05): top-level for..of — reuse the
+                // function-body machinery (self-contained flag lets);
+                // Num(0) tail, view=false. The brain hit this exact gap
+                // minutes after the counted-loop ship (t1_sumsq@ts 14:08).
+                out.push(lower_prefix_around(
+                    std::slice::from_ref(stmt),
+                    Num(0),
+                    false,
+                )?);
+            }
+            Statement::DoWhileStatement(d) => {
+                // M1.5+ (2026-10-05)
+                out.push(lower_do_while_form(d, false)?);
+            }
+            Statement::SwitchStatement(sw) => {
+                // M1.5+ (2026-10-05): all-break if-chain
+                out.push(lower_switch_form(sw, false)?);
             }
             Statement::EmptyStatement(_) => {}
             // `type X = { ... }` — data-shape declaration, compile-time
@@ -1011,6 +1276,175 @@ fn has_return_inside_loop(stmts: &[Statement<'_>]) -> bool {
     stmts.iter().any(in_loop)
 }
 
+/// while/for bodies with break/continue/return are not lowered — the
+/// exit-protocol machinery exists only for for..of. Hard-error early so
+/// the author (or the brain) gets an actionable message instead of
+/// silently broken semantics (2026-10-05, M1.5 loops).
+fn reject_loop_exits(stmts: &[Statement<'_>]) -> Result<(), String> {
+    for s in stmts {
+        match s {
+            Statement::BreakStatement(_)
+            | Statement::ContinueStatement(_)
+            | Statement::ReturnStatement(_) => {
+                return Err("ts_frontend: break/continue/return inside while/for are not supported yet — use a flag variable or recursion".into())
+            }
+            Statement::BlockStatement(b) => reject_loop_exits(&b.body)?,
+            Statement::IfStatement(i) => {
+                reject_loop_exits(stmts_of(&i.consequent))?;
+                if let Some(alt) = &i.alternate {
+                    reject_loop_exits(stmts_of(alt))?;
+                }
+            }
+            Statement::WhileStatement(w) => reject_loop_exits(stmts_of(&w.body))?,
+            Statement::ForStatement(f) => reject_loop_exits(stmts_of(&f.body))?,
+            Statement::ForOfStatement(fo) => reject_loop_exits(stmts_of(&fo.body))?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Lower `while (test) { body }` (no break/continue/return — caller must
+/// reject_loop_exits first). Body lowers through lower_prefix_around with
+/// a nil tail — plain statement chaining, no __fn_done protocol (works at
+/// top level AND inside functions).
+fn lower_while_form(w: &oxc_ast::ast::WhileStatement<'_>, view: bool) -> Result<LispVal, String> {
+    reject_loop_exits(stmts_of(&w.body))?;
+    let body = lower_prefix_around(stmts_of(&w.body), Num(0), view)?;
+    Ok(list(vec![Sym("while"), truthy(&w.test)?, body]))
+}
+
+/// Lower `for (init; test; update) { body }` as
+/// `(begin pre... (let* binds (while test body... update)))`.
+/// let-scope covers the whole loop; the update runs as the loop's last
+/// statement each iteration.
+fn lower_for_form(f: &oxc_ast::ast::ForStatement<'_>, view: bool) -> Result<LispVal, String> {
+    reject_loop_exits(stmts_of(&f.body))?;
+    let mut binds: Vec<LispVal> = Vec::new();
+    let mut pre: Vec<LispVal> = Vec::new();
+    if let Some(init) = &f.init {
+        match init {
+            oxc_ast::ast::ForStatementInit::VariableDeclaration(v) => {
+                for d in &v.declarations {
+                    let name = binding_name(&d.id)?;
+                    let ie = d
+                        .init
+                        .as_ref()
+                        .ok_or("ts_frontend: for-loop declaration needs initializer")?;
+                    if expr_is_bigint(ie) {
+                        BIGINT_LOCALS.with(|s| s.borrow_mut().push(name.clone()));
+                    }
+                    if expr_is_stringy(ie) || expr_is_str_method_call(ie) {
+                        mark_string_local(&name);
+                    }
+                    binds.push(list(vec![Sym(name), lower_expr(ie)?]));
+                }
+            }
+            other => {
+                // INHERIT(Expression) — spread variants, use as_expression()
+                if let Some(e) = other.as_expression() {
+                    pre.push(effect_expr(e)?);
+                } else {
+                    return Err("ts_frontend: unsupported for-loop init (M1.5)".into());
+                }
+            }
+        }
+    }
+    let test = match &f.test {
+        Some(e) => truthy(e)?,
+        None => Num(1),
+    };
+    let mut body = lower_prefix_around(stmts_of(&f.body), Num(0), view)?;
+    if let Some(u) = &f.update {
+        body = list(vec![Sym("begin"), body, effect_expr(u)?]);
+    }
+    let mut while_form = list(vec![Sym("while"), test, body]);
+    if !binds.is_empty() {
+        while_form = list(vec![Sym("let*"), list(binds), while_form]);
+    }
+    let mut seq = vec![Sym("begin")];
+    seq.extend(pre);
+    seq.push(while_form);
+    Ok(list(seq))
+}
+
+/// Lower `do { body } while (test);` → (begin body (while test body)).
+/// Body lowers twice (pre-run + loop) — semantics-faithful, no exit
+/// protocol (reject_loop_exits applies).
+fn lower_do_while_form(d: &oxc_ast::ast::DoWhileStatement<'_>, view: bool) -> Result<LispVal, String> {
+    reject_loop_exits(stmts_of(&d.body))?;
+    let body = lower_prefix_around(stmts_of(&d.body), Num(0), view)?;
+    let test = truthy(&d.test)?;
+    Ok(list(vec![
+        Sym("begin"),
+        body.clone(),
+        list(vec![Sym("while"), test, body]),
+    ]))
+}
+
+/// switch with all-break semantics (2026-10-05): lowers to an if-chain of
+/// (= disc test) comparisons; default (at most one) becomes the final
+/// else. Fallthrough is REJECTED — every non-empty case body must end in
+/// break; empty case bodies (case a: case b: …) are rejected too (write
+/// the body explicitly). return inside a case is rejected (use a flag
+/// variable, assign, then return after the switch).
+fn lower_switch_form(sw: &oxc_ast::ast::SwitchStatement<'_>, view: bool) -> Result<LispVal, String> {
+    let disc = lower_expr(&sw.discriminant)?;
+    let has_default = sw.cases.iter().any(|c| c.test.is_none());
+    // validate: exits, fallthrough, empties, dup defaults
+    let mut defaults = 0;
+    for c in &sw.cases {
+        if c.test.is_none() {
+            defaults += 1;
+            if defaults > 1 {
+                return Err("ts_frontend: switch: multiple default cases".into());
+            }
+        }
+        if c.consequent.is_empty() {
+            return Err(
+                "ts_frontend: switch: empty case body = fallthrough (not supported) — write the body explicitly in each case"
+                    .into(),
+            );
+        }
+        for st in &c.consequent {
+            if matches!(st, Statement::ReturnStatement(_)) {
+                return Err(
+                    "ts_frontend: switch: return inside a case is not supported — assign a result variable, break, then return after the switch"
+                        .into(),
+                );
+            }
+        }
+        let last_break = matches!(c.consequent.last(), Some(Statement::BreakStatement(_)));
+        if !last_break {
+            return Err(
+                "ts_frontend: switch: every case body must end with `break;` (fallthrough not supported)"
+                    .into(),
+            );
+        }
+    }
+    // build the chain from the LAST case backwards; default becomes else
+    let mut chain: Option<LispVal> = None;
+    for c in sw.cases.iter().rev() {
+        let body_stmts = &c.consequent[..c.consequent.len() - 1]; // strip trailing break
+        let body = lower_prefix_around(body_stmts, Num(0), view)?;
+        match &c.test {
+            Some(t) => {
+                let test = lower_expr(t)?;
+                let cond = list(vec![Sym("="), disc.clone(), test]);
+                let else_arm = chain.take().unwrap_or(Num(0));
+                chain = Some(list(vec![Sym("if"), cond, body, else_arm]));
+            }
+            None => {
+                // default: claims the final else position; later
+                // (higher-up) cases chain on top of it
+                chain = Some(body);
+            }
+        }
+    }
+    let _ = has_default;
+    Ok(chain.unwrap_or(Num(0)))
+}
+
 /// Any `return` anywhere below these statements (loops, ifs, blocks).
 fn stmts_have_deep_return(stmts: &[Statement<'_>]) -> bool {
     fn deep(s: &Statement<'_>) -> bool {
@@ -1200,7 +1634,19 @@ fn lower_prefix_around_with_return(
             // every statement after this if. Direct returns and nested
             // carriers keep the blanket only when the branch is a
             // guaranteed return (its value IS the function result).
-            if stmt_has_return(&i.consequent) && !is_commit_form(&then_e) {
+            //
+            // (2026-10-06) BUT is_commit_form scans the WHOLE branch form:
+            // a PREFIX early-return carrier (`{ if (g) return "x";
+            // return "B"; }`) also trips the exemption, and the guarded
+            // tail's "B" is then discarded in statement position — the
+            // return silently vanishes (found via the discard_normalize
+            // probe: old code rejected this shape at typecheck, masking
+            // the lowering hole). Force the blanket when the branch ENDS
+            // in a direct return: the branch is a guaranteed return, and
+            // the tail commit survives via the __fn_done guard.
+            let then_tail_return =
+                matches!(stmts_of(&i.consequent).last(), Some(Statement::ReturnStatement(_)));
+            if (stmt_has_return(&i.consequent) && !is_commit_form(&then_e)) || then_tail_return {
                 // branch value becomes the function result
                 then_e = list(vec![
                     Sym("begin"),
@@ -1211,7 +1657,9 @@ fn lower_prefix_around_with_return(
             let else_e = match &i.alternate {
                 Some(alt) => {
                     let mut e = lower_block_tail(stmts_of(alt), view)?;
-                    if stmt_has_return(alt) && !is_commit_form(&e) {
+                    let alt_tail_return =
+                        matches!(stmts_of(alt).last(), Some(Statement::ReturnStatement(_)));
+                    if (stmt_has_return(alt) && !is_commit_form(&e)) || alt_tail_return {
                         e = list(vec![
                             Sym("begin"),
                             list(vec![Sym("set!"), Sym("__fn_res"), e]),
@@ -1426,6 +1874,20 @@ fn lower_prefix_around(
     }
     let (init, last) = stmts.split_at(stmts.len() - 1);
     let inner = match &last[0] {
+        // NOTE: WhileStatement/ForStatement have dedicated exit-protocol
+        // arms lower in this match (lower_while_parts / lower_for_parts,
+        // break/continue/return capable) — top-level loops are the ones
+        // handled separately in lower_program (M1.5, 2026-10-05).
+        Statement::DoWhileStatement(d) => {
+            // M1.5+ (2026-10-05)
+            let form = lower_do_while_form(d, view)?;
+            list(vec![Sym("begin"), form, tail])
+        }
+        Statement::SwitchStatement(sw) => {
+            // M1.5+ (2026-10-05): if-chain, no exit protocol
+            let form = lower_switch_form(sw, view)?;
+            list(vec![Sym("begin"), form, tail])
+        }
         Statement::VariableDeclaration(v) => {
             // JSON API v3: `const {..} = near.args<{..}>()`
             if let Some(res) = lower_args_destructuring(v) {
@@ -2967,11 +3429,37 @@ fn lower_assign_form(asg: &oxc_ast::ast::AssignmentExpression<'_>) -> Result<Lis
             let (v, expr) = lower_assignment(asg)?;
             Ok(list(vec![Sym("set!"), Sym(v), expr]))
         }
-        oxc_ast::ast::AssignmentTarget::StaticMemberExpression(_) => Err(
-            "ts_frontend: property assignment not supported — objects are immutable JSON values; \
-             rebuild with `o = jsonSet(o, \"key\", jsonQuote(v))` (numbers: toStr(v))"
-                .into(),
-        ),
+        oxc_ast::ast::AssignmentTarget::StaticMemberExpression(sm) => {
+            // M2+ (2026-10-05): `o.x = v` lowers to a REBINDING — objects
+            // are immutable JSON-string values, so the property write is
+            // (set! o (json-set o "x" <encoded v>)). Single-level only:
+            // dotted targets (o.a.b = v) need nested rebuilds — rejected.
+            if !matches!(asg.operator, AssignmentOperator::Assign) {
+                return Err(
+                    "ts_frontend: compound property assignment (o.x += v) not supported — read o.x, add, reassign"
+                        .into(),
+                );
+            }
+            // reject dotted chains: sm.object must be a plain identifier
+            let (obj_name, path) = match &sm.object {
+                Expression::Identifier(id) => (id.name.as_str().to_string(), sm.property.name.as_str().to_string()),
+                _ => return Err(
+                    "ts_frontend: only single-level property writes (o.x = v) are supported — nested (o.a.b = v) needs a manual jsonSet rebuild"
+                        .into(),
+                ),
+            };
+            let val = encode_json_value(&asg.right)?;
+            Ok(list(vec![
+                Sym("set!"),
+                Sym(obj_name.clone()),
+                list(vec![
+                    Sym("json-set"),
+                    Sym(obj_name),
+                    Str(path),
+                    val,
+                ]),
+            ]))
+        }
         oxc_ast::ast::AssignmentTarget::ComputedMemberExpression(cm) => {
             let obj = lower_expr(&cm.object)?;
             let idx = lower_expr(&cm.expression)?;
@@ -3738,6 +4226,13 @@ fn member_fn_returns_non_string(obj: &str, prop: &str) -> bool {
         ),
         "u128" => matches!(prop, "lt" | "gt" | "eq" | "isZero" | "toI64"),
         "storage" => matches!(prop, "has" | "hasKey" | "set" | "write" | "del" | "remove"),
+        // Math.* always returns a number — without this, `Math.pow(2,16) + 1`
+        // type-probed as a string method call and the frontend folded `+`
+        // into (str-cat (to-string (expt 2 16)) (to-string 1)) (2026-10-05).
+        "Math" => matches!(
+            prop,
+            "abs" | "max" | "min" | "pow" | "sqrt" | "floor" | "ceil" | "round"
+        ),
         _ => false,
     }
 }
@@ -4701,7 +5196,12 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                             let joined = acc.unwrap_or(LispVal::Str(String::new()));
                             return Ok(list(vec![Sym("near/log"), joined]));
                         }
-                        ("Math", "abs") | ("Math", "max") | ("Math", "min") => {
+                        ("Math", "abs")
+                        | ("Math", "max")
+                        | ("Math", "min")
+                        | ("Math", "sqrt")
+                        | ("Math", "floor")
+                        | ("Math", "round") => {
                             let op = sm.property.name.as_str();
                             if c.arguments.is_empty() {
                                 return Err(format!(
@@ -4717,6 +5217,52 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 items.push(lower_expr(e2)?);
                             }
                             return Ok(list(items));
+                        }
+                        ("Math", "pow") => {
+                            // Math.pow(a, b) → (expt a b): expt is the
+                            // runtime's power builtin; the old fallthrough
+                            // minted an unknown Math/pow symbol instead.
+                            if c.arguments.len() != 2 {
+                                return Err(
+                                    "ts_frontend: Math.pow takes exactly two arguments (M1)"
+                                        .into(),
+                                );
+                            }
+                            let mut items = vec![Sym("expt")];
+                            for a in &c.arguments {
+                                let e2 = a
+                                    .as_expression()
+                                    .ok_or("ts_frontend: unsupported Math.pow argument (M1)")?;
+                                items.push(lower_expr(e2)?);
+                            }
+                            return Ok(list(items));
+                        }
+                        ("Math", "ceil") => {
+                            // Math.ceil(x) → (ceiling x) — the runtime builtin
+                            // is spelled `ceiling`.
+                            if c.arguments.is_empty() {
+                                return Err(
+                                    "ts_frontend: Math.ceil needs at least one argument (M1)"
+                                        .into(),
+                                );
+                            }
+                            let mut items = vec![Sym("ceiling")];
+                            for a in &c.arguments {
+                                let e2 = a
+                                    .as_expression()
+                                    .ok_or("ts_frontend: unsupported Math.ceil argument (M1)")?;
+                                items.push(lower_expr(e2)?);
+                            }
+                            return Ok(list(items));
+                        }
+                        ("Math", other) => {
+                            // Hard-error instead of minting Math/<name>
+                            // symbols no backend knows (t4_pow@ts root
+                            // cause — 0/38 on "unknown 'Math/pow'").
+                            return Err(format!(
+                                "ts_frontend: Math.{other} not supported \
+                                 (M1: abs/max/min/pow/sqrt/floor/ceil/round)"
+                            ));
                         }
                         ("JSON", "stringify") => {
                             if c.arguments.len() != 1 {
@@ -5074,6 +5620,25 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 head
             };
             let head = map_builtin_call(&head);
+            // strict surface: a BARE-IDENTIFIER callee whose RAW name
+            // survives every mapping unchanged (raw == final head) and is
+            // neither a user-defined function nor RLM runtime API is a
+            // lisp passthrough attempt — reject (2026-10-05). Raw-name
+            // comparison matters: callee_name already applies
+            // map_global_fn (strToNum → str->num), so comparing
+            // post-map heads false-positived known builtins. Member-call
+            // results (near.storageSet → near/storage_set) are Identifier-
+            // free and exempt: near.<member> lowering is its own
+            // (deliberately generic) path.
+            if let Expression::Identifier(id) = &c.callee {
+                let raw = id.name.as_str().to_string();
+                if raw == head && !user_fn_or_runtime(&raw) {
+                    return Err(format!(
+                        "ts_frontend: unknown function `{}` is not a TS-surface builtin (see cheatsheet) and not defined in this program; do NOT write lisp names",
+                        raw
+                    ));
+                }
+            }
             let mut items = vec![Sym(head.clone())];
             for a in &c.arguments {
                 if let Argument::SpreadElement(_) = a {
@@ -5238,8 +5803,15 @@ fn statically_bool(e: &Expression<'_>) -> bool {
         e,
         Expression::UnaryExpression(u) if matches!(u.operator, UnaryOperator::LogicalNot)
     );
+    // `while (true)` / `if (x === true)` — literal booleans are bool (the
+    // exit-path cond wrapper picks its false_e by this predicate; a missed
+    // literal made bool≠int branches and the checker rejected while(true)
+    // with break/continue — test_continue_keyword regression, fixed again
+    // 2026-10-05).
+    let bool_lit = matches!(e, Expression::BooleanLiteral(_));
     matches!(e, Expression::LogicalExpression(_))
         || is_not
+        || bool_lit
         || bool_call
         || matches!(e, Expression::BooleanLiteral(_))
         || matches!(
@@ -5514,12 +6086,18 @@ fn map_builtin_call(name: &str) -> String {
         "strSlice" => "str-slice",
         "strCat" => "str-cat",
         "strIndexOf" => "str-index-of",
-        "strToNum" => "str->num",
+        "strToNum" | "Number" | "parseInt" | "parseFloat" => "str->num",
         "toStr" | "toString" => "to-string",
         "jsonGet" => "json-get",
         "jsonGetStr" => "json-get-str",
         "jsonExtract" => "json-extract-input",
         "strSplit" => "str-split",
+        "strJoin" => "str-join",
+        // near_* free functions (d.ts-declared since 2026-08-30, unmapped
+        // until the dts-parity test caught them 2026-10-05)
+        "near_storage_get" => "near/storage_get",
+        "near_storage_set" => "near/storage_set",
+        "near_predecessor_account_id" => "near/predecessor_account_id",
         "hexDecode" => "hex-decode",
         "hexEncode" => "hex-encode",
         "sha256Hash" => "sha256-hash",
@@ -5931,8 +6509,10 @@ fn expr_kind(e: &Expression<'_>) -> &'static str {
 mod ts_pos_tests {
     #[test]
     fn ts_ident_offsets_recorded_and_hints_resolve() {
-        let src =
-            "export function new_() {\n  let x = 1\n  let y = undefined_helper(x)\n  return y\n}\n";
+        // strict surface (2026-10-05): unknown bare calls are rejected, so
+        // the helper is DEFINED here — its call-site still records an
+        // ident offset for the line-hint machinery.
+        let src = "function undefined_helper(x: number): number { return x; }\nexport function new_() {\n  let x = 1\n  let y = undefined_helper(x)\n  return y\n}\n";
         let r = super::parse_ts(src).expect("parses");
         assert!(!r.is_empty());
         let map = super::take_ident_offsets();
@@ -5942,6 +6522,6 @@ mod ts_pos_tests {
             "undefined_helper should be in the ident map"
         );
         let line = super::ts_line_hint(&map, src, "undefined_helper").expect("hint");
-        assert_eq!(line, "3");
+        assert_eq!(line, "4");
     }
 }

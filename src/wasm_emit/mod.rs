@@ -649,6 +649,12 @@ pub struct WasmEmitter {
     pub(crate) local_type_map: Vec<ValType>, // per-local type (indexed by local idx)
     pub(crate) current_func: Option<String>,
     pub(crate) current_param_count: usize,
+    /// Param NAMES of the function being emitted (parallel to the wasm
+    /// param locals 0..n). Needed by the TC loop-back invalidation: when a
+    /// tail self-call rebinds param locals and branches back, every u128
+    /// parse-cache memo for those names is stale (locals persist across
+    /// the branch; wasm only zeroes them on a fresh activation).
+    pub(crate) current_param_names: Vec<String>,
     /// Nesting depth inside tc() — 0 = directly in loop, 1 = inside tc_if's if, etc.
     pub(crate) tc_depth: u32,
     pub(crate) try_stack: Vec<TryFrame>, // active try bodies (guarded fallible ops)
@@ -762,6 +768,7 @@ impl WasmEmitter {
             local_type_map: Vec::new(),
             current_func: None,
             current_param_count: 0,
+            current_param_names: Vec::new(),
             tc_depth: 0,
             try_stack: Vec::new(),
             while_id: Cell::new(0),
@@ -1198,6 +1205,7 @@ impl WasmEmitter {
         }
         self.current_func = Some(name.to_string());
         self.current_param_count = params.len();
+        self.current_param_names = params.iter().map(|s| s.to_string()).collect();
         self.while_id.set(0);
         self.scan_host(body);
 
@@ -1400,6 +1408,7 @@ impl WasmEmitter {
             }
         };
         self.current_func = None;
+        self.current_param_names = Vec::new();
         self.gas_local = None;
         self.funcs[placeholder_idx] = FuncDef {
             name: name.into(),
@@ -1576,6 +1585,8 @@ impl WasmEmitter {
                     v.push(Instruction::LocalGet(*t));
                     v.push(Instruction::LocalSet(i as u32));
                 }
+                let names = self.current_param_names.clone();
+                self.emit_parse_cache_invalidate_names(&mut v, &names);
                 v.push(Instruction::Br(0));
                 Ok(v)
             }
@@ -1590,6 +1601,7 @@ impl WasmEmitter {
 
     fn tc_let(&mut self, a: &[LispVal]) -> Result<Vec<Instruction<'static>>, String> {
         let mut v = Vec::new();
+        let mut bound_names: Vec<String> = Vec::new();
         if let LispVal::List(bs) = &a[0] {
             for b in bs {
                 if let LispVal::List(p) = b {
@@ -1598,11 +1610,15 @@ impl WasmEmitter {
                             let idx = self.local_idx(n);
                             v.extend(self.expr(&p[1])?);
                             v.push(Instruction::LocalSet(idx));
+                            bound_names.push(n.clone());
                         }
                     }
                 }
             }
         }
+        // Re-bound names may carry u128 parse-cache memos from an earlier
+        // loop iteration — invalidate before the body can read them.
+        self.emit_parse_cache_invalidate_names(&mut v, &bound_names);
         // Implicit begin in let body
         for (i, x) in a[1..].iter().enumerate() {
             if i < a.len() - 2 {
@@ -1691,6 +1707,8 @@ impl WasmEmitter {
             v.push(Instruction::LocalGet(*t));
             v.push(Instruction::LocalSet(i as u32));
         }
+        let names = self.current_param_names.clone();
+        self.emit_parse_cache_invalidate_names(&mut v, &names);
         Ok(v)
     }
 

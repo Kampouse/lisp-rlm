@@ -658,6 +658,11 @@ impl WasmEmitter {
                 }
             }
             "near/ecrecover" => self.need_host(54),
+            "near/ecrecover_pk" => {
+                self.need_host(54);
+                self.need_host(0);
+                self.need_host(1);
+            }
             "near/p256_verify" => self.need_host(55),
             // Alt BN128
             "near/alt_bn128_g1_multiexp" => {

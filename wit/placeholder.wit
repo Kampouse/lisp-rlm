@@ -1,0 +1,10 @@
+// Placeholder package — keeps wasmtime bindgen!'s auto-discovery of this
+// crate's wit/ directory parseable (real packages live in wit/deps/*, the
+// nohttp variant in alt-wit/). Auto-discovery pushes this dir whenever any
+// bindgen!() exists in the crate (see examples/p2run.rs); a package with no
+// world makes wit-parser reject the directory ("no package header found").
+package lisp:rlm-wit@0.1.0 {
+    world placeholder {
+        // empty on purpose
+    }
+}

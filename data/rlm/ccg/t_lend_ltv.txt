@@ -1,0 +1,3 @@
+### PAST ATTEMPTS ON t_lend_ltv (agent memory — do NOT repeat these failures)
+- FAIL it4: <105-char scaffold defining prime? — structure was wrong, do not reuse> → ERROR: ~~QT~~read-all: parse error: unexpected `)` at line 8
+- SOLVED ONCE WITH (complete): (let ((asset1 30) (price1 50) (asset2 10) (price2 200) (borrowed 1400))~~NL~~  (let ((total-value (+ (* asset1 price1) (* asset2 price2))))~~NL~~    (let ((basis-points (* borrowed 10000)))~~NL~~      (rlm-set answer (quotient basis-points total-value))~~NL~~ 

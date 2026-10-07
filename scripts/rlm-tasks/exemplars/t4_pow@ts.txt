@@ -1,0 +1,5 @@
+# auto — mined from own completed worlds
+(define result (expt 2 16))
+(rlm_set "answer" result)
+(rlm_set "Final" true)
+

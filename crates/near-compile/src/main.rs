@@ -417,15 +417,7 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
     };
     let wasm_bytes = match lisp_rlm_wasm::wasm_emit::compile_near(&effective_source) {
         Ok(b) => b,
-        Err(e) => {
-            // two-layer annotation: TS projects get the ts-line hint from the
-            // ident map; .lisp sources (and map misses) get a tokenizer line
-            // from the real source. annotate_type_error no-ops when the
-            // message already carries a line, so the layers never double-pin.
-            let e = augment_with_ts_line(e, &ident_map, &source);
-            let e = lisp_rlm_wasm::annotate_type_error(&e, &effective_source);
-            return Err(e);
-        }
+        Err(e) => return Err(augment_with_ts_line(e, &ident_map, &source)),
     };
     let func_names: Vec<String> = extract_func_names(&effective_source).unwrap_or_default();
 
@@ -2320,9 +2312,13 @@ fn run_compile(args: &[String]) {
     let src_path = &positional[0];
     let src = fs::read_to_string(src_path).expect("read input");
 
-    // TS frontend: lower TypeScript source to lisp before the normal pipeline
-    let src_is_lowered_ts = src_path.ends_with(".ts") || src_path.ends_with(".mts");
-    let src = if src_is_lowered_ts {
+    // TS frontend: lower TypeScript source to lisp before the normal pipeline.
+    // Keep the ident-offset map (drained by take_ident_offsets after the
+    // lowering walk) so compile errors can be located to a TS function/line
+    // (single-file path lacked this — project mode had it since do_build).
+    let is_ts = src_path.ends_with(".ts") || src_path.ends_with(".mts");
+    let ts_src = if is_ts { Some(src.clone()) } else { None };
+    let src = if is_ts {
         match lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(&src) {
             Ok(l) => l,
             Err(e) => {
@@ -2332,6 +2328,19 @@ fn run_compile(args: &[String]) {
         }
     } else {
         src
+    };
+    // drain AFTER lowering — the walk populates the map during
+    // ts_to_lisp_source (draining first hands the error paths an empty map)
+    // def-offsets land ON definitions (first-occurrence idents often point
+    // at a call above the def under hoisted lowering order)
+    let ts_ident_map = if is_ts {
+        // def-offsets FIRST — lookups are first-match by name, and the
+        // definition line beats a call site for error location
+        let mut m = lisp_rlm_wasm::ts_frontend::take_fn_def_offsets();
+        m.extend(lisp_rlm_wasm::ts_frontend::take_ident_offsets());
+        m
+    } else {
+        Vec::new()
     };
 
     if args.iter().any(|a| a == "--dump-lisp") {
@@ -2370,23 +2379,28 @@ fn run_compile(args: &[String]) {
         }
     };
     let wasm_bytes = match target.as_str() {
-        "near" => {
-            let compiled = if src_is_lowered_ts {
-                lisp_rlm_wasm::wasm_emit::compile_near_labelled_ir(&src)
-            } else {
-                lisp_rlm_wasm::wasm_emit::compile_near(&src)
-            };
-            match compiled {
+        "near" => match lisp_rlm_wasm::wasm_emit::compile_near(&src) {
             Ok(w) => w,
             Err(e) => {
-                // ts-line hints (augment_with_ts_line layer at project path)
-                // aren't wired on this single-file branch; the ir/near label
-                // comes from compile_near_labelled_ir vs compile_near itself.
-                eprintln!("❌ Compile error: {}", e);
+                // locate the failing top-level form via prefix-bisect, then
+                // layer the name→line hints for symbols the message renders
+                let located = if let (Some(ts), map) = (ts_src.as_deref(), ts_ident_map.clone()) {
+                    match lisp_rlm_wasm::parse_all(&src) {
+                        Ok(exprs) => lisp_rlm_wasm::ts_frontend::locate_form_error(
+                            &exprs, &map, ts, &e,
+                        ),
+                        Err(_) => None,
+                    }
+                } else {
+                    None
+                };
+                match located {
+                    Some(loc) => eprintln!("❌ Compile error\n📍 {}", loc),
+                    None => eprintln!("❌ Compile error: {}", augment_with_ts_line(e, &ts_ident_map, ts_src.as_deref().unwrap_or(""))),
+                }
                 std::process::exit(1);
             }
-        }
-        }
+        },
         "outlayer" | "wasi" | "wasi-p1" => match lisp_rlm_wasm::wasi::compile_outlayer(&src) {
             Ok(w) => w,
             Err(e) => {

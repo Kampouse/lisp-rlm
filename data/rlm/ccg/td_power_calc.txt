@@ -1,0 +1,2 @@
+### PAST ATTEMPTS ON td_power_calc (agent memory — do NOT repeat these failures)
+- SOLVED ONCE WITH (complete): (let ((ans (expt 3 4))) (rlm-set answer ans) (rlm-set Final t) (final true))

@@ -12,7 +12,7 @@
 (define (llm-code ctx)
   (ts->lisp (strip-code-fences (llm (build-prompt-ts ctx)))))
 (define (task-verify a) (= a 65536))
-(run-rlm "Compute 2 to the power 16 by writing and evaluating lisp code; store it as answer. When achieved, finish with rlm_set(\"Final\", true).")
+(run-rlm "Compute 2 to the power 16 by writing and evaluating TypeScript code; store it as answer. When achieved, finish with rlm_set(\"Final\", true).")
 (if (task-verify (rlm-get answer)) nil (re-lesson))
 (write-trace)
 (println (str-concat "RLMDUMP task=t4_pow@ts"))

@@ -849,6 +849,20 @@ fn parse_and_compile_opts_labelled(
         }
     }
 
+    // Hard-error invariant (2026-10-06): an export target with no matching
+    // define used to silently skip its wrapper body while the export/function
+    // sections still counted it → malformed wasm (48 types / 47 bodies,
+    // "function and code section have inconsistent lengths"). Undefined
+    // export targets are a program error and must fail the compile.
+    for (fn_name, export_name, _) in &em.exports {
+        if !em.funcs.iter().any(|f| &f.name == fn_name) {
+            return Err(format!(
+                "export \"{}\" targets undefined function '{}' — define it or remove the export",
+                export_name, fn_name
+            ));
+        }
+    }
+
     // Collect bare expressions (not define/export/borsh-schema/memory) for implicit toplevel
     let mut bare_exprs: Vec<LispVal> = Vec::new();
     for e in &exprs {

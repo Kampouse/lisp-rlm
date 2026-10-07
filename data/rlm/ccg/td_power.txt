@@ -1,0 +1,4 @@
+### PAST ATTEMPTS ON td_power (agent memory — do NOT repeat these failures)
+- FAIL it8: (begin (rlm-set answer → ERROR: read-all: parse error: missing closing `)` at line 1,
+- FAIL it0: <77-char failed attempt> → ERROR: rlm-set: need symbol or string key~~NL~~    (fn [] . 
+- SOLVED ONCE WITH (complete): (let ((ans (expt 3 4)) (final true)) (rlm-set answer ans) (rlm-set Final final))

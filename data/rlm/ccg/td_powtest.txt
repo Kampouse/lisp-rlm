@@ -1,0 +1,4 @@
+### PAST ATTEMPTS ON td_powtest (agent memory — do NOT repeat these failures)
+- FAIL it6: <98-char failed attempt> → ERROR: apply: last arg must be list~~NL~~    (fn [] . . .) ×
+- FAIL it7: <110-char failed attempt> → ERROR: apply: last arg must be list~~NL~~    (fn [] . . .) ×
+- SOLVED ONCE WITH (complete): (let* ((pow (lambda (x y) (expt x y)))~~NL~~        (res (expt 3 4))~~NL~~        (ans res))~~NL~~  (rlm-set answer res)~~NL~~  (rlm-set Final t)~~NL~~  (final true))

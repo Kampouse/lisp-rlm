@@ -266,7 +266,13 @@ fn truncate_str(s: &str, n: usize) -> String {
     if s.len() <= n {
         s.to_string()
     } else {
-        format!("{}...", &s[..n])
+        // char-boundary safe: floor to a boundary (multi-byte UTF-8 in
+        // error messages — the strict-gate em-dash panicked here 2026-10-05)
+        let mut end = n;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &s[..end])
     }
 }
 

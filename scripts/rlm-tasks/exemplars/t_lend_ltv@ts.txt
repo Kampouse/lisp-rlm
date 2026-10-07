@@ -1,0 +1,6 @@
+# auto — mined from own completed worlds
+(define totalValue (+ (* 30 50) (* 10 200)))
+(define basisPoints (floor (/ (* 1400 10000) totalValue)))
+(rlm_set "answer" basisPoints)
+(rlm_set "Final" true)
+

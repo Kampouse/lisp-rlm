@@ -187,9 +187,28 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64ShrU);
                 v.push(Instruction::I32WrapI64);
-                // content_type ptr/len
-                v.push(Instruction::I32Const(content_type_area));
-                v.push(Instruction::I32Const(content_type_len));
+                // content_type ptr/len — 3rd arg if provided (WIT: http-post
+                // (url, body, content-type)); the arg was silently ignored and
+                // a data-segment "application/json" always sent (2026-10-05,
+                // OutLayer Bearer header block needs the runtime string).
+                if a.len() >= 3 {
+                    let ct_expr = self.expr(&a[2])?;
+                    v.extend(ct_expr.clone());
+                    v.push(Instruction::I64Const(3));
+                    v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64Const(0xFFFFFFFF));
+                    v.push(Instruction::I64And);
+                    v.push(Instruction::I32WrapI64);
+                    v.extend(ct_expr);
+                    v.push(Instruction::I64Const(3));
+                    v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64ShrU);
+                    v.push(Instruction::I32WrapI64);
+                } else {
+                    v.push(Instruction::I32Const(content_type_area));
+                    v.push(Instruction::I32Const(content_type_len));
+                }
                 // ret_area
                 v.push(Instruction::I32Const(ret_area));
                 // P2 native bridge: per-URL sentinel (200+idx) when the URL is a

@@ -1,0 +1,4 @@
+### PAST ATTEMPTS ON ta_prime_sum@ts (agent memory — do NOT repeat these failures)
+- FAIL it7: <109-char failed attempt> → ERROR: run_program: compilation failed for define 'primes': 
+- FAIL it8: <110-char failed attempt> → ERROR: run_program: compilation failed for define 'primes': 
+- KNOWN TRAP on this task: use +

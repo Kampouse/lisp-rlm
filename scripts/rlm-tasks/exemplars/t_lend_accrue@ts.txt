@@ -1,0 +1,6 @@
+# auto — mined from own completed worlds
+(define interest (floor (/ (* (* 1000 3) 200) 10000)))
+(define newPrincipal (+ 1000 interest))
+(rlm_set "answer" newPrincipal)
+(rlm_set "Final" true)
+

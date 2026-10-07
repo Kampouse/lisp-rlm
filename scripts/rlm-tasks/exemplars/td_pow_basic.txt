@@ -1,0 +1,6 @@
+# auto — mined from own completed worlds
+(let* ((pow (lambda (a b) (expt a b)))
+        (res (apply pow 3 (list 4)))
+        (final (if (= res 81) #t #f)))
+  (rlm-set answer res)
+  (rlm-set Final final))

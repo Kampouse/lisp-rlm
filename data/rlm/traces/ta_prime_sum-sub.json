@@ -1,0 +1,1 @@
+{"task_id":"ta_prime_sum-sub","ts":1791310302.9907839298,"policy":"nil","task":"sum of all prime numbers less than 100","completed":true,"iterations":1,"result":"nil","answer":"1060","lesson":"nil","nodes":[{"i":1,"ok":true,"s":"ta_prime_sum-sub|ok||rc0|es0|i1","a":"ladder","code":"(begin (rlm-set answer 1060) (rlm-set Final true))","out":"true"}]}

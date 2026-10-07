@@ -563,26 +563,32 @@ fn execute_promise_uncached(
                     // transfer-out receipt COMMITS; a stiff borrower keeps
                     // the funds; the settle aborts fail-closed. This is
                     // exactly why real pools whitelist borrowers.
-                    out.push(r);
                     let child_ret =
                         PENDING_RETURN.with(|p| std::mem::replace(&mut *p.borrow_mut(), outer_ret));
                     if let Some(ridx) = child_ret {
                         ptrace!("  ⛓ child returned promise {ridx} — resolving before dependents");
                         let cres = execute_promise(ridx)?;
-                        // NOTE (2026-09-08): the child's results APPEND after the
-                        // local result — do NOT replace slot 0. Tried strict
-                        // promise_return substitution (pop local first): the
-                        // payout-chain residue landed in promise_result(0),
-                        // callback_dex_trade took its consume-branch early and
-                        // burrowland's SwapReference handler (which owns the
-                        // position_latest_actions.remove) panicked "There is no
-                        // action for the position" → margin_open_failed. The
-                        // append convention reproduces the mainnet-success end
-                        // state; slot-exact substitution needs a study of real
-                        // receipt ordering for returned-promise chains.
+                        // LIVE-NEAR flattening (2026-10-06, supersedes the
+                        // 2026-09-08 append note): a promise_returned receipt's
+                        // registered promise resolves to the returned chain's
+                        // FINAL value — promise_result(0) at the awaiter reads
+                        // the deepest result, not the (usually empty) local one.
+                        // Proof: wasm_emit eaf59367 live-tested d2b → r:FINAL42
+                        // through ft_on_transfer → promise_return(then(deep2→
+                        // post2)) on testnet; the CLMM invariant harness caught
+                        // the mock's divergence (resolve saw empty → phantom
+                        // full refund while the pool's books stayed consistent).
+                        // The 09-08 substitution attempt failed because it put
+                        // chain RESIDUE in slot 0 — correct flattening uses the
+                        // chain's LAST result. Append tail retained so index>0
+                        // readers (multi-promise batches) keep prior behavior.
+                        let flat = cres.last().cloned().unwrap_or(r);
+                        out.push(flat);
                         for r2 in cres {
                             out.push(r2);
                         }
+                    } else {
+                        out.push(r);
                     }
                 }
                 PAction::Transfer(amt) => {

@@ -1,0 +1,3 @@
+### PAST ATTEMPTS ON t_lend_hf@ts (agent memory — do NOT repeat these failures)
+- FAIL it1: <110-char failed attempt> → ERROR: decompose-rejected — this step MUST delegate via (sub
+- FAIL it2: <110-char failed attempt> → ERROR: type error: mul expects numbers, got collateral price

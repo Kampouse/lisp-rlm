@@ -1,0 +1,4 @@
+### PAST ATTEMPTS ON t_lend_accrue (agent memory — do NOT repeat these failures)
+- FAIL it1: <110-char scaffold defining accrue-interest — structure was wrong, do not reuse> → ERROR: (set! answer ...) is INVISIBLE to the world — plain e
+- FAIL it0: <110-char failed attempt> → ERROR: (set! answer ...) is INVISIBLE to the world — plain e
+- SOLVED ONCE WITH (complete): (let* ((principal 1000)~~NL~~       (rate 3)~~NL~~       (blocks 200)~~NL~~       (interest (quotient (* principal rate blocks) 10000))~~NL~~       (new-principal (+ principal interest)))~~NL~~  (rlm-set answer new-principal)~~NL~~  (final true))

@@ -1,0 +1,21 @@
+;; DREAMED TASK — agent-authored, probe-verified (ref solves, poison fails)
+;; targets state: t2_reverse@ts|ok||rc0|es0|i1
+;; dreamed 1791317201.7815330029
+(load-file "rlm_runtime.lisp")
+(load-file "scripts/rlm-tasks/policy.lisp")
+(load-file "scripts/rlm-tasks/q-table.lisp")
+(load-file "scripts/rlm-tasks/custom-actions.lisp")
+(rlm-set __policy POLICY_ID)
+(define (llm-code ctx)
+  (llm (build-prompt ctx)))
+(begin
+  (rlm-set __trace_id "td_reverse_simple")
+  (define (task-verify a) (= a (list 4 3 2 1)))
+  (run-rlm "Reverse the list (list 1 2 3 4) using the reverse function; store it via (rlm-set answer ...) then (rlm-set Final true).")
+  (if (task-verify (rlm-get answer)) nil (re-lesson))
+  (write-trace)
+  (println (str-concat "RLMDUMP task=td_reverse_simple"))
+  (println (str-concat "RLMDUMP iterations=" (to-string (rlm-get iteration))))
+  (println (str-concat "RLMDUMP answer=" (to-string (rlm-get answer))))
+  (println (str-concat "RLMDUMP Final=" (to-string (rlm-get Final))))
+)

@@ -1,0 +1,6 @@
+# auto — mined from own completed worlds
+(let ((asset1 30) (price1 50) (asset2 10) (price2 200) (borrowed 1400))
+  (let ((total-value (+ (* asset1 price1) (* asset2 price2))))
+    (let ((basis-points (* borrowed 10000)))
+      (rlm-set answer (quotient basis-points total-value))
+      (final true))))

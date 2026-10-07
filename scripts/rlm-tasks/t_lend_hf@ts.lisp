@@ -1,0 +1,23 @@
+;; AUTO-GENERATED @ts twin of t_lend_hf.lisp — edit the BASE task and
+;; regenerate: python3 scripts/gen-ts-twins.py  (do not hand-edit)
+;; RLM lending curriculum — stage 1: health factor
+;; Open-goal ladder step (2026-09-30): pure-function DeFi math, no storage.
+(load-file "rlm_runtime.lisp")
+(load-file "scripts/rlm-tasks/policy.lisp")
+(load-file "scripts/rlm-tasks/q-table.lisp")
+(load-file "scripts/rlm-tasks/custom-actions.lisp")
+(load-file "scripts/rlm-tasks/rlm_ts.lisp")
+(rlm-set __policy POLICY_ID)
+(rlm-set __surface "ts")
+(rlm-set __trace_id "t_lend_hf@ts")
+(define (llm-code ctx)
+  (ts->lisp (strip-code-fences (llm (build-prompt-ts ctx)))))
+(define (task-verify a) (equal? a 40))
+(run-rlm "Compute a lending health factor: collateral=125, price=40, collateral-factor=8 tenths, debt=1000; health factor = collateral*price*collateral-factor/debt with truncating integer division. Store the integer result as answer (it equals 40). When achieved, finish with rlm_set(\"Final\", true).")
+(retry-with-feedback task-verify "40" 2)
+(if (task-verify (rlm-get answer)) nil (re-lesson))
+(write-trace)
+(println (str-concat "RLMDUMP task=t_lend_hf@ts"))
+(println (str-concat "RLMDUMP iterations=" (to-string (rlm-get iteration))))
+(println (str-concat "RLMDUMP answer=" (to-string (rlm-get answer))))
+(println (str-concat "RLMDUMP Final=" (to-string (rlm-get Final))))

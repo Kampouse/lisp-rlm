@@ -264,7 +264,7 @@ declare const near: {
   callAwait(target: string, method: string, argsJson: string, gas: number,
             callback: string, cbGas: number, cbArgsJson: string): void;
   // inside a callback: read the callee's return ("0" = first promise result).
-  // Returns the raw value or NIL on failure — branch on it, fail closed.
+  // Returns the payload string, "" on failure (fail-closed; branch on strLength < 1) — branch on it, fail closed.
   promiseResult(idx: number): string;
 
   // ── async/await (V1) ──
@@ -327,7 +327,7 @@ declare const near: {
   // ── raw promises (lower-level than callAwait) ──
   /** All three take deposit as i64 (use 0) BEFORE gas. Return promise idx. */
   promiseCreate(target: string, method: string, argsJson: string, deposit: number, gas: number): number;
-  promiseThen(p: number, target: string, method: string, argsJson: string, deposit: number, gas: number): number;
+  promiseThen(p: number, target: string, method: string, argsJson: string, deposit: string, gas: number): number;
   promiseAnd(p1: number, p2: number, p3?: number): number;
 
   // ── promise batches (multi-action promises; strings, not raw ABI) ──

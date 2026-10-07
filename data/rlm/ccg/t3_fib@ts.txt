@@ -1,0 +1,2 @@
+### PAST ATTEMPTS ON t3_fib@ts (agent memory — do NOT repeat these failures)
+- FAIL it0: <110-char failed attempt> → ERROR: run_program: compilation failed for body expression(s

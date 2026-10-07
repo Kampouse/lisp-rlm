@@ -26,7 +26,7 @@
 (fold-right f init lst) — Right fold.
 (str-split s delim) — Split string by delimiter.
 (str-trim s) — Trim whitespace.
-(str-join sep lst) — Join list of strings with separator. Separator FIRST.
+(str-join lst sep) — Join list of strings with separator.
 (number? x) — Is x a number?
 (string? x) — Is x a string?
 (map? x) — Is x a dict?

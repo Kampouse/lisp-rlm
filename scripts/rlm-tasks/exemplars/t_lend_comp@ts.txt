@@ -1,0 +1,6 @@
+# auto — mined from own completed worlds
+(define current 1000)
+(begin (let* ((i 0)) (while (< i 2) (begin (begin (set! current (floor (/ (* current 1025) 1000))) 0) (set! i (+ i 1))))))
+(rlm_set "answer" current)
+(rlm_set "Final" true)
+

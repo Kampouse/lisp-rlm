@@ -1,0 +1,2 @@
+### PAST ATTEMPTS ON td_primesum (agent memory — do NOT repeat these failures)
+- FAIL it1: <110-char failed attempt> → ERROR: (set! answer ...) is INVISIBLE to the world — plain e

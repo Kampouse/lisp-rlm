@@ -37,6 +37,7 @@ declare function strJoin(separator: string, parts: LispArr<string>): string;
 // `{ k: v }` literals fold into json-set chains and are plain JSON text:
 // storage/returns/interop need no conversion. Reads: `o.key` ("" when
 // absent), nested `o.a.b` lowers to one dot-path call. Numeric reads need strToNum;
+// `o.x = v;` (statement) rebinds: o = jsonSet(o, "x", encoded v) — single level.
 // rebuild via jsonSet with an ENCODED value (jsonQuote(s) for strings,
 // toStr(n) for numbers — object literals self-encode).
 declare type LispObj = string;
@@ -76,6 +77,9 @@ declare function strLength(s: string): number;
 declare function strLen(s: string): number;
 declare function strSlice(s: string, start: number, end: number): string;
 declare function strIndexOf(haystack: string, needle: string): number;
+declare function Number(s: string): number;
+declare function parseInt(s: string): number;
+declare function parseFloat(s: string): number;
 declare function strToNum(s: string): number;
 declare function toStr(n: any): string;
 declare function jsonGet(key: string, json: string): string;
@@ -365,7 +369,9 @@ declare const near: {
 
 // ── JS std shims (2026-08-30) ─────────────────────────────────────────
 // console.log → near/log (args space-joined, auto to-string'd).
-// Math.abs/max/min → abs/max/min (variadic, integer math).
+// Math.abs, Math.max, Math.min, Math.sqrt, Math.floor, Math.ceil,
+// Math.round → same-named int builtins; Math.pow(a,b) → (expt a b).
+// Other Math.* hard-error at the frontend (2026-10-05).
 // JSON.stringify(scalar) → json-quote; JSON.parse: NOT NEEDED — tx args
 // arrive parsed; use typed params / near.jsonGet.
 // (console/Math/JSON value types come from lib — not redeclared here.)

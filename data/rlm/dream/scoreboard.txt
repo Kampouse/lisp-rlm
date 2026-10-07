@@ -1,6 +1,9 @@
-t1_sumsq: 4/4 solved, 1.0 avg iters
-t2_reverse: 8/8 solved, 1.0 avg iters
-t3_fib: 2/2 solved, 1.0 avg iters
-t4_pow: 7/7 solved, 1.0 avg iters
-t5_vowels: 10/10 solved, 2.0 avg iters
-ta_prime_sum: 0/49 solved, 1.0 avg iters
+t_lend_liq@ts: 0/45 solved, 2.1 avg iters
+t_lend_ltv@ts: 1/1 solved, 1.0 avg iters
+t_lend_tier@ts: 3/3 solved, 1.0 avg iters
+ta_prime_sum: 1/7 solved, 1.9 avg iters
+ta_prime_sum_product: 3/3 solved, 1.0 avg iters
+td_reverse: 9/9 solved, 1.0 avg iters
+td_reverse_list: 1/1 solved, 1.0 avg iters
+td_reverse_practice: 10/10 solved, 1.0 avg iters
+td_reverse_simple: 1/1 solved, 1.0 avg iters

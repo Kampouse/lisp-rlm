@@ -1,0 +1,5 @@
+### PAST ATTEMPTS ON t5_vowels@ts (agent memory — do NOT repeat these failures)
+- FAIL it1: <109-char failed attempt> → ERROR: run_program: compilation failed for body expression(s → CORRECTION: use vec
+- FAIL it2: <110-char failed attempt> → ERROR: str-contains: need string, got Str(~~QT~~aeiou~~QT~~)
+- FAIL it3: <110-char failed attempt> → ERROR: run_program: compilation failed for body expression(s → CORRECTION: use vec
+- SOLVED ONCE WITH (complete): (define lowerWord (str-downcase ~~QT~~precaution~~QT~~))~~NL~~(define split (str-split lowerWord ~~QT~~~~QT~~))~~NL~~(define count (vec-length (filter (lambda (char) (str-contains ~~QT~~aeiou~~QT~~ char)) split)))~~NL~~(rlm_set ~~QT~~answer~~QT~~ count)~~NL~~(

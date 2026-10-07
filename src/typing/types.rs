@@ -118,6 +118,7 @@ const KNOWN_NEAR_FUNCS: &[&str] = &[
     "random_seed",
     "ripemd160",
     "ecrecover",
+    "ecrecover_pk",
     "alt_bn128_g1_multiexp",
     "alt_bn128_g1_sum",
     "alt_bn128_pairing_check",
@@ -332,6 +333,47 @@ impl TcEnv {
         // abs : num → num
         env.insert_mono(
             "abs".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+
+        // expt : num → num → num (Math.pow lowering, 2026-10-05)
+        env.insert_mono(
+            "expt".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num), TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+        // floor : num → num (Math.floor lowering, 2026-10-05)
+        env.insert_mono(
+            "floor".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+        // ceiling : num → num (Math.ceil lowering, 2026-10-05)
+        env.insert_mono(
+            "ceiling".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+        // round : num → num (Math.round lowering, 2026-10-05)
+        env.insert_mono(
+            "round".to_string(),
+            TcType::Arrow(
+                vec![TcType::Con(TcCon::Num)],
+                Box::new(TcType::Con(TcCon::Num)),
+            ),
+        );
+        // sqrt : num → num (Math.sqrt lowering, 2026-10-05)
+        env.insert_mono(
+            "sqrt".to_string(),
             TcType::Arrow(
                 vec![TcType::Con(TcCon::Num)],
                 Box::new(TcType::Con(TcCon::Num)),
@@ -1453,6 +1495,21 @@ impl TcEnv {
             TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
         );
         // near/iter_prefix : str → int (iterator id)
+        // near/ecrecover_pk : str → str → int → int → str
+        //   (hash-32B, sig-64B, v, malleability) → 65B uncompressed pubkey
+        //   binary string, "" when the signature does not verify.
+        env.insert_mono(
+            "near/ecrecover_pk".into(),
+            TcType::Arrow(
+                vec![
+                    str_ty.clone(),
+                    str_ty.clone(),
+                    int_ty.clone(),
+                    int_ty.clone(),
+                ],
+                Box::new(str_ty.clone()),
+            ),
+        );
         env.insert_mono(
             "near/iter_prefix".into(),
             TcType::Arrow(vec![str_ty.clone()], Box::new(int_ty.clone())),
@@ -1597,7 +1654,9 @@ impl TcEnv {
                 Box::new(int_ty.clone()),
             ),
         );
-        // near/promise_then : int → str → str → str → int → int → int
+        // near/promise_then : int → str → str → str → str → int → int
+        // (idx, account, method, args, deposit u128 decimal STR, gas int)
+        // deposit is a decimal u128 string at runtime (emitter truth).
         env.insert_mono(
             "near/promise_then".into(),
             TcType::Arrow(
@@ -1606,7 +1665,7 @@ impl TcEnv {
                     str_ty.clone(),
                     str_ty.clone(),
                     str_ty.clone(),
-                    int_ty.clone(),
+                    str_ty.clone(),
                     int_ty.clone(),
                 ],
                 Box::new(int_ty.clone()),
@@ -1654,6 +1713,8 @@ impl TcEnv {
                     int_ty.clone(),
                     str_ty.clone(),
                     str_ty.clone(),
+                    // deposit is a decimal u128 STRING (emitter parses it via
+                    // u128 str helpers — "deposit_le16"); typer mirrors runtime.
                     str_ty.clone(),
                     int_ty.clone(),
                 ],

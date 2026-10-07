@@ -18,16 +18,19 @@
         cand))
     (str-trim s)))
 
-;; --- TS-arm prompt assembly: gate feedback + per-task CCG memory.
-;; Deliberately skips dream/cheatsheet.txt (Lisp-syntax lessons would
-;; teach the wrong surface). CCG memory is tag-isolated via __trace_id
-;; "@ts" suffix, so each surface accumulates its own attempt history.
+;; --- TS-arm prompt assembly: gate feedback + TS cheatsheet + per-task CCG memory.
+;; The Lisp cheatsheet (dream/cheatsheet.txt) teaches lisp syntax — the TS
+;; arm reads dream/cheatsheet-ts.txt instead (gen-cheatsheet-ts.py), so both
+;; arms compound surface knowledge without cross-contamination. CCG memory
+;; is tag-isolated via __trace_id "@ts" suffix, so each surface accumulates
+;; its own attempt history.
 (define (build-prompt-ts ctx)
   (let ((fb (rlm-get __gate_feedback))
+        (cheat (try (read-file "data/rlm/dream/cheatsheet-ts.txt") (catch e "")))
         (mem (try (read-file (str-concat "data/rlm/ccg/" (q-task-tag) ".txt")) (catch e ""))))
     (begin
       (if (and fb (not (= fb ""))) (rlm-set __gate_feedback ""))
       (str-concat
         ctx
         (if (and fb (not (= fb ""))) fb "")
-        "\n" mem "\n"))))
+        "\n" cheat "\n" mem "\n"))))

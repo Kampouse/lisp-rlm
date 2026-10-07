@@ -1,0 +1,4 @@
+### PAST ATTEMPTS ON t_lend_liq (agent memory — do NOT repeat these failures)
+- FAIL it0: <110-char scaffold defining prime? — structure was wrong, do not reuse> → ERROR: ~~QT~~read-all: parse error: unexpected `)` at line 1
+- FAIL it1: <110-char scaffold defining prime? — structure was wrong, do not reuse> → ERROR: ~~QT~~read-all: parse error: missing closing `)` at l
+- SOLVED ONCE WITH (complete): (let ((debt 8000) (max-repay (/ debt 2)) (penalty (* max-repay 0.05)) (total (+ max-repay penalty))) (rlm-set answer total) (final true))

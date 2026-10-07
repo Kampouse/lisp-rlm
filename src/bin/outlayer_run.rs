@@ -160,10 +160,16 @@ fn main() {
     };
     // ── REAL http-post (canonical ABI: url, body, content_type, ret_area) ──
     // ret_area layout: +0 error flag (0 = ok), +4 body ptr, +8 body len
+    // Scratch rotation: each POST writes at HTTP_SBUF + n*STRIDE (n bumped
+    // per call) — a single shared base made a 2nd POST overwrite the 1st's
+    // body before the program read it (dual-chain pipe test, 2026-10-05).
+    let post_scratch = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let http_post_fn = Func::new(
         &mut store,
         FuncType::new(&engine, vec![ValType::I32; 7], vec![]),
-        |mut caller, args, _| {
+        {
+            let post_scratch = post_scratch.clone();
+            move |mut caller, args, _| {
             let (up, ul, bp, bl, cp, cl, ra) = (
                 args[0].unwrap_i32() as usize,
                 args[1].unwrap_i32() as usize,
@@ -187,27 +193,48 @@ fn main() {
                     use std::io::Write as _;
                     let body_path = format!("/tmp/__outlayer_post_body_{}", std::process::id());
                     std::fs::write(&body_path, &body).ok();
-                    let resp = std::process::Command::new("curl")
-                        .args([
-                            "-s",
-                            "--max-time",
-                            "10",
-                            "-X",
-                            "POST",
-                            "-H",
-                            &format!("Content-Type: {ct}"),
-                            "--data-binary",
-                            &format!("@{body_path}"),
-                            &url,
-                        ])
-                        .output();
+                    // Header block: newline-separated "Name: value" lines.
+                    // Single line (no \n) = plain Content-Type — fully backward
+                    // compatible. Needed for Authorization: Bearer on OutLayer
+                    // wallet API (2026-10-05, solana sign test).
+                    let headers: Vec<String> = ct
+                        .split('\n')
+                        .map(|l| l.trim())
+                        .filter(|l| !l.is_empty())
+                        .map(|l| {
+                            if l.contains(':') && !l.to_ascii_lowercase().starts_with("content-type:") {
+                                l.to_string()
+                            } else if l.to_ascii_lowercase().starts_with("content-type:") {
+                                l.to_string()
+                            } else {
+                                format!("Content-Type: {l}")
+                            }
+                        })
+                        .collect();
+                    eprintln!("🧾 headers: {headers:?}");
+                    let mut cmd = std::process::Command::new("curl");
+                    cmd.args(["-s", "--max-time", "10", "-X", "POST"]);
+                    for h in &headers {
+                        cmd.arg("-H").arg(h);
+                    }
+                    cmd.arg("--data-binary").arg(&format!("@{body_path}")).arg(&url);
+                    let resp = cmd.output();
                     std::fs::remove_file(&body_path).ok();
                     let (err, out): (u32, Vec<u8>) = match resp {
                         Ok(o) if o.status.success() => (0, o.stdout),
                         _ => (1, Vec::new()),
                     };
-                    let dst = HTTP_SBUF;
-                    let n = out.len().min(data.len().saturating_sub(dst));
+                    // Rotate DOWNWARD from the ret area: the only free HTTP
+                    // region is [HTTP_SBUF, OL_RET_AREA_BASE) (~1MB). Slot N
+                    // writes at RET_AREA-8KB*(N+1) — never touching the ret
+                    // area itself (slot1 at HTTP_SBUF+1MB == OL_RET_AREA_BASE
+                    // clobbered the return ptr/len — the corrupted-response-
+                    // head bug, 2026-10-05). 128 slots × 8KB.
+                    let slot = post_scratch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let stride = 8192usize;
+                    let dst = (HTTP_SBUF + 1_048_576 - stride * ((slot % 127) + 1))
+                        .max(HTTP_SBUF);
+                    let n = out.len().min(stride).min(data.len().saturating_sub(dst));
                     if n > 0 {
                         data[dst..dst + n].copy_from_slice(&out[..n]);
                     }
@@ -219,6 +246,7 @@ fn main() {
                 }
             }
             Ok(())
+            }
         },
     );
     let view_fn = stub(&mut store, 9, false);
