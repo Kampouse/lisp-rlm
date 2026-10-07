@@ -62,6 +62,9 @@ fn is_builtin_wildcard(name: &str) -> bool {
                 | "schnorr-sign-pk"
                 | "schnorr-pubkey"
                 | "schnorr-pubkey33"
+                // (error msg) — portable hard-error: panic_utf8 in NEAR mode,
+                // Unreachable trap in WASI/P2 (call.rs:60). 2026-10-04, H3.
+                | "error"
         )
 }
 
@@ -278,6 +281,24 @@ impl TcEnv {
     /// Insert a monomorphic (no quantified vars) binding.
     pub fn insert_mono(&mut self, name: String, ty: TcType) {
         self.insert(name, Scheme { vars: vec![], ty });
+    }
+
+    /// Sorted builtin inventory as "name<TAB>signature" lines — the single
+    /// source of truth behind the browser playground's autocomplete + hover
+    /// (published via browser-compiler `publish_builtins`). Rendered from the
+    /// checker's own env, so the editor can never drift from the compiler.
+    pub fn builtin_signatures() -> String {
+        let env = Self::with_near_builtins();
+        let mut items: Vec<(String, String)> = env
+            .bindings
+            .iter()
+            .map(|(name, scheme)| (name.clone(), scheme.ty.to_string()))
+            .collect();
+        items.sort();
+        items
+            .into_iter()
+            .map(|(name, sig)| format!("{}\t{}\n", name, sig))
+            .collect()
     }
 
     /// Standard pure builtins with their type schemes.
@@ -2207,4 +2228,23 @@ impl std::fmt::Display for TcCon {
             TcCon::Any => write!(f, "any"),
         }
     }
+}
+
+#[test]
+fn builtin_signatures_parses() {
+    let s = TcEnv::builtin_signatures();
+    let lines: Vec<&str> = s.lines().collect();
+    assert!(lines.len() > 50, "suspiciously few builtins: {}", lines.len());
+    // format: name<TAB>signature, sorted
+    for l in &lines {
+        let tab = l.find('\t').expect("no tab");
+        assert!(tab > 0, "empty name: {}", l);
+    }
+    // sorted + spot-checks
+    let mut names: Vec<&str> = lines.iter().map(|l| &l[..l.find('\t').unwrap()]).collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "not sorted");
+    assert!(names.contains(&"str-cat"), "missing str-cat");
+    assert!(names.iter().any(|n| n.starts_with("near/")), "missing near/*");
 }

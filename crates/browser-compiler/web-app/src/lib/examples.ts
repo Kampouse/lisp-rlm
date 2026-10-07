@@ -1,3 +1,4 @@
+import type { CompileTarget } from './compiler.ts';
 export interface Sidecar {
   account: string;   // sandbox account this contract is bound to (e.g. "ft.pg")
   name: string;
@@ -8,7 +9,7 @@ export interface Example {
   name: string;
   icon: string;
   source: string;
-  target: 'p1' | 'p2' | 'pure' | 'near';
+  target: CompileTarget;
   lang?: 'ts';
   account?: string;      // sandbox account for the MAIN contract (multi-contract examples)
   sidecars?: Sidecar[];  // extra contracts deployed alongside — run via the receipt engine

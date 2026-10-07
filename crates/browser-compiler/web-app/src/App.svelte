@@ -22,10 +22,12 @@
   // reference via /// <reference path>. Canonical copy lives at ts/.
   // @ts-ignore -- vite ?raw (no vite-env.d.ts typing needed at runtime)
   import lispRlmDts from '../../../../ts/lisp-rlm.d.ts?raw';
+  import { typescriptDefaults as monacoTsDefaults } from 'monaco-editor/esm/vs/language/typescript/monaco.contribution';
   import { initCompiler, compile, compileWithFallback, runPure, runNear, compileP2Core, toHexDump, getNearStorage, clearNearStorage, getNearContext, setNearContext, resetNearContext, decodeReturnValue, formatGas, lowerTs, type CompileTarget, type CompileResult, type NearContext, type SourceLang } from './lib/compiler.ts';
   import { runWasiWithWorker } from './lib/runWasiWithWorker.ts';
   import { examples } from './lib/examples.ts';
   import { runMulti } from './lib/contracts-runtime.ts';
+  import { list as builtinList, signatureOf } from './lib/builtins.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
   import { parseTests, buildTestCode, type TestRunResult } from './lib/test-runner.ts';
   import { compressToBase64Url, decompressFromBase64Url } from './lib/share.ts';
@@ -78,7 +80,6 @@
   }
 
   let showOutline: boolean = $state(true);
-  let outlineItems: OutlineItem[] = $derived(parseOutline(source));
 
   // ============================================
   // API Reference (per target)
@@ -401,12 +402,12 @@
     return core;
   }
 
-  let apiForTarget: ApiGroup[] = $derived(getApiForTarget(target));
 
   function insertSnippet(fn: string) {
     if (!editorInstance) return;
     const snippet = SNIPPETS[fn] || `(${fn} )`;
     const pos = editorInstance.getPosition();
+    if (!pos) return;
     editorInstance.executeEdits('api-ref', [{
       range: new monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column),
       text: snippet,
@@ -422,6 +423,9 @@
   // ============================================
   let target: CompileTarget = $state('pure');
   let source: string = $state('');
+
+  let outlineItems: OutlineItem[] = $derived(parseOutline(source));
+  let apiForTarget: ApiGroup[] = $derived(getApiForTarget(target));
   let wasmReady: boolean = $state(false);
   let compiling: boolean = $state(false);
   let deploying: boolean = $state(false);
@@ -712,7 +716,7 @@
       const hash = window.location.hash.slice(1);
       if (!hash) return {};
       const params = new URLSearchParams(hash);
-      const result: { source?: string; target?: CompileTarget; example?: number } = {};
+      const result: { source?: string; target?: CompileTarget; example?: number; shared?: boolean } = {};
       if (params.has('code')) {
         result.source = decodeURIComponent(atob(params.get('code')!));
       }
@@ -831,7 +835,7 @@
     // Dialect surface for the TS worker: autocomplete + typo squiggles for
     // strCat/near.* etc. Without this every valid builtin shows red and
     // real typos are invisible (the LSP knows nothing about our globals).
-    const tsDefaults = monaco.languages.typescript.typescriptDefaults;
+    const tsDefaults = monacoTsDefaults;
     tsDefaults.addExtraLib(lispRlmDts as string, 'ts:lisp-rlm/lisp-rlm.d.ts');
     tsDefaults.setDiagnosticsOptions({
       noSemanticValidation: false,
@@ -948,8 +952,57 @@
         increaseIndentPattern: /[(\[{]\s*$/,
         decreaseIndentPattern: /^\s*[)\]}]/,
       },
-      wordPattern: /[*!?+\-<>=/.a-zA-Z_][*!?+\-<>=/.a-zA-Z0-9_]*/,
+      wordPattern: /[*!?+\-<>=/.a-zA-Z_][*!?+\-<>=/.a-zA-Z0-9_]*/,    });
+
+    // Builtin autocomplete + hover — fed from the checker's own type env via
+    // the wasm module (publish_builtins). Cannot drift from the compiler:
+    // a builtin missing there is never suggested here.
+    monaco.languages.registerCompletionItemProvider('lisp-rlm', {
+      triggerCharacters: ['/', '-'],
+      provideCompletionItems(model, position) {
+        const word = model.getWordUntilPosition(position);
+        const range = {
+          startLineNumber: position.lineNumber,
+          endLineNumber: position.lineNumber,
+          startColumn: word.startColumn,
+          endColumn: word.endColumn,
+        };
+        const suggestions: any[] = [];
+        for (const b of builtinList()) {
+          if (word.word && !b.name.startsWith(word.word)) continue;
+          suggestions.push({
+            label: b.name,
+            kind: b.name.includes('/')
+              ? monaco.languages.CompletionItemKind.Function
+              : monaco.languages.CompletionItemKind.Keyword,
+            detail: b.sig,
+            insertText: `${b.name} `,
+            range,
+            sortText: `0_${b.name}`,
+          });
+        }
+        return { suggestions };
+      },
     });
+
+    monaco.languages.registerHoverProvider('lisp-rlm', {
+      provideHover(model, position) {
+        const w = model.getWordAtPosition(position);
+        if (!w) return null;
+        const sig = signatureOf(w.word);
+        if (!sig) return null;
+        return {
+          range: new monaco.Range(
+            position.lineNumber, w.startColumn, position.lineNumber, w.endColumn,
+          ),
+          contents: [
+            { value: `**${w.word}** — builtin` },
+            { value: `\`${sig}\`` },
+          ],
+        };
+      },
+    });
+
 
     monaco.editor.defineTheme('lisp-dark', {
       base: 'vs-dark',
@@ -1569,6 +1622,8 @@
 
   <!-- Mobile Examples Drawer -->
   {#if showExamplesMenu}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <!-- Backdrop: pointer convenience only; Esc + drawer-close button cover keyboard -->
     <div class="drawer-overlay" onclick={() => { showExamplesMenu = false; }}></div>
     <div class="drawer">
       <div class="drawer-header">
@@ -1697,7 +1752,7 @@
       {/if}
     </button>
 
-    <div class="header-brand" onclick={() => { showLearn = false; }} role="button" tabindex="0">
+    <div class="header-brand" onclick={() => { showLearn = false; }} role="button" tabindex="0" onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") showLearn = false; }}>
       <div class="header-logo">λ</div>
       <span class="header-title">Lisp → WASM</span>
     </div>
@@ -2087,14 +2142,14 @@
               <div class="api-ref-body">
                 {#each apiForTarget as group}
                   <div class="api-group">
-                    <div class="api-group-title" onclick={() => apiExpanded[group.title] = !apiExpanded[group.title]}>
+                    <div class="api-group-title" role="button" tabindex="0" onclick={() => apiExpanded[group.title] = !apiExpanded[group.title]} onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") apiExpanded[group.title] = !apiExpanded[group.title]; }}>
                       <span>{apiExpanded[group.title] ? '▾' : '▸'} {group.title}</span>
                       <span class="api-count">{group.items.length}</span>
                     </div>
                     {#if apiExpanded[group.title]}
                       <div class="api-items">
                         {#each group.items as fn}
-                          <span class="api-fn" onclick={() => insertSnippet(fn)}>{fn}</span>
+                          <span class="api-fn" role="button" tabindex="0" onclick={() => insertSnippet(fn)} onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") insertSnippet(fn); }}>{fn}</span>
                         {/each}
                       </div>
                     {/if}
@@ -2172,6 +2227,8 @@
 
         <!-- File Context Menu -->
         {#if fileContextMenu}
+          <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+          <!-- Backdrop: pointer convenience only; menu buttons + Esc cover keyboard -->
           <div class="ctx-overlay" onclick={closeContextMenu}></div>
           <div class="ctx-menu" style="left: {fileContextMenu.x}px; top: {fileContextMenu.y}px;">
             <button class="ctx-item" onclick={() => startRename(fileContextMenu!.fileId)}>
@@ -2234,6 +2291,8 @@
         </button>
       {:else}
         <!-- Resizer -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <!-- Pointer-drag resizer (outputPaneWidth is clamped in startResize) -->
         <div class="resizer" onmousedown={startResize}></div>
 
         <!-- Output Pane -->
@@ -2342,22 +2401,22 @@
                       {#if showNearContext}
                         <div class="near-context-form">
                           <div class="near-ctx-row">
-                            <label>Signer</label>
-                            <input type="text" bind:value={nearCtx.signerAccount} placeholder="user.testnet" onchange={() => setNearContext(nearCtx)} />
+                            <label for="near-ctx-signer">Signer</label>
+                            <input id="near-ctx-signer" type="text" bind:value={nearCtx.signerAccount} placeholder="user.testnet" onchange={() => setNearContext(nearCtx)} />
                           </div>
                           <div class="near-ctx-row">
-                            <label>Deposit</label>
-                            <input type="text" value={nearCtx.attachedDeposit.toString()} oninput={(e) => { try { nearCtx.attachedDeposit = BigInt((e.target as HTMLInputElement).value); setNearContext(nearCtx); } catch {} }} placeholder="0" />
+                            <label for="near-ctx-deposit">Deposit</label>
+                            <input id="near-ctx-deposit" type="text" value={nearCtx.attachedDeposit.toString()} oninput={(e) => { try { nearCtx.attachedDeposit = BigInt((e.target as HTMLInputElement).value); setNearContext(nearCtx); } catch {} }} placeholder="0" />
                             <span class="near-ctx-unit">yoctoⓃ</span>
                           </div>
                           <div class="near-ctx-row">
-                            <label>Balance</label>
-                            <input type="text" value={nearCtx.accountBalance.toString()} oninput={(e) => { try { nearCtx.accountBalance = BigInt((e.target as HTMLInputElement).value); setNearContext(nearCtx); } catch {} }} placeholder="1000000..." />
+                            <label for="near-ctx-balance">Balance</label>
+                            <input id="near-ctx-balance" type="text" value={nearCtx.accountBalance.toString()} oninput={(e) => { try { nearCtx.accountBalance = BigInt((e.target as HTMLInputElement).value); setNearContext(nearCtx); } catch {} }} placeholder="1000000..." />
                             <span class="near-ctx-unit">yoctoⓃ</span>
                           </div>
                           <div class="near-ctx-row">
-                            <label>Block</label>
-                            <input type="text" value={nearCtx.blockIndex.toString()} oninput={(e) => { try { nearCtx.blockIndex = BigInt((e.target as HTMLInputElement).value); setNearContext(nearCtx); } catch {} }} placeholder="12345678" />
+                            <label for="near-ctx-block">Block</label>
+                            <input id="near-ctx-block" type="text" value={nearCtx.blockIndex.toString()} oninput={(e) => { try { nearCtx.blockIndex = BigInt((e.target as HTMLInputElement).value); setNearContext(nearCtx); } catch {} }} placeholder="12345678" />
                           </div>
                         </div>
                       {/if}
@@ -2533,9 +2592,11 @@
                         <div class="deploy-form">
                           {#if target === 'p1'}
                             <div class="deploy-field">
-                              <label class="deploy-label">Contract Name</label>
+                              <label class="deploy-label" for="deploy-contract-name">Contract Name</label>
                               <div class="deploy-input-group">
                                 <input
+                                  id="deploy-contract-name"
+
                                   type="text"
                                   class="deploy-input"
                                   bind:value={contractName}
@@ -2546,7 +2607,7 @@
                             </div>
                           {:else}
                             <div class="deploy-field">
-                              <label class="deploy-label">OutLayer Contract</label>
+                              <span class="deploy-label">OutLayer Contract</span>
                               <span class="deploy-readonly">
                                 {network === 'testnet' ? 'outlayer.testnet' : 'outlayer.kampouse.near'}
                               </span>
@@ -3162,9 +3223,6 @@
   .examples-scroll {
     overflow-y: auto;
   }
-  .output-pane.collapsed .output-body {
-    display: none;
-  }
   .header-run-btn {
     display: flex;
     align-items: center;
@@ -3189,9 +3247,6 @@
     opacity: 0.6;
     cursor: not-allowed;
   }
-  .header-run-btn .spinner-icon {
-    animation: spin 1s linear infinite;
-  }
   .header-test-btn {
     display: flex;
     align-items: center;
@@ -3213,9 +3268,6 @@
   .header-test-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
-  }
-  .header-test-btn .spinner-icon {
-    animation: spin 1s linear infinite;
   }
   .output-pane.collapsed {
     min-height: auto;

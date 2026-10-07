@@ -1,11 +1,16 @@
-import init, { compile_p1, compile_p2, compile_p2_core, compile_pure, compile_ts, ts_to_lisp, disassemble_wasm } from '../../public/wasm/lisp_rlm_browser.js';
+import init, {
+  compile_p1, compile_p2, compile_p2_core, compile_pure, compile_ts, ts_to_lisp,
+  disassemble_wasm, publish_builtins,
+} from '../../public/wasm/lisp_rlm_browser.js';
+import { p256 } from '@noble/curves/nist.js';
 import { annotateErrorLines } from './errorLines.ts';
 import { compileViaWorker } from './compileWorkerClient.ts';
+import { feed as feedBuiltins } from './builtins.ts';
 
 let initialized = false;
 let initPromise: Promise<void> | null = null;
 
-export type CompileTarget = 'p1' | 'p2' | 'pure';
+export type CompileTarget = 'p1' | 'p2' | 'pure' | 'near';
 export type SourceLang = 'lisp' | 'ts';
 
 export interface CompileResult {
@@ -24,6 +29,13 @@ export async function initCompiler(): Promise<void> {
   if (initPromise) return initPromise;
 
   initPromise = init().then(() => {
+    // One-time builtin inventory pull — powers lisp completion + hover
+    // (App.svelte registers the providers once this resolves).
+    try {
+      feedBuiltins(publish_builtins());
+    } catch (e) {
+      console.warn('publish_builtins failed — autocomplete disabled', e);
+    }
     initialized = true;
   });
 
@@ -102,9 +114,10 @@ export function compile(source: string, target: CompileTarget, lang: SourceLang 
         throw new Error(`TS dialect currently supports the P1 (NEAR) target only, got "${target}"`);
       }
     }
+    // 'near' compiles to P1 (the NEAR run happens separately via runNear —
+    // see the UI), so the wasm build is identical to 'p1'.
     let wasmBytes: Uint8Array;
     switch (target) {
-      case 'p1': wasmBytes = lang === 'ts' ? compile_ts(source) : compile_p1(source); break;
       case 'p2': wasmBytes = compile_p2_core(source); break;
       case 'pure': wasmBytes = compile_pure(source); break;
       default: wasmBytes = lang === 'ts' ? compile_ts(source) : compile_p1(source); break;
@@ -721,13 +734,27 @@ function buildNearEnv(): Record<string, Function> {
     },
     ed25519_verify: (): bigint => 1n,
     // p256_verify(sig_len, sig_ptr, msg_len, msg_ptr, pk_len, pk_ptr) → u64
-    // Uses Web Crypto API SubtleCrypto to verify P-256 ECDSA signatures.
-    // sig: 64 bytes (r||s big-endian), pk: 33 bytes (compressed SEC1), msg: prehashed digest
-    // Returns 1 = valid, 0 = invalid.
-    // NOTE: This mock is synchronous but SubtleCrypto is async; for the browser playground
-    // we return 1 (always passes) as a stub. Real verification requires async integration.
-    // TODO: Integrate real P-256 verification via async worker or sync crypto library.
-    p256_verify: (): bigint => 1n,
+    // REAL verification (no stub): @noble/curves p256, sync — fits the wasm
+    // host-fn ABI without pre-pass plumbing.
+    // sig: 64 bytes (r||s big-endian compact), pk: 33 bytes (compressed
+    // SEC1), msg: the PREHASHED digest (32 bytes).
+    // Returns 1 = valid, 0 = invalid format/signature.
+    p256_verify: (sigLen: bigint, sigPtr: bigint, msgLen: bigint, msgPtr: bigint, pkLen: bigint, pkPtr: bigint): bigint => {
+      const mem = nearMemBytes();
+      const sig = mem.slice(Number(sigPtr), Number(sigPtr + sigLen));
+      const msg = mem.slice(Number(msgPtr), Number(msgPtr + msgLen));
+      const pk = mem.slice(Number(pkPtr), Number(pkPtr + pkLen));
+      try {
+        if (sigLen !== 64n) return 0n; // r||s compact only
+        // pk: NEAR passes compressed SEC1 (33B); noble's Point.fromBytes also
+        // accepts uncompressed — accept both, reject garbage.
+        const pubKey = p256.Point.fromBytes(new Uint8Array(pk));
+        const ok = p256.verify(new Uint8Array(sig), new Uint8Array(msg), pubKey.toBytes(true));
+        return ok ? 1n : 0n;
+      } catch {
+        return 0n; // malformed sig/pk — same contract as the real host fn
+      }
+    },
 
     // ===== Promise (cross-contract view calls via RPC) =====
     // promise_create(account_id_len, account_id_ptr, method_name_len, method_name_ptr,
@@ -892,6 +919,11 @@ export async function runNear(
   returnValue: Uint8Array | null;
   methods: string[];
   gasUsed: number;
+  gasBreakdown: { opcodes: number; opcodeGas: number; hostGas: number } | null;
+  logs: string[];
+  panic: string | null;
+  storageDiff: Array<{ key: string; oldVal: string | null; newVal: string | null }>;
+  receipts: Array<{ index: number; accountId: string; methodName: string; argsSize: number; type: string }>;
 }> {
   nearStorage.clear();
   nearRegisters.clear();
@@ -1097,12 +1129,6 @@ export async function runNear(
   return {
     stdout: nearStdout, returnValue: nearReturnValue, methods, gasUsed, gasBreakdown,
     logs: nearLogs, panic: nearPanicMsg, storageDiff: nearStorageDiff, receipts: nearPromiseNodes,
-  } as {
-    stdout: string; returnValue: Uint8Array | null; methods: string[]; gasUsed: number;
-    gasBreakdown: { opcodes: number; opcodeGas: number; hostGas: number } | null;
-    logs: string[]; panic: string | null;
-    storageDiff: Array<{ key: string; oldVal: string | null; newVal: string | null }>;
-    receipts: typeof nearPromiseNodes;
   };
 }
 

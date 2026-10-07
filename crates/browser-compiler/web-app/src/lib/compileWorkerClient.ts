@@ -19,7 +19,7 @@ import { annotateErrorLines } from './errorLines.ts';
 
 export interface WorkerCompileRequest {
   source: string;
-  target: 'p1' | 'p2' | 'pure';
+  target: 'p1' | 'p2' | 'pure' | 'near';
   lang: 'lisp' | 'ts';
 }
 

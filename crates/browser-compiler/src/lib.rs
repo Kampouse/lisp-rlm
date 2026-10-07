@@ -99,3 +99,11 @@ pub fn disassemble_wasm(wasm_bytes: &[u8]) -> Result<String, JsValue> {
 pub fn wasm_size(wasm_bytes: &[u8]) -> usize {
     wasm_bytes.len()
 }
+
+/// Sorted builtin inventory ("name\tsig" lines) from the checker's own env —
+/// the playground's autocomplete + hover feed. Single source of truth: the
+/// editor can never drift from what the compiler accepts.
+#[wasm_bindgen]
+pub fn publish_builtins() -> String {
+    lisp_rlm_wasm::typing::types::TcEnv::builtin_signatures()
+}
