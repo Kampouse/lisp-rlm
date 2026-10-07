@@ -247,7 +247,72 @@ pub fn parse_ts(src: &str) -> Result<Vec<LispVal>, String> {
     IDENT_OFFSETS.with(|m| m.borrow_mut().clear());
     // on success (or error) the map holds first-occurrence offsets for every
     // identifier seen during the walk — drained by take_ident_offsets()
-    lower_program(&ret.program)
+    let mut forms = lower_program(&ret.program)?;
+    for f in forms.iter_mut() {
+        *f = discard_normalize(f);
+    }
+    Ok(forms)
+}
+
+/// Post-lowering normalization (2026-10-06): the __fn_done/__wl_* statement
+/// guards wrap arbitrary statement bodies as `(if (= FLAG 0) BODY 0)`.
+/// When BODY's TYPE is a str — a bare str-returning call like
+/// `poolSwap(amt);`, or a statement-if whose branches type str — the
+/// checker's branch unification rejects it as `str ≠ int` even though the
+/// statement position discards the value entirely. Fix: rewrite to
+/// `(if (= FLAG 0) (begin BODY 0) 0)` — the same discard idiom the loop
+/// lowering has always used (`list(vec![Sym("begin"), e, Num(0)])`).
+/// Semantics-neutral: effects and evaluation order preserved, value 0.
+/// Found live while porting the CLMM pool to TS (bisected via probe files:
+/// statement CALLS, nested guard-ifs, and if-branches with str tails all
+/// hit the one pattern — one root cause, one rewrite).
+fn discard_normalize(v: &LispVal) -> LispVal {
+    match v {
+        LispVal::List(items) => {
+            // don't descend into quoted DATA — it is not code
+            if let Some(LispVal::Sym(s)) = items.first() {
+                if s == "quote" {
+                    return v.clone();
+                }
+            }
+            // rewrite matching guard-wraps
+            if items.len() == 4 {
+                let is_flag_test = matches!(
+                    &items[0],
+                    LispVal::Sym(s) if s == "if"
+                ) && matches!(
+                    &items[1],
+                    LispVal::List(t) if t.len() == 3
+                        && matches!(&t[0], LispVal::Sym(op) if op == "=")
+                        && matches!(&t[1], LispVal::Sym(flag)
+                            if flag == "__fn_done" || flag.starts_with("__wl_"))
+                        && matches!(&t[2], LispVal::Num(n) if *n == 0)
+                ) && matches!(&items[3], LispVal::Num(n) if *n == 0);
+                let already_discarding = matches!(
+                    &items[2],
+                    LispVal::List(b) if !b.is_empty()
+                        && matches!(b.first(), Some(LispVal::Sym(s)) if s == "begin")
+                        && matches!(b.last(), Some(LispVal::Num(n)) if *n == 0)
+                );
+                if is_flag_test && !already_discarding {
+                    let body = discard_normalize(&items[2]);
+                    return LispVal::List(vec![
+                        items[0].clone(),
+                        items[1].clone(),
+                        LispVal::List(vec![
+                            LispVal::Sym("begin".into()),
+                            body,
+                            LispVal::Num(0),
+                        ]),
+                        LispVal::Num(0),
+                    ]);
+                }
+            }
+            // recurse
+            LispVal::List(items.iter().map(discard_normalize).collect())
+        }
+        other => other.clone(),
+    }
 }
 
 /// Parse + retain the ident→offset map (for augmenting downstream errors).
@@ -1430,7 +1495,19 @@ fn lower_prefix_around_with_return(
             // every statement after this if. Direct returns and nested
             // carriers keep the blanket only when the branch is a
             // guaranteed return (its value IS the function result).
-            if stmt_has_return(&i.consequent) && !is_commit_form(&then_e) {
+            //
+            // (2026-10-06) BUT is_commit_form scans the WHOLE branch form:
+            // a PREFIX early-return carrier (`{ if (g) return "x";
+            // return "B"; }`) also trips the exemption, and the guarded
+            // tail's "B" is then discarded in statement position — the
+            // return silently vanishes (found via the discard_normalize
+            // probe: old code rejected this shape at typecheck, masking
+            // the lowering hole). Force the blanket when the branch ENDS
+            // in a direct return: the branch is a guaranteed return, and
+            // the tail commit survives via the __fn_done guard.
+            let then_tail_return =
+                matches!(stmts_of(&i.consequent).last(), Some(Statement::ReturnStatement(_)));
+            if (stmt_has_return(&i.consequent) && !is_commit_form(&then_e)) || then_tail_return {
                 // branch value becomes the function result
                 then_e = list(vec![
                     Sym("begin"),
@@ -1441,7 +1518,9 @@ fn lower_prefix_around_with_return(
             let else_e = match &i.alternate {
                 Some(alt) => {
                     let mut e = lower_block_tail(stmts_of(alt), view)?;
-                    if stmt_has_return(alt) && !is_commit_form(&e) {
+                    let alt_tail_return =
+                        matches!(stmts_of(alt).last(), Some(Statement::ReturnStatement(_)));
+                    if (stmt_has_return(alt) && !is_commit_form(&e)) || alt_tail_return {
                         e = list(vec![
                             Sym("begin"),
                             list(vec![Sym("set!"), Sym("__fn_res"), e]),
