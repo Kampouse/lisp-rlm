@@ -35,15 +35,13 @@ pub(crate) use gas::{
 pub(crate) use hosts::{build_env_linker, host_fn};
 
 // ── mainnet gas/stack instrumentation (finite-wasm, PV155 costs) ──
-pub(crate) mod instrument;
-pub(crate) use instrument::REMAINING_GAS_EXPORT;
+// Lifted to the lib (src/instrument.rs): browser compiler + near-mock now
+// share ONE meter, so JS and CLI can never disagree on gas.
+pub(crate) use lisp_rlm_wasm::instrument::{
+    instrument, REMAINING_GAS_EXPORT, InstrumentError,
+    REGULAR_OP_COST, LINEAR_OP_BASE_COST, LINEAR_OP_UNIT_COST, MAX_STACK_HEIGHT,
+};
 
-/// PV155 instruction costs (protocol-86 parameter snapshot, 2026-09-10).
-pub(crate) const REGULAR_OP_COST: u64 = 822_756;
-pub(crate) const LINEAR_OP_BASE_COST: u64 = 26_328_192;
-pub(crate) const LINEAR_OP_UNIT_COST: u64 = 822_756;
-/// max_stack_height (protocol-86): enforced by the instrumented stack budget.
-pub(crate) const MAX_STACK_HEIGHT: u32 = 262_144;
 /// Function-call action fee (execution side, protocol-86): burned by the
 /// receipt itself on mainnet, on top of instruction + host gas.
 pub(crate) const FUNCTION_CALL_BASE_GAS: u64 = 780_000_000_000;
@@ -104,7 +102,7 @@ pub(crate) fn compile_module(
     engine: &wasmtime::Engine,
     bytes: &[u8],
 ) -> Result<wasmtime::Module, Box<dyn std::error::Error>> {
-    let prepared = instrument::instrument(bytes)?;
+    let prepared = instrument(bytes)?;
     Ok(wasmtime::Module::from_binary(engine, &prepared)?)
 }
 pub(crate) use promises::{

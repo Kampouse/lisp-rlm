@@ -1229,13 +1229,14 @@
           lines.push(`Return: ${retDecoded}`);
         }
 
-        // Show gas (static WASM estimation with NEAR pricing)
+        // Show gas — PV155-metered when available (matches nearcore/near-mock),
+        // else the static opcode fallback
         nearGasUsed = formatGas(nearResult.gasUsed);
         const bd = nearResult.gasBreakdown;
         if (bd) {
-          lines.push(`Gas: ${nearGasUsed} (${bd.opcodes} opcodes, ${formatGas(bd.opcodeGas)} compute, ${formatGas(bd.hostGas)} host)`);
+          lines.push(`Gas: ${nearGasUsed} est. (${bd.opcodes} opcodes, ${formatGas(bd.opcodeGas)} compute, ${formatGas(bd.hostGas)} host)`);
         } else {
-          lines.push(`Gas: ${nearGasUsed}`);
+          lines.push(`Gas: ${nearGasUsed} (PV155 metered)`);
         }
 
         runResult = lines.join('\n');

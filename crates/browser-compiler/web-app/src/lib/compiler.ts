@@ -1,6 +1,6 @@
 import init, {
   compile_p1, compile_p2, compile_p2_core, compile_pure, compile_ts, ts_to_lisp,
-  disassemble_wasm, publish_builtins,
+  disassemble_wasm, publish_builtins, instrument_for_gas,
 } from '../../public/wasm/lisp_rlm_browser.js';
 import { p256 } from '@noble/curves/nist.js';
 import { annotateErrorLines } from './errorLines.ts';
@@ -955,8 +955,45 @@ export async function runNear(
     },
   };
 
-  const { instance } = await WebAssembly.instantiate(wasmBytes.buffer as ArrayBuffer, imports) as any;
+  // REAL gas metering: the exact finite-wasm PV155 instrument nearcore's
+  // prepare (and near-mock) applies to every mainnet contract. The
+  // instrumented module exposes `remaining_gas` (mutable i64) + 3 hook
+  // imports; burned = prepaid − remaining. Falls back to the static
+  // opcode-walk estimate only if instrumentation fails (opaque module).
+  let instrumented = false;
+  let instrumentedBytes: Uint8Array | null = null;
+  let meteredExtra = 0; // pass-2 (promise re-run) burn, added to the total
+  const prepaidGas = BigInt(gasLimit as unknown as bigint);
+  try {
+    instrumentedBytes = new Uint8Array(instrument_for_gas(new Uint8Array(wasmBytes)));
+    // same contract as nearcore: the exhausted hooks abort the call; the
+    // gas hook fires only on the failing charge, right before the trap
+    imports.internal = {
+      finite_wasm_gas_exhausted: () => { throw new Error('NEAR panic: Exceeded the prepaid gas'); },
+      finite_wasm_stack_exhausted: () => { throw new Error('WasmTrap: StackOverflow'); },
+      // the report hook IS the failing-charge abort (same as near-mock)
+      finite_wasm_gas: (_charge: bigint) => { throw new Error('NEAR panic: Exceeded the prepaid gas'); },
+    };
+    instrumented = true;
+  } catch (e) {
+    console.warn('gas instrumentation unavailable, falling back to static estimate:', e);
+  }
+
+  const { instance } = await WebAssembly.instantiate(
+    (instrumented ? instrumentedBytes! : new Uint8Array(wasmBytes)).buffer as ArrayBuffer,
+    imports,
+  ) as any;
   const exports = instance.exports as Record<string, unknown>;
+  let remainingGasGlobal: WebAssembly.Global | null = null;
+  if (instrumented) {
+    const g = exports.remaining_gas as WebAssembly.Global | undefined;
+    if (g) {
+      remainingGasGlobal = g;
+      try { g.value = prepaidGas as unknown as bigint; } catch { /* shouldn't happen: mutable */ }
+    } else {
+      instrumented = false; // exotic module without the global — fall back
+    }
+  }
 
   // Set memory reference from the module's exported memory (has data segments loaded)
   nearMemory = exports.memory as WebAssembly.Memory;
@@ -1077,9 +1114,18 @@ export async function runNear(
       nearPromiseNodes = []; // Clear nodes from pass 1 to avoid duplicates
       nearStdout += `Methods: ${methods.join(', ')}\n`;
 
-      // Re-instantiate WASM for clean state
-      const { instance: inst2 } = await WebAssembly.instantiate(wasmBytes.buffer as ArrayBuffer, imports) as any;
+      // Re-instantiate WASM for clean state (same instrumented binary;
+      // pass-2 burn is read below into meteredExtra)
+      const pass2UsesMeter = instrumented;
+      const { instance: inst2 } = await WebAssembly.instantiate(
+        (instrumented ? instrumentedBytes! : new Uint8Array(wasmBytes)).buffer as ArrayBuffer,
+        imports,
+      ) as any;
       const exports2 = inst2.exports as Record<string, unknown>;
+      if (pass2UsesMeter) {
+        const g2 = exports2.remaining_gas as WebAssembly.Global | undefined;
+        if (g2) { try { g2.value = prepaidGas as unknown as bigint; } catch {} }
+      }
       nearMemory = exports2.memory as WebAssembly.Memory;
       loadNearStorage();
 
@@ -1100,6 +1146,14 @@ export async function runNear(
           }
         }
       }
+      // Pass-2 burn (fresh instrumented global, same prepaid basis)
+      if (pass2UsesMeter) {
+        const g2 = (inst2.exports as Record<string, unknown>).remaining_gas as WebAssembly.Global | undefined;
+        if (g2) {
+          const rem2 = BigInt(g2.value as unknown as bigint);
+          meteredExtra = prepaidGas > rem2 ? Number(prepaidGas - rem2) : 0;
+        }
+      }
     }
   } catch (err: unknown) {
     if (!(err instanceof Error && (err.message === 'NEAR_RETURN' || err.message === 'NEAR panic' || err.message?.startsWith('NEAR panic:')))) {
@@ -1110,13 +1164,21 @@ export async function runNear(
   // Compute storage diff
   nearStorageDiff = computeDiff(storageBefore);
 
-  // Static gas estimation from WASM binary
-  const targetMethod = options?.method ?? (methods.length === 1 ? methods[0] : undefined);
-  if (targetMethod) {
-    const est = estimateGas(wasmBytes, targetMethod);
-    if (est) {
-      gasUsed = est.totalGas;
-      gasBreakdown = { opcodes: est.opcodes, opcodeGas: est.opcodeGas, hostGas: est.hostGas };
+  // Gas: PV155-metered burn when instrumented (matches near-mock), else
+  // the static opcode-walk estimate as labeled fallback.
+  if (instrumented && remainingGasGlobal) {
+    const remaining = BigInt(remainingGasGlobal.value as unknown as bigint);
+    const burned = prepaidGas > remaining ? Number(prepaidGas - remaining) : 0;
+    gasUsed = burned + meteredExtra;
+    gasBreakdown = null; // metered — no static breakdown to show
+  } else {
+    const targetMethod = options?.method ?? (methods.length === 1 ? methods[0] : undefined);
+    if (targetMethod) {
+      const est = estimateGas(wasmBytes, targetMethod);
+      if (est) {
+        gasUsed = est.totalGas;
+        gasBreakdown = { opcodes: est.opcodes, opcodeGas: est.opcodeGas, hostGas: est.hostGas };
+      }
     }
   }
 

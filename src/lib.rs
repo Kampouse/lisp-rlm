@@ -37,6 +37,7 @@ mod dispatch;
 pub mod gas_estimate;
 pub mod helpers;
 pub mod near_validate;
+pub mod instrument;
 pub mod outlayer_adapter;
 pub mod p2_native;
 pub mod p2_wasi_bridge;

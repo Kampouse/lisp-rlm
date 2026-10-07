@@ -107,3 +107,15 @@ pub fn wasm_size(wasm_bytes: &[u8]) -> usize {
 pub fn publish_builtins() -> String {
     lisp_rlm_wasm::typing::types::TcEnv::builtin_signatures()
 }
+
+/// Instrument a contract wasm with the SAME finite-wasm PV155 gas/stack pass
+/// near-mock (and nearcore's prepare) applies, so the browser NEAR runner
+/// measures real burned gas instead of a static opcode estimate. Returns the
+/// instrumented binary; after running a method, read the exported
+/// `remaining_gas` i64 global and compute burned = prepaid − remaining.
+/// Errors map to wasm-bindgen JsError.
+#[wasm_bindgen]
+pub fn instrument_for_gas(contract_wasm: &[u8]) -> Result<Vec<u8>, wasm_bindgen::JsError> {
+    lisp_rlm_wasm::instrument::instrument(contract_wasm)
+        .map_err(|e| wasm_bindgen::JsError::new(&format!("instrument: {e}")))
+}
