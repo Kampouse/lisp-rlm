@@ -95,7 +95,7 @@ class Harness:
         bp = bal["tB"].get("pool", "0")
         ap = bal["tA"].get("pool", "0")
         sh_sum = sum(int(pool[k]) for k in pool if k.startswith("SH:"))
-        self.stats["checks"] += 4
+        self.stats["checks"] += 5
         for name, got, want in (
             ("I1 bal_tB(pool)==PB+orphanB", bp, str(int(pb) + orphan_ok)),
             ("I3 bal_tA(pool)==AB", ap, ab),
@@ -107,6 +107,16 @@ class Harness:
                if k in pool and int(pool[k] or "0") < 0]
         if neg:
             self.failures.append(f"{ctx}: I4 negative book values: {neg}")
+        # I6 ladder-liquidity: slots are B-denominated sellable quotes —
+        # they must never sum above the pool's ACTUAL B (bp, incl. orphaned
+        # residue). A breach = ladder advertising undeliverable liquidity
+        # (rounding drift in withdraw slot-scaling would show here first).
+        slots_sum = sum(int(pool.get(k, "0") or "0")
+                        for k in ("S0", "S1", "S2", "S3", "S4"))
+        if slots_sum > int(bp):
+            self.failures.append(
+                f"{ctx}: I6 Σslots({slots_sum}) > bal_tB(pool)({bp})"
+                f" — ladder oversells deliverable B")
 
     @staticmethod
     def same(a, b):
