@@ -80,6 +80,7 @@ fn ts_to_lisp_source_inner(src: &str) -> Result<String, String> {
     CONST_FOLDS.with(|s| s.borrow_mut().clear());
     BIGINT_CONSTS.with(|s| s.borrow_mut().clear());
     MONEY_NAMES.with(|s| s.borrow_mut().clear());
+    LEDGER_NAMES.with(|s| s.borrow_mut().clear());
     MONEY_ALIASES.with(|s| s.borrow_mut().clear());
     USER_FNS.with(|m| m.borrow_mut().clear());
     let exprs = parse_ts(src)?;
@@ -125,6 +126,10 @@ thread_local! {
     /// Money-domain value names (2026-10-08 taint gate): await-result
     /// bindings (`const x = await near.call(...)` returns u128 decimal
     /// strings) — a raw `+`/`-` on two of them corrupts the amount.
+    // LEDGER tier: names bound to `storageGet(...) ?? ""` reads — may
+    // feed SINKS (custody check) but carry NO arithmetic seal.
+    static LEDGER_NAMES: std::cell::RefCell<Vec<String>> =
+        std::cell::RefCell::new(Vec::new());
     static MONEY_NAMES: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// Scalar money type aliases seen at statement level: `type Yocto =
@@ -848,6 +853,7 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
     STRING_LOCALS.with(|s| s.borrow_mut().clear());
     SHAPE_BIGINT_FIELDS.with(|s| s.borrow_mut().clear());
     MONEY_NAMES.with(|s| s.borrow_mut().clear());
+    LEDGER_NAMES.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
     for p in &f.params.items {
         let n = binding_name(&p.pattern)?;
@@ -888,6 +894,7 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         .ok_or("ts_frontend: async function missing body")?;
     let stmts = &body.statements;
     check_return_contract(&name, stmts, return_ann_money(f))?;
+    check_money_sinks(stmts)?;
 
     // Forward-scan the WHOLE body: bigint lets / string locals / input
     // handles must be registered before any segment lowers (segments lower
@@ -922,10 +929,10 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
             continue;
         };
         let names = pattern_names(&decl.id)?;
-        // (2026-10-08) Await results are u128 decimal strings — money.
-        for n in &names {
-            MONEY_NAMES.with(|s| s.borrow_mut().push(n.clone()));
-        }
+        // (2026-10-08, tightened) Await results seed money ONLY for
+        // balance/supply reads — money comes from money sources. An
+        // await of `getName` binds a plain string (Value), not Yocto.
+        seed_await_money_names(&ae.argument, &names);
         let arg = &ae.argument;
         // near.all([...]) detection — must be the bare member call
         let mut all_arr: Option<&oxc_ast::ast::ArrayExpression<'_>> = None;
@@ -1752,6 +1759,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
     STRING_LOCALS.with(|s| s.borrow_mut().clear());
     SHAPE_BIGINT_FIELDS.with(|s| s.borrow_mut().clear());
     MONEY_NAMES.with(|s| s.borrow_mut().clear());
+    LEDGER_NAMES.with(|s| s.borrow_mut().clear());
     INPUT_HANDLES.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
     for p in &f.params.items {
@@ -1798,6 +1806,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
         &body.statements,
         return_ann_money(f),
     )?;
+    check_money_sinks(&body.statements)?;
 
     // forward-scan bigint lets (CPS lowering means let-site registration
     // runs after statements that reference the binding — see scan_bigint_lets)
@@ -5265,14 +5274,23 @@ fn expr_is_money(e: &Expression<'_>) -> bool {
             .with(|s| s.borrow().iter().any(|x| *x == id.name.as_str())),
         Expression::ParenthesizedExpression(pe) => expr_is_money(&pe.expression),
         Expression::BinaryExpression(b) => {
-            matches!(
-                b.operator,
-                BinaryOperator::Addition
-                    | BinaryOperator::Subtraction
-                    | BinaryOperator::Multiplication
-                    | BinaryOperator::Division
-                    | BinaryOperator::Remainder
-            ) && (expr_is_money(&b.left) || expr_is_money(&b.right))
+            if matches!(b.operator, BinaryOperator::Addition) {
+                // `+` with money on ONE side is CONCAT — the result is
+                // display TEXT, not money (the contract doctrine: a
+                // labeled string is not an amount). Only money+money
+                // stays "money" here, and that shape is the raw-
+                // arithmetic error caught by the gate — it never
+                // flows onward as a value.
+                money_arithmetic(&b.left, &b.right)
+            } else {
+                matches!(
+                    b.operator,
+                    BinaryOperator::Subtraction
+                        | BinaryOperator::Multiplication
+                        | BinaryOperator::Division
+                        | BinaryOperator::Remainder
+                ) && (expr_is_money(&b.left) || expr_is_money(&b.right))
+            }
         }
         Expression::CallExpression(c) => match &c.callee {
             Expression::StaticMemberExpression(sm) => {
@@ -5414,6 +5432,81 @@ fn for_each_return_arg(
     }
 }
 
+/// The method name of a `near.call(target, method, ...)` expression,
+/// when it is a string literal. A dynamic method name is `None`: the
+/// binding flows as Value (permissive on the unknown).
+fn near_call_method<'a>(e: &Expression<'a>) -> Option<&'a str> {
+    let Expression::CallExpression(c) = e else {
+        return None;
+    };
+    let Expression::StaticMemberExpression(sm) = &c.callee else {
+        return None;
+    };
+    let Expression::Identifier(obj) = &sm.object else {
+        return None;
+    };
+    if obj.name != "near" || sm.property.name != "call" {
+        return None;
+    }
+    // near.call(target, method, args, gas, deposit) — method is arg 1
+    match c.arguments.get(1).and_then(|a| a.as_expression()) {
+        Some(Expression::StringLiteral(s)) => Some(s.value.as_str()),
+        _ => None,
+    }
+}
+
+/// Awaited methods whose RESULT is a u128 decimal string — the money
+/// SOURCES. NEP-141 balance/supply reads. Every other await result is
+/// Value: a `getName` string is not yocto, and returning it as
+/// `: Promise<Yocto>` is exactly the lie the contract check kills.
+fn await_method_is_money(m: &str) -> bool {
+    matches!(
+        m,
+        "ftBalanceRaw"
+            | "ftBalanceOf"
+            | "balanceOf"
+            | "ftTotalSupply"
+            | "ftSupplyFor"
+            | "ftStorageBalanceOf"
+    )
+}
+
+/// Seed MONEY_NAMES for one await binding. near.all binds positionally
+/// (name j <-> element j), a plain await binds its one name — and only
+/// balance/supply methods seed. This is what makes the registry mean
+/// "u128 decimal string" instead of "came from an await".
+fn seed_await_money_names(arg: &Expression<'_>, names: &[String]) {
+    if let Expression::CallExpression(c) = arg {
+        if let Expression::StaticMemberExpression(sm) = &c.callee {
+            if let Expression::Identifier(obj) = &sm.object {
+                if obj.name == "near" && sm.property.name == "all" {
+                    if let Some(args0) = c.arguments.first().and_then(|a| a.as_expression()) {
+                        if let Expression::ArrayExpression(arr) = args0 {
+                            for (j, n) in names.iter().enumerate() {
+                                let money = arr
+                                    .elements
+                                    .get(j)
+                                    .and_then(|el| el.as_expression())
+                                    .and_then(near_call_method)
+                                    .is_some_and(await_method_is_money);
+                                if money {
+                                    MONEY_NAMES.with(|s| s.borrow_mut().push(n.clone()));
+                                }
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        if near_call_method(arg).is_some_and(await_method_is_money) {
+            for n in names {
+                MONEY_NAMES.with(|s| s.borrow_mut().push(n.clone()));
+            }
+        }
+    }
+}
+
 /// Pre-pass for check_return_contract: register every
 /// `const x = await ...` / destructured-await binding as money so the
 /// return walk sees it. Mirrors the AwaitPoint scan's semantics.
@@ -5422,12 +5515,69 @@ fn register_await_names(stmts: &[Statement<'_>]) {
         match s {
             Statement::VariableDeclaration(v) => {
                 for d in &v.declarations {
-                    let await_init = matches!(&d.init, Some(Expression::AwaitExpression(_)));
                     let money_ann = declarator_ann_is_money(d);
-                    if await_init || money_ann {
+                    if money_ann {
                         if let Ok(names) = pattern_names(&d.id) {
                             for n in names {
                                 MONEY_NAMES.with(|s| s.borrow_mut().push(n));
+                            }
+                        }
+                    } else if let Some(Expression::AwaitExpression(ae)) = &d.init {
+                        if let Ok(names) = pattern_names(&d.id) {
+                            seed_await_money_names(&ae.argument, &names);
+                        }
+                    } else if d
+                        .init
+                        .as_ref()
+                        .is_some_and(|iv| is_storage_read_fallback(iv))
+                    {
+                        // Ledger boundary (SEAL tier): `const bal =
+                        // storageGet(k) ?? "0"` is u128-domain by contract
+                        // convention — carries the seal AND the arithmetic rule.
+                        if let Ok(names) = pattern_names(&d.id) {
+                            for n in names {
+                                MONEY_NAMES.with(|s| s.borrow_mut().push(n));
+                            }
+                        }
+                    } else if d
+                        .init
+                        .as_ref()
+                        .is_some_and(|iv| is_boundary_stamp(iv))
+                    {
+                        // Param-boundary stamp: `const amount =
+                        // jsonGetStr("amount") ?? STORAGE_MIN` — the author's
+                        // custody declaration. LEDGER tier: transferable to
+                        // sinks, NO arithmetic seal — the reader cannot know
+                        // the domain (groth16 pulls HEX through the same
+                        // jsonGetStr). `: Yocto` is how an author asserts the
+                        // money domain and gets the full seal.
+                        if let Ok(names) = pattern_names(&d.id) {
+                            for n in names {
+                                LEDGER_NAMES.with(|s| s.borrow_mut().push(n));
+                            }
+                        }
+                    } else if d
+                        .init
+                        .as_ref()
+                        .is_some_and(|iv| is_ledger_read(iv))
+                    {
+                        // Ledger tier: `const pn = storageGet(k) ?? ""` —
+                        // sink-transferable, NOT arithmetic-sealed.
+                        if let Ok(names) = pattern_names(&d.id) {
+                            for n in names {
+                                LEDGER_NAMES.with(|s| s.borrow_mut().push(n));
+                            }
+                        }
+                    } else if let Some(Expression::CallExpression(c)) = &d.init {
+                        // Op-closure inference: `const t = u128Add(a, b)` is
+                        // money by the op's signature (Yocto x Yocto -> Yocto).
+                        // A bare string literal is Str — NOT money (the
+                        // customs seal; its fix is `: Yocto` at birth).
+                        if u128_arith_call(c) {
+                            if let Ok(names) = pattern_names(&d.id) {
+                                for n in names {
+                                    MONEY_NAMES.with(|s| s.borrow_mut().push(n));
+                                }
                             }
                         }
                     }
@@ -5508,13 +5658,287 @@ fn check_and_register_money_const(
     if !ann_is_money {
         return Ok(());
     }
-    if !expr_is_u128_value(init) {
+    if !expr_is_u128_value(init) && !is_boundary_stamp(init) {
         return Err(format!(
             "ts_frontend: `const {name}` is annotated as a money type but its initializer is not a provable u128 value — use an await result, u128Add(...), a deposit/balance read, or a decimal string"
         ));
     }
     MONEY_NAMES.with(|s| s.borrow_mut().push(name.to_string()));
     Ok(())
+}
+
+/// Walk every CallExpression in a statement tree — statements, nested
+/// blocks/if/loops, and expression positions (init, conditions, args).
+fn for_each_stmt_call<'b>(
+    stmts: &'b [Statement<'b>],
+    f: &mut dyn FnMut(&oxc_ast::ast::CallExpression<'b>),
+) {
+    use oxc_ast::ast::Expression;
+    fn walk_expr<'b>(
+        e: &Expression<'b>,
+        f: &mut dyn FnMut(&oxc_ast::ast::CallExpression<'b>),
+    ) {
+        match e {
+            Expression::CallExpression(c) => {
+                f(c);
+                for a in &c.arguments {
+                    if let Some(x) = a.as_expression() {
+                        walk_expr(x, f);
+                    }
+                }
+            }
+            Expression::StaticMemberExpression(sm) => walk_expr(&sm.object, f),
+            Expression::ComputedMemberExpression(cm) => walk_expr(&cm.object, f),
+            Expression::AwaitExpression(a) => walk_expr(&a.argument, f),
+            Expression::ParenthesizedExpression(p) => walk_expr(&p.expression, f),
+            Expression::BinaryExpression(b) => {
+                walk_expr(&b.left, f);
+                walk_expr(&b.right, f);
+            }
+            Expression::LogicalExpression(l) => {
+                walk_expr(&l.left, f);
+                walk_expr(&l.right, f);
+            }
+            Expression::UnaryExpression(u) => walk_expr(&u.argument, f),
+            Expression::ConditionalExpression(c) => {
+                walk_expr(&c.test, f);
+                walk_expr(&c.consequent, f);
+                walk_expr(&c.alternate, f);
+            }
+            Expression::TemplateLiteral(t) => {
+                for x in &t.expressions {
+                    walk_expr(x, f);
+                }
+            }
+            Expression::ArrayExpression(a) => {
+                for el in &a.elements {
+                    if let Some(x) = el.as_expression() {
+                        walk_expr(x, f);
+                    }
+                }
+            }
+            Expression::ObjectExpression(o) => {
+                for prop in &o.properties {
+                    if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(op) = prop {
+                        walk_expr(&op.value, f);
+                    }
+                }
+            }
+            Expression::SequenceExpression(s) => {
+                for x in &s.expressions {
+                    walk_expr(x, f);
+                }
+            }
+            Expression::AssignmentExpression(a) => walk_expr(&a.right, f),
+            _ => {}
+        }
+    }
+    for s in stmts {
+        match s {
+            Statement::ExpressionStatement(es) => walk_expr(&es.expression, f),
+            Statement::VariableDeclaration(v) => {
+                for d in &v.declarations {
+                    if let Some(init) = &d.init {
+                        walk_expr(init, f);
+                    }
+                }
+            }
+            Statement::ReturnStatement(r) => {
+                if let Some(x) = r.argument.as_ref() {
+                    walk_expr(x, f);
+                }
+            }
+            Statement::IfStatement(i) => {
+                walk_expr(&i.test, f);
+                for_each_stmt_call(stmts_of(&i.consequent), f);
+                if let Some(alt) = i.alternate.as_ref() {
+                    match alt {
+                        oxc_ast::ast::Statement::BlockStatement(b) => {
+                            for_each_stmt_call(&b.body, f)
+                        }
+                        other => {
+                            let sl = std::slice::from_ref(other);
+                            for_each_stmt_call(sl, f);
+                        }
+                    }
+                }
+            }
+            Statement::BlockStatement(b) => for_each_stmt_call(&b.body, f),
+            Statement::WhileStatement(w) => {
+                walk_expr(&w.test, f);
+                for_each_stmt_call(stmts_of(&w.body), f);
+            }
+            Statement::ForStatement(fo) => {
+                if let Some(oxc_ast::ast::ForStatementInit::VariableDeclaration(vd)) = &fo.init {
+                    for d in &vd.declarations {
+                        if let Some(init) = &d.init {
+                            walk_expr(init, f);
+                        }
+                    }
+                }
+                if let Some(test) = &fo.test {
+                    walk_expr(test, f);
+                }
+                if let Some(upd) = &fo.update {
+                    walk_expr(upd, f);
+                }
+                for_each_stmt_call(stmts_of(&fo.body), f);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The two ABIs where untyped strings enter the contract: the PARAM
+/// boundary (jsonGet) and the LEDGER boundary (storageGet — u128 keys
+/// by contract convention, `?? "0"` for the empty ledger).
+fn boundary_reader_name<'a>(e: &Expression<'a>) -> Option<&'a str> {
+    match e {
+        Expression::CallExpression(c) => {
+            if let Expression::Identifier(id) = &c.callee {
+                if id.name == "jsonGet" {
+                    return Some("jsonGet");
+                }
+            }
+            if let Expression::StaticMemberExpression(sm) = &c.callee {
+                if let Expression::Identifier(obj) = &sm.object {
+                    if obj.name == "near" {
+                        if sm.property.name == "jsonGet" {
+                            return Some("jsonGet");
+                        }
+                        if sm.property.name == "jsonGetStr" {
+                            return Some("jsonGetStr");
+                        }
+                        if sm.property.name == "storageGet" {
+                            return Some("storageGet");
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// `near.storageGet(k) ?? "0"` — the LEDGER-read idiom. The fallback
+/// must be a digit-parsable literal: `?? "0"` declares a u128 ledger,
+/// while `?? ""` declares optional TEXT (JSON rows, comma buffers) —
+/// those do NOT carry the seal.
+fn is_storage_read_fallback(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::AwaitExpression(a) => is_storage_read_fallback(&a.argument),
+        Expression::ParenthesizedExpression(pe) => is_storage_read_fallback(&pe.expression),
+        Expression::LogicalExpression(l)
+            if l.operator == oxc_ast::ast::LogicalOperator::Coalesce =>
+        {
+            boundary_reader_name(&l.left) == Some("storageGet")
+                && match &l.right {
+                    Expression::BigIntLiteral(_) => true,
+                    Expression::StringLiteral(s) => s.value.parse::<u128>().is_ok(),
+                    _ => false,
+                }
+        }
+        Expression::CallExpression(_) => boundary_reader_name(e) == Some("storageGet"),
+        _ => false,
+    }
+}
+
+/// `near.storageGet(...) ?? ""` (or a bare read) — the contract's OWN
+/// storage, whose ledger keys are u128 by convention and whose missing
+/// case the contract already guards (`ERR_NO_POOL`-style aborts). This
+/// is the LEDGER tier: values may feed SINKS (the custody check) but
+/// carry NO arithmetic seal — `a + b` between two such reads stays a
+/// raw-arithmetic error. The u128-typed readers (`loadU128`/`readU128`)
+/// are the migration path to the full seal.
+fn is_ledger_read(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::AwaitExpression(a) => is_ledger_read(&a.argument),
+        Expression::ParenthesizedExpression(pe) => is_ledger_read(&pe.expression),
+        Expression::LogicalExpression(l)
+            if l.operator == oxc_ast::ast::LogicalOperator::Coalesce =>
+        {
+            boundary_reader_name(&l.left) == Some("storageGet")
+                && matches!(&l.right, Expression::StringLiteral(_))
+        }
+        Expression::CallExpression(_) => boundary_reader_name(e) == Some("storageGet"),
+        _ => false,
+    }
+}
+
+/// The sanctioned BOUNDARY STAMP (typed-surface rule 5, in TS form):
+/// `const amt: Yocto = jsonGet("amt", p)` — the ABI param reader, or
+/// `const bal = near.storageGet(k) ?? "0"` — the ledger boundary. A
+/// cross-boundary value cannot be PROVEN at compile time; the author
+/// stamps it, and the stamp is greppable for audit. Anything else
+/// (arbitrary calls, template concat, numbers) is NOT stampable:
+/// u128 is not i64, and display text is not an amount.
+fn is_boundary_stamp(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::AwaitExpression(a) => is_boundary_stamp(&a.argument),
+        Expression::ParenthesizedExpression(pe) => is_boundary_stamp(&pe.expression),
+        Expression::LogicalExpression(l)
+            if l.operator == oxc_ast::ast::LogicalOperator::Coalesce =>
+        {
+            match boundary_reader_name(&l.left) {
+                // param boundary: the read is the author's custody point —
+                // the fallback choice is theirs too (STORAGE_MIN etc.)
+                Some("jsonGet") | Some("jsonGetStr") => true,
+                // ledger boundary: digit-parsable fallback declares a
+                // u128 key; `?? ""` is optional TEXT and does not stamp
+                Some("storageGet") => match &l.right {
+                    Expression::BigIntLiteral(_) => true,
+                    Expression::StringLiteral(s) => s.value.parse::<u128>().is_ok(),
+                    _ => false,
+                },
+                _ => false,
+            }
+        }
+        Expression::CallExpression(_) => boundary_reader_name(e).is_some(),
+        _ => false,
+    }
+}
+
+/// SINK check: `near.transferU128(to, amount)` — the amount slot moves
+/// real value on chain, so it demands a provable u128 (the customs
+/// seal). An unbranded `const s = "5"` is Str/Value, not Yocto — the
+/// fix is the annotation at birth: `const s: Yocto = "5"`.
+fn check_money_sinks(stmts: &[Statement<'_>]) -> Result<(), String> {
+    // Same pre-pass as the return contract: annotate-birth and await/op
+    // registrations happen at lowering, AFTER this entry check.
+    register_await_names(stmts);
+    let bad: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+    for_each_stmt_call(stmts, &mut |c| {
+        if bad.borrow().is_some() {
+            return;
+        }
+        let Expression::StaticMemberExpression(sm) = &c.callee else {
+            return;
+        };
+        let Expression::Identifier(obj) = &sm.object else {
+            return;
+        };
+        if obj.name != "near" || sm.property.name != "transferU128" || c.arguments.len() != 2 {
+            return;
+        }
+        let Some(amt) = c.arguments.get(1).and_then(|a| a.as_expression()) else {
+            return;
+        };
+        let amt_ok = expr_is_u128_value(amt)
+            || is_boundary_stamp(amt)
+            || is_ledger_read(amt)
+            || matches!(&amt, Expression::Identifier(id)
+                if LEDGER_NAMES.with(|s| s.borrow().iter().any(|x| *x == id.name.as_str())));
+        if !amt_ok {
+            *bad.borrow_mut() = Some(
+                "transferU128 amount must be a provable u128 value (await result, u128Add(...), deposit/balance read, a `: Yocto`-annotated const, a storageGet ledger read, or jsonGet at the ABI boundary) — an unannotated string is not checked money".into(),
+            );
+        }
+    });
+    match bad.into_inner() {
+        Some(why) => Err(format!("ts_frontend: {why}")),
+        None => Ok(()),
+    }
 }
 
 /// `const d: Yocto = ...` — the declarator's id annotation names a money

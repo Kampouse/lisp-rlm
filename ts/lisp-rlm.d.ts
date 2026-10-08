@@ -474,7 +474,18 @@ interface JSON {
  *  string. `"label:" + x` is concat (display text): annotate
  *  `: Promise<string>`, not `: Promise<Yocto>`.
  *  `const d: Yocto = ...` must also initialize from a provable u128
- *  value, and d itself carries the arithmetic rule. */
+ *  value, and d itself carries the arithmetic rule.
+ *  Money SOURCES: await results seed money only for balance/supply
+ *  reads (ftBalanceRaw/ftBalanceOf/balanceOf/ftTotalSupply/ftSupplyFor)
+ *  — an await of any other method binds a plain string, and returning
+ *  it as `: Promise<Yocto>` is rejected. SINKS: transferU128's amount
+ *  must be a provable u128 value — an unannotated string is rejected
+ *  (`const s: Yocto = "5"` is the fix). Boundaries (greppable custody):
+ *  `jsonGet`/`jsonGetStr` reads and `storageGet(k) ?? "0"` ledger reads
+ *  may feed sinks but carry NO arithmetic seal (the reader can't know
+ *  the domain) — assert the money domain with the annotation:
+ *  `const amt: Yocto = ...`. Op closure: u128Add(...) etc. return
+ *  money. */
 type Yocto = string;
 
 /** u128 raw amount in TOKEN DECIMALS (NEP-141 `amount`) as a DECIMAL
