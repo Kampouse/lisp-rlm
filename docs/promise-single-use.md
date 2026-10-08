@@ -1,6 +1,7 @@
 # Promise Single-Use — the double-await hazard and its detection tiers
 
-*Design note JP ↔ Gork, 2026-10-08. Companion to `typed-surface-design.md` (T7 affine) and the async v2 arc (`ts_frontend.rs`).*
+*Design note JP ↔ Gork, 2026-10-08. Companion to `typed-surface-design.md` (whose T5/T6 ladder affine types
+would extend) and the async v2 arc (`ts_frontend.rs`).*
 
 ---
 
@@ -17,9 +18,15 @@ Current state of the merged tree:
   (locals die at the await boundary — a read of a `let` after an await is a
   compile error naming the variable) and a lowering that guarantees **exactly
   ONE `promise_then` per await node** in generated code.
-- **Nothing** detects awaiting the *same promise value* at two await points.
-  `(await p) ... (await p)` typechecks today and compiles to two registered
-  callbacks on one promise.
+- **The TS surface is already safe by construction:** v2 accepts only
+  `await near.call(...)` directly (verified 2026-10-08 — `const p =
+  near.call(...); await p` is rejected: "await must wrap near.call"). A
+  promise handle can never be held in a TS binding, so `(await p) ...
+  (await p)` is unrepresentable there.
+- **The exposure is the `.lisp` surface.** Nothing detects two consuming
+  uses of one promise binding. Verified in-tree 2026-10-08: a defn that
+  runs `near/promise_then` on the same `p` twice compiles clean (exit 0,
+  no warning) — two registered callbacks, both fire.
 
 This is the single most expensive silent failure mode the language currently has.
 
@@ -35,10 +42,15 @@ general linear typing exists.
 
 Defn-local syntactic pass:
 
-- Track every binding whose value is a promise (`near/promise_batch_create`,
-  `near/promise_create`, `near/promise_and`, TS `near.call` results awaiting).
+- Track every defn-local binding whose value is a promise
+  (`near/promise_batch_create`, `near/promise_create`, `near/promise_and`,
+  `near/promise_then`). The TS side needs no lint — its await-shape rule
+  already forbids holding promises in bindings.
 - Count uses in **consuming positions**: base arg of `promise_then`, argument
   of `promise_return`, operand of `promise_and`.
+- `promise_batch_action_*` is NOT a consuming position — batch actions
+  legally accumulate on one handle (create → action… → then → return is the
+  canonical ft2.lisp idiom). Only the three callbacks above consume.
 - Second consuming use → hard error naming both lines:
   `error: promise 'p' consumed twice (L41, L67)`.
 
@@ -61,7 +73,9 @@ code that runs.
 
 ## Tier 3 — T7 affine: `Promise` as a move-only value (the endgame)
 
-With affine resource types (see `typed-surface-design.md` §T7):
+With affine resource types (beyond the typed doc's current ladder —
+`typed-surface-design.md` tops out at T5 effects / T6 phantoms; affine is the
+agreed next rung, not yet written up there):
 
 ```
 (await p)        ;; moves p
