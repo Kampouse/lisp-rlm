@@ -69,7 +69,7 @@ pub fn handle(
                 Ok(Some(LispVal::Num(acc)))
             }
         }
-        "=" | "==" => {
+        "=" => {
             if any_float(args) {
                 Ok(Some(LispVal::Bool(
                     as_float(&args[0])? == as_float(&args[1])?,
@@ -78,7 +78,7 @@ pub fn handle(
                 Ok(Some(LispVal::Bool(args.get(0) == args.get(1))))
             }
         }
-        "!=" | "/=" => {
+        "!=" => {
             if any_float(args) {
                 Ok(Some(LispVal::Bool(
                     as_float(&args[0])? != as_float(&args[1])?,

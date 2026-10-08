@@ -10,16 +10,16 @@
   (str->num (nth (str-split s ".") 0)))
 
 (define (hyperliquid-btc)
-  (dollars (json-get "BTC"
-    (http-post "https://api.hyperliquid.xyz/info" "{\"type\":\"allMids\"}"))))
+  (dollars (json-get (http-post "https://api.hyperliquid.xyz/info" "{\"type\":\"allMids\"}")
+    "BTC")))
 
 (define (coinbase-btc)
-  (dollars (json-get "data.amount"
-    (http-get "https://api.coinbase.com/v2/prices/BTC-USD/spot"))))
+  (dollars (json-get (http-get "https://api.coinbase.com/v2/prices/BTC-USD/spot")
+    "data.amount")))
 
 (define (bitstamp-btc)
-  (dollars (json-get "last"
-    (http-get "https://www.bitstamp.net/api/v2/ticker/btcusd/"))))
+  (dollars (json-get (http-get "https://www.bitstamp.net/api/v2/ticker/btcusd/")
+    "last")))
 
 (define (run)
   (let ((hl (hyperliquid-btc))

@@ -6028,9 +6028,14 @@ impl WasmEmitter {
         v.push(Instruction::I64Sub);
         v.push(Instruction::LocalSet(acc_i));
         v.push(Instruction::End);
-        // Return tagged number
+        // Return tagged number — CHECKED retag (TASK-DX-AGREE item 5,
+        // 2026-10-08): acc is a parsed i64 and can be any value the string
+        // names, incl. |acc| >= 2^60 which the tagged scheme cannot hold.
+        // The old unchecked `shl 3` silently sign-flipped such values
+        // (lisp-diff: (str->num "1152921504606846976") -> wasm -2^60);
+        // now it traps, matching the interp's check_num_range gate.
         v.push(Instruction::LocalGet(acc_i));
-        v.extend(self.emit_tag_num());
+        v.extend(self.emit_tag_num_checked());
         Ok(v)
     }
 

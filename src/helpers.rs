@@ -8,9 +8,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "/",
     "mod",
     "=",
-    "==",
     "!=",
-    "/=",
     "<",
     ">",
     "<=",
@@ -947,8 +945,8 @@ pub fn get_doc(name: &str) -> Option<&'static str> {
         "expt" => "(expt base exp) — Exponentiation.",
 
         // Comparison
-        "=" | "==" => "(= a b) — Numeric equality (int or float).",
-        "!=" | "/=" => "(!= a b) — Numeric inequality.",
+        "=" => "(= a b) — Numeric equality (int or float).",
+        "!=" => "(!= a b) — Numeric inequality.",
         "<" | ">" | "<=" | ">=" => "(< a b) — Numeric comparison.",
         "equal?" => "(equal? a b) — Deep structural equality.",
 

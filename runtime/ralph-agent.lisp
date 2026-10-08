@@ -180,14 +180,14 @@
 ;; === JSON Task Helpers ===
 
 (define (parse-task json-str)
-  (let ((id (json-get "id" json-str))
-        (desc (json-get "desc" json-str))
-        (status (json-get "status" json-str))
-        (priority-str (json-get "priority" json-str)))
+  (let ((id (json-get json-str "id"))
+        (desc (json-get json-str "desc"))
+        (status (json-get json-str "status"))
+        (priority (json-get json-str "priority")))
     (dict "id" id
           "desc" desc
           "status" (if (nil? status) "pending" status)
-          "priority" (if (nil? priority-str) 50 (string->number priority-str)))))
+          "priority" (if (nil? priority) 50 priority)))))
 
 (define (load-task-list json-str idx)
   (let ((elem (json-array-get json-str idx)))

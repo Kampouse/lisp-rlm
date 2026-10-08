@@ -36,11 +36,11 @@
 ;; === Extract content from ZAI response ===
 
 (define (extract-content resp)
-  (let ((choices (json-get "choices" resp)))
+  (let ((choices (json-get resp "choices")))
     (if (nil? choices) resp
-      (let ((msg (json-get "message" choices)))
+      (let ((msg (json-get choices "message")))
         (if (nil? msg) resp
-          (let ((content (json-get "content" msg)))
+          (let ((content (json-get msg "content")))
             (if (nil? content) resp content)))))))
 
 ;; === Dispatch ===
@@ -64,6 +64,6 @@
 ;; === Run Entry Point (bot mode: input from stdin) ===
 
 (define (run input)
-  (let ((text (json-get "text" input)))
+  (let ((text (json-get input "text")))
     (if (nil? text) "idle"
       (send-telegram "5125145880" (extract-content (call-ai text))))))

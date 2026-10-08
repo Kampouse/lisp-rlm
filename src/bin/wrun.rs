@@ -18,7 +18,18 @@ fn main() -> anyhow::Result<()> {
     linker.func_wrap(
         "env",
         "value_return",
-        |_: Caller<'_, ()>, _: i64, _: i64| {},
+        |mut c: Caller<'_, ()>, len: i64, ptr: i64| {
+            // near modules return through value_return; mirror an 8-byte
+            // payload into TEMP_MEM(64) so the raw read below sees it
+            if len == 8 {
+                if let Some(m) = c.get_export("memory").and_then(|e| e.into_memory()) {
+                    let mut buf = [0u8; 8];
+                    if m.read(&c, ptr as usize, &mut buf).is_ok() {
+                        let _ = m.write(&mut c, 64, &buf);
+                    }
+                }
+            }
+        },
     )?;
     // any other env imports the module needs get zero-arity stubs by name
     for imp in module.imports() {
@@ -39,7 +50,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let inst = linker.instantiate(&mut store, &module)?;
-    let run = inst.get_typed_func::<(), ()>(&mut store, "run")?;
+    let run = inst.get_typed_func::<(), ()>(&mut store, "run").or_else(|_| inst.get_typed_func::<(), ()>(&mut store, "_run"))?;
     run.call(&mut store, ())?;
     let mem = inst.get_memory(&mut store, "memory").unwrap();
     let mut rb = [0u8; 8];

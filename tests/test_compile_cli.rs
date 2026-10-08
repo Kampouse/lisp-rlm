@@ -16,9 +16,30 @@ use std::process::Command;
 const SRC: &str = "export function ping(): string { return \"pong\"; }\n";
 
 fn bin() -> Command {
-    let mut c = Command::new("./target/release/compile");
+    // CARGO_BIN_EXE_compile: cargo sets this for integration tests of a
+    // package's bins automatically — it always points at the bin cargo
+    // built for THIS test run ($CARGO_TARGET_DIR/debug/compile), so it
+    // works under any target-dir override without a pre-built release
+    // binary (TASK-DX-AGREE item 4; the task text's canonical fix).
+    let mut c = Command::new(env!("CARGO_BIN_EXE_compile"));
     c.current_dir(env!("CARGO_MANIFEST_DIR"));
     c
+}
+
+#[test]
+fn bin_helper_resolves_under_cargo_target_dir() {
+    // Regression (item 4): the spawned compile binary must exist and live
+    // inside the ACTIVE target dir, so the suite cannot depend on a stale
+    // ./target/release built by some other invocation.
+    let dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "./target".into());
+    let resolved = std::fs::canonicalize(env!("CARGO_BIN_EXE_compile"))
+        .expect("cargo-provided bin missing");
+    let base = std::fs::canonicalize(&dir)
+        .unwrap_or_else(|_| std::path::PathBuf::from(dir.clone()));
+    assert!(
+        resolved.starts_with(&base),
+        "resolved {resolved:?} must live under CARGO_TARGET_DIR {dir:?}"
+    );
 }
 
 fn tmpdir(tag: &str) -> std::path::PathBuf {

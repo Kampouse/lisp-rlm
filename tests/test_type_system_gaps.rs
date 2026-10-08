@@ -715,3 +715,38 @@ fn gap_i2_u128_add_wrong_arity_accepted() {
         let _ = compile_typed(src);
     }));
 }
+
+// ── == /= alias strictness (2026-10-07, TASK-DX-AGREE item 2) ──
+// Policy: the interp surface must be a STRICT SUBSET of wasm semantics.
+// The emitter never had == / /= arms, so these interp-only aliases
+// compiled in the interpreter and then threw at the wasm stage. They are
+// now rejected up front by the checker with a canonical-form hint.
+#[test]
+fn eq_alias_is_rejected_with_hint() {
+    let result = compile_typed(r#"(define (main) (== 1 1))"#);
+    assert!(result.is_err(), "== must not be accepted");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("==") && (err.contains("did you mean") || err.contains("unknown") || err.contains("not in scope")),
+        "== rejection should point at the problem: {}",
+        err
+    );
+}
+
+#[test]
+fn slash_eq_alias_is_rejected_with_hint() {
+    let result = compile_typed(r#"(define (main) (/= 2 3))"#);
+    assert!(result.is_err(), "/= must not be accepted");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("/=") && (err.contains("did you mean") || err.contains("unknown") || err.contains("not in scope")),
+        "/= rejection should point at the problem: {}",
+        err
+    );
+}
+
+#[test]
+fn canonical_eq_ne_still_work() {
+    let result = compile_typed(r#"(define (main) (if (and (= 1 1) (!= 2 3)) 1 0))"#);
+    assert!(result.is_ok(), "canonical = and != must keep working: {:?}", result.err());
+}

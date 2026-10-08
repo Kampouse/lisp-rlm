@@ -5,4 +5,4 @@
 
 (define (run)
   (let ((resp (fetch-spot)))
-    (json-get "data.amount" resp)))
+    (json-get resp "data.amount")))
