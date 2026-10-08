@@ -1655,6 +1655,231 @@ use std::collections::HashMap;
 /// builtin env (which knows about `near/input`, `near/storage_write`, etc.)
 ///
 /// Returns `Ok(())` if all forms type-check, or `Err(msg)` with the first error.
+/// Promise single-use lint (design: docs/promise-single-use.md, Tier 1).
+///
+/// A promise handle is move-only by intent: `near/promise_then`,
+/// `near/promise_return`, `near/promise_and` are CONSUMING positions. The
+/// host does not invalidate a consumed promise — a second consumer
+/// registers a second callback that ALSO fires (silent double-pay).
+/// This lint makes that a compile error, defn-local, naming both lines.
+///
+/// NOT consuming: `near/promise_batch_action_*` — batch actions legally
+/// accumulate on one handle (create -> action* -> then -> return is the
+/// canonical ft2.lisp idiom).
+///
+/// Runs PRE-desugar on source-faithful shapes. Lines are resolved against
+/// the raw source: the i-th walked occurrence of an op name corresponds to
+/// the i-th token occurrence (pre-order walk == source order; the parser is
+/// sequential). If the two counts ever disagree (quoted data, reader
+/// macros), line labels are dropped rather than misreported.
+
+const PROMISE_PRODUCERS: &[&str] = &[
+    "near/promise_batch_create",
+    "near/promise_create",
+    "near/promise_and",
+    "near/promise_then",
+];
+
+const PROMISE_CONSUMERS: &[&str] = &[
+    "near/promise_then",
+    "near/promise_return",
+    "near/promise_and",
+];
+
+struct PromiseUse {
+    binding: String,
+    op: String,
+    /// index of this op occurrence within the walked program (source order)
+    occurrence: usize,
+}
+
+pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Result<(), String> {
+    // Token-scan the source: byte offset of every occurrence of each op name.
+    // With no source text (exprs-only path) the map stays empty and every
+    // label degrades to "line ?" - the rejection itself still fires.
+    let mut op_lines: std::collections::HashMap<&str, Vec<usize>> =
+        std::collections::HashMap::new();
+    if let Some(source) = source {
+        for op in PROMISE_CONSUMERS {
+            let mut lines = Vec::new();
+            let bytes = source.as_bytes();
+            let pat = op.as_bytes();
+            let mut i = 0;
+            while i + pat.len() <= bytes.len() {
+                if &bytes[i..i + pat.len()] == pat {
+                    // token boundary: not surrounded by identifier chars
+                    let before_ok = i == 0
+                        || !bytes[i - 1].is_ascii_alphanumeric()
+                            && bytes[i - 1] != b'/'
+                            && bytes[i - 1] != b'-'
+                            && bytes[i - 1] != b'_';
+                    let after = bytes.get(i + pat.len()).copied().unwrap_or(b' ');
+                    let after_ok = !after.is_ascii_alphanumeric()
+                        && after != b'-'
+                        && after != b'_'
+                        && after != b'/';
+                    if before_ok && after_ok {
+                        let line = 1 + source[..i].bytes().filter(|b| *b == b'\n').count();
+                        lines.push(line);
+                        i += pat.len();
+                        continue;
+                    }
+                }
+                i += 1;
+            }
+            op_lines.insert(op, lines);
+        }
+    }
+
+    // Walk, counting op occurrences in pre-order and recording consuming
+    // uses of tracked promise bindings.
+    let mut occurrence: std::collections::HashMap<&'static str, usize> =
+        std::collections::HashMap::new();
+    let mut uses: Vec<PromiseUse> = Vec::new();
+    let mut tracked: std::collections::HashMap<String, ()> = std::collections::HashMap::new();
+
+    fn walk<'a>(
+        val: &'a LispVal,
+        op_lines: &std::collections::HashMap<&str, Vec<usize>>,
+        occurrence: &mut std::collections::HashMap<&'static str, usize>,
+        tracked: &mut std::collections::HashMap<String, ()>,
+        uses: &mut Vec<PromiseUse>,
+    ) {
+        if let LispVal::List(items) = val {
+            if items.is_empty() {
+                return;
+            }
+            let head = match &items[0] {
+                LispVal::Sym(s) => Some(s.as_str()),
+                _ => None,
+            };
+
+            // (let* / let BINDINGS BODY...) — bindings introduce promise
+            // values; later bindings see earlier ones (let* semantics).
+            if matches!(head, Some("let*") | Some("let")) {
+                if let Some(LispVal::List(bindings)) = items.get(1) {
+                    for b in bindings {
+                        if let LispVal::List(bi) = b {
+                            if bi.len() >= 2 {
+                                // value first, in the scope so far
+                                walk(&bi[1], op_lines, occurrence, tracked, uses);
+                                // producer? track the name
+                                if let (LispVal::Sym(name), LispVal::List(v)) = (&bi[0], &bi[1]) {
+                                    if v.first().map_or(false, |h| {
+                                        matches!(h, LispVal::Sym(s) if PROMISE_PRODUCERS.contains(&s.as_str()))
+                                    }) {
+                                        tracked.insert(name.clone(), ());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                for it in &items[2..] {
+                    walk(it, op_lines, occurrence, tracked, uses);
+                }
+                return;
+            }
+
+            // (lambda PARAMS BODY...) / (fn ...) — params shadow tracked names
+            if matches!(head, Some("lambda") | Some("fn")) {
+                let saved: Vec<(String, ())> = if let Some(LispVal::List(params)) = items.get(1) {
+                    let mut s = Vec::new();
+                    for p in params {
+                        if let LispVal::Sym(n) = p {
+                            if let Some(v) = tracked.remove(n) {
+                                s.push((n.clone(), v));
+                            }
+                        }
+                    }
+                    s
+                } else {
+                    Vec::new()
+                };
+                for it in &items[2..] {
+                    walk(it, op_lines, occurrence, tracked, uses);
+                }
+                for (n, v) in saved {
+                    tracked.insert(n, v);
+                }
+                return;
+            }
+
+            // Consuming call? Count the occurrence ALWAYS (index alignment).
+            if let Some(s) = head {
+                if let Some(op) = PROMISE_CONSUMERS.iter().find(|c| **c == s) {
+                    let idx = *occurrence.get(op).unwrap_or(&0);
+                    occurrence.insert(op, idx + 1);
+                    // which args are consuming positions?
+                    let consume_args: &[usize] = match *op {
+                        "near/promise_then" => &[1],
+                        "near/promise_return" => &[1],
+                        "near/promise_and" => &[1, 2, 3, 4, 5, 6, 7, 8],
+                        _ => unreachable!(),
+                    };
+                    for ai in consume_args {
+                        if let Some(LispVal::Sym(name)) = items.get(*ai) {
+                            if tracked.contains_key(name) {
+                                uses.push(PromiseUse {
+                                    binding: name.clone(),
+                                    op: op.to_string(),
+                                    occurrence: idx,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            for it in &items[1..] {
+                walk(it, op_lines, occurrence, tracked, uses);
+            }
+        }
+    }
+
+    for e in exprs {
+        walk(e, &op_lines, &mut occurrence, &mut tracked, &mut uses);
+    }
+
+    if uses.is_empty() {
+        return Ok(());
+    }
+
+    // Group by binding; a second consuming use is the error.
+    let mut per_binding: std::collections::HashMap<String, Vec<&PromiseUse>> =
+        std::collections::HashMap::new();
+    for u in &uses {
+        per_binding.entry(u.binding.clone()).or_default().push(u);
+    }
+    let mut errs: Vec<String> = Vec::new();
+    for (binding, group) in &per_binding {
+        if group.len() < 2 {
+            continue;
+        }
+        let mut sites: Vec<String> = Vec::new();
+        for u in group {
+            let label = match op_lines.get(u.op.as_str()).and_then(|l| l.get(u.occurrence))
+            {
+                Some(l) => format!("line {}", l),
+                None => "line ?".to_string(),
+            };
+            sites.push(format!("{} ({})", u.op.trim_start_matches("near/"), label));
+        }
+        errs.push(format!(
+            "error: promise '{}' consumed {} times ({}) — a promise handle is single-use; both callbacks would fire on chain",
+            binding,
+            group.len(),
+            sites.join(", ")
+        ));
+    }
+    errs.sort();
+    if errs.is_empty() {
+        Ok(())
+    } else {
+        Err(errs.join("\n"))
+    }
+}
+
 pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
     let mut env = if near {
         TcEnv::with_near_builtins()

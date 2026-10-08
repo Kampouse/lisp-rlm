@@ -763,6 +763,14 @@ fn parse_and_compile_opts_labelled(
     let mut exprs = exprs;
     crate::clojure::desugar(&mut exprs);
 
+    // Promise single-use lint (docs/promise-single-use.md Tier 1) — runs on
+    // pre-desugar shapes? No: AFTER desugar, so sugar-expanded bodies are
+    // covered too; consuming calls are host ops desugar leaves intact.
+    // Line labels come from the raw source via token occurrence alignment.
+    if typecheck && near {
+        crate::typing::checker::check_promise_single_use(Some(source), &exprs)?;
+    }
+
     // Type check pass — catches undefined vars, arity mismatches, type errors
     if typecheck {
         crate::typing::type_check_program(&exprs, near)
@@ -1395,6 +1403,10 @@ pub fn compile_near_from_exprs_with_map(
 fn compile_near_from_exprs_with_map_inner(
     exprs: &[LispVal],
 ) -> Result<(Vec<u8>, serde_json::Value), String> {
+    // Promise single-use lint (source-less path: labels degrade to "line ?",
+    // the rejection still fires — see check_promise_single_use)
+    crate::typing::checker::check_promise_single_use(None, exprs)?;
+
     // Type check pass (source-less path: caller passes exprs; errors get no
     // line annotation here — annotate_type_error needs the source text and
     // runs at the source-level choke points instead)

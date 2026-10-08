@@ -482,6 +482,7 @@ pub(crate) fn fresh_tx_state() {
     }
     PROMISE_DAG.with(|d| d.borrow_mut().clear());
     EXECUTED_PROMISES.with(|e| e.borrow_mut().clear());
+    CONSUMED_PROMISES.with(|c| c.borrow_mut().clear());
     PROMISE_RESULTS.with(|r| *r.borrow_mut() = Vec::new());
     PENDING_RETURN.with(|p| *p.borrow_mut() = None);
     LOG_LINES.with(|l| l.borrow_mut().clear());
@@ -877,6 +878,27 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
+// promise single-use (2026-10-08): consuming ops mark their base handle here;
+// a second consuming call on the same handle TRAPS. NEAR-faithful: nearcore
+// promise_then takes the promise by value - a reuse is a guest bug that on
+// mainnet silently double-fires every registered callback (double-pay).
+// Cleared wherever the DAG is (every EXECUTED_PROMISES clear site).
+thread_local! {
+    static CONSUMED_PROMISES: std::cell::RefCell<std::collections::HashSet<usize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+fn consume_promise(idx: usize, op: &str) -> Result<(), wasmtime::Error> {
+    let dupe = CONSUMED_PROMISES.with(|c| !c.borrow_mut().insert(idx));
+    if dupe {
+        Err(wasmtime::Error::msg(format!(
+            "promise {idx} already consumed: {op} on an already-consumed handle (promises are move-only, single-use)"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
 impl Default for RunCfg {
     fn default() -> Self {
         RunCfg {
@@ -1230,6 +1252,7 @@ fn build_promise_hosts(
         FuncType::new(engine, vec![ValType::I64; 3], vec![ValType::I64]),
         move |mut caller, args, results| {
             let idx = args[0].unwrap_i64() as usize;
+            consume_promise(idx, "promise_batch_then")?;
             let acct = mem_read_str_checked(
                 &mut caller,
                 args[1].unwrap_i64(),
@@ -1550,6 +1573,7 @@ fn build_promise_hosts(
         FuncType::new(engine, vec![ValType::I64; 9], vec![ValType::I64]),
         move |mut caller, args, results| {
             let idx = args[0].unwrap_i64() as usize;
+            consume_promise(idx, "promise_then")?;
             let acct = mem_read_str_checked(
                 &mut caller,
                 args[1].unwrap_i64(),
@@ -1617,6 +1641,9 @@ fn build_promise_hosts(
                     }
                 }
             }
+            for d in &deps {
+                consume_promise(*d, "promise_and")?;
+            }
             results[0] = Val::I64(dag_push(deps, String::new(), vec![]) as i64);
             Ok(())
         },
@@ -1678,6 +1705,7 @@ fn build_promise_hosts(
         FuncType::new(engine, vec![ValType::I64], vec![]),
         |mut caller, args, _| {
             crate::hosts::charge_gas(&mut caller, crate::PROMISE_RETURN_GAS)?;
+            consume_promise(args[0].unwrap_i64() as usize, "promise_return")?;
             PENDING_RETURN.with(|p| *p.borrow_mut() = Some(args[0].unwrap_i64() as usize));
             mtrace!("  → promise_return({})", args[0].unwrap_i64());
             Ok(())
@@ -2554,6 +2582,7 @@ pub(crate) fn run_scenario_opts(
             state.lock().unwrap().storage = pre_call;
             PROMISE_DAG.with(|d| d.borrow_mut().clear());
             EXECUTED_PROMISES.with(|e| e.borrow_mut().clear());
+            CONSUMED_PROMISES.with(|c| c.borrow_mut().clear());
         }
 
         // chaos semantics: expect:"trap" means the entry MUST have reverted
@@ -2620,6 +2649,7 @@ pub(crate) fn run_scenario_opts(
         }
         PROMISE_DAG.with(|d| d.borrow_mut().clear());
         EXECUTED_PROMISES.with(|e| e.borrow_mut().clear());
+        CONSUMED_PROMISES.with(|c| c.borrow_mut().clear());
         // Execute-once memo is PER-DAG scope (see fresh_tx_state): receipt
         // indices restart at 0 every step, so a memo entry surviving from the
         // PREVIOUS step aliases THIS step's receipts — replaying stale results
@@ -2892,6 +2922,7 @@ pub(crate) fn settle_receipts() -> Result<SettleReport, Box<dyn std::error::Erro
     // then re-insert the batches with remapped dep indices.
     PROMISE_DAG.with(|d| d.borrow_mut().clear());
     EXECUTED_PROMISES.with(|e| e.borrow_mut().clear());
+    CONSUMED_PROMISES.with(|c| c.borrow_mut().clear());
     PROMISE_OUTCOMES.with(|o| o.borrow_mut().clear());
     crate::promises::receipt_traps_reset();
     LOG_LINES.with(|l| l.borrow_mut().clear());
