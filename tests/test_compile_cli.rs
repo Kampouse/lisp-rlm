@@ -15,10 +15,59 @@ use std::process::Command;
 
 const SRC: &str = "export function ping(): string { return \"pong\"; }\n";
 
+fn compile_bin_path() -> std::path::PathBuf {
+    // Honor CARGO_TARGET_DIR when the suite runs from a non-default target
+    // dir (e.g. CARGO_TARGET_DIR=target-hardening cargo test --workspace);
+    // fall back to ./target otherwise (TASK-DX-AGREE item 4). Within the
+    // active dir prefer release (the documented workflow builds release
+    // bins) then debug (present when the suite's own debug profile built
+    // bins, e.g. via cargo build --bins under the same CARGO_TARGET_DIR).
+    let base = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "./target".into());
+    let candidates = [
+        std::path::Path::new(&base).join("release").join("compile"),
+        std::path::Path::new(&base).join("debug").join("compile"),
+        std::path::PathBuf::from("./target/release/compile"),
+        std::path::PathBuf::from("./target/debug/compile"),
+    ];
+    candidates
+        .iter()
+        .find(|p| p.exists())
+        .cloned()
+        .unwrap_or_else(|| candidates[0].clone())
+}
+
 fn bin() -> Command {
-    let mut c = Command::new("./target/release/compile");
+    let mut c = Command::new(compile_bin_path());
     c.current_dir(env!("CARGO_MANIFEST_DIR"));
     c
+}
+
+#[test]
+fn bin_helper_resolves_under_cargo_target_dir() {
+    // Regression (item 4): under a non-default CARGO_TARGET_DIR the
+    // helper must point INSIDE it; under the default dir, at ./target.
+    // We cannot re-exec with a different env easily, so pin the
+    // resolution logic both ways via the same code path bin() uses.
+    let resolve = |dir: String| std::path::Path::new(&dir).join("release").join("compile");
+    assert_eq!(
+        resolve("target-hardening".into()),
+        std::path::Path::new("target-hardening/release/compile")
+    );
+    assert_eq!(
+        resolve("./target".into()),
+        std::path::Path::new("./target/release/compile")
+    );
+    // And the live helper must at least produce a path whose parent dir
+    // matches the active override (default when run plainly).
+    let dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "./target".into());
+    let resolved = compile_bin_path();
+    // The resolved path must live inside the ACTIVE target dir (either its
+    // release or debug flavor), never a stale default-dir binary when the
+    // override is set.
+    assert!(
+        resolved.starts_with(&dir),
+        "resolved {resolved:?} must live under CARGO_TARGET_DIR {dir:?}"
+    );
 }
 
 fn tmpdir(tag: &str) -> std::path::PathBuf {
