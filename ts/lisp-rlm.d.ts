@@ -463,9 +463,18 @@ interface JSON {
 }
 
 // ── ergonomics-v2 (2026-10-07) ──────────────────────────────────────────
-/** u128-precision amount — decimal STRING at every boundary. Hover
- *  documentation over the string ABI: the type does not change what is
- *  transmitted (garbage traps at runtime with a full rollback). */
+/** u128 amount of yoctoNEAR (10¹⁸ yocto = 1 NEAR) as a DECIMAL STRING —
+ *  the near-sdk `Balance`/`NearToken` spelling. Sources: attachedDepositU128(),
+ *  accountBalance(), transferU128 amounts. Arithmetic ONLY via u128.* —
+ *  `+` on yocto strings corrupts silently (string concat, value loss). */
+type Yocto = string;
+
+/** u128 raw amount in TOKEN DECIMALS (NEP-141 `amount`) as a DECIMAL
+ *  STRING — ftBalanceRaw()/ftTransfer-scale values. Same rule: arithmetic
+ *  ONLY via u128.* — `+` corrupts. */
+type Amount = string;
+
+/** @deprecated — use Yocto (NEAR-denominated) or Amount (FT raw). */
 type Money = string;
 
 /** Fail the transaction with msg when cond is false (full state
