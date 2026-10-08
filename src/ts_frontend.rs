@@ -79,6 +79,8 @@ fn ts_to_lisp_source_inner(src: &str) -> Result<String, String> {
     OBJECT_PARAMS.with(|s| s.borrow_mut().clear());
     CONST_FOLDS.with(|s| s.borrow_mut().clear());
     BIGINT_CONSTS.with(|s| s.borrow_mut().clear());
+    MONEY_NAMES.with(|s| s.borrow_mut().clear());
+    MONEY_ALIASES.with(|s| s.borrow_mut().clear());
     USER_FNS.with(|m| m.borrow_mut().clear());
     let exprs = parse_ts(src)?;
     let mut out = String::new();
@@ -119,6 +121,16 @@ thread_local! {
     /// accumulator, 2026-09-01: `out = out + x` emitted numeric + on
     /// strings → interp type-error / wasm tagged-garbage).
     static STRING_LOCALS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Money-domain value names (2026-10-08 taint gate): await-result
+    /// bindings (`const x = await near.call(...)` returns u128 decimal
+    /// strings) — a raw `+`/`-` on two of them corrupts the amount.
+    static MONEY_NAMES: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Scalar money type aliases seen at statement level: `type Yocto =
+    /// string`, `type Bal = Yocto`. The built-in Yocto/Amount/Money trio
+    /// is always recognized.
+    static MONEY_ALIASES: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// Record-typed locals with bigint fields, inferred from the shape
     /// literal in `let rec = storageGet(...) ?? '{"amt":"0",...}'`:
@@ -730,6 +742,26 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                 TYPE_ALIASES.with(|m| {
                     m.borrow_mut().push((a.id.name.as_str().to_string(), props));
                 });
+                // (2026-10-08) money aliases: the Yocto/Amount/Money trio,
+                // or any alias DEFINED as one (`type Bal = Yocto`).
+                {
+                    let an = a.id.name.as_str();
+                    let money = matches!(an, "Yocto" | "Amount" | "Money")
+                        || match &a.type_annotation {
+                            oxc_ast::ast::TSType::TSTypeReference(r) => {
+                                matches!(&r.type_name,
+                                    oxc_ast::ast::TSTypeName::IdentifierReference(id)
+                                        if matches!(id.name.as_str(), "Yocto" | "Amount" | "Money")
+                                            || MONEY_ALIASES.with(|m| {
+                                                m.borrow().iter().any(|x| *x == id.name.as_str())
+                                            }))
+                            }
+                            _ => false,
+                        };
+                    if money {
+                        MONEY_ALIASES.with(|m| m.borrow_mut().push(an.to_string()));
+                    }
+                }
             }
             // Types-only imports from the near module family are ELIDED.
             // The ambient d.ts (ts/lisp-rlm.d.ts → Monaco addExtraLib)
@@ -815,6 +847,7 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
     BIGINT_LOCALS.with(|s| s.borrow_mut().clear());
     STRING_LOCALS.with(|s| s.borrow_mut().clear());
     SHAPE_BIGINT_FIELDS.with(|s| s.borrow_mut().clear());
+    MONEY_NAMES.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
     for p in &f.params.items {
         let n = binding_name(&p.pattern)?;
@@ -837,6 +870,9 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         };
         if kind == 4 {
             BIGINT_NAMES.with(|s| s.borrow_mut().push(n.clone()));
+        }
+        if ann_is_money_alias(p.type_annotation.as_deref()) {
+            MONEY_NAMES.with(|s| s.borrow_mut().push(n.clone()));
         }
         if kind == 0 {
             // See lower_function: string params skip the to-string
@@ -885,6 +921,10 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
             continue;
         };
         let names = pattern_names(&decl.id)?;
+        // (2026-10-08) Await results are u128 decimal strings — money.
+        for n in &names {
+            MONEY_NAMES.with(|s| s.borrow_mut().push(n.clone()));
+        }
         let arg = &ae.argument;
         // near.all([...]) detection — must be the bare member call
         let mut all_arr: Option<&oxc_ast::ast::ArrayExpression<'_>> = None;
@@ -1710,6 +1750,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
     BIGINT_LOCALS.with(|s| s.borrow_mut().clear());
     STRING_LOCALS.with(|s| s.borrow_mut().clear());
     SHAPE_BIGINT_FIELDS.with(|s| s.borrow_mut().clear());
+    MONEY_NAMES.with(|s| s.borrow_mut().clear());
     INPUT_HANDLES.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
     for p in &f.params.items {
@@ -1733,6 +1774,9 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
         };
         if kind == 4 {
             BIGINT_NAMES.with(|s| s.borrow_mut().push(n.clone()));
+        }
+        if ann_is_money_alias(p.type_annotation.as_deref()) {
+            MONEY_NAMES.with(|s| s.borrow_mut().push(n.clone()));
         }
         if kind == 0 {
             // String-typed params (unannotated defaults to str in this
@@ -5192,6 +5236,72 @@ fn expr_is_bigint(e: &Expression<'_>) -> bool {
     }
 }
 
+/// (2026-10-08) Is this expression money-domain? Identifier in
+/// MONEY_NAMES (annotated param, await result), a money-source call
+/// (deposit/balance reads), or nested raw arithmetic over either.
+/// NOTE: u128Xxx(...) calls are deliberately NOT money here — the
+/// bigint-shape machinery already routes any `+` touching them to the
+/// correct u128/* lowering, and gating them again would reject
+/// previously-valid mixed shapes.
+fn expr_is_money(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::Identifier(id) => MONEY_NAMES
+            .with(|s| s.borrow().iter().any(|x| *x == id.name.as_str())),
+        Expression::ParenthesizedExpression(pe) => expr_is_money(&pe.expression),
+        Expression::BinaryExpression(b) => {
+            matches!(
+                b.operator,
+                BinaryOperator::Addition
+                    | BinaryOperator::Subtraction
+                    | BinaryOperator::Multiplication
+                    | BinaryOperator::Division
+                    | BinaryOperator::Remainder
+            ) && (expr_is_money(&b.left) || expr_is_money(&b.right))
+        }
+        Expression::CallExpression(c) => match &c.callee {
+            Expression::StaticMemberExpression(sm) => {
+                matches!(&sm.object, Expression::Identifier(obj) if obj.name == "near")
+                    && matches!(
+                        sm.property.name.as_str(),
+                        "attachedDeposit"
+                            | "attachedDepositU128"
+                            | "accountBalance"
+                            | "loadU128"
+                            | "readU128"
+                    )
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// The gate predicate: BOTH operands money-domain. One-sided money `+`
+/// stays legal (prefix strings: `"total:" + amt` is concat by design).
+fn money_arithmetic<'a, 'b>(
+    l: &Expression<'a>,
+    r: &Expression<'b>,
+) -> bool {
+    expr_is_money(l) && expr_is_money(r)
+}
+
+/// `d: Yocto` / `x: Amount` / `m: Money` — the annotation names a money
+/// alias (the built-in trio, or an alias defined as one).
+fn ann_is_money_alias(t: Option<&oxc_ast::ast::TSTypeAnnotation<'_>>) -> bool {
+    let Some(a) = t else { return false };
+    match &a.type_annotation {
+        oxc_ast::ast::TSType::TSTypeReference(r) => match &r.type_name {
+            oxc_ast::ast::TSTypeName::IdentifierReference(id) => {
+                let n = id.name.as_str();
+                matches!(n, "Yocto" | "Amount" | "Money")
+                    || MONEY_ALIASES.with(|m| m.borrow().iter().any(|x| x == n))
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
     match e {
         Expression::NumericLiteral(n) => Ok(Num(n.value as i64)),
@@ -5523,6 +5633,29 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     }
                 }
             }
+            // (2026-10-08) Money-taint gate: raw arithmetic on TWO
+            // money-domain values corrupts u128 decimal strings — `+`
+            // concatenates (balances merge instead of summing), - * / %
+            // use i64 math (truncation). Fires only when both sides are
+            // money (MONEY_NAMES idents = await results + annotated
+            // params/locals, deposit/balance reads, nested raw money
+            // arith). Bigint-shaped operands dispatched above to u128/*;
+            // one-sided money `+` stays legal (prefix concat: "total:" +
+            // amt is the DSL's display idiom).
+            if matches!(
+                b.operator,
+                BinaryOperator::Addition
+                    | BinaryOperator::Subtraction
+                    | BinaryOperator::Multiplication
+                    | BinaryOperator::Division
+                    | BinaryOperator::Remainder
+            ) && money_arithmetic(&b.left, &b.right)
+            {
+                return Err(
+                    "ts_frontend: raw arithmetic on money values (Yocto/Amount) corrupts u128 decimal strings — `+` concatenates, other ops use i64 math. Use the u128* family: u128Add(a, b), u128Sub(a, b), ...".into(),
+                );
+            }
+
             // stringy +: fold into nested binary str-cat (checker's + is num-only;
             // any string literal / template operand ⇒ concat semantics)
             if b.operator == BinaryOperator::Addition

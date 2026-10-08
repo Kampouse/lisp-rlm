@@ -466,12 +466,15 @@ interface JSON {
 /** u128 amount of yoctoNEAR (10¹⁸ yocto = 1 NEAR) as a DECIMAL STRING —
  *  the near-sdk `Balance`/`NearToken` spelling. Sources: attachedDepositU128(),
  *  accountBalance(), transferU128 amounts. Arithmetic ONLY via u128.* —
- *  `+` on yocto strings corrupts silently (string concat, value loss). */
+ *  ENFORCED at compile time (2026-10-08): raw `+ - * / %` on two money
+ *  values is an error (`+` concatenates decimal strings; i64 ops
+ *  truncate). One-sided `+` stays legal ("total:" + amt). */
 type Yocto = string;
 
 /** u128 raw amount in TOKEN DECIMALS (NEP-141 `amount`) as a DECIMAL
- *  STRING — ftBalanceRaw()/ftTransfer-scale values. Same rule: arithmetic
- *  ONLY via u128.* — `+` corrupts. */
+ *  STRING — ftBalanceRaw()/ftTransfer-scale values. Same ENFORCED rule:
+ *  arithmetic via u128.* only — raw `+` on two money values is a compile
+ *  error. */
 type Amount = string;
 
 /** @deprecated — use Yocto (NEAR-denominated) or Amount (FT raw). */

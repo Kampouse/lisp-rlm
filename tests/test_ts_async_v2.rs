@@ -330,3 +330,67 @@ fn v2_pitch_shape_destructuring_object_args() {
         "pitch shape failed: {out}"
     );
 }
+
+#[test]
+fn v2_money_taint_raw_arithmetic_on_amounts_is_compile_error() {
+    let _l = lock(); // compile-only, but keep the family serialized anyway
+
+    // CASE 1: `+` on two await results — the original hazard. `+` lowers
+    // to concat on decimal strings: balances MERGE instead of summing.
+    let src = r#"
+export async function f(user: string): string {
+  const a = await near.call("tokx.v2.test.near", "ftBalanceRaw", "{}", 20000000000000, 0);
+  const b = await near.call("toky.v2.test.near", "ftBalanceRaw", "{}", 20000000000000, 0);
+  return a + b;
+}
+"#;
+    let err = ts_to_lisp_source(src).unwrap_err();
+    assert!(
+        err.contains("raw arithmetic on money values"),
+        "expected the money-taint error, got: {err}"
+    );
+
+    // CASE 2: Yocto-annotated params — `+` corrupts the same way.
+    let src = r#"
+type Yocto = string;
+export function g(a: Yocto, b: Yocto): Yocto {
+  return a + b;
+}
+"#;
+    let err = ts_to_lisp_source(src).unwrap_err();
+    assert!(
+        err.contains("raw arithmetic on money values"),
+        "expected the money-taint error for annotated params, got: {err}"
+    );
+
+    // CASE 3: deposit + balance — money-source calls count too.
+    let src = r#"
+export function h(): string {
+  return near.attachedDepositU128() + near.accountBalance();
+}
+"#;
+    let err = ts_to_lisp_source(src).unwrap_err();
+    assert!(
+        err.contains("raw arithmetic on money values"),
+        "expected the money-taint error for deposit+balance, got: {err}"
+    );
+
+    // NEGATIVE 1: one-sided money `+` is concat by design — legal.
+    let src = r#"
+export async function ok1(user: string): string {
+  const a = await near.call("tokx.v2.test.near", "ftBalanceRaw", "{}", 20000000000000, 0);
+  return "total:" + a;
+}
+"#;
+    assert!(ts_to_lisp_source(src).is_ok(), "one-sided + must stay legal");
+
+    // NEGATIVE 2: u128Add is the blessed op — legal.
+    let src = r#"
+export async function ok2(user: string): string {
+  const a = await near.call("tokx.v2.test.near", "ftBalanceRaw", "{}", 20000000000000, 0);
+  const b = await near.call("toky.v2.test.near", "ftBalanceRaw", "{}", 20000000000000, 0);
+  return u128Add(a, b);
+}
+"#;
+    assert!(ts_to_lisp_source(src).is_ok(), "u128Add must stay legal");
+}
