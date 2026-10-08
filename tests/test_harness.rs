@@ -1,11 +1,9 @@
 //! Test: boot the harness and run one scheduler tick
 
 use lisp_rlm_wasm::*;
-use std::sync::{Mutex, MutexGuard};
 
-// Serialize tests touching the shared runtime/state dir (checkpoint writes
-// race test_persistence's write-then-load round-trip in parallel threads).
-static TEST_LOCK: Mutex<()> = Mutex::new(());
+mod common;
+use common::runtime_lock;
 
 fn eval(code: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
     let exprs = parse_all(code).unwrap();
@@ -14,7 +12,12 @@ fn eval(code: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
 
 #[test]
 fn test_harness_boot() {
-    let _lock = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // flock serializes test threads AND other cargo-test processes; held
+    // for the whole body (see tests/common/mod.rs).
+    let _flock = runtime_lock();
+    // Nuke state at entry, under the lock: no test may depend on another
+    // test's cleanup (boot() LOADS whatever runtime/state holds).
+    let _ = std::fs::remove_dir_all("runtime/state");
     let mut env = Env::new();
     let mut state = EvalState::new();
 
@@ -30,7 +33,9 @@ fn test_harness_boot() {
 
 #[test]
 fn test_register_and_tick() {
-    let _lock = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _flock = runtime_lock();
+    // Entry nuke (boot() loads existing state — see test_harness_boot).
+    let _ = std::fs::remove_dir_all("runtime/state");
     let mut env = Env::new();
     let mut state = EvalState::new();
 
@@ -63,13 +68,13 @@ fn test_register_and_tick() {
         "Expected 0 intentions after one-shot, got {:?}",
         remaining
     );
-
-    let _ = std::fs::remove_dir_all("runtime/state");
 }
 
 #[test]
 fn test_persistence() {
-    let _lock = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _flock = runtime_lock();
+    // Entry nuke (boot() loads existing state — see test_harness_boot).
+    let _ = std::fs::remove_dir_all("runtime/state");
     let mut env = Env::new();
     let mut state = EvalState::new();
 
@@ -103,7 +108,4 @@ fn test_persistence() {
         "Expected list of 1, got {:?}",
         loaded
     );
-
-    // Clean up
-    let _ = std::fs::remove_dir_all("runtime/state");
 }

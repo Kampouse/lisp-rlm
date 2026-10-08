@@ -34,3 +34,6 @@ scripts/gaskey/node_modules/
 
 # hardening subagent build dir (separate from target/)
 /target-hardening/
+# cross-process test lockfile (tests/common/mod.rs) — persistent by design,
+# never unlinked (unlinking a flock'd file races open() into a new inode)
+/runtime/.test.lock
