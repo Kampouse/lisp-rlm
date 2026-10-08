@@ -76,8 +76,11 @@ fn ts_to_lisp_source_inner(src: &str) -> Result<String, String> {
     STRING_LOCALS.with(|s| s.borrow_mut().clear());
     SHAPE_BIGINT_FIELDS.with(|s| s.borrow_mut().clear());
     TYPE_ALIASES.with(|s| s.borrow_mut().clear());
+    OBJECT_PARAMS.with(|s| s.borrow_mut().clear());
     CONST_FOLDS.with(|s| s.borrow_mut().clear());
     BIGINT_CONSTS.with(|s| s.borrow_mut().clear());
+    MONEY_NAMES.with(|s| s.borrow_mut().clear());
+    MONEY_ALIASES.with(|s| s.borrow_mut().clear());
     USER_FNS.with(|m| m.borrow_mut().clear());
     let exprs = parse_ts(src)?;
     let mut out = String::new();
@@ -119,6 +122,16 @@ thread_local! {
     /// strings → interp type-error / wasm tagged-garbage).
     static STRING_LOCALS: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Money-domain value names (2026-10-08 taint gate): await-result
+    /// bindings (`const x = await near.call(...)` returns u128 decimal
+    /// strings) — a raw `+`/`-` on two of them corrupts the amount.
+    static MONEY_NAMES: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Scalar money type aliases seen at statement level: `type Yocto =
+    /// string`, `type Bal = Yocto`. The built-in Yocto/Amount/Money trio
+    /// is always recognized.
+    static MONEY_ALIASES: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
     /// Record-typed locals with bigint fields, inferred from the shape
     /// literal in `let rec = storageGet(...) ?? '{"amt":"0",...}'`:
     /// keys whose default is a QUOTED NUMERIC string are bigint fields
@@ -144,6 +157,15 @@ thread_local! {
     /// `type X = { ... }` aliases collected at statement level; resolved
     /// when a param is annotated with a named type. Compile-time only.
     static TYPE_ALIASES: std::cell::RefCell<Vec<(String, Vec<(String, bool)>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Object-shaped params by NAME (`params`, `ctx`…): their property
+    /// reads lower against the CACHED-INPUT contract (near/json_get_str
+    /// with a dotted path) instead of the param's dead binding. Before
+    /// this registry the read lowered to (json-get-str "to" params) —
+    /// params binds (near/json_get_str "params"), a top-level key that's
+    /// never in the args JSON — so `params.to` was silently nil at
+    /// runtime (documented BUG, fixed 2026-10-07).
+    static OBJECT_PARAMS: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// Top-level `const K = <literal>;` — folded into every use site.
     /// (2026-08-31) a value-define at top level emits a stub (known emitter
@@ -299,11 +321,7 @@ fn discard_normalize(v: &LispVal) -> LispVal {
                     return LispVal::List(vec![
                         items[0].clone(),
                         items[1].clone(),
-                        LispVal::List(vec![
-                            LispVal::Sym("begin".into()),
-                            body,
-                            LispVal::Num(0),
-                        ]),
+                        LispVal::List(vec![LispVal::Sym("begin".into()), body, LispVal::Num(0)]),
                         LispVal::Num(0),
                     ]);
                 }
@@ -450,7 +468,19 @@ fn collect_user_fns(stmts: &[Statement<'_>], out: &mut std::collections::HashSet
                         collect_user_fns(&body.statements, out);
                     }
                 }
+                // `export const f = (…) => …` — F3 exported arrow: lowered
+                // to a define + export pair and CALLED BY NAME, so the
+                // strict-surface gate must whitelist it too.
+                if let Declaration::VariableDeclaration(v) = &decl.declaration {
+                    collect_arrow_decls(v, out);
+                }
             }
+            // F3 scoped closures: `const f = (…) => …` locals bind a lambda
+            // called by name — register them or the strict gate (2026-10-05)
+            // rejects `f(s)` as a lisp passthrough before the F3 lowering
+            // ever runs (surfaced when the local F3 line met the pushed
+            // strict-surface line in the 2026-10-07 merge).
+            Statement::VariableDeclaration(v) => collect_arrow_decls(v, out),
             Statement::BlockStatement(b) => collect_user_fns(&b.body, out),
             Statement::IfStatement(i) => {
                 collect_user_fns(stmts_of(&i.consequent), out);
@@ -472,9 +502,22 @@ fn collect_user_fns(stmts: &[Statement<'_>], out: &mut std::collections::HashSet
     }
 }
 
+/// Register `const name = (…) => …` declarators (F3 callable arrows).
+fn collect_arrow_decls(
+    v: &oxc_ast::ast::VariableDeclaration<'_>,
+    out: &mut std::collections::HashSet<String>,
+) {
+    for d in &v.declarations {
+        if matches!(d.init, Some(Expression::ArrowFunctionExpression(_))) {
+            if let Ok(name) = binding_name(&d.id) {
+                out.insert(name);
+            }
+        }
+    }
+}
+
 fn user_fn_or_runtime(name: &str) -> bool {
-    USER_FNS.with(|f| f.borrow().contains(name))
-        || RLM_RUNTIME_API.contains(&name)
+    USER_FNS.with(|f| f.borrow().contains(name)) || RLM_RUNTIME_API.contains(&name)
 }
 
 fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
@@ -551,9 +594,11 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                             }
                             continue;
                         }
-                        let (name, define) = lower_function(f, true)?;
+                        let (name, defines) = lower_function(f, true)?;
                         let view = name.starts_with("get_");
-                        out.push(define);
+                        for d in &defines {
+                            out.push(d.clone());
+                        }
                         // `new` is a reserved word in TypeScript — `new_` is the
                         // dialect's spelling for NEAR's `new` constructor export.
                         let export_name = if name == "new_" { "new".to_string() } else { name.clone() };
@@ -603,7 +648,9 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                             .into(),
                     );
                 }
-                hoisted.push(lower_function(f, false)?.1);
+                for d in lower_function(f, false)?.1 {
+                    hoisted.push(d);
+                }
             }
             Statement::VariableDeclaration(v) => {
                 for d in &v.declarations {
@@ -695,6 +742,26 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                 TYPE_ALIASES.with(|m| {
                     m.borrow_mut().push((a.id.name.as_str().to_string(), props));
                 });
+                // (2026-10-08) money aliases: the Yocto/Amount/Money trio,
+                // or any alias DEFINED as one (`type Bal = Yocto`).
+                {
+                    let an = a.id.name.as_str();
+                    let money = matches!(an, "Yocto" | "Amount" | "Money")
+                        || match &a.type_annotation {
+                            oxc_ast::ast::TSType::TSTypeReference(r) => {
+                                matches!(&r.type_name,
+                                    oxc_ast::ast::TSTypeName::IdentifierReference(id)
+                                        if matches!(id.name.as_str(), "Yocto" | "Amount" | "Money")
+                                            || MONEY_ALIASES.with(|m| {
+                                                m.borrow().iter().any(|x| *x == id.name.as_str())
+                                            }))
+                            }
+                            _ => false,
+                        };
+                    if money {
+                        MONEY_ALIASES.with(|m| m.borrow_mut().push(an.to_string()));
+                    }
+                }
             }
             // Types-only imports from the near module family are ELIDED.
             // The ambient d.ts (ts/lisp-rlm.d.ts → Monaco addExtraLib)
@@ -739,12 +806,33 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
     Ok(result)
 }
 
-/// Lower an async function into entry + continuation via near/call-await.
-/// V1 (fail-loud): exactly one await, `const x = await near.call(...)`,
-/// and it must be the FIRST statement (their original V1 silently dropped
-/// pre-await statements — we hard-error instead).
-/// Returns forms: entry define, entry export, continuation define, cont. export.
+/// Lower an async function — async v2 (2026-10-08).
+///
+/// Awaits anywhere, multiple awaits, `near.all([...])` fanout, payable.
+/// CPS split at each await point: the entry runs pre-await statements,
+/// snapshots the params into storage and fires await 0; resume k restores
+/// the frame, binds await k's results, runs its segment and fires the next
+/// await. The LAST resume runs the final segment as the function value.
+///
+/// Frame = entry params ONLY (the V1-proven `__await:<fn>:<param>` storage
+/// path). A `let` local read after an await, or an assignment to a
+/// param/pre-await local after an await, is a COMPILE ERROR naming the
+/// variable (T4 — locals die at the await boundary; the frame is the only
+/// state that crosses). Pre-await reassignment of params is fine: the
+/// snapshot happens after the pre-await statements run, so the final
+/// values are what the continuations see.
+///
+/// `await near.call(t, m, args, gas, dep)` and
+/// `const [a, b] = await near.all([c1, c2])` both lower to the manual
+/// promise shape (promise_create → [promise_and] → ONE promise_then →
+/// promise_return) — the same DAG the portfolio fixture hand-writes — so
+/// deposits flow through untouched (V1's zero-deposit restriction is gone)
+/// and every join has exactly ONE resume reading promise_result(0..n) in
+/// dependency order.
+///
+/// Returns forms: entry define + export, then per await: resume define + export.
 fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
+    const CB_GAS: i64 = 50_000_000_000_000;
     let name =
         f.id.as_ref()
             .map(|i| i.name.as_str().to_string())
@@ -754,10 +842,12 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
     // (object = JSON-text binding; numeric props auto-decode on read)
     NUM_PARAM_NAMES.with(|s| s.borrow_mut().clear());
     OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
+    OBJECT_PARAMS.with(|s| s.borrow_mut().clear());
     BIGINT_NAMES.with(|s| s.borrow_mut().clear());
     BIGINT_LOCALS.with(|s| s.borrow_mut().clear());
     STRING_LOCALS.with(|s| s.borrow_mut().clear());
     SHAPE_BIGINT_FIELDS.with(|s| s.borrow_mut().clear());
+    MONEY_NAMES.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
     for p in &f.params.items {
         let n = binding_name(&p.pattern)?;
@@ -781,6 +871,9 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         if kind == 4 {
             BIGINT_NAMES.with(|s| s.borrow_mut().push(n.clone()));
         }
+        if ann_is_money_alias(p.type_annotation.as_deref()) {
+            MONEY_NAMES.with(|s| s.borrow_mut().push(n.clone()));
+        }
         if kind == 0 {
             // See lower_function: string params skip the to-string
             // interpolation wrap (2026-09-02).
@@ -794,87 +887,387 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         .as_ref()
         .ok_or("ts_frontend: async function missing body")?;
     let stmts = &body.statements;
+    check_return_contract(&name, stmts, return_ann_money(f))?;
 
-    // Find `const x = await expr;`
-    let mut await_idx = None;
-    let mut await_var = None;
-    let mut await_expr = None;
+    // Forward-scan the WHOLE body: bigint lets / string locals / input
+    // handles must be registered before any segment lowers (segments lower
+    // in CPS order — see scan_bigint_lets).
+    scan_bigint_lets(stmts);
+
+    let state_key = format!("__await:{}", name);
+
+    // ── collect top-level await points ──────────────────────────────
+    enum Bind {
+        Plain,
+        Object,
+        Positional,
+    }
+    struct AwaitPoint<'a> {
+        idx: usize,
+        names: Vec<String>,
+        bind: Bind,
+        // near.call(...) for Plain/Object, the array literal for Positional
+        src_expr: &'a Expression<'a>,
+    }
+    let mut awaits: Vec<AwaitPoint<'_>> = Vec::new();
     for (i, s) in stmts.iter().enumerate() {
-        if let oxc_ast::ast::Statement::VariableDeclaration(vd) = s {
-            if vd.declarations.len() == 1 {
-                let decl = &vd.declarations[0];
-                if let Some(init) = &decl.init {
-                    if let oxc_ast::ast::Expression::AwaitExpression(ae) = init {
-                        await_idx = Some(i);
-                        await_var = Some(binding_name(&decl.id)?);
-                        await_expr = Some(&ae.argument);
-                        break;
+        let Statement::VariableDeclaration(vd) = s else {
+            continue;
+        };
+        if vd.declarations.len() != 1 {
+            continue;
+        }
+        let decl = &vd.declarations[0];
+        let Some(Expression::AwaitExpression(ae)) = &decl.init else {
+            continue;
+        };
+        let names = pattern_names(&decl.id)?;
+        // (2026-10-08) Await results are u128 decimal strings — money.
+        for n in &names {
+            MONEY_NAMES.with(|s| s.borrow_mut().push(n.clone()));
+        }
+        let arg = &ae.argument;
+        // near.all([...]) detection — must be the bare member call
+        let mut all_arr: Option<&oxc_ast::ast::ArrayExpression<'_>> = None;
+        if let Expression::CallExpression(c) = arg {
+            if let Expression::StaticMemberExpression(sm) = &c.callee {
+                if let Expression::Identifier(obj) = &sm.object {
+                    if obj.name == "near" && sm.property.name == "all" {
+                        if c.arguments.len() != 1 {
+                            return Err(
+                                "ts_frontend: near.all takes exactly one array argument".into()
+                            );
+                        }
+                        match c.arguments[0].as_expression() {
+                            Some(Expression::ArrayExpression(arr)) => all_arr = Some(arr),
+                            _ => {
+                                return Err(
+                                    "ts_frontend: near.all takes an ARRAY LITERAL of near.call(...) expressions"
+                                        .into(),
+                                )
+                            }
+                        }
                     }
                 }
             }
         }
-    }
-    let await_idx =
-        await_idx.ok_or("ts_frontend: async function must contain `const x = await expr;`")?;
-    if await_idx != 0 {
-        return Err(
-            "ts_frontend: V1 async — await must be the first statement (pre-await code unsupported)"
-                .into(),
-        );
-    }
-    let await_var = await_var.unwrap();
-    let await_expr = await_expr.unwrap();
-    let after_stmts = &stmts[await_idx + 1..];
-
-    let state_key = format!("__await:{}", name);
-    let cb_name = format!("{}__resume", name);
-
-    // ── entry: read params from tx json, save state, fire call-await ──
-    let mut entry_inner: Vec<LispVal> = Vec::new(); // begin-items after bindings
-    for (n, kind) in &param_names {
-        let v = if *kind == 1 {
-            list(vec![Sym("to-string"), Sym(n.clone())])
-        } else {
-            Sym(n.clone())
-        };
-        entry_inner.push(list(vec![
-            Sym("near/storage_set"),
-            Str(format!("{}:{}", state_key, n)),
-            v,
-        ]));
-    }
-    // await near.call(target, method, args, gas, deposit)
-    //   → near/call-await(target, method, args, gas, cb, 50Tgas, "{}")
-    let await_lisp = lower_expr(await_expr)?;
-    let call_await = match &await_lisp {
-        LispVal::List(items) if items.len() >= 6 && items[0] == Sym("near/call") => {
-            // fail-loud: dropped deposit must be zero
-            let dep_ok = matches!(&items[5], LispVal::Num(0))
-                || matches!(&items[5], LispVal::Str(x) if x == "0");
-            if !dep_ok {
+        if let Some(arr) = all_arr {
+            if !matches!(decl.id, oxc_ast::ast::BindingPattern::ArrayPattern(_)) {
                 return Err(
-                    "ts_frontend: await near.call(...) — deposit must be 0 (call-await is zero-deposit; use the raw near/call-await form for payable)"
+                    "ts_frontend: `await near.all([...])` binds with an array pattern: `const [a, b] = await near.all([...])`"
                         .into(),
                 );
             }
-            let mut new_items = vec![Sym("near/call-await")];
-            new_items.extend(items[1..5].iter().cloned());
-            new_items.push(Str(cb_name.clone()));
-            new_items.push(Num(50_000_000_000_000));
-            new_items.push(Str("{}".to_string()));
-            list(new_items)
+            if arr.elements.len() != names.len() {
+                return Err(format!(
+                    "ts_frontend: near.all — {} name(s) bound but {} call(s) in the array",
+                    names.len(),
+                    arr.elements.len()
+                )
+                .into());
+            }
+            awaits.push(AwaitPoint {
+                idx: i,
+                names,
+                bind: Bind::Positional,
+                src_expr: arg,
+            });
+        } else if names.len() > 1 {
+            return Err(
+                "ts_frontend: only `await near.all([...])` binds multiple names".into(),
+            );
+        } else {
+            let bind = match &decl.id {
+                oxc_ast::ast::BindingPattern::BindingIdentifier(_) => Bind::Plain,
+                oxc_ast::ast::BindingPattern::ObjectPattern(_) => Bind::Object,
+                _ => {
+                    return Err(
+                        "ts_frontend: `await near.call(...)` binds a name or object pattern"
+                            .into(),
+                    )
+                }
+            };
+            awaits.push(AwaitPoint {
+                idx: i,
+                names,
+                bind,
+                src_expr: arg,
+            });
         }
-        LispVal::List(items) if !items.is_empty() && items[0] == Sym("near/call") => {
-            return Err("ts_frontend: await must wrap near.call() with 5 args (target, method, args, gas, 0)".into());
-        }
-        _ => return Err("ts_frontend: V1 async — await expression must be near.call(...)".into()),
-    };
-    entry_inner.push(call_await);
+    }
+    if awaits.is_empty() {
+        return Err(
+            "ts_frontend: async function must contain `const x = await near.call(...);`".into(),
+        );
+    }
 
-    let entry_body = if param_names.is_empty() {
+    // ── T4 frame rule ───────────────────────────────────────────────
+    // Params cross every await (entry snapshot). Await results are bound
+    // at their await and FRAME-PERSISTED for all later continuations (each
+    // resume storage_sets its results; later resumes restore them — the
+    // join-at-the-end pattern is the point). Plain `let` locals die at the
+    // await boundary: reading one after an await, or assigning to a
+    // param/pre-await local/await result after an await, is a COMPILE
+    // ERROR naming the variable.
+    let param_set: Vec<String> = param_names.iter().map(|(n, _)| n.clone()).collect();
+    let n_awaits = awaits.len();
+    // region 0 = entry (stmts before await 0), region k = resume k-1's stmts
+    let mut region_stmts: Vec<&[Statement<'_>]> = Vec::new();
+    region_stmts.push(&stmts[0..awaits[0].idx]);
+    for k in 0..n_awaits {
+        let start = awaits[k].idx + 1;
+        let end = if k + 1 < n_awaits {
+            awaits[k + 1].idx
+        } else {
+            stmts.len()
+        };
+        region_stmts.push(&stmts[start..end]);
+    }
+    let mut region_decls: Vec<Vec<String>> = Vec::new();
+    for rs in &region_stmts {
+        let mut d = Vec::new();
+        for s in *rs {
+            if let Statement::VariableDeclaration(vd) = s {
+                for dd in &vd.declarations {
+                    d.extend(pattern_names(&dd.id)?);
+                }
+            }
+        }
+        region_decls.push(d);
+    }
+    // await-result owner table: name → await index. Result of await j is
+    // live in regions j+1..=n (bound locally at j+1, frame-restored after).
+    let mut await_owner: Vec<(String, usize)> = Vec::new();
+    for (j, a) in awaits.iter().enumerate() {
+        for nm in &a.names {
+            await_owner.push((nm.clone(), j));
+        }
+    }
+    let owner_of =
+        |n: &str| await_owner.iter().find(|(nm, _)| nm == n).map(|(_, j)| *j);
+    for k in 0..region_stmts.len() {
+        let mut reads: Vec<String> = Vec::new();
+        let mut assigns: Vec<String> = Vec::new();
+        for s in region_stmts[k] {
+            stmt_walk_idents(s, &mut reads, &mut assigns);
+        }
+        let decl_here = &region_decls[k];
+        // redeclare: a region cannot rebind an await-result name — the
+        // resume's let would double-bind the frame restore
+        for d in decl_here {
+            if owner_of(d).is_some() {
+                return Err(format!(
+                    "ts_frontend: async `{name}`: cannot redeclare `{d}` — await results are frame-persisted for later continuations; bind a fresh name"
+                )
+                .into());
+            }
+        }
+        for a in &assigns {
+            if owner_of(a).is_some() {
+                return Err(format!(
+                    "ts_frontend: async `{name}`: `{a}` is an await result — await results are const; bind a new name"
+                )
+                .into());
+            }
+        }
+        if k >= 1 {
+            // assignment targets first (sharper message than a read error)
+            for a in &assigns {
+                if param_set.contains(a) {
+                    return Err(format!(
+                        "ts_frontend: async `{name}`: cannot assign to parameter `{a}` after an await — the frame snapshot happens in the entry; make `{a}` final before the first await"
+                    )
+                    .into());
+                }
+                if (0..k).any(|j| region_decls[j].contains(a)) {
+                    return Err(format!(
+                        "ts_frontend: async `{name}`: cannot assign to `{a}` after an await — locals die at the await boundary; declare `{a}` inside this continuation segment"
+                    )
+                    .into());
+                }
+            }
+        }
+        for r in &reads {
+            if assigns.contains(r) || decl_here.contains(r) || param_set.contains(r) {
+                continue;
+            }
+            if let Some(j) = owner_of(r) {
+                if j + 1 <= k {
+                    continue; // bound this resume (j+1==k) or frame-restored (j+1<k)
+                }
+                return Err(format!(
+                    "ts_frontend: async `{name}`: await result `{r}` used before its await runs — move the await earlier or restructure"
+                )
+                .into());
+            }
+            if k >= 1 && (0..k).any(|j| region_decls[j].contains(r)) {
+                return Err(format!(
+                    "ts_frontend: async `{name}`: local `{r}` crosses an await boundary — only parameters and await results survive; make `{r}` a parameter or recompute it after the await"
+                )
+                .into());
+            }
+        }
+    }
+
+    // ── fire forms: one per await, built once, moved into their body ──
+    // (near/call T M A G DEP) → (near/promise_create T M A DEP G)
+    let to_pcreate = |items: &[LispVal], ctx: &str| -> Result<LispVal, String> {
+        if items.len() != 6 || items[0] != Sym("near/call") {
+            return Err(format!(
+                "ts_frontend: {ctx} must be near.call(target, method, args, gas, deposit)"
+            ));
+        }
+        // TS surface types deposit as number; the promise ABI is a u128
+        // decimal STR (unified 2026-10-07 — see the promise_create typing
+        // row). Coerce literals; Str deposits (near.attachedDeposit(),
+        // decimal amounts) pass through untouched.
+        let dep = match &items[5] {
+            LispVal::Num(n) => Str(n.to_string()),
+            other => other.clone(),
+        };
+        Ok(list(vec![
+            Sym("near/promise_create"),
+            items[1].clone(),
+            items[2].clone(),
+            items[3].clone(),
+            dep,
+            items[4].clone(),
+        ]))
+    };
+    let fire = |create: LispVal, cb: &str| -> LispVal {
+        list(vec![
+            Sym("near/promise_return"),
+            list(vec![
+                Sym("near/promise_then"),
+                create,
+                list(vec![Sym("near/current_account_id")]),
+                Str(cb.to_string()),
+                Str("{}".to_string()),
+                Str("0".to_string()),
+                Num(CB_GAS),
+            ]),
+        ])
+    };
+    let cb_name = |k: usize| -> String {
+        if n_awaits == 1 {
+            format!("{name}__resume")
+        } else {
+            format!("{name}__resume{k}")
+        }
+    };
+    let mut fire_forms: Vec<LispVal> = Vec::with_capacity(n_awaits);
+    for (k, ap) in awaits.iter().enumerate() {
+        match &ap.bind {
+            Bind::Positional => {
+                let arr = match &ap.src_expr {
+                    Expression::CallExpression(c) => match c.arguments[0].as_expression() {
+                        Some(Expression::ArrayExpression(arr)) => arr,
+                        _ => unreachable!("checked at scan"),
+                    },
+                    _ => unreachable!("checked at scan"),
+                };
+                let mut creates: Vec<LispVal> = Vec::new();
+                for (j, el) in arr.elements.iter().enumerate() {
+                    let Some(elex) = el.as_expression() else {
+                        return Err(format!(
+                            "ts_frontend: near.all element {j} is empty (`[a, , b]` holes are not calls)"
+                        ));
+                    };
+                    let l = lower_expr(elex)?;
+                    let LispVal::List(items) = &l else {
+                        return Err(format!(
+                            "ts_frontend: near.all element {j} must be near.call(target, method, args, gas, deposit)"
+                        ));
+                    };
+                    creates.push(to_pcreate(
+                        items,
+                        &format!("near.all element {j}"),
+                    )?);
+                }
+                let joined = list({
+                    let mut v = vec![Sym("near/promise_and")];
+                    v.extend(creates);
+                    v
+                });
+                fire_forms.push(fire(joined, &cb_name(k)));
+            }
+            _ => {
+                let l = lower_expr(ap.src_expr)?;
+                let LispVal::List(items) = l else {
+                    return Err(format!(
+                        "ts_frontend: await must wrap near.call(target, method, args, gas, deposit) — async `{name}`"
+                    ));
+                };
+                let create = to_pcreate(&items, "await expression")?;
+                fire_forms.push(fire(create, &cb_name(k)));
+            }
+        }
+    }
+
+    // ── entry: param reads from tx json, pre-await stmts, snapshot, fire ──
+    let save_bindings: Vec<LispVal> = param_names
+        .iter()
+        .map(|(nm, kind)| {
+            let v = if *kind == 1 {
+                list(vec![Sym("to-string"), Sym(nm.clone())])
+            } else {
+                Sym(nm.clone())
+            };
+            list(vec![
+                Sym("near/storage_set"),
+                Str(format!("{}:{}", state_key, nm)),
+                v,
+            ])
+        })
+        .collect();
+    // Tail of the entry = snapshot + fire await 0. Composed THROUGH the
+    // pre-await statements (lower_prefix_around) so the first await's
+    // near.call arguments can reference pre-await locals.
+    let mut entry_tail_items = save_bindings;
+    entry_tail_items.push(fire_forms[0].clone());
+    let entry_tail = if entry_tail_items.len() == 1 {
+        entry_tail_items.pop().unwrap()
+    } else {
         let mut b = vec![Sym("begin")];
-        b.extend(entry_inner);
+        b.extend(entry_tail_items);
         list(b)
+    };
+    // Compose pre-await statements with a tail that may FIRE the next
+    // await. Early `return`s inside bind function-level __fn_done/__fn_res
+    // locally (mirroring lower_block_tail's flag-guard path) and SUPPRESS
+    // the tail-fire — a returned function must not keep the promise chain
+    // going. Segment value: __fn_res on early return (done_value), else
+    // the tail's value.
+    let compose_seg =
+        |pre: &[Statement<'_>], tail: LispVal, done_value: LispVal| -> Result<LispVal, String> {
+            if pre.is_empty() {
+                return Ok(tail);
+            }
+            if !stmts_have_deep_return(pre) {
+                return lower_prefix_around(pre, tail, false);
+            }
+            let guarded = list(vec![
+                Sym("if"),
+                list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+                tail,
+                done_value,
+            ]);
+            let saved = FN_FLAGS_BOUND.with(|f| f.replace(true));
+            let inner = lower_prefix_around_with_return(pre, guarded, false);
+            FN_FLAGS_BOUND.with(|f| f.set(saved));
+            Ok(list(vec![
+                Sym("let"),
+                list(vec![
+                    list(vec![Sym("__fn_done"), Num(0)]),
+                    list(vec![Sym("__fn_res"), list(vec![Sym("quote"), LispVal::Nil])]),
+                ]),
+                inner?,
+            ]))
+        };
+    let pre = &stmts[0..awaits[0].idx];
+    let entry_seq = compose_seg(pre, entry_tail, Sym("__fn_res"))?;
+    let entry_body = if param_names.is_empty() {
+        entry_seq
     } else {
         let bindings = param_names
             .iter()
@@ -888,11 +1281,7 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
                 list(vec![Sym(n.clone()), v])
             })
             .collect();
-        list(vec![Sym("let"), list(bindings), {
-            let mut b = vec![Sym("begin")];
-            b.extend(entry_inner);
-            list(b)
-        }])
+        list(vec![Sym("let"), list(bindings), entry_seq])
     };
     let entry_define = list(vec![
         Sym("define"),
@@ -907,43 +1296,329 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         if view { Sym("#t") } else { Sym("#f") },
     ]);
 
-    // ── continuation: restore state, bind promise result, run the rest ──
-    let mut let_bindings: Vec<LispVal> = Vec::new();
-    for (n, kind) in &param_names {
-        // storage_get returns (opt str) — unwrap with default before use
-        let getter = list(vec![
-            Sym("default"),
-            list(vec![
-                Sym("near/storage_get"),
-                Str(format!("{}:{}", state_key, n)),
-            ]),
-            Str(String::new()),
-        ]);
-        let val = if *kind == 1 {
-            list(vec![Sym("str->num"), getter])
-        } else {
-            getter
+    // ── resumes: restore frame + bind await results + segment (+ fire) ──
+    let mut out: Vec<LispVal> = vec![entry_define, entry_export];
+    for k in 0..n_awaits {
+        let cbk = cb_name(k);
+        let mut let_bindings: Vec<LispVal> = Vec::new();
+        for (nm, kind) in &param_names {
+            let getter = list(vec![
+                Sym("default"),
+                list(vec![
+                    Sym("near/storage_get"),
+                    Str(format!("{}:{}", state_key, nm)),
+                ]),
+                Str(String::new()),
+            ]);
+            let val = if *kind == 1 {
+                list(vec![Sym("str->num"), getter])
+            } else {
+                getter
+            };
+            let_bindings.push(list(vec![Sym(nm.clone()), val]));
+        }
+        let ap = &awaits[k];
+        for (j, nm) in ap.names.iter().enumerate() {
+            let res = list(vec![Sym("near/promise_result"), Num(j as i64)]);
+            let v = match ap.bind {
+                Bind::Object => {
+                    // const {a, b} = await near.call(...) — property reads
+                    // on the returned JSON text
+                    list(vec![Sym("json-get-str"), Str(nm.clone()), res])
+                }
+                _ => res, // Plain: index 0; Positional: index = position
+            };
+            let_bindings.push(list(vec![Sym(nm.clone()), v]));
+        }
+        // restore every EARLIER await's results (each was storage_set by its
+        // own resume; default "" keeps a failed/missing result readable)
+        for (j, aj) in awaits.iter().enumerate() {
+            if j >= k {
+                continue;
+            }
+            for nm in &aj.names {
+                let getter = list(vec![
+                    Sym("default"),
+                    list(vec![
+                        Sym("near/storage_get"),
+                        Str(format!("{}:{}", state_key, nm)),
+                    ]),
+                    Str(String::new()),
+                ]);
+                let_bindings.push(list(vec![Sym(nm.clone()), getter]));
+            }
+        }
+        let seg = region_stmts[k + 1];
+        // Tail = persist THIS await's results for later resumes (the resume's
+        // let binds them), then fire the next await — composed THROUGH the
+        // segment via lower_prefix_around so the tail sees segment locals
+        // (`const dep = ...` before an await is common and legal).
+        let mut tail_items: Vec<LispVal> = Vec::new();
+        if k + 1 < n_awaits {
+            for nm in &ap.names {
+                tail_items.push(list(vec![
+                    Sym("near/storage_set"),
+                    Str(format!("{}:{}", state_key, nm)),
+                    Sym(nm.clone()),
+                ]));
+            }
+            tail_items.push(fire_forms[k + 1].clone());
+        }
+        let tail = match tail_items.len() {
+            1 => tail_items.pop().unwrap(),
+            0 => Num(0),
+            _ => {
+                let mut b = vec![Sym("begin")];
+                b.extend(tail_items);
+                list(b)
+            }
         };
-        let_bindings.push(list(vec![Sym(n.clone()), val]));
+        // Segment composition mirrors the entry: early `return`s inside the
+        // segment bind LOCAL __fn_done/__fn_res and suppress the tail-fire;
+        // the resume exports the last segment's value with a plain-value
+        // export (the __resume contract has no flag channel — V1 same).
+        let done_value = if k + 1 < n_awaits {
+            Num(0)
+        } else {
+            Sym("__fn_res")
+        };
+        let body_inner = if seg.is_empty() {
+            tail
+        } else if !stmts_have_deep_return(seg) {
+            lower_prefix_around(seg, tail, false)?
+        } else {
+            let guarded = list(vec![
+                Sym("if"),
+                list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+                tail,
+                done_value,
+            ]);
+            let saved = FN_FLAGS_BOUND.with(|f| f.replace(true));
+            let inner = lower_prefix_around_with_return(seg, guarded, false);
+            FN_FLAGS_BOUND.with(|f| f.set(saved));
+            list(vec![
+                Sym("let"),
+                list(vec![
+                    list(vec![Sym("__fn_done"), Num(0)]),
+                    list(vec![
+                        Sym("__fn_res"),
+                        list(vec![Sym("quote"), LispVal::Nil]),
+                    ]),
+                ]),
+                inner?,
+            ])
+        };
+        out.push(list(vec![
+            Sym("define"),
+            list(vec![Sym(cbk.clone())]),
+            list(vec![Sym("let"), list(let_bindings), body_inner]),
+        ]));
+        out.push(list(vec![
+            Sym("export"),
+            Str(cbk),
+            Sym(cb_name(k)),
+            Sym("#f"),
+        ]));
     }
-    let_bindings.push(list(vec![
-        Sym(await_var.clone()),
-        list(vec![Sym("near/promise_result"), Num(0)]),
-    ]));
-    let after_body = lower_block_tail(after_stmts, false)?;
-    let cb_define = list(vec![
-        Sym("define"),
-        list(vec![Sym(cb_name.clone())]),
-        list(vec![Sym("let"), list(let_bindings), after_body]),
-    ]);
-    let cb_export = list(vec![
-        Sym("export"),
-        Str(cb_name.clone()),
-        Sym(cb_name.clone()),
-        Sym("#f"),
-    ]);
 
-    Ok(vec![entry_define, entry_export, cb_define, cb_export])
+    Ok(out)
+}
+
+/// Every binding NAME in a declaration pattern — flat, positional.
+/// `x` → [x]; `{a, b}` → [a, b]; `[p, q]` → [p, q]. Holes/rest/nested
+/// patterns are refused (fail-loud, name the syntax).
+fn pattern_names(p: &oxc_ast::ast::BindingPattern<'_>) -> Result<Vec<String>, String> {
+    use oxc_ast::ast::BindingPattern::*;
+    match p {
+        BindingIdentifier(b) => Ok(vec![b.name.as_str().to_string()]),
+        ObjectPattern(op) => {
+            let mut out = Vec::new();
+            for prop in &op.properties {
+                out.extend(pattern_names(&prop.value)?);
+            }
+            if let Some(rest) = &op.rest {
+                return Err(format!(
+                    "ts_frontend: rest element `{}` unsupported in await bindings",
+                    match &rest.argument {
+                        BindingIdentifier(b) => b.name.as_str().to_string(),
+                        _ => "...".to_string(),
+                    }
+                ));
+            }
+            Ok(out)
+        }
+        ArrayPattern(ap) => {
+            let mut out = Vec::new();
+            for el in &ap.elements {
+                match el {
+                    Some(e) => out.extend(pattern_names(e)?),
+                    None => {
+                        return Err(
+                            "ts_frontend: near.all bindings cannot have holes (`[a, , b]`)"
+                                .into(),
+                        )
+                    }
+                }
+            }
+            if let Some(rest) = &ap.rest {
+                return Err(
+                    "ts_frontend: rest elements unsupported in await bindings".into(),
+                );
+            }
+            Ok(out)
+        }
+        _ => Err("ts_frontend: unsupported await binding pattern".into()),
+    }
+}
+
+/// Statement-level walker for the T4 await-frame rule: collects identifier
+/// READS and bare-identifier ASSIGNMENT/UPDATE targets (recursing through
+/// control flow). Arrow bodies are the lambda's own scope — skipped, same
+/// policy as expr_idents.
+fn stmt_walk_idents(
+    s: &Statement<'_>,
+    reads: &mut Vec<String>,
+    assigns: &mut Vec<String>,
+) {
+    match s {
+        Statement::ExpressionStatement(es) => walk_expr_idents(&es.expression, reads, assigns),
+        Statement::VariableDeclaration(vd) => {
+            for d in &vd.declarations {
+                if let Some(init) = &d.init {
+                    walk_expr_idents(init, reads, assigns);
+                }
+            }
+        }
+        Statement::BlockStatement(b) => {
+            for st in &b.body {
+                stmt_walk_idents(st, reads, assigns);
+            }
+        }
+        Statement::IfStatement(i) => {
+            walk_expr_idents(&i.test, reads, assigns);
+            for st in stmts_of(&i.consequent) {
+                stmt_walk_idents(st, reads, assigns);
+            }
+            if let Some(alt) = &i.alternate {
+                for st in stmts_of(alt) {
+                    stmt_walk_idents(st, reads, assigns);
+                }
+            }
+        }
+        Statement::WhileStatement(w) => {
+            walk_expr_idents(&w.test, reads, assigns);
+            for st in stmts_of(&w.body) {
+                stmt_walk_idents(st, reads, assigns);
+            }
+        }
+        Statement::DoWhileStatement(d) => {
+            for st in stmts_of(&d.body) {
+                stmt_walk_idents(st, reads, assigns);
+            }
+            walk_expr_idents(&d.test, reads, assigns);
+        }
+        Statement::ForStatement(fs) => {
+            if let Some(init) = &fs.init {
+                match init {
+                    oxc_ast::ast::ForStatementInit::VariableDeclaration(vd) => {
+                        for dd in &vd.declarations {
+                            if let Some(init) = &dd.init {
+                                walk_expr_idents(init, reads, assigns);
+                            }
+                        }
+                    }
+                    other => {
+                        if let Some(e) = other.as_expression() {
+                            walk_expr_idents(e, reads, assigns);
+                        }
+                    }
+                }
+            }
+            if let Some(test) = &fs.test {
+                walk_expr_idents(test, reads, assigns);
+            }
+            if let Some(update) = &fs.update {
+                walk_expr_idents(update, reads, assigns);
+            }
+            for st in stmts_of(&fs.body) {
+                stmt_walk_idents(st, reads, assigns);
+            }
+        }
+        Statement::ReturnStatement(r) => {
+            if let Some(a) = &r.argument {
+                walk_expr_idents(a, reads, assigns);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Expression walker: reads via the proven expr_idents, plus a side-walk
+/// for assignment/update TARGETS (expr_idents conflates them into reads —
+/// the T4 rule wants the sharper "cannot assign" message).
+fn walk_expr_idents(e: &Expression<'_>, reads: &mut Vec<String>, assigns: &mut Vec<String>) {
+    use oxc_ast::ast::AssignmentTarget;
+    expr_idents(e, reads);
+    fn aw(e: &Expression<'_>, assigns: &mut Vec<String>) {
+        match e {
+            Expression::AssignmentExpression(a) => {
+                if let AssignmentTarget::AssignmentTargetIdentifier(id) = &a.left {
+                    assigns.push(id.name.as_str().to_string());
+                }
+                aw(&a.right, assigns);
+            }
+            Expression::UpdateExpression(u) => {
+                if let oxc_ast::ast::SimpleAssignmentTarget::AssignmentTargetIdentifier(id) =
+                    &u.argument
+                {
+                    assigns.push(id.name.as_str().to_string());
+                }
+            }
+            Expression::ParenthesizedExpression(p) => aw(&p.expression, assigns),
+            Expression::BinaryExpression(b) => {
+                aw(&b.left, assigns);
+                aw(&b.right, assigns);
+            }
+            Expression::LogicalExpression(l) => {
+                aw(&l.left, assigns);
+                aw(&l.right, assigns);
+            }
+            Expression::UnaryExpression(u) => aw(&u.argument, assigns),
+            Expression::SequenceExpression(sq) => {
+                for x in &sq.expressions {
+                    aw(x, assigns);
+                }
+            }
+            Expression::ConditionalExpression(c) => {
+                aw(&c.test, assigns);
+                aw(&c.consequent, assigns);
+                aw(&c.alternate, assigns);
+            }
+            Expression::CallExpression(c) => {
+                aw(&c.callee, assigns);
+                for a in &c.arguments {
+                    if let Argument::SpreadElement(_) = a {
+                        continue;
+                    }
+                    if let Some(ae) = a.as_expression() {
+                        aw(ae, assigns);
+                    }
+                }
+            }
+            Expression::StaticMemberExpression(m) => aw(&m.object, assigns),
+            Expression::ComputedMemberExpression(m) => {
+                aw(&m.object, assigns);
+                aw(&m.expression, assigns);
+            }
+            Expression::TemplateLiteral(t) => {
+                for x in &t.expressions {
+                    aw(x, assigns);
+                }
+            }
+            _ => {}
+        }
+    }
+    aw(e, assigns);
 }
 
 /// Forward scan: register every `let x = <bigint-init>;` in a function
@@ -1060,7 +1735,7 @@ fn scan_one_bigint_let(s: &Statement<'_>) {
 }
 
 /// Lower a function declaration → (define (name params...) body)
-fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal), String> {
+fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<LispVal>), String> {
     let name =
         f.id.as_ref()
             .map(|i| i.name.as_str().to_string())
@@ -1071,10 +1746,12 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
     // (object = JSON-text binding; numeric props auto-decode on read)
     NUM_PARAM_NAMES.with(|s| s.borrow_mut().clear());
     OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
+    OBJECT_PARAMS.with(|s| s.borrow_mut().clear());
     BIGINT_NAMES.with(|s| s.borrow_mut().clear());
     BIGINT_LOCALS.with(|s| s.borrow_mut().clear());
     STRING_LOCALS.with(|s| s.borrow_mut().clear());
     SHAPE_BIGINT_FIELDS.with(|s| s.borrow_mut().clear());
+    MONEY_NAMES.with(|s| s.borrow_mut().clear());
     INPUT_HANDLES.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
     for p in &f.params.items {
@@ -1099,6 +1776,9 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
         if kind == 4 {
             BIGINT_NAMES.with(|s| s.borrow_mut().push(n.clone()));
         }
+        if ann_is_money_alias(p.type_annotation.as_deref()) {
+            MONEY_NAMES.with(|s| s.borrow_mut().push(n.clone()));
+        }
         if kind == 0 {
             // String-typed params (unannotated defaults to str in this
             // dialect) register as string locals: template interpolation
@@ -1113,10 +1793,19 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
         .body
         .as_ref()
         .ok_or("ts_frontend: function overloads/declarations unsupported")?;
+    check_return_contract(
+        &name,
+        &body.statements,
+        return_ann_money(f),
+    )?;
 
     // forward-scan bigint lets (CPS lowering means let-site registration
     // runs after statements that reference the binding — see scan_bigint_lets)
     scan_bigint_lets(&body.statements);
+    // F3: whole-function closure-safety analysis BEFORE lowering — the
+    // lowering hoists/reorders statements, so lowering-time checks see
+    // assignments/arrows out of order. Static pass sees the full body.
+    check_fn_closure_safety(&body.statements)?;
 
     // view convention: get_* functions' returns become json_return_str
     // (the define tail value alone does not call value_return)
@@ -1128,6 +1817,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
     // wrapper passes the stdin input string as the argument (the NEAR
     // near/json_get_str host op does not exist on the OutLayer runtime).
     let wasi_mode = TS_WASI_MODE.with(|m| m.get());
+    let mut impl_define: Option<LispVal> = None;
     let expr = if exported && !wasi_mode {
         if !param_names.is_empty() {
             let bindings = param_names
@@ -1148,7 +1838,41 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
             let inner = lower_block_tail(&body.statements, view)?;
             NUM_PARAM_NAMES.with(|s| s.borrow_mut().clear());
             OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
-            list(vec![Sym("let"), list(bindings), inner])
+            OBJECT_PARAMS.with(|s| s.borrow_mut().clear());
+            // Raw-twin entry split (2026-10-03): when every param is
+            // `number` and the return is `number`, emit
+            //   (define (__impl_f x y) :: int int -> int BODY)
+            //   (define (f) (let ((x (str->num ..)) ...) (__impl_f x y)))
+            // The impl's annotation feeds fn_int_annotations → the raw-i64
+            // twin fires, and the entry's call routes through the twin's
+            // untag/retag boundary (call.rs raw-twin fast path). String/
+            // array/object/bigint params keep the old inline-let shape.
+            // Fail-closed: any body form outside the int subset kills the
+            // twin at emit time and everything runs the tagged path, so
+            // behavior can only match — never diverge.
+            let ret_int = ts_ann_to_lisp(f.return_type.as_ref().map(|v| &**v)) == Some("int");
+            if ret_int && param_names.iter().all(|(_, k)| *k == 1) {
+                let impl_name = format!("__impl_{}", name);
+                let mut impl_sig = vec![Sym(impl_name.clone())];
+                for (n, _) in &param_names {
+                    impl_sig.push(Sym(n.clone()));
+                }
+                let mut impl_items = vec![Sym("define"), list(impl_sig), Sym("::".to_string())];
+                for _ in &param_names {
+                    impl_items.push(Sym("int".to_string()));
+                }
+                impl_items.push(Sym("->".to_string()));
+                impl_items.push(Sym("int".to_string()));
+                impl_items.push(inner);
+                impl_define = Some(list(impl_items));
+                let mut call_items = vec![Sym(impl_name)];
+                for (n, _) in &param_names {
+                    call_items.push(Sym(n.clone()));
+                }
+                list(vec![Sym("let"), list(bindings), list(call_items)])
+            } else {
+                list(vec![Sym("let"), list(bindings), inner])
+            }
         } else {
             lower_block_tail(&body.statements, view)?
         }
@@ -1191,7 +1915,13 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, LispVal
     }
 
     define_items.push(expr);
-    Ok((name, list(define_items)))
+    // The entry define stays under `name` (the export references it). When
+    // the impl split fired, the impl define is emitted first so the twin
+    // exists before any caller compiles.
+    if let Some(impl_def) = impl_define {
+        return Ok((name, vec![impl_def, list(define_items)]));
+    }
+    Ok((name, vec![list(define_items)]))
 }
 
 /// A bare mid-function return: `return e;` as a statement at this level
@@ -1323,7 +2053,10 @@ fn lower_for_form(f: &oxc_ast::ast::ForStatement<'_>, view: bool) -> Result<Lisp
 /// Lower `do { body } while (test);` → (begin body (while test body)).
 /// Body lowers twice (pre-run + loop) — semantics-faithful, no exit
 /// protocol (reject_loop_exits applies).
-fn lower_do_while_form(d: &oxc_ast::ast::DoWhileStatement<'_>, view: bool) -> Result<LispVal, String> {
+fn lower_do_while_form(
+    d: &oxc_ast::ast::DoWhileStatement<'_>,
+    view: bool,
+) -> Result<LispVal, String> {
     reject_loop_exits(stmts_of(&d.body))?;
     let body = lower_prefix_around(stmts_of(&d.body), Num(0), view)?;
     let test = truthy(&d.test)?;
@@ -1340,7 +2073,10 @@ fn lower_do_while_form(d: &oxc_ast::ast::DoWhileStatement<'_>, view: bool) -> Re
 /// break; empty case bodies (case a: case b: …) are rejected too (write
 /// the body explicitly). return inside a case is rejected (use a flag
 /// variable, assign, then return after the switch).
-fn lower_switch_form(sw: &oxc_ast::ast::SwitchStatement<'_>, view: bool) -> Result<LispVal, String> {
+fn lower_switch_form(
+    sw: &oxc_ast::ast::SwitchStatement<'_>,
+    view: bool,
+) -> Result<LispVal, String> {
     let disc = lower_expr(&sw.discriminant)?;
     let has_default = sw.cases.iter().any(|c| c.test.is_none());
     // validate: exits, fallthrough, empties, dup defaults
@@ -1518,6 +2254,11 @@ fn lower_prefix_around_with_return(
                 if expr_is_stringy(init_e) || expr_is_str_method_call(init_e) {
                     mark_string_local(&name);
                 }
+                check_and_register_money_const(
+                    &name,
+                    declarator_ann_is_money(d),
+                    init_e,
+                )?;
                 if expr_has_call(init_e) {
                     // Impure initializer — hoist the binding with a nil dummy
                     // (unifies with any type per the checker), then guard the
@@ -1596,8 +2337,10 @@ fn lower_prefix_around_with_return(
             // the lowering hole). Force the blanket when the branch ENDS
             // in a direct return: the branch is a guaranteed return, and
             // the tail commit survives via the __fn_done guard.
-            let then_tail_return =
-                matches!(stmts_of(&i.consequent).last(), Some(Statement::ReturnStatement(_)));
+            let then_tail_return = matches!(
+                stmts_of(&i.consequent).last(),
+                Some(Statement::ReturnStatement(_))
+            );
             if (stmt_has_return(&i.consequent) && !is_commit_form(&then_e)) || then_tail_return {
                 // branch value becomes the function result
                 then_e = list(vec![
@@ -1866,6 +2609,11 @@ fn lower_prefix_around(
                 if expr_is_stringy(init_e) || expr_is_str_method_call(init_e) {
                     mark_string_local(&name);
                 }
+                check_and_register_money_const(
+                    &name,
+                    declarator_ann_is_money(d),
+                    init_e,
+                )?;
                 register_shape_fields(d, init_e);
                 bindings.push(list(vec![Sym(name), lower_expr(init_e)?]));
             }
@@ -3404,12 +4152,7 @@ fn lower_assign_form(asg: &oxc_ast::ast::AssignmentExpression<'_>) -> Result<Lis
             Ok(list(vec![
                 Sym("set!"),
                 Sym(obj_name.clone()),
-                list(vec![
-                    Sym("json-set"),
-                    Sym(obj_name),
-                    Str(path),
-                    val,
-                ]),
+                list(vec![Sym("json-set"), Sym(obj_name), Str(path), val]),
             ]))
         }
         oxc_ast::ast::AssignmentTarget::ComputedMemberExpression(cm) => {
@@ -3428,7 +4171,12 @@ fn lower_assign_form(asg: &oxc_ast::ast::AssignmentExpression<'_>) -> Result<Lis
                     list(vec![Sym("vec-nth"), obj.clone(), idx.clone()]),
                     rhs,
                 ]),
-                _ => return Err("ts_frontend: element writes support only = / += / -=".into()),
+                _ => {
+                    return Err("ts_frontend: element writes support only = / += / -= \
+                         (compound *= /= %= are plain-variable only; obj.prop \
+                         writes need jsonSet)"
+                        .into())
+                }
             };
             Ok(list(vec![Sym("vec-set!"), obj, idx, val]))
         }
@@ -3549,6 +4297,348 @@ fn expr_is_numberish(e: &Expression<'_>) -> bool {
     }
 }
 
+/// Collect every plain Identifier NAME appearing in an expression
+/// (member property names excluded — only value refs). Used by the F3
+/// closure-safety checks: capture detection (T4) and the dispatch-freeze
+/// scan on pipeline callback bodies. Deliberately over-approximates
+/// (shadowed params count too) — conservative hard errors only.
+fn expr_idents(e: &Expression<'_>, out: &mut Vec<String>) {
+    match e {
+        Expression::Identifier(id) => out.push(id.name.as_str().to_string()),
+        Expression::TemplateLiteral(t) => {
+            for x in &t.expressions {
+                expr_idents(x, out);
+            }
+        }
+        Expression::ArrayExpression(a) => {
+            for el in &a.elements {
+                if let Some(x) = el.as_expression() {
+                    expr_idents(x, out);
+                }
+            }
+        }
+        Expression::ObjectExpression(o) => {
+            for prop in &o.properties {
+                if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(pp) = prop {
+                    expr_idents(&pp.value, out);
+                }
+            }
+        }
+        Expression::BinaryExpression(b) => {
+            expr_idents(&b.left, out);
+            expr_idents(&b.right, out);
+        }
+        Expression::LogicalExpression(l) => {
+            expr_idents(&l.left, out);
+            expr_idents(&l.right, out);
+        }
+        Expression::UnaryExpression(u) => expr_idents(&u.argument, out),
+        Expression::UpdateExpression(_) => {}
+        Expression::ConditionalExpression(c) => {
+            expr_idents(&c.test, out);
+            expr_idents(&c.consequent, out);
+            expr_idents(&c.alternate, out);
+        }
+        Expression::ParenthesizedExpression(p) => expr_idents(&p.expression, out),
+        Expression::AwaitExpression(a) => expr_idents(&a.argument, out),
+        Expression::CallExpression(c) => {
+            expr_idents(&c.callee, out);
+            for a in &c.arguments {
+                if let Some(x) = a.as_expression() {
+                    expr_idents(x, out);
+                }
+            }
+        }
+        Expression::StaticMemberExpression(m) => expr_idents(&m.object, out),
+        Expression::ComputedMemberExpression(m) => {
+            expr_idents(&m.object, out);
+            expr_idents(&m.expression, out);
+        }
+        Expression::AssignmentExpression(a) => {
+            if let oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(id) = &a.left {
+                out.push(id.name.as_str().to_string());
+            }
+            expr_idents(&a.right, out);
+        }
+        Expression::ArrowFunctionExpression(_) => {
+            // lambda-lifted — its free vars were checked at its own site
+        }
+        _ => {}
+    }
+}
+
+fn stmt_exprs<'a>(st: &'a Statement<'a>, acc: &mut Vec<&'a Expression<'a>>) {
+    match st {
+        Statement::ReturnStatement(r) => {
+            if let Some(x) = &r.argument {
+                acc.push(x);
+            }
+        }
+        Statement::ExpressionStatement(x) => acc.push(&x.expression),
+        Statement::IfStatement(i) => {
+            acc.push(&i.test);
+            body_or_stmt(&i.consequent, acc);
+            if let Some(alt) = &i.alternate {
+                body_or_stmt(alt, acc);
+            }
+        }
+        Statement::BlockStatement(b) => stmts_exprs(&b.body, acc),
+        Statement::WhileStatement(w) => {
+            acc.push(&w.test);
+            body_or_stmt(&w.body, acc);
+        }
+        Statement::ForOfStatement(f) => {
+            acc.push(&f.right);
+            body_or_stmt(&f.body, acc);
+        }
+        Statement::VariableDeclaration(v) => {
+            for d in &v.declarations {
+                if let Some(x) = &d.init {
+                    acc.push(x);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn stmts_exprs<'a>(stmts: &'a [Statement<'a>], acc: &mut Vec<&'a Expression<'a>>) {
+    for st in stmts {
+        stmt_exprs(st, acc);
+    }
+}
+
+fn body_or_stmt<'a>(st: &'a Statement<'a>, acc: &mut Vec<&'a Expression<'a>>) {
+    match st {
+        Statement::BlockStatement(b) => stmts_exprs(&b.body, acc),
+        _ => stmt_exprs(st, acc),
+    }
+}
+
+/// All identifiers an arrow references beyond its params. Expression form
+/// walks directly; block form walks its statements' expressions (return/
+/// expr-stmt/if/while/for-of/decl inits cover the real body shapes).
+fn arrow_body_idents(a: &oxc_ast::ast::ArrowFunctionExpression<'_>) -> Vec<String> {
+    let mut out = Vec::new();
+    let params: Vec<String> = a
+        .params
+        .items
+        .iter()
+        .filter_map(|p| binding_name(&p.pattern).ok())
+        .collect();
+    if let Some(x) = a.get_expression() {
+        expr_idents(x, &mut out);
+    } else if let Some(fb) = a.get_function_body() {
+        let mut acc = Vec::new();
+        stmts_exprs(&fb.statements, &mut acc);
+        for x in acc {
+            expr_idents(x, &mut out);
+        }
+    }
+    out.retain(|n| !params.contains(n));
+    out
+}
+
+/// F3 (2026-10-04) — whole-function closure-safety analysis.
+///
+/// Run BEFORE lowering a function body, over the raw AST — the lowering
+/// pipeline hoists/reorders statements (impure-init prologue, early-return
+/// prefixes), so inline lowering-time checks see the sets in the wrong
+/// order. This static pass sees the complete picture:
+///
+/// - T4: an arrow capturing a local that is EVER assigned (`x = …`,
+///   `x += …`, `x++`) is a wasm landmine (closure cells are not
+///   per-invocation; bytecode fixed 2026-08-26, wasm NOT) → hard error
+///   naming the variable. Immutable capture is fine (probed end-to-end
+///   through wasm + interpreter 2026-10-04).
+/// - dispatch-freeze: a pipeline callback (.map/.filter/.reduce) that
+///   calls a lambda-initialized local emits an INVALID module (probed
+///   2026-10-04) → hard error suggesting inlining.
+/// - boundaries: an arrow literal as a direct call argument to a user
+///   fn can't cross function boundaries (unknown-function at emit) →
+///   hard error.
+///
+/// Deliberately over-approximate (nested shadowing not tracked) — every
+/// hit is a hard error, never a silent pass.
+struct ClosureScan {
+    assigned: Vec<String>,
+    lambda_init_locals: Vec<String>,
+    /// (free idents, is_pipeline_callback)
+    arrows: Vec<(Vec<String>, bool)>,
+    call_arg_arrow: bool,
+}
+
+fn scan_expr(e: &Expression<'_>, scan: &mut ClosureScan) {
+    match e {
+        Expression::AssignmentExpression(a) => {
+            if let oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(id) = &a.left {
+                scan.assigned.push(id.name.as_str().to_string());
+            }
+            scan_expr(&a.right, scan);
+        }
+        Expression::UpdateExpression(u) => {
+            if let oxc_ast::ast::SimpleAssignmentTarget::AssignmentTargetIdentifier(id) =
+                &u.argument
+            {
+                scan.assigned.push(id.name.as_str().to_string());
+            }
+        }
+        Expression::ArrowFunctionExpression(arrow) => {
+            scan.arrows.push((arrow_body_idents(arrow), false));
+            // nested content still contributes assignments/other arrows
+            if let Some(x) = arrow.get_expression() {
+                scan_expr(x, scan);
+            } else if let Some(fb) = arrow.get_function_body() {
+                scan_stmts_closure(&fb.statements, scan);
+            }
+        }
+        Expression::CallExpression(c) => {
+            scan_expr(&c.callee, scan);
+            let pipeline = match &c.callee {
+                Expression::StaticMemberExpression(sm) => {
+                    matches!(sm.property.name.as_str(), "map" | "filter" | "reduce")
+                }
+                _ => false,
+            };
+            for arg in &c.arguments {
+                let Some(ae) = arg.as_expression() else {
+                    continue;
+                };
+                match ae {
+                    Expression::ArrowFunctionExpression(arrow) => {
+                        if !pipeline {
+                            scan.call_arg_arrow = true;
+                        }
+                        scan.arrows.push((arrow_body_idents(arrow), pipeline));
+                        if let Some(x) = arrow.get_expression() {
+                            scan_expr(x, scan);
+                        } else if let Some(fb) = arrow.get_function_body() {
+                            scan_stmts_closure(&fb.statements, scan);
+                        }
+                    }
+                    _ => scan_expr(ae, scan),
+                }
+            }
+        }
+        Expression::BinaryExpression(b) => {
+            scan_expr(&b.left, scan);
+            scan_expr(&b.right, scan);
+        }
+        Expression::LogicalExpression(l) => {
+            scan_expr(&l.left, scan);
+            scan_expr(&l.right, scan);
+        }
+        Expression::UnaryExpression(u) => scan_expr(&u.argument, scan),
+        Expression::ConditionalExpression(cd) => {
+            scan_expr(&cd.test, scan);
+            scan_expr(&cd.consequent, scan);
+            scan_expr(&cd.alternate, scan);
+        }
+        Expression::ParenthesizedExpression(pe) => scan_expr(&pe.expression, scan),
+        Expression::AwaitExpression(a) => scan_expr(&a.argument, scan),
+        Expression::TemplateLiteral(t) => {
+            for x in &t.expressions {
+                scan_expr(x, scan);
+            }
+        }
+        Expression::ArrayExpression(a) => {
+            for el in &a.elements {
+                if let Some(x) = el.as_expression() {
+                    scan_expr(x, scan);
+                }
+            }
+        }
+        Expression::ObjectExpression(o) => {
+            for prop in &o.properties {
+                if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(pp) = prop {
+                    scan_expr(&pp.value, scan);
+                }
+            }
+        }
+        Expression::StaticMemberExpression(m) => scan_expr(&m.object, scan),
+        Expression::ComputedMemberExpression(m) => {
+            scan_expr(&m.object, scan);
+            scan_expr(&m.expression, scan);
+        }
+        _ => {}
+    }
+}
+
+fn scan_stmts_closure(stmts: &[Statement<'_>], scan: &mut ClosureScan) {
+    for st in stmts {
+        match st {
+            Statement::ExpressionStatement(x) => scan_expr(&x.expression, scan),
+            Statement::ReturnStatement(r) => {
+                if let Some(x) = &r.argument {
+                    scan_expr(x, scan);
+                }
+            }
+            Statement::VariableDeclaration(v) => {
+                for d in &v.declarations {
+                    if let (Some(init_e), Ok(name)) = (&d.init, binding_name(&d.id)) {
+                        if matches!(init_e, Expression::ArrowFunctionExpression(_)) {
+                            scan.lambda_init_locals.push(name.clone());
+                        }
+                        scan_expr(init_e, scan);
+                    }
+                }
+            }
+            _ => {
+                // if/while/for-of/blocks — generic statement-expression
+                // walker (assignment-statements surface as expression
+                // statements in oxc anyway).
+                let mut acc = Vec::new();
+                stmt_exprs(st, &mut acc);
+                for x in acc {
+                    scan_expr(x, scan);
+                }
+            }
+        }
+    }
+}
+
+/// Entry point: run all three F3 checks over a function body.
+fn check_fn_closure_safety(stmts: &[Statement<'_>]) -> Result<(), String> {
+    let mut scan = ClosureScan {
+        assigned: Vec::new(),
+        lambda_init_locals: Vec::new(),
+        arrows: Vec::new(),
+        call_arg_arrow: false,
+    };
+    scan_stmts_closure(stmts, &mut scan);
+
+    for (idents, is_callback) in &scan.arrows {
+        if *is_callback {
+            for n in idents {
+                if scan.lambda_init_locals.contains(n) {
+                    return Err(format!(
+                        "ts_frontend: pipeline callback calls lambda-valued local `{n}` — \
+dispatch-freeze landmine (emits invalid wasm). Inline the arrow's body or hoist the logic out"
+                    ));
+                }
+            }
+        } else {
+            for n in idents {
+                if scan.assigned.contains(n) {
+                    return Err(format!(
+                        "ts_frontend: arrow captures mutable local `{n}` — closure-over-set! is \
+unsupported on wasm (backend T4: cells not per-invocation). Copy it to a \
+fresh const before the arrow, or restructure"
+                    ));
+                }
+            }
+        }
+    }
+    if scan.call_arg_arrow {
+        return Err(
+            "ts_frontend: arrow as call argument unsupported — first-class \
+function values can't cross user-function boundaries (M1)"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// Does the expression contain any call? Used by lower_prefix_around_with_return
 /// to detect impure variable initializers that must be guarded after an early
 /// return (Bug 2: `const b = writeAndReturn(a)` wrote storage even when
@@ -3640,7 +4730,59 @@ fn lower_assignment(
             }
         }
         AssignmentOperator::Subtraction => list(vec![Sym("-"), Sym(v.clone()), rhs]),
-        _ => return Err("ts_frontend: only = / += / -= assignments supported".into()),
+        // Compound assigns (2026-10-04): *= /= expand to one op application;
+        // %= mirrors the binary `%` truncated-mod lowering (lisp `mod` is
+        // euclidean — wrong signs for negatives), binding the rhs ONCE via
+        // let (JS `x %= f()` runs f() exactly once).
+        AssignmentOperator::Multiplication => list(vec![Sym("*"), Sym(v.clone()), rhs]),
+        AssignmentOperator::Division => list(vec![Sym("/"), Sym(v.clone()), rhs]),
+        AssignmentOperator::Remainder => {
+            // lisp `mod` is euclidean (wrong signs for negatives) — mirror
+            // the binary `%` truncated form: v - rhs*(v/rhs). Bind-once via
+            // let when the rhs is impure (JS `x %= f()` runs f() once);
+            // a pure rhs may duplicate freely.
+            if expr_has_call(&asg.right) {
+                let r = format!("__mod_r_{}", v);
+                list(vec![
+                    Sym("let"),
+                    list(vec![list(vec![Sym(r.clone()), rhs])]),
+                    list(vec![
+                        Sym("-"),
+                        Sym(v.clone()),
+                        list(vec![
+                            Sym("*"),
+                            Sym(r.clone()),
+                            list(vec![Sym("/"), Sym(v.clone()), Sym(r)]),
+                        ]),
+                    ]),
+                ])
+            } else {
+                list(vec![
+                    Sym("-"),
+                    Sym(v.clone()),
+                    list(vec![
+                        Sym("*"),
+                        rhs.clone(),
+                        list(vec![Sym("/"), Sym(v.clone()), rhs]),
+                    ]),
+                ])
+            }
+        }
+        AssignmentOperator::Exponential => {
+            return Err("ts_frontend: **= unsupported — the NEAR typechecker/wasm \
+                 emitter have no power builtin (the interpreter-only `expt` \
+                 is not in the NEAR builtin set); use a helper with \
+                 repeated multiplication"
+                .into());
+        }
+        _ => {
+            return Err(
+                "ts_frontend: supported assignment operators: = += -= *= /= %= \
+                 (obj.prop compound writes stay unsupported — objects are \
+                 immutable JSON values; rebuild via jsonSet)"
+                    .into(),
+            )
+        }
     };
     Ok((v, out))
 }
@@ -4110,6 +5252,297 @@ fn expr_is_bigint(e: &Expression<'_>) -> bool {
     }
 }
 
+/// (2026-10-08) Is this expression money-domain? Identifier in
+/// MONEY_NAMES (annotated param, await result), a money-source call
+/// (deposit/balance reads), or nested raw arithmetic over either.
+/// NOTE: u128Xxx(...) calls are deliberately NOT money here — the
+/// bigint-shape machinery already routes any `+` touching them to the
+/// correct u128/* lowering, and gating them again would reject
+/// previously-valid mixed shapes.
+fn expr_is_money(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::Identifier(id) => MONEY_NAMES
+            .with(|s| s.borrow().iter().any(|x| *x == id.name.as_str())),
+        Expression::ParenthesizedExpression(pe) => expr_is_money(&pe.expression),
+        Expression::BinaryExpression(b) => {
+            matches!(
+                b.operator,
+                BinaryOperator::Addition
+                    | BinaryOperator::Subtraction
+                    | BinaryOperator::Multiplication
+                    | BinaryOperator::Division
+                    | BinaryOperator::Remainder
+            ) && (expr_is_money(&b.left) || expr_is_money(&b.right))
+        }
+        Expression::CallExpression(c) => match &c.callee {
+            Expression::StaticMemberExpression(sm) => {
+                matches!(&sm.object, Expression::Identifier(obj) if obj.name == "near")
+                    && matches!(
+                        sm.property.name.as_str(),
+                        "attachedDeposit"
+                            | "attachedDepositU128"
+                            | "accountBalance"
+                            | "loadU128"
+                            | "readU128"
+                    )
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// The gate predicate: BOTH operands money-domain. One-sided money `+`
+/// stays legal (prefix strings: `"total:" + amt` is concat by design).
+fn money_arithmetic<'a, 'b>(
+    l: &Expression<'a>,
+    r: &Expression<'b>,
+) -> bool {
+    expr_is_money(l) && expr_is_money(r)
+}
+
+/// u128 free-function family that RETURNS a u128 decimal string (the
+/// comparison fns return boolean and are excluded).
+fn u128_arith_call(c: &oxc_ast::ast::CallExpression<'_>) -> bool {
+    matches!(
+        &c.callee,
+        Expression::Identifier(id) if matches!(
+            id.name.as_str(),
+            "u128Add" | "u128Sub" | "u128Mul" | "u128MulDiv" | "u128Div" | "u128Mod"
+        )
+    )
+}
+
+/// STRICT: this expression's VALUE is a u128 decimal string — provable
+/// money, not display text. Deliberately NO binary ops: `"total:" + amt`
+/// is concat (a labeled string), not an amount — that is the whole point
+/// of the return-contract check.
+fn expr_is_u128_value(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::ParenthesizedExpression(pe) => expr_is_u128_value(&pe.expression),
+        Expression::Identifier(id) => {
+            let n = id.name.as_str();
+            MONEY_NAMES.with(|s| s.borrow().iter().any(|x| *x == n))
+                || BIGINT_NAMES.with(|s| s.borrow().iter().any(|x| *x == n))
+                || BIGINT_LOCALS.with(|s| s.borrow().iter().any(|x| *x == n))
+        }
+        Expression::AwaitExpression(a) => expr_is_u128_value(&a.argument),
+        Expression::StringLiteral(s) => s.value.parse::<u128>().is_ok(),
+        Expression::ConditionalExpression(c) => {
+            expr_is_u128_value(&c.consequent) && expr_is_u128_value(&c.alternate)
+        }
+        Expression::CallExpression(c) => {
+            u128_arith_call(c)
+                || matches!(&c.callee, Expression::StaticMemberExpression(sm)
+                    if matches!(&sm.object, Expression::Identifier(obj) if obj.name == "near")
+                    && matches!(
+                        sm.property.name.as_str(),
+                        "attachedDeposit" | "attachedDepositU128"
+                            | "accountBalance" | "loadU128" | "readU128"
+                    ))
+        }
+        _ => false,
+    }
+}
+
+/// Does this function's return annotation promise money — either directly
+/// (`: Yocto`) or wrapped (`Promise<Yocto>`)? Names the built-in trio or a
+/// registered alias.
+fn return_ann_money(f: &oxc_ast::ast::Function<'_>) -> bool {
+    let Some(t) = f.return_type.as_ref().map(|v| &**v) else {
+        return false;
+    };
+    let is_money_name = |n: &str| {
+        matches!(n, "Yocto" | "Amount" | "Money")
+            || MONEY_ALIASES.with(|m| m.borrow().iter().any(|x| x == n))
+    };
+    match &t.type_annotation {
+        oxc_ast::ast::TSType::TSTypeReference(r) => {
+            let oxc_ast::ast::TSTypeName::IdentifierReference(id) = &r.type_name else {
+                return false;
+            };
+            if id.name.as_str() == "Promise" {
+                if let Some(ta) = r.type_arguments.as_ref() {
+                    if let Some(first) = ta.params.first() {
+                        if let oxc_ast::ast::TSType::TSTypeReference(inner) = first {
+                            if let oxc_ast::ast::TSTypeName::IdentifierReference(iid) =
+                                &inner.type_name
+                            {
+                                return is_money_name(iid.name.as_str());
+                            }
+                        }
+                    }
+                }
+                return false;
+            }
+            is_money_name(id.name.as_str())
+        }
+        _ => false,
+    }
+}
+
+/// Walk a statement slice recursively; invoke `f` on every return argument.
+/// Mirrors stmts_have_deep_return's traversal (blocks, if/else, while, for).
+fn for_each_return_arg(
+    stmts: &[Statement<'_>],
+    f: &mut dyn FnMut(&Expression<'_>),
+) {
+    for s in stmts {
+        match s {
+            Statement::ReturnStatement(r) => {
+                if let Some(e) = r.argument.as_ref() {
+                    f(e);
+                }
+            }
+            Statement::BlockStatement(b) => {
+                for_each_return_arg(&b.body, f);
+            }
+            Statement::IfStatement(i) => {
+                for_each_return_arg(stmts_of(&i.consequent), f);
+                if let Some(alt) = i.alternate.as_ref() {
+                    for_each_return_arg(stmts_of(alt), f);
+                }
+            }
+            Statement::WhileStatement(w) => {
+                for_each_return_arg(stmts_of(&w.body), f);
+            }
+            Statement::ForStatement(fo) => {
+                for_each_return_arg(stmts_of(&fo.body), f);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Pre-pass for check_return_contract: register every
+/// `const x = await ...` / destructured-await binding as money so the
+/// return walk sees it. Mirrors the AwaitPoint scan's semantics.
+fn register_await_names(stmts: &[Statement<'_>]) {
+    for s in stmts {
+        match s {
+            Statement::VariableDeclaration(v) => {
+                for d in &v.declarations {
+                    let await_init = matches!(&d.init, Some(Expression::AwaitExpression(_)));
+                    let money_ann = declarator_ann_is_money(d);
+                    if await_init || money_ann {
+                        if let Ok(names) = pattern_names(&d.id) {
+                            for n in names {
+                                MONEY_NAMES.with(|s| s.borrow_mut().push(n));
+                            }
+                        }
+                    }
+                }
+            }
+            Statement::BlockStatement(b) => register_await_names(&b.body),
+            Statement::IfStatement(i) => {
+                register_await_names(stmts_of(&i.consequent));
+                if let Some(alt) = i.alternate.as_ref() {
+                    register_await_names(stmts_of(alt));
+                }
+            }
+            Statement::WhileStatement(w) => register_await_names(stmts_of(&w.body)),
+            Statement::ForStatement(fo) => register_await_names(stmts_of(&fo.body)),
+            _ => {}
+        }
+    }
+}
+
+/// Return CONTRACT: a function promising `Yocto`/`Amount` (or a Promise of
+/// one) must return a provable u128 value — await result, u128 arithmetic
+/// call, deposit/balance read, or a decimal string literal. Labeled strings
+/// (`"total:" + x`) are display text, not money: annotate `: Promise<string>`
+/// instead. This is the annotation made checkable.
+fn check_return_contract(
+    fname: &str,
+    body_stmts: &[Statement<'_>],
+    ret_money: bool,
+) -> Result<(), String> {
+    if !ret_money {
+        return Ok(());
+    }
+    // The lowering registers await-result names AFTER this check runs (the
+    // AwaitPoint scan at lowering time) — pre-register them here so
+    // `return a` after `const a = await ...` is provably money. The later
+    // registration pushing the same names again is harmless (membership).
+    register_await_names(body_stmts);
+    let mut bad: Option<String> = None;
+    for_each_return_arg(body_stmts, &mut |e| {
+        if bad.is_none() && !expr_is_u128_value(e) {
+            bad = Some(match e {
+                Expression::BinaryExpression(b)
+                    if matches!(
+                        b.operator,
+                        oxc_ast::ast::BinaryOperator::Addition
+                            | oxc_ast::ast::BinaryOperator::Subtraction
+                            | oxc_ast::ast::BinaryOperator::Multiplication
+                            | oxc_ast::ast::BinaryOperator::Division
+                            | oxc_ast::ast::BinaryOperator::Remainder
+                    ) && money_arithmetic(&b.left, &b.right) =>
+                    // the return IS money-op-money — the canonical raw-
+                    // arithmetic error is the precise diagnosis; the
+                    // contract check just caught it earlier (entry, not
+                    // lowering). Match the taint lint's wording verbatim.
+                    "raw arithmetic on money values (Yocto/Amount) corrupts u128 decimal strings — `+` concatenates, other ops use i64 math. Use the u128* family: u128Add(a, b), u128Sub(a, b), ...".into(),
+                Expression::BinaryExpression(b)
+                    if matches!(b.operator, oxc_ast::ast::BinaryOperator::Addition) =>
+                    "concatenation (`+` with a label) — annotate the fn `: Promise<string>`, or return the raw u128 value".into(),
+                _ => "not a provable u128 value — return an await result, u128Add(...), a deposit/balance read, or a decimal string".into(),
+            });
+        }
+    });
+    match bad {
+        Some(why) => Err(format!(
+            "ts_frontend: `{fname}` promises a money type (Yocto/Amount) but its return is {why}"
+        )),
+        None => Ok(()),
+    }
+}
+
+/// `const d: Yocto = ...` — a money-annotated declaration must initialize
+/// from a provable u128 value, and the name joins the taint registry.
+fn check_and_register_money_const(
+    name: &str,
+    ann_is_money: bool,
+    init: &Expression<'_>,
+) -> Result<(), String> {
+    if !ann_is_money {
+        return Ok(());
+    }
+    if !expr_is_u128_value(init) {
+        return Err(format!(
+            "ts_frontend: `const {name}` is annotated as a money type but its initializer is not a provable u128 value — use an await result, u128Add(...), a deposit/balance read, or a decimal string"
+        ));
+    }
+    MONEY_NAMES.with(|s| s.borrow_mut().push(name.to_string()));
+    Ok(())
+}
+
+/// `const d: Yocto = ...` — the declarator's id annotation names a money
+/// alias. BindingPattern has no type_annotation field; the idiom mirrors
+/// the type-alias walk at the top of the file (ann → TSTypeAnnotation).
+fn declarator_ann_is_money(d: &oxc_ast::ast::VariableDeclarator<'_>) -> bool {
+    // oxc 0.147: the annotation lives on the DECLARATOR (estree
+    // VariableDeclaratorId hoist), not on the binding identifier.
+    ann_is_money_alias(d.type_annotation.as_ref().map(|v| &**v))
+}
+
+/// `d: Yocto` / `x: Amount` / `m: Money` — the annotation names a money
+/// alias (the built-in trio, or an alias defined as one).
+fn ann_is_money_alias(t: Option<&oxc_ast::ast::TSTypeAnnotation<'_>>) -> bool {
+    let Some(a) = t else { return false };
+    match &a.type_annotation {
+        oxc_ast::ast::TSType::TSTypeReference(r) => match &r.type_name {
+            oxc_ast::ast::TSTypeName::IdentifierReference(id) => {
+                let n = id.name.as_str();
+                matches!(n, "Yocto" | "Amount" | "Money")
+                    || MONEY_ALIASES.with(|m| m.borrow().iter().any(|x| x == n))
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
     match e {
         Expression::NumericLiteral(n) => Ok(Num(n.value as i64)),
@@ -4260,30 +5693,56 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 list(vec![Sym("near/json_get_str"), Str(top)]),
                             ]));
                         }
-                    }
-                    let recv = lower_expr(base)?;
-                    // Object-param numeric prop: `user.votes` where the
-                    // annotation says number → auto str->num decode
-                    if let (Expression::Identifier(id), 1) = (base, path.len()) {
-                        if let Some(is_num) = OBJ_PARAM_PROPS.with(|s| {
-                            s.borrow()
-                                .iter()
-                                .find(|(n, _)| n == id.name.as_str())
-                                .and_then(|(_, props)| {
-                                    props
+                        // Object-param property read (`params.to`): the
+                        // param binds a DEAD nil — its entry prologue binds
+                        // (near/json_get_str "params"), a top-level args
+                        // key that never exists — so reads go through the
+                        // cached input getter with the dotted path. Same
+                        // nil-on-miss contract as the input handles above.
+                        // (BUG fix 2026-10-07: this read used to lower to
+                        // (json-get-str "to" params) → silent nil at
+                        // runtime while compiling clean.) Number-typed
+                        // leaf fields keep the auto str->num decode the
+                        // old dead-binding arm performed.
+                        if OBJECT_PARAMS
+                            .with(|s| s.borrow().iter().any(|x| x == id.name.as_str()))
+                        {
+                            let dotted: Vec<&str> = path.iter().rev().map(|s| s.as_str()).collect();
+                            let get = if dotted.len() == 1 {
+                                list(vec![
+                                    Sym("near/json_get_str"),
+                                    Str(dotted.join(".")),
+                                ])
+                            } else {
+                                let top = dotted[0].to_string();
+                                let rest = dotted[1..].join(".");
+                                list(vec![
+                                    Sym("json-get-str"),
+                                    Str(rest),
+                                    list(vec![Sym("near/json_get_str"), Str(top)]),
+                                ])
+                            };
+                            let is_num_leaf = dotted.len() == 1
+                                && OBJ_PARAM_PROPS.with(|s| {
+                                    s.borrow()
                                         .iter()
-                                        .find(|(k, _)| k.as_str() == path[0].as_str())
-                                        .map(|(_, num)| *num)
+                                        .find(|(n, _)| n == id.name.as_str())
+                                        .and_then(|(_, props)| {
+                                            props
+                                                .iter()
+                                                .find(|(k, _)| k.as_str() == dotted[0])
+                                                .map(|(_, num)| *num)
+                                        })
                                 })
-                        }) {
-                            if is_num {
-                                return Ok(list(vec![
-                                    Sym("str->num"),
-                                    list(vec![Sym("json-get-str"), Str(path[0].clone()), recv]),
-                                ]));
-                            }
+                                .unwrap_or(false);
+                            return Ok(if is_num_leaf {
+                                list(vec![Sym("str->num"), get])
+                            } else {
+                                get
+                            });
                         }
                     }
+                    let recv = lower_expr(base)?;
                     let dotted = path.iter().rev().cloned().collect::<Vec<_>>().join(".");
                     Ok(list(vec![Sym("json-get-str"), Str(dotted), recv]))
                 }
@@ -4415,6 +5874,29 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     }
                 }
             }
+            // (2026-10-08) Money-taint gate: raw arithmetic on TWO
+            // money-domain values corrupts u128 decimal strings — `+`
+            // concatenates (balances merge instead of summing), - * / %
+            // use i64 math (truncation). Fires only when both sides are
+            // money (MONEY_NAMES idents = await results + annotated
+            // params/locals, deposit/balance reads, nested raw money
+            // arith). Bigint-shaped operands dispatched above to u128/*;
+            // one-sided money `+` stays legal (prefix concat: "total:" +
+            // amt is the DSL's display idiom).
+            if matches!(
+                b.operator,
+                BinaryOperator::Addition
+                    | BinaryOperator::Subtraction
+                    | BinaryOperator::Multiplication
+                    | BinaryOperator::Division
+                    | BinaryOperator::Remainder
+            ) && money_arithmetic(&b.left, &b.right)
+            {
+                return Err(
+                    "ts_frontend: raw arithmetic on money values (Yocto/Amount) corrupts u128 decimal strings — `+` concatenates, other ops use i64 math. Use the u128* family: u128Add(a, b), u128Sub(a, b), ...".into(),
+                );
+            }
+
             // stringy +: fold into nested binary str-cat (checker's + is num-only;
             // any string literal / template operand ⇒ concat semantics)
             if b.operator == BinaryOperator::Addition
@@ -4501,6 +5983,17 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 BinaryOperator::ShiftLeft => "shl",
                 BinaryOperator::ShiftRight => "shr",
                 BinaryOperator::ShiftRightZeroFill => "shr",
+                BinaryOperator::Exponential => {
+                    // No power builtin exists in the NEAR typechecker/wasm
+                    // emitter (the interpreter-only `expt` is not in the
+                    // NEAR builtin set — probe E, 2026-10-04). Hard error,
+                    // never a silent wrong lowering.
+                    return Err("ts_frontend: `**` unsupported — no power builtin in the \
+                         NEAR typechecker/wasm emitter (interpreter-only `expt` is \
+                         not in the NEAR builtin set); use a helper with repeated \
+                         multiplication"
+                        .into());
+                }
                 _ => {
                     return Err(
                         "ts_frontend: exponent/assign-ops in expressions not supported".into(),
@@ -4514,16 +6007,44 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             ]))
         }
         Expression::LogicalExpression(l) => {
-            // Short-circuit, boolean-valued — NOT JS value semantics.
-            // Both arms lowered to bool type so the if-form is type-consistent.
-            let a = to_bool(&l.left)?;
-            let b = to_bool(&l.right)?;
+            // && / ||: JS VALUE semantics (2026-10-04) — `a || b` yields a
+            // when a is truthy else b; `a && b` yields b when a is truthy
+            // else a. The left operand is let-bound so it evaluates AT MOST
+            // once (`f() || x` runs f exactly once); the branch test is the
+            // RAW bound value — emit_cond_branch truthiness (falsy = {Bool
+            // false, Nil, Num 0}; STR — including "" — is truthy, the
+            // documented M2 boundary mirroring `if (s)`). Replaces the old
+            // always-0/1 boolean coercion.
+            let lv_and = |t: &str, a_val: LispVal, b_val: LispVal| {
+                list(vec![
+                    Sym("let"),
+                    list(vec![list(vec![Sym(t.to_string()), a_val])]),
+                    list(vec![
+                        Sym("if"),
+                        Sym(t.to_string()),
+                        b_val,
+                        Sym(t.to_string()),
+                    ]),
+                ])
+            };
             Ok(match l.operator {
-                LogicalOperator::And => {
-                    list(vec![Sym("if"), a, b, list(vec![Sym("="), Num(1), Num(0)])])
-                }
+                LogicalOperator::And => lv_and(
+                    &format!("__lv_and{}", l.span.start),
+                    lower_expr(&l.left)?,
+                    lower_expr(&l.right)?,
+                ),
                 LogicalOperator::Or => {
-                    list(vec![Sym("if"), a, list(vec![Sym("="), Num(1), Num(1)]), b])
+                    let t = format!("__lv_or{}", l.span.start);
+                    list(vec![
+                        Sym("let"),
+                        list(vec![list(vec![Sym(t.clone()), lower_expr(&l.left)?])]),
+                        list(vec![
+                            Sym("if"),
+                            Sym(t.clone()),
+                            Sym(t),
+                            lower_expr(&l.right)?,
+                        ]),
+                    ])
                 }
                 // `a ?? b` — value-level nil-handling: (default a b).
                 // JSON API v3 (2026-09-15): `handle.prop ?? fb` dispatches on
@@ -4738,8 +6259,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                             // minted an unknown Math/pow symbol instead.
                             if c.arguments.len() != 2 {
                                 return Err(
-                                    "ts_frontend: Math.pow takes exactly two arguments (M1)"
-                                        .into(),
+                                    "ts_frontend: Math.pow takes exactly two arguments (M1)".into(),
                                 );
                             }
                             let mut items = vec![Sym("expt")];
@@ -5100,9 +6620,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     (&sm.object, sm.property.name.as_str())
                 {
                     if o.name == "near" && c.arguments.len() == 1 {
-                        let a = c
-                            .arguments
-                            [0]
+                        let a = c.arguments[0]
                             .as_expression()
                             .ok_or("ts_frontend: bad depositGte arg")?;
                         if let Expression::BigIntLiteral(b) = a {
@@ -5112,7 +6630,8 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 .map(|s| s.as_str().trim_end_matches('n'))
                                 .unwrap_or_default();
                             let v = raw.parse::<u128>().map_err(|_| {
-                                "ts_frontend: depositGte bigint literal out of u128 range".to_string()
+                                "ts_frontend: depositGte bigint literal out of u128 range"
+                                    .to_string()
                             })?;
                             return Ok(list(vec![
                                 Sym("near/deposit-gte"),
@@ -5120,17 +6639,212 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 Num((v >> 64) as i64),
                             ]));
                         }
-                        return Err(
-                            "ts_frontend: depositGte takes (lo64, hi64) numbers or ONE \
+                        return Err("ts_frontend: depositGte takes (lo64, hi64) numbers or ONE \
                              bigint literal, e.g. depositGte(12000000000000000000000n)"
-                                .into(),
-                        );
+                            .into());
+                    }
+                }
+            }
+            // near.db.* (2026-10-07): MUST run before callee_name — the
+            // callee `near.db.key` is a 2-level member chain, which
+            // callee_name rejects ("nested member chains not in M1").
+            // near.db.<method>(…) desugars onto the PROVEN storage family
+            // — pure frontend aliasing, checker/emitter/runtime untouched:
+            //   key(k) → (near/storage_get k)     opt str; `?? "d"` unwraps
+            //   put(k,v) → (near/storage_set k v) string in, string at rest
+            //   has(k) → (near/storage_has k)     bool
+            //   del(k) → (near/storage_remove k)  nil
+            //   keys(p) → the storage_cleaner drain loop
+            //     (examples/storage_cleaner.lisp shape — nil-guard exits,
+            //     NOT truthiness: numeric 0 is truthy in this lisp),
+            //     compiled to a vec via (list) + vec-push. Rides the
+            //     ENGINE-level storage-iter builtins (host fns 36/38,
+            //     tests/test_storage_iter.rs) — the PROTOCOL's
+            //     storage_iter_* host ABI is deprecated (near-vm-runner
+            //     0.37.3 answers HostError::Deprecated) and is never
+            //     emitted.
+            if let Expression::StaticMemberExpression(sm2) = &c.callee {
+                if let Expression::StaticMemberExpression(db2) = &sm2.object {
+                    if let Expression::Identifier(ns_o) = &db2.object {
+                    if ns_o.name == "near" && db2.property.name.as_str() == "db" {
+                            let method = sm2.property.name.as_str();
+                            let mut db_args = Vec::new();
+                            for a in &c.arguments {
+                                db_args.push(
+                                    a.as_expression()
+                                        .ok_or("ts_frontend: bad near.db argument (M1)")?,
+                                );
+                            }
+                            return match (method, db_args.len()) {
+                                ("key", 1) => Ok(list(vec![
+                                    Sym("near/storage_get"),
+                                    lower_expr(db_args[0])?,
+                                ])),
+                                ("put", 2) => Ok(list(vec![
+                                    Sym("near/storage_set"),
+                                    lower_expr(db_args[0])?,
+                                    lower_expr(db_args[1])?,
+                                ])),
+                                ("has", 1) => Ok(list(vec![
+                                    Sym("near/storage_has"),
+                                    lower_expr(db_args[0])?,
+                                ])),
+                                ("del", 1) => Ok(list(vec![
+                                    Sym("near/storage_remove"),
+                                    lower_expr(db_args[0])?,
+                                ])),
+                                ("keys", 1) => {
+                                    let kv = lower_expr(db_args[0])?;
+                                    Ok(list(vec![
+                                        Sym("let*"),
+                                        list(vec![
+                                            list(vec![
+                                                Sym("__dbk_it"),
+                                                list(vec![
+                                                    Sym("storage-iter-prefix"),
+                                                    kv,
+                                                ]),
+                                            ]),
+                                            list(vec![
+                                                Sym("__dbk_cur"),
+                                                list(vec![
+                                                    Sym("storage-iter-next"),
+                                                    Sym("__dbk_it"),
+                                                ]),
+                                            ]),
+                                            list(vec![
+                                                Sym("__dbk_acc"),
+                                                list(vec![Sym("list")]),
+                                            ]),
+                                        ]),
+                                        list(vec![
+                                            Sym("begin"),
+                                            list(vec![
+                                                Sym("while"),
+                                                list(vec![
+                                                    Sym("!="),
+                                                    Sym("__dbk_cur"),
+                                                    LispVal::Nil,
+                                                ]),
+                                                list(vec![
+                                                    Sym("begin"),
+                                                    list(vec![
+                                                        Sym("set!"),
+                                                        Sym("__dbk_acc"),
+                                                        list(vec![
+                                                            Sym("vec-push"),
+                                                            Sym("__dbk_acc"),
+                                                            Sym("__dbk_cur"),
+                                                        ]),
+                                                    ]),
+                                                    list(vec![
+                                                        Sym("set!"),
+                                                        Sym("__dbk_cur"),
+                                                        list(vec![
+                                                            Sym("storage-iter-next"),
+                                                            Sym("__dbk_it"),
+                                                        ]),
+                                                    ]),
+                                                    Num(0),
+                                                ]),
+                                            ]),
+                                            Sym("__dbk_acc"),
+                                        ]),
+                                    ]))
+                                }
+                                ("key", _) => {
+                                    Err("ts_frontend: near.db.key takes (key)".into())
+                                }
+                                ("put", _) => {
+                                    Err("ts_frontend: near.db.put takes (key, value)".into())
+                                }
+                                ("has", _) => {
+                                    Err("ts_frontend: near.db.has takes (key)".into())
+                                }
+                                ("del", _) => {
+                                    Err("ts_frontend: near.db.del takes (key)".into())
+                                }
+                                ("keys", _) => {
+                                    Err("ts_frontend: near.db.keys takes (prefix)".into())
+                                }
+                                _ => Err(format!(
+                                    "ts_frontend: unknown near.db method `{method}` — key/put/has/del/keys"
+                                )),
+                            };
+                        }
                     }
                 }
             }
             let head = callee_name(&c.callee)?;
             // blockTimestampNum() → RAW numeric ns (alias for the host op
             // — near/block_timestamp_num doesn't exist)
+            // ── ergonomics-v2 builtins (2026-10-07) ─────────────────────
+            // assert(cond, msg) → (if cond 0 (near/panic msg)). Special
+            // form (not a function): near/panic : str → any makes ANY
+            // typed branch unify. Statement position discards the 0.
+            if head == "assert" {
+                if c.arguments.len() != 2 {
+                    return Err("ts_frontend: assert takes exactly (cond, msg)".into());
+                }
+                let a0 = c.arguments[0]
+                    .as_expression()
+                    .ok_or("ts_frontend: bad assert cond")?;
+                let a1 = c.arguments[1]
+                    .as_expression()
+                    .ok_or("ts_frontend: bad assert msg")?;
+                return Ok(list(vec![
+                    Sym("if"),
+                    lower_expr(a0)?,
+                    Num(0),
+                    list(vec![Sym("near/panic"), lower_expr(a1)?]),
+                ]));
+            }
+            // near.event(name, {…}) → (near/log (json-quote …)). Host op
+            // exists (near/log, fn 28); object literal already encodes to
+            // JSON text via lower_object_literal. Standard event JSON:
+            // {"event":name,"data":{…}}.
+            if head == "near/event" {
+                if c.arguments.len() != 2 {
+                    return Err(
+                        "ts_frontend: near.event takes exactly (name, objectLiteral)".into(),
+                    );
+                }
+                let a1 = c.arguments[1]
+                    .as_expression()
+                    .ok_or("ts_frontend: bad near.event payload")?;
+                let payload = match a1 {
+                    Expression::ObjectExpression(_) => lower_expr(a1)?,
+                    _ => {
+                        return Err(
+                            "ts_frontend: near.event payload must be an object literal".into()
+                        )
+                    }
+                };
+                let name_e = c.arguments[0]
+                    .as_expression()
+                    .ok_or("ts_frontend: bad near.event name")?;
+                // payload is ALREADY encoded JSON text (lower_object_literal
+                // → json-set chain) — json-set embeds it raw as the "data"
+                // value. json-quote wraps the assembled object text.
+                let name_v = lower_expr(name_e)?;
+                return Ok(list(vec![
+                    Sym("near/log"),
+                    list(vec![
+                        Sym("json-quote"),
+                        list(vec![
+                            Sym("json-set"),
+                            list(vec![
+                                Sym("json-set"),
+                                Str("{}".to_string()),
+                                Str("event".to_string()),
+                                list(vec![Sym("json-quote"), name_v]),
+                            ]),
+                            Str("data".to_string()),
+                            payload,
+                        ]),
+                    ]),
+                ]));
+            }
             let head = if head == "near/block_timestamp_num" {
                 "near/block_timestamp".to_string()
             } else {
@@ -5184,11 +6898,8 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             {
                 if let Some(a) = c.arguments[0].as_expression() {
                     if expr_is_missable_getter(a) {
-                        let shielded = list(vec![
-                            Sym("default"),
-                            items[1].clone(),
-                            Str(String::new()),
-                        ]);
+                        let shielded =
+                            list(vec![Sym("default"), items[1].clone(), Str(String::new())]);
                         items[1] = shielded;
                     }
                 }
@@ -5340,6 +7051,7 @@ fn statically_bool(e: &Expression<'_>) -> bool {
         || is_not
         || bool_lit
         || bool_call
+        || matches!(e, Expression::BooleanLiteral(_))
         || matches!(
             e,
             Expression::BinaryExpression(b) if matches!(
@@ -5411,7 +7123,10 @@ fn callee_name(e: &Expression<'_>) -> Result<String, String> {
             // (or worse, silently no-ops). Warn at compile time instead
             // (2026-09-30). Generic lowering stays — the d.ts surface is a
             // convention, not a whitelist (near.returnStr works pre-d.ts).
-            if obj == "near" && !known_near_member(s.property.name.as_str()) {
+            if obj == "near" && s.property.name.as_str() == "event" {
+                // documented surface (d.ts + KNOWN_NEAR_MEMBERS); lowering
+                // is the near/event special form in the call path below
+            } else if obj == "near" && !known_near_member(s.property.name.as_str()) {
                 eprintln!(
                     "[warn] ts_frontend: near.{} is not in the known host surface — \
                      lowering to `{}`. If that op doesn't exist, this traps at \
@@ -5426,56 +7141,150 @@ fn callee_name(e: &Expression<'_>) -> Result<String, String> {
     }
 }
 
+/// The known near.* member surface — DATA, not a hand-rolled matches!().
+/// Enforced byte-for-byte against ts/lisp-rlm.d.ts's `declare const near`
+/// block by tests/ts_surface_dts_parity.rs (both directions). Adding a
+/// builtin means: d.ts entry + this table in the same commit, or the
+/// parity test fails. Keep order alphabetical within each group.
+pub const KNOWN_NEAR_MEMBERS: &[&str] = &[
+    // namespaces (near.db.* — methods gated by KNOWN_DB_MEMBERS below)
+    "db",
+    // events
+    "event",
+    // input/args
+    "jsonGetStr",
+    "jsonGetInt",
+    "jsonGetArr",
+    "jsonArr",
+    "jsonGet",
+    "jsonSet",
+    "jsonQuote",
+    "jsonExtract",
+    "jsonReturnStr",
+    "jsonReturnInt",
+    // identity / env
+    "predecessorAccountId",
+    "signerAccountId",
+    "currentAccountId",
+    "signerAccountPk",
+    "blockIndex",
+    "blockHeight",
+    "blockTimestamp",
+    "blockTimestampNum",
+    "prepaidGas",
+    "usedGas",
+    "storageUsage",
+    "accountBalance",
+    "attachedDeposit",
+    "attachedDepositLow",
+    "attachedDepositHigh",
+    "attachedDepositU128",
+    "depositGte",
+    "input",
+    // storage
+    "storageGet",
+    "storageSet",
+    "storageRemove",
+    "storageHas",
+    "storageHasKey",
+    "iterPrefix",
+    "iterNext",
+    // returns / control
+    "returnStr",
+    "log",
+    "logNum",
+    "panic",
+    "abort",
+    // money
+    "transfer",
+    "transferU128",
+    "storeU128",
+    "readU128",
+    "loadU128",
+    // hashes / crypto (precompiles)
+    "sha256",
+    "keccak256",
+    "keccak512",
+    "ripemd160",
+    "randomSeed",
+    "hexDecode",
+    "hexEncode",
+    "sha256Hash",
+    "keccak256Hash",
+    "ed25519Verify",
+    "ecrecover",
+    "vrfGenerate",
+    "schnorrVerify",
+    "schnorrSign",
+    "schnorrSignPk",
+    "schnorrPubkey",
+    "schnorrPubkey33",
+    "p256Verify",
+    "altBn128PairingCheck",
+    "altBn128G1Sum",
+    "altBn128G1Multiexp",
+    "altBn128G2Sum",
+    "bls12381PairingCheck",
+    "bls12381P1Sum",
+    "bls12381P2Sum",
+    "bls12381G1Multiexp",
+    "bls12381G2Multiexp",
+    "bls12381MapFpToG1",
+    "bls12381MapFp2ToG2",
+    "bls12381P1Decompress",
+    "bls12381P2Decompress",
+    "blsG1Sum",
+    "blsG2Sum",
+    // promises
+    "all",
+    "promiseCreate",
+    "promiseThen",
+    "promiseAnd",
+    "promiseReturn",
+    "promiseResult",
+    "promiseSucceeded",
+    "promiseResultsCount",
+    "promiseBatchCreate",
+    "promiseBatchThen",
+    "promiseBatchActionTransfer",
+    "promiseBatchActionFunctionCall",
+    "promiseBatchActionFunctionCallWeight",
+    "promiseBatchActionCreateAccount",
+    "promiseBatchActionDeployGlobalContract",
+    "promiseBatchActionDeployGlobalContractByAccountId",
+    "promiseBatchActionUseGlobalContract",
+    "promiseBatchActionUseGlobalContractByAccountId",
+    "promiseBatchActionAddKeyWithFullAccess",
+    "promiseBatchActionAddGasKeyWithFullAccess",
+    "promiseBatchActionAddKeyWithFunctionCall",
+    "promiseBatchActionAddGasKeyWithFunctionCall",
+    "promiseBatchActionTransferToGasKey",
+    "promiseBatchActionDeleteKey",
+    "promiseBatchActionStake",
+    "promiseBatchActionDeleteAccount",
+    "promiseYieldCreate",
+    "promiseYieldResume",
+    "yieldCreate",
+    "yieldResume",
+    "callAwait",
+    "call",
+];
+
 /// The known near.* member surface (keep in sync with ts/lisp-rlm.d.ts —
-/// the warning above only exists to catch typos, not to close the door on
-/// undocumented host ops).
+/// parity is ENFORCED by tests/ts_surface_dts_parity.rs; the warning below
+/// only exists to catch typos, not to close the door on undocumented host
+/// ops).
 fn known_near_member(p: &str) -> bool {
-    matches!(
-        p,
-        // input/args
-        "jsonGetStr" | "jsonGetInt" | "jsonGetArr" | "jsonArr" | "jsonGet" | "jsonSet"
-            | "jsonQuote" | "jsonExtract" | "jsonReturnStr" | "jsonReturnInt"
-        // identity / env
-            | "predecessorAccountId" | "signerAccountId" | "currentAccountId"
-            | "signerAccountPk" | "blockIndex" | "blockHeight" | "blockTimestamp"
-            | "blockTimestampNum" | "prepaidGas" | "usedGas" | "storageUsage"
-            | "accountBalance" | "attachedDepositLow" | "attachedDepositHigh"
-            | "depositGte"
-        // storage
-            | "storageGet" | "storageSet" | "storageRemove" | "storageHas"
-            | "storageHasKey" | "iterPrefix"
-        // returns / control
-            | "returnStr" | "log" | "logNum" | "panic" | "abort"
-        // money
-            | "transfer" | "transferU128" | "storeU128" | "readU128"
-        // promises
-            | "promiseCreate" | "promiseThen" | "promiseAnd" | "promiseReturn"
-            | "promiseResult" | "promiseSucceeded" | "promiseResultsCount"
-            | "promiseBatchCreate" | "promiseBatchThen"
-            | "promiseBatchActionTransfer" | "promiseBatchActionFunctionCall"
-            | "promiseBatchActionFunctionCallWeight"
-            | "promiseBatchActionCreateAccount"
-            | "promiseBatchActionDeployGlobalContract"
-            | "promiseBatchActionDeployGlobalContractByAccountId"
-            | "promiseBatchActionUseGlobalContract"
-            | "promiseBatchActionUseGlobalContractByAccountId"
-            | "promiseBatchActionAddKeyWithFullAccess"
-            | "promiseBatchActionAddGasKeyWithFullAccess"
-            | "promiseBatchActionAddKeyWithFunctionCall"
-            | "promiseBatchActionAddGasKeyWithFunctionCall"
-            | "promiseBatchActionTransferToGasKey"
-            | "promiseBatchActionDeleteKey" | "promiseBatchActionStake"
-            | "promiseBatchActionDeleteAccount"
-            | "promiseYieldCreate" | "promiseYieldResume"
-            | "yieldCreate" | "yieldResume"
-            | "callAwait" | "call"
-        // crypto
-            | "sha256Hash" | "keccak256Hash" | "hexDecode" | "hexEncode"
-            | "ed25519Verify" | "schnorrVerify" | "schnorrSign" | "schnorrSignPk"
-            | "schnorrPubkey" | "schnorrPubkey33" | "vrfGenerate"
-            | "p256Verify" | "altBn128PairingCheck" | "bls12381PairingCheck"
-            | "altBn128G1Sum" | "altBn128G2Sum" | "blsG1Sum" | "blsG2Sum"
-    )
+    KNOWN_NEAR_MEMBERS.contains(&p)
+}
+
+/// Known near.db.* method surface — parity-enforced against the d.ts
+/// `db: { … }` block by tests/ts_surface_dts_parity.rs (both directions),
+/// same rule as KNOWN_NEAR_MEMBERS.
+pub const KNOWN_DB_MEMBERS: &[&str] = &["del", "has", "key", "keys", "put"];
+
+fn known_db_member(p: &str) -> bool {
+    KNOWN_DB_MEMBERS.contains(&p)
 }
 
 /// Bare getter calls that yield NIL on a miss (jsonGetStr / near.jsonGetStr /
@@ -5642,6 +7451,7 @@ fn map_builtin_call(name: &str) -> String {
         "u128Add" => "u128/add",
         "u128Sub" => "u128/sub",
         "u128Mul" => "u128/mul",
+        "u128MulDiv" => "u128/muldiv",
         "u128Div" => "u128/div",
         "u128Mod" => "u128/mod",
         "u128Lt" => "u128/lt",
@@ -5721,7 +7531,15 @@ fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool)>> {
                 m.borrow()
                     .iter()
                     .find(|(k, _)| *k == name)
-                    .map(|(_, props)| props.clone())
+                    .and_then(|(_, props)| {
+                        if props.first().map(|(k, _)| k == SCALAR_ALIAS_MARK).unwrap_or(false) {
+                            // scalar alias (`type Money = string`) — a plain
+                            // param, not an object shape
+                            None
+                        } else {
+                            Some(props.clone())
+                        }
+                    })
             })
         }
         _ => None,
@@ -5744,30 +7562,47 @@ fn param_is_type_ref(p: &FormalParameter<'_>) -> bool {
     false
 }
 
+/// Marker first-element for SCALAR type aliases (`type Money = string`):
+/// param_object_props sees this and resolves the alias to None — the param
+/// is a plain str/int, NOT a kind-3 object param (an empty-props kind-3
+/// used to register a dead object binding and corrupt the entry ABI).
+const SCALAR_ALIAS_MARK: &str = "\u{0}scalar";
+
 /// Shape of a `type X = { prop: string; num: number; ... }` alias.
 fn alias_props(a: &oxc_ast::ast::TSTypeAliasDeclaration<'_>) -> Vec<(String, bool)> {
-    let oxc_ast::ast::TSType::TSTypeLiteral(lit) = &a.type_annotation else {
-        return Vec::new();
-    };
-    let mut props = Vec::new();
-    for m in &lit.members {
-        if let oxc_ast::ast::TSSignature::TSPropertySignature(sig) = m {
-            if let oxc_ast::ast::PropertyKey::StaticIdentifier(id) = &sig.key {
-                let is_num = matches!(
-                    sig.type_annotation.as_ref().map(|t| &t.type_annotation),
-                    Some(TSType::TSNumberKeyword(_))
-                );
-                props.push((id.name.as_str().to_string(), is_num));
+    match &a.type_annotation {
+        // `type Money = string` (u128-decimal ABI hover docs, 2026-10-07):
+        // SCALAR aliases record as marker ([] + is_scalar) so
+        // param_object_props resolves the ref to None (plain str param)
+        // instead of kind-3-empty (which used to register a dead
+        // object-param binding and corrupt the entry ABI).
+        oxc_ast::ast::TSType::TSStringKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false)],
+        oxc_ast::ast::TSType::TSNumberKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false)],
+        oxc_ast::ast::TSType::TSBigIntKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false)],
+        oxc_ast::ast::TSType::TSTypeLiteral(lit) => {
+            let mut props = Vec::new();
+            for m in &lit.members {
+                if let oxc_ast::ast::TSSignature::TSPropertySignature(sig) = m {
+                    if let oxc_ast::ast::PropertyKey::StaticIdentifier(id) = &sig.key {
+                        let is_num = matches!(
+                            sig.type_annotation.as_ref().map(|t| &t.type_annotation),
+                            Some(oxc_ast::ast::TSType::TSNumberKeyword(_))
+                        );
+                        props.push((id.name.as_str().to_string(), is_num));
+                    }
+                }
             }
+            props
         }
+        _ => Vec::new(),
     }
-    props
 }
 
 /// Register an object param's shape for read-time numeric decoding and
 /// encode-time raw embedding (side-channel, cleared with NUM_PARAM_NAMES
 /// after body lowering).
 fn register_obj_param(name: &str, props: Vec<(String, bool)>) {
+    OBJECT_PARAMS.with(|s| s.borrow_mut().push(name.to_string()));
     OBJ_PARAM_PROPS.with(|s| {
         s.borrow_mut().push((name.to_string(), props));
     });

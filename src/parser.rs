@@ -450,6 +450,70 @@ pub struct Spanned<T> {
     pub col: usize,
 }
 
+/// Annotate a checker error with a line number, Rust-side. Returns the
+/// message unchanged if it already carries "line N" (parse errors do) or
+/// if nothing matches. Resolution order:
+///   1. `'ident'` quoted in the message (type errors quote symbols:
+///      "undefined variable 'x' — not in scope") → first token exactly
+///      equal to the ident (string-token forms include quotes; strip them)
+///   2. fallback: first non-noise word in the message found as a token
+pub fn annotate_type_error(err: &str, input: &str) -> String {
+    annotate_type_error_label(err, input, "near")
+}
+
+/// label variants: "near" (real .lisp source), "ir" (lowered TS→lisp — the
+/// line refers to --dump-lisp output, not the author's TS file)
+pub fn annotate_type_error_label(err: &str, input: &str, label: &str) -> String {
+    if err.is_empty() || input.is_empty() {
+        return err.to_string();
+    }
+    // already spans? ("... at line 3" from the parser)
+    if err.contains(" at line ") {
+        return err.to_string();
+    }
+    // the message may be one of several joined by "; " — annotate the head
+    let head = err.splitn(2, ';').next().unwrap_or(err);
+    // candidate identifiers, in preference order:
+    //   quoted 'x'  |  "define name"  |  first meaningful word
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(rest) = head.split('\'').nth(1) {
+        let id = rest.split('\'').next().unwrap_or("");
+        if !id.is_empty()
+            && id
+                .chars()
+                .all(|c| c.is_alphanumeric() || "-_./:!<>?*+=@#$%&".contains(c))
+        {
+            candidates.push(id.to_string());
+        }
+    }
+    for w in head.split_whitespace() {
+        let w = w.trim_matches(|c: char| !c.is_alphanumeric() && !"-_.".contains(c));
+        if w.len() > 1
+            && w.chars()
+                .next()
+                .map(|c| c.is_alphabetic() || c == '_')
+                .unwrap_or(false)
+        {
+            candidates.push(w.to_string());
+        }
+    }
+    let toks = tokenize(input);
+    for cand in &candidates {
+        for (t, off) in &toks {
+            // string tokens carry their quotes — compare both ways
+            let t_bare = t
+                .strip_suffix('"')
+                .and_then(|x| x.strip_prefix('"'))
+                .unwrap_or(t);
+            if t_bare == cand {
+                let (line, _col) = offset_to_line_col(input, *off);
+                return format!("{err} ({label} line {line})");
+            }
+        }
+    }
+    err.to_string()
+}
+
 pub fn parse_all_spanned(_input: &str) -> Result<Vec<Spanned<crate::types::LispVal>>, String> {
     Err("parse_all_spanned not available (old parser)".into())
 }

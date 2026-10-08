@@ -85,11 +85,14 @@ fn locate_form_error_names_culprit() {
                \x20 export function go(): string { return badTail(\"x\"); }\n";
     let ir = ts_to_lisp_source(src).unwrap();
     let exprs = lisp_rlm_wasm::parse_all(&ir).unwrap();
-    let err = lisp_rlm_wasm::typing::type_check_program(&exprs, true)
-        .expect_err("must fail");
+    let err = lisp_rlm_wasm::typing::type_check_program(&exprs, true).expect_err("must fail");
     let map = lisp_rlm_wasm::ts_frontend::take_fn_def_offsets();
     let loc = lisp_rlm_wasm::ts_frontend::locate_form_error(&exprs, &map, src, &err)
         .expect("must locate");
     assert!(loc.contains("`badTail`"), "culprit fn named: {}", loc);
-    assert!(loc.contains("ts line 2"), "definition line, not call site: {}", loc);
+    assert!(
+        loc.contains("ts line 2"),
+        "definition line, not call site: {}",
+        loc
+    );
 }

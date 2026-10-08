@@ -1937,10 +1937,11 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     // only in the P2 combined builder (build_p2_with_wasi_http). Without
     // this mapping the P1 module fails validation with "unknown function
     // 200" (suite 03_rpc_post red since the P1/P2 split).
-    let http_post_used = em
-        .funcs
-        .iter()
-        .any(|f| f.instrs.iter().any(|i| matches!(i, Instruction::Call(n) if (200..300).contains(n))));
+    let http_post_used = em.funcs.iter().any(|f| {
+        f.instrs
+            .iter()
+            .any(|i| matches!(i, Instruction::Call(n) if (200..300).contains(n)))
+    });
     let http_post_import_idx = if http_post_used {
         let hf = &outlayer_imports()[4]; // http-post: (url ptr/len, body ptr/len, ct ptr/len, ret_area) -> ()
         let idx = total_imports;
@@ -3597,57 +3598,57 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     // bridge hardwired to URL 0 made every second relay silently POST to the
     // first URL — GAPS.md bug #2.)
     if bridge_native_post {
-     for post_url_i in 0..http_post_count {
-        let post_target = http_post_fn_idx + post_url_i * 2;
-        let ma4 = MemArg {
-            offset: 0,
-            align: 2,
-            memory_index: 0,
-        };
-        let sbuf = crate::wasi_http::SENTINEL_BUF;
-        let sbuf_size = crate::wasi_http::SENTINEL_BUF_SIZE;
-        // params 0-6 as above; local 7: status
-        let mut bridge = Function::new([(1u32, ValType::I32)]);
-        // __wasi_http_post(url_ptr, url_len, body_ptr, body_len, buf, buf_len, len_ptr=ret_area+12)
-        bridge.instruction(&Instruction::LocalGet(0));
-        bridge.instruction(&Instruction::LocalGet(1));
-        bridge.instruction(&Instruction::LocalGet(2));
-        bridge.instruction(&Instruction::LocalGet(3));
-        bridge.instruction(&Instruction::I32Const(sbuf));
-        bridge.instruction(&Instruction::I32Const(sbuf_size));
-        bridge.instruction(&Instruction::LocalGet(6));
-        bridge.instruction(&Instruction::I32Const(12));
-        bridge.instruction(&Instruction::I32Add);
-        bridge.instruction(&Instruction::Call(post_target));
-        bridge.instruction(&Instruction::LocalSet(7));
-        // ret_area+8 = len (written by POST at ret_area+12)
-        bridge.instruction(&Instruction::LocalGet(6));
-        bridge.instruction(&Instruction::LocalGet(6));
-        bridge.instruction(&Instruction::I32Load(MemArg {
-            offset: 12,
-            align: 2,
-            memory_index: 0,
-        }));
-        bridge.instruction(&Instruction::I32Store(MemArg {
-            offset: 8,
-            align: 2,
-            memory_index: 0,
-        }));
-        // ret_area+4 = SENTINEL_BUF
-        bridge.instruction(&Instruction::LocalGet(6));
-        bridge.instruction(&Instruction::I32Const(sbuf));
-        bridge.instruction(&Instruction::I32Store(MemArg {
-            offset: 4,
-            align: 2,
-            memory_index: 0,
-        }));
-        // ret_area+0 = status (0=ok)
-        bridge.instruction(&Instruction::LocalGet(6));
-        bridge.instruction(&Instruction::LocalGet(7));
-        bridge.instruction(&Instruction::I32Store(ma4));
-        bridge.instruction(&Instruction::End);
-        codes.function(&bridge);
-     }
+        for post_url_i in 0..http_post_count {
+            let post_target = http_post_fn_idx + post_url_i * 2;
+            let ma4 = MemArg {
+                offset: 0,
+                align: 2,
+                memory_index: 0,
+            };
+            let sbuf = crate::wasi_http::SENTINEL_BUF;
+            let sbuf_size = crate::wasi_http::SENTINEL_BUF_SIZE;
+            // params 0-6 as above; local 7: status
+            let mut bridge = Function::new([(1u32, ValType::I32)]);
+            // __wasi_http_post(url_ptr, url_len, body_ptr, body_len, buf, buf_len, len_ptr=ret_area+12)
+            bridge.instruction(&Instruction::LocalGet(0));
+            bridge.instruction(&Instruction::LocalGet(1));
+            bridge.instruction(&Instruction::LocalGet(2));
+            bridge.instruction(&Instruction::LocalGet(3));
+            bridge.instruction(&Instruction::I32Const(sbuf));
+            bridge.instruction(&Instruction::I32Const(sbuf_size));
+            bridge.instruction(&Instruction::LocalGet(6));
+            bridge.instruction(&Instruction::I32Const(12));
+            bridge.instruction(&Instruction::I32Add);
+            bridge.instruction(&Instruction::Call(post_target));
+            bridge.instruction(&Instruction::LocalSet(7));
+            // ret_area+8 = len (written by POST at ret_area+12)
+            bridge.instruction(&Instruction::LocalGet(6));
+            bridge.instruction(&Instruction::LocalGet(6));
+            bridge.instruction(&Instruction::I32Load(MemArg {
+                offset: 12,
+                align: 2,
+                memory_index: 0,
+            }));
+            bridge.instruction(&Instruction::I32Store(MemArg {
+                offset: 8,
+                align: 2,
+                memory_index: 0,
+            }));
+            // ret_area+4 = SENTINEL_BUF
+            bridge.instruction(&Instruction::LocalGet(6));
+            bridge.instruction(&Instruction::I32Const(sbuf));
+            bridge.instruction(&Instruction::I32Store(MemArg {
+                offset: 4,
+                align: 2,
+                memory_index: 0,
+            }));
+            // ret_area+0 = status (0=ok)
+            bridge.instruction(&Instruction::LocalGet(6));
+            bridge.instruction(&Instruction::LocalGet(7));
+            bridge.instruction(&Instruction::I32Store(ma4));
+            bridge.instruction(&Instruction::End);
+            codes.function(&bridge);
+        }
     }
     // ── env lookup helper at env_lookup_fn_idx ──
     // (key_area) -> (): sentinel-150 env lookup via canon get-environment.
@@ -3924,18 +3925,43 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
 
     if std::env::var("LISPRLM_DEBUG_LAYOUT").is_ok() {
         let mut spans: Vec<(u64, u64, &str)> = Vec::new();
-        for (o, b) in &em.data_segments { spans.push((*o as u64, *o as u64 + b.len() as u64, "lit")); }
-        for (o, b) in &all_http_data_segments { spans.push((*o as u64, *o as u64 + b.len() as u64, "url")); }
-        let lit_max = em.data_segments.iter().map(|(o, b)| *o as u64 + b.len() as u64).max().unwrap_or(0);
-        let url_min = all_http_data_segments.iter().map(|(o, _)| *o as u64).min().unwrap_or(0);
-        let url_max = all_http_data_segments.iter().map(|(o, b)| *o as u64 + b.len() as u64).max().unwrap_or(0);
+        for (o, b) in &em.data_segments {
+            spans.push((*o as u64, *o as u64 + b.len() as u64, "lit"));
+        }
+        for (o, b) in &all_http_data_segments {
+            spans.push((*o as u64, *o as u64 + b.len() as u64, "url"));
+        }
+        let lit_max = em
+            .data_segments
+            .iter()
+            .map(|(o, b)| *o as u64 + b.len() as u64)
+            .max()
+            .unwrap_or(0);
+        let url_min = all_http_data_segments
+            .iter()
+            .map(|(o, _)| *o as u64)
+            .min()
+            .unwrap_or(0);
+        let url_max = all_http_data_segments
+            .iter()
+            .map(|(o, b)| *o as u64 + b.len() as u64)
+            .max()
+            .unwrap_or(0);
         eprintln!("LAYOUT: literals {} segs end={} | urls {} segs [{}..{}] | pages={} | next_data_offset={} | URL_BASE_CROSS={}",
             em.data_segments.len(), lit_max, all_http_data_segments.len(), url_min, url_max, em.memory_pages.max(2048), em.next_data_offset,
             if em.next_data_offset > 16384 { "YES!!" } else { "no" });
         spans.sort();
         for i in 0..spans.len().saturating_sub(1) {
-            if spans[i].1 > spans[i+1].0 {
-                eprintln!("OVERLAP! {}@{}..{} vs {}@{}..{}", spans[i].2, spans[i].0, spans[i].1, spans[i+1].2, spans[i+1].0, spans[i+1].1);
+            if spans[i].1 > spans[i + 1].0 {
+                eprintln!(
+                    "OVERLAP! {}@{}..{} vs {}@{}..{}",
+                    spans[i].2,
+                    spans[i].0,
+                    spans[i].1,
+                    spans[i + 1].2,
+                    spans[i + 1].0,
+                    spans[i + 1].1
+                );
             }
         }
     }

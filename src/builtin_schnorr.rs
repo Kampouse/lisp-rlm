@@ -63,7 +63,7 @@ fn sha256_block_impl(h: &mut [u32; 8], block: &[u8; 64]) {
     h[7] = h[7].wrapping_add(hh);
 }
 
-fn sha256_impl(data: &[u8]) -> [u8; 32] {
+pub fn sha256_impl(data: &[u8]) -> [u8; 32] {
     let mut h = [
         0x6A09E667u32,
         0xBB67AE85,
@@ -484,6 +484,256 @@ pub fn schnorr_verify_impl(pk: &[u8; 32], sig: &[u8; 64], msg: &[u8]) -> bool {
     even_y
 }
 
+// ── Scalar ops mod n (curve order, NOT field prime P) ──
+// Ported from schnorr/src/lib.rs so interp and stitched-wasm agree
+// byte-for-byte on sign. schnorr.wasm is the canonical implementation.
+
+fn sc_geq_n(a: [u64; 4]) -> bool {
+    for i in (0..4).rev() {
+        if a[i] > N[i] {
+            return true;
+        }
+        if a[i] < N[i] {
+            return false;
+        }
+    }
+    true
+} // a >= n (true at equality)
+
+fn sc_sub_n(a: [u64; 4]) -> [u64; 4] {
+    let mut r = [0u64; 4];
+    let mut b: i128 = 0;
+    for i in 0..4 {
+        b += N[i] as i128 - a[i] as i128;
+        r[i] = b as u64;
+        b >>= 64;
+    }
+    r
+} // n - a, requires a <= n
+
+fn sc_sub_n_in_place(r: &mut [u64; 4]) {
+    let mut b: i128 = 0;
+    for i in 0..4 {
+        b += r[i] as i128 - N[i] as i128;
+        r[i] = b as u64;
+        b >>= 64;
+    }
+} // r -= n (opposite direction of sc_sub_n)
+
+/// 512-bit schoolbook product, reduced mod n by MSB-first shift-subtract.
+/// The heart of the sign path: e·d' MUST reduce mod n, never mod P.
+fn sc_mul_mod_n(a: [u64; 4], b: [u64; 4]) -> [u64; 4] {
+    let mut t = [0u64; 8];
+    for i in 0..4 {
+        let mut carry: u128 = 0;
+        for j in 0..4 {
+            let cur = t[i + j] as u128 + (a[i] as u128) * (b[j] as u128) + carry;
+            t[i + j] = cur as u64;
+            carry = cur >> 64;
+        }
+        let mut k = i + 4;
+        while carry > 0 && k < 8 {
+            let cur = t[k] as u128 + carry;
+            t[k] = cur as u64;
+            carry = cur >> 64;
+            k += 1;
+        }
+    }
+    // Invariant: r < n < 2^256 ⇒ r<<1 | bit < 2n, one conditional subtract.
+    let mut r = [0u64; 4];
+    for bit in (0..512).rev() {
+        let mut carry = ((t[bit / 64] >> (bit % 64)) & 1) as u64;
+        for limb in r.iter_mut() {
+            let nc = *limb >> 63;
+            *limb = (*limb << 1) | carry;
+            carry = nc;
+        }
+        if carry == 1 || sc_geq_n(r) {
+            sc_sub_n_in_place(&mut r);
+        }
+    }
+    r
+}
+
+fn sc_add_mod_n(a: [u64; 4], b: [u64; 4]) -> [u64; 4] {
+    let mut r = [0u64; 4];
+    let mut c: u128 = 0;
+    for i in 0..4 {
+        c = a[i] as u128 + b[i] as u128 + c;
+        r[i] = c as u64;
+        c >>= 64;
+    }
+    if c > 0 || sc_geq_n(r) {
+        sc_sub_n_in_place(&mut r);
+    }
+    r
+}
+
+// ── BIP-340 pubkey / sign — exact mirrors of schnorr/src/lib.rs ──
+// Failure convention (same as the wasm lib): all-zero output on invalid
+// sk (0, or point-at-infinity). Callers surface it as ret=0 / "".
+
+const G_PT: Pt = Pt {
+    x: GX,
+    y: GY,
+    inf: false,
+};
+
+fn y_is_even(y: &[u64; 4]) -> bool {
+    (fe_to_be_bytes(y)[31] & 1) == 0
+}
+
+pub fn schnorr_pubkey_impl(sk: &[u8; 32]) -> [u8; 32] {
+    let mut d = be_bytes_to_fe(sk);
+    if sc_geq_n(d) {
+        d = sc_sub_n(d);
+    }
+    if is_zero(&d) {
+        return [0u8; 32];
+    }
+    let p = scalar_mul(&d, &G_PT);
+    if p.inf {
+        return [0u8; 32];
+    }
+    fe_to_be_bytes(&p.x)
+}
+
+/// SEC1-compressed form (0x02/0x03 prefix + x) — the cacheable form
+/// schnorr-sign-pk consumes; the prefix carries y-parity.
+pub fn schnorr_pubkey33_impl(sk: &[u8; 32]) -> [u8; 33] {
+    let mut d = be_bytes_to_fe(sk);
+    if sc_geq_n(d) {
+        d = sc_sub_n(d);
+    }
+    let mut out = [0u8; 33];
+    if is_zero(&d) {
+        return out;
+    }
+    let p = scalar_mul(&d, &G_PT);
+    if p.inf {
+        return out;
+    }
+    out[0] = if y_is_even(&p.y) { 0x02 } else { 0x03 };
+    out[1..].copy_from_slice(&fe_to_be_bytes(&p.x));
+    out
+}
+
+pub fn schnorr_sign_impl(sk: &[u8; 32], msg: &[u8; 32], aux: &[u8; 32]) -> [u8; 64] {
+    let mut d = be_bytes_to_fe(sk);
+    if sc_geq_n(d) {
+        d = sc_sub_n(d);
+    }
+    if is_zero(&d) {
+        return [0u8; 64];
+    }
+    let p_pt = scalar_mul(&d, &G_PT);
+    if p_pt.inf {
+        return [0u8; 64];
+    }
+    let p_bytes = fe_to_be_bytes(&p_pt.x);
+    // d' = d if P.y even, else n - d
+    let dp = if y_is_even(&p_pt.y) { d } else { sc_sub_n(d) };
+    // t = d' xor tagged_hash("BIP0340/aux", aux)
+    let aux_hash = tagged_hash_impl(b"BIP0340/aux", aux);
+    let dp_bytes = fe_to_be_bytes(&dp);
+    let mut t = [0u8; 32];
+    for i in 0..32 {
+        t[i] = dp_bytes[i] ^ aux_hash[i];
+    }
+    // k = tagged_hash("BIP0340/nonce", t || P || msg) mod n
+    let mut nonce_input = [0u8; 96];
+    nonce_input[..32].copy_from_slice(&t);
+    nonce_input[32..64].copy_from_slice(&p_bytes);
+    nonce_input[64..96].copy_from_slice(msg);
+    let mut kp = be_bytes_to_fe(&tagged_hash_impl(b"BIP0340/nonce", &nonce_input));
+    if sc_geq_n(kp) {
+        kp = sc_sub_n(kp);
+    }
+    if is_zero(&kp) {
+        return [0u8; 64];
+    }
+    let r_pt = scalar_mul(&kp, &G_PT);
+    if r_pt.inf {
+        return [0u8; 64];
+    }
+    let r_bytes = fe_to_be_bytes(&r_pt.x);
+    // R must have even y: k ← n−k flips y, leaves x
+    let kp = if y_is_even(&r_pt.y) { kp } else { sc_sub_n(kp) };
+    // e = tagged_hash("BIP0340/challenge", R || P || msg)
+    let mut challenge_input = [0u8; 96];
+    challenge_input[..32].copy_from_slice(&r_bytes);
+    challenge_input[32..64].copy_from_slice(&p_bytes);
+    challenge_input[64..96].copy_from_slice(msg);
+    let e = be_bytes_to_fe(&tagged_hash_impl(b"BIP0340/challenge", &challenge_input));
+    let sig_s = sc_add_mod_n(kp, sc_mul_mod_n(e, dp));
+    let mut sig = [0u8; 64];
+    sig[..32].copy_from_slice(&r_bytes);
+    sig[32..].copy_from_slice(&fe_to_be_bytes(&sig_s));
+    sig
+}
+
+/// Sign with a CACHED pk33 (skips the internal P = d·G mult). The prefix
+/// selects d' = d (0x02) vs n−d (0x03); a wrong prefix yields a sig that
+/// fails verification (fail-closed), never a wrong-but-valid signature.
+pub fn schnorr_sign_pk_impl(
+    sk: &[u8; 32],
+    pk33: &[u8; 33],
+    msg: &[u8; 32],
+    aux: &[u8; 32],
+) -> [u8; 64] {
+    if pk33[0] != 0x02 && pk33[0] != 0x03 {
+        return [0u8; 64];
+    }
+    let mut d = be_bytes_to_fe(sk);
+    if sc_geq_n(d) {
+        d = sc_sub_n(d);
+    }
+    if is_zero(&d) {
+        return [0u8; 64];
+    }
+    let dp = if pk33[0] == 0x02 { d } else { sc_sub_n(d) };
+    let mut p_bytes = [0u8; 32];
+    p_bytes.copy_from_slice(&pk33[1..33]);
+    let aux_hash = tagged_hash_impl(b"BIP0340/aux", aux);
+    let dp_bytes = fe_to_be_bytes(&dp);
+    let mut t = [0u8; 32];
+    for i in 0..32 {
+        t[i] = dp_bytes[i] ^ aux_hash[i];
+    }
+    let mut nonce_input = [0u8; 96];
+    nonce_input[..32].copy_from_slice(&t);
+    nonce_input[32..64].copy_from_slice(&p_bytes);
+    nonce_input[64..96].copy_from_slice(msg);
+    let mut kp = be_bytes_to_fe(&tagged_hash_impl(b"BIP0340/nonce", &nonce_input));
+    if sc_geq_n(kp) {
+        kp = sc_sub_n(kp);
+    }
+    if is_zero(&kp) {
+        return [0u8; 64];
+    }
+    let g = Pt {
+        x: GX,
+        y: GY,
+        inf: false,
+    };
+    let r_pt = scalar_mul(&kp, &g);
+    if r_pt.inf {
+        return [0u8; 64];
+    }
+    let r_bytes = fe_to_be_bytes(&r_pt.x);
+    let kp = if y_is_even(&r_pt.y) { kp } else { sc_sub_n(kp) };
+    let mut challenge_input = [0u8; 96];
+    challenge_input[..32].copy_from_slice(&r_bytes);
+    challenge_input[32..64].copy_from_slice(&p_bytes);
+    challenge_input[64..96].copy_from_slice(msg);
+    let e = be_bytes_to_fe(&tagged_hash_impl(b"BIP0340/challenge", &challenge_input));
+    let sig_s = sc_add_mod_n(kp, sc_mul_mod_n(e, dp));
+    let mut sig = [0u8; 64];
+    sig[..32].copy_from_slice(&r_bytes);
+    sig[32..].copy_from_slice(&fe_to_be_bytes(&sig_s));
+    sig
+}
+
 // --- Public interface for the bytecode VM ---
 
 pub fn lisp_val_to_bytes(v: &LispVal) -> Result<Vec<u8>, String> {
@@ -533,6 +783,52 @@ pub fn builtin_schnorr_verify(args: &[LispVal]) -> Result<LispVal, String> {
         .try_into()
         .map_err(|_| "schnorr-verify: sig must be 64 bytes")?;
     Ok(LispVal::Bool(schnorr_verify_impl(&pk_arr, &sig_arr, &msg)))
+}
+
+// Interp builtins for the wasm schnorr-sign/-pubkey surface. Byte-lists in,
+// byte-list out — mirroring builtin_sha256/schnorr-verify conventions.
+// Failure (sk=0 / bad prefix / infinity) returns the all-zero list, the
+// interp twin of the wasm lib's ret=0 + zeroed buffer.
+
+fn bytes_32(args: &[LispVal], i: usize, who: &str) -> Result<[u8; 32], String> {
+    let v = lisp_val_to_bytes(args.get(i).ok_or(format!("{who}: missing arg {i}"))?)?;
+    let n = v.len();
+    v.try_into()
+        .map_err(|_| format!("{who}: arg {i} must be 32 bytes, got {n}"))
+}
+
+fn bytes_33(args: &[LispVal], i: usize, who: &str) -> Result<[u8; 33], String> {
+    let v = lisp_val_to_bytes(args.get(i).ok_or(format!("{who}: missing arg {i}"))?)?;
+    let n = v.len();
+    v.try_into()
+        .map_err(|_| format!("{who}: arg {i} must be 33 bytes, got {n}"))
+}
+
+pub fn builtin_schnorr_pubkey(args: &[LispVal]) -> Result<LispVal, String> {
+    let sk = bytes_32(args, 0, "schnorr-pubkey")?;
+    Ok(bytes_to_lisp_list(&schnorr_pubkey_impl(&sk)))
+}
+
+pub fn builtin_schnorr_pubkey33(args: &[LispVal]) -> Result<LispVal, String> {
+    let sk = bytes_32(args, 0, "schnorr-pubkey33")?;
+    Ok(bytes_to_lisp_list(&schnorr_pubkey33_impl(&sk)))
+}
+
+pub fn builtin_schnorr_sign(args: &[LispVal]) -> Result<LispVal, String> {
+    let sk = bytes_32(args, 0, "schnorr-sign")?;
+    let msg = bytes_32(args, 1, "schnorr-sign")?;
+    let aux = bytes_32(args, 2, "schnorr-sign")?;
+    Ok(bytes_to_lisp_list(&schnorr_sign_impl(&sk, &msg, &aux)))
+}
+
+pub fn builtin_schnorr_sign_pk(args: &[LispVal]) -> Result<LispVal, String> {
+    let sk = bytes_32(args, 0, "schnorr-sign-pk")?;
+    let pk33 = bytes_33(args, 1, "schnorr-sign-pk")?;
+    let msg = bytes_32(args, 2, "schnorr-sign-pk")?;
+    let aux = bytes_32(args, 3, "schnorr-sign-pk")?;
+    Ok(bytes_to_lisp_list(&schnorr_sign_pk_impl(
+        &sk, &pk33, &msg, &aux,
+    )))
 }
 
 #[cfg(test)]

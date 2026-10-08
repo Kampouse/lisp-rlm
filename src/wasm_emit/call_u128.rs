@@ -927,6 +927,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(16));
                 v.push(Instruction::I64Const(STORAGE_U128_BUF));
                 v.push(Instruction::I64Const(0));
+                self.need_host(17);
                 v.push(Self::host_call(17));
                 v.push(Instruction::Drop);
                 v.push(Instruction::I64Const(0));
@@ -954,10 +955,12 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(0));
+                self.need_host(18);
                 v.push(Self::host_call(18));
                 v.push(Instruction::Drop);
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64Const(STORAGE_U128_BUF));
+                self.need_host(0);
                 v.push(Self::host_call(0));
                 v.push(Instruction::Drop);
                 v.push(Instruction::I32Const(STORAGE_U128_BUF as i32));

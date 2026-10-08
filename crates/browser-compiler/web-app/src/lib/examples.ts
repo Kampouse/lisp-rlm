@@ -1,3 +1,4 @@
+import type { CompileTarget } from './compiler.ts';
 export interface Sidecar {
   account: string;   // sandbox account this contract is bound to (e.g. "ft.pg")
   name: string;
@@ -8,7 +9,7 @@ export interface Example {
   name: string;
   icon: string;
   source: string;
-  target: 'p1' | 'p2' | 'pure' | 'near';
+  target: CompileTarget;
   lang?: 'ts';
   account?: string;      // sandbox account for the MAIN contract (multi-contract examples)
   sidecars?: Sidecar[];  // extra contracts deployed alongside — run via the receipt engine
@@ -877,3 +878,42 @@ export function ftBalanceOf(who: string): string {
     ],
   },
 ];
+
+// --- Build-time synced repo examples ---------------------------------------
+// Every examples/*.lisp from the repo is bundled verbatim via vite ?raw
+// imports. This kills the drift class where the playground's curated samples
+// and the repo's examples rot independently — a repo example edit (e.g. the
+// wallet_cex json-get-str port) now lands on the site with the next build.
+// Curated samples above remain the front of the list; these append after.
+
+const repoModules = import.meta.glob('../../../../../examples/*.lisp', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>;
+
+// OutLayer (WASI) builtins require the p2 toolchain — the compile dispatch
+// maps p2 → compile_p2_core. NEAR-target examples route p1. A compile error
+// surfaces in the Error Lens like any other; nothing here can break the build.
+const REPO_EXAMPLE_TARGETS: Record<string, Example['target']> = {
+  'btc_avg.lisp': 'p2',
+  'btc_avg_json.lisp': 'p2',
+  'wallet_auth.lisp': 'p2',
+  'wallet_cex.lisp': 'p2',
+  'factory.lisp': 'p1',
+  'wallet.lisp': 'p1',
+  'wallet-p256.lisp': 'p1',
+};
+
+const repoExamples: Example[] = Object.entries(repoModules)
+  .map(([path, source]) => {
+    const file = path.split('/').pop()!;
+    const name = file.replace(/\.lisp$/, '');
+    const target = REPO_EXAMPLE_TARGETS[file] ?? 'p1';
+    return { name, icon: '📦', source, target } as Example;
+  })
+  .sort((a, b) => a.name.localeCompare(b.name));
+
+export const repoExampleCount = repoExamples.length;
+
+examples.push(...repoExamples);

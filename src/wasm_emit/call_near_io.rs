@@ -75,6 +75,7 @@ impl WasmEmitter {
                     v.push(Instruction::LocalGet(raw));
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::I64ExtendI32U); // ptr
+                    self.need_host(28);
                     v.push(Self::host_call(28));
                     v.push(Instruction::I64Const(TAG_NIL));
                     Ok(v)
@@ -104,6 +105,7 @@ impl WasmEmitter {
                     v.push(Instruction::LocalGet(raw));
                     v.push(Instruction::I32WrapI64);
                     v.push(Instruction::I64ExtendI32U); // ptr
+                    self.need_host(28);
                     v.push(Self::host_call(28));
                     // Second: log the number (same technique as near/log_num)
                     v.extend(num_expr);
@@ -193,6 +195,7 @@ impl WasmEmitter {
                     v.push(Instruction::End);
                     v.push(Instruction::LocalGet(digit_count));
                     v.push(Instruction::LocalGet(ptr));
+                    self.need_host(28);
                     v.push(Self::host_call(28));
                     v.push(Instruction::I64Const(TAG_NIL));
                     Ok(v)
@@ -213,6 +216,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(raw));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // ptr
+                self.need_host(27);
                 v.push(Self::host_call(27)); // panic_utf8(len, ptr)
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
@@ -251,6 +255,7 @@ impl WasmEmitter {
                     v.push(Instruction::I64Const(0));
                     return Ok(v);
                 }
+                self.need_host(26);
                 Ok(vec![Self::host_call(26), Instruction::I64Const(0)])
             }
             "abort" => {

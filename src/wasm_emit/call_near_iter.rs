@@ -37,6 +37,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // ptr
+                self.need_host(2);
                 v.push(Self::host_call(2));
                 // storage_iter_prefix(prefix_len, register_id=0) — idx 36
                 v.push(Instruction::LocalGet(p));
@@ -79,6 +80,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                self.need_host(2);
                 v.push(Self::host_call(2));
                 // write end to register 1
                 v.push(Instruction::I64Const(1));
@@ -90,6 +92,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                self.need_host(2);
                 v.push(Self::host_call(2));
                 // storage_iter_range(start_len, reg0, end_len, reg1) — idx 37
                 v.push(Instruction::LocalGet(s));

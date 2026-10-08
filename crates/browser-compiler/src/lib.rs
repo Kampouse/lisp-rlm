@@ -20,6 +20,14 @@ pub fn compile_p1(source: &str) -> Result<Vec<u8>, JsValue> {
     let mut exprs = lisp_rlm_wasm::parse_all(source)
         .map_err(|e| JsValue::from_str(&format!("Parse error: {}", e)))?;
     lisp_rlm_wasm::clojure::desugar(&mut exprs);
+    // typecheck runs inside compile_near_from_exprs without source context —
+    // pre-run it here WITH source so errors get exact "(near line N)" pins
+    let annotated = lisp_rlm_wasm::typing::type_check_program(&exprs, true)
+        .err()
+        .map(|e| lisp_rlm_wasm::annotate_type_error(&e, source));
+    if let Some(msg) = annotated {
+        return Err(JsValue::from_str(&format!("Compile error: {}", msg)));
+    }
     lisp_rlm_wasm::compile_near_from_exprs(&exprs)
         .map_err(|e| JsValue::from_str(&format!("Compile error: {}", e)))
 }
@@ -58,6 +66,13 @@ pub fn compile_ts(source: &str) -> Result<Vec<u8>, JsValue> {
         .map_err(|e| JsValue::from_str(&format!("TS lowering error: {}", e)))?;
     let mut exprs = lisp_rlm_wasm::parse_all(&lisp_src)
         .map_err(|e| JsValue::from_str(&format!("Parse error: {}", e)))?;
+    if let Err(e) = lisp_rlm_wasm::typing::type_check_program(&exprs, true) {
+        // checker errors carries no spans — annotate against the lowered lisp
+        // IR (annotate_type_error no-ops when nothing matches); the TS-side
+        // hint (augment_with_ts_line in the CLI) is unavailable browser-side.
+        let annotated = lisp_rlm_wasm::annotate_type_error_label(&e, &lisp_src, "ir");
+        return Err(JsValue::from_str(&format!("Compile error: {}", annotated)));
+    }
     lisp_rlm_wasm::clojure::desugar(&mut exprs);
     lisp_rlm_wasm::compile_near_from_exprs(&exprs)
         .map_err(|e| JsValue::from_str(&format!("Compile error: {}", e)))
@@ -83,4 +98,24 @@ pub fn disassemble_wasm(wasm_bytes: &[u8]) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn wasm_size(wasm_bytes: &[u8]) -> usize {
     wasm_bytes.len()
+}
+
+/// Sorted builtin inventory ("name\tsig" lines) from the checker's own env —
+/// the playground's autocomplete + hover feed. Single source of truth: the
+/// editor can never drift from what the compiler accepts.
+#[wasm_bindgen]
+pub fn publish_builtins() -> String {
+    lisp_rlm_wasm::typing::types::TcEnv::builtin_signatures()
+}
+
+/// Instrument a contract wasm with the SAME finite-wasm PV155 gas/stack pass
+/// near-mock (and nearcore's prepare) applies, so the browser NEAR runner
+/// measures real burned gas instead of a static opcode estimate. Returns the
+/// instrumented binary; after running a method, read the exported
+/// `remaining_gas` i64 global and compute burned = prepaid − remaining.
+/// Errors map to wasm-bindgen JsError.
+#[wasm_bindgen]
+pub fn instrument_for_gas(contract_wasm: &[u8]) -> Result<Vec<u8>, wasm_bindgen::JsError> {
+    lisp_rlm_wasm::instrument::instrument(contract_wasm)
+        .map_err(|e| wasm_bindgen::JsError::new(&format!("instrument: {e}")))
 }

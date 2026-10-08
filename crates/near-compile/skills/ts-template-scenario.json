@@ -1,0 +1,9 @@
+{
+  "steps": [
+    { "method": "init", "args": {}, "as": "owner.test.near", "expect": "ok" },
+    { "method": "increment", "args": {}, "as": "alice.test.near", "expect": "ok" },
+    { "method": "increment", "args": {}, "as": "alice.test.near", "expect": "ok" },
+    { "method": "init", "args": {}, "as": "owner.test.near", "expect": "trap" },
+    { "method": "get_count", "args": {}, "as": "alice.test.near", "expect": "2", "view": true }
+  ]
+}

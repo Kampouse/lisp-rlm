@@ -1890,7 +1890,9 @@ pub(crate) fn build_env_linker(
                         let ns = prefixed_key(&acct, b"");
                         let (id, cost) = {
                             let mut st = s_iter_p.lock().unwrap();
-                            let mut ks: Vec<Vec<u8>> = st.storage.keys()
+                            let mut ks: Vec<Vec<u8>> = st
+                                .storage
+                                .keys()
                                 .filter(|k| k.starts_with(&ns))
                                 .map(|k| k[ns.len()..].to_vec())
                                 .collect();

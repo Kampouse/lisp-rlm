@@ -20,21 +20,25 @@ impl WasmEmitter {
                 // Option A ruling (2026-08-26): NEAR ns timestamps (~2^60.4)
                 // can't fit the 61-bit tagged payload — return DECIMAL STRING
                 // (u128-string representation). Compare with u128/gt etc.
+                self.need_host(9);
                 let mut v = vec![Self::host_call(9)];
                 v.extend(self.emit_itoa_raw());
                 Ok(v)
             }
             "near/epoch_height" => {
+                self.need_host(10);
                 let mut v = vec![Self::host_call(10)];
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "near/prepaid_gas" => {
+                self.need_host(15);
                 let mut v = vec![Self::host_call(15)];
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
             "near/used_gas" => {
+                self.need_host(16);
                 let mut v = vec![Self::host_call(16)];
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -57,6 +61,7 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 // attached_deposit(balance_ptr) writes 16 bytes directly to memory
                 v.push(Instruction::I64Const(TEMP_MEM as i64)); // balance_ptr
+                self.need_host(14);
                 v.push(Self::host_call(14)); // attached_deposit -> writes to memory at TEMP_MEM
                                              // Compare: deposit >= threshold (u128 comparison)
                                              // deposit at TEMP_MEM[0..16], threshold = (lo_val, hi_val)
@@ -111,6 +116,7 @@ impl WasmEmitter {
                 // ("64" in the differential; lisp twin str-cat rendered it as "").
                 let mut v = Vec::new();
                 v.push(Instruction::I64Const(TEMP_MEM as i64)); // balance_ptr
+                self.need_host(14);
                 v.push(Self::host_call(14)); // attached_deposit -> writes u128 LE at TEMP_MEM
                 let h = self.ensure_u128_str_helpers();
                 v.push(Instruction::I64Const(TEMP_MEM as i64)); // lo@0, hi@8 — helper's layout
@@ -125,12 +131,15 @@ impl WasmEmitter {
             "near/current_contract_code" => {
                 let mut v = Vec::new();
                 v.push(Instruction::I64Const(0)); // register_id=0
+                self.need_host(72);
                 v.push(Self::host_call(72));
                 v.push(Instruction::Drop); // drop status u64
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64Const(TEMP_MEM));
+                self.need_host(0);
                 v.push(Self::host_call(0)); // read_register
                 v.push(Instruction::I64Const(0));
+                self.need_host(1);
                 v.push(Self::host_call(1)); // register_len
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
@@ -153,6 +162,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.extend(stake);
+                self.need_host(84);
                 v.push(Self::host_call(84));
                 v.push(Instruction::I64Const(0));
                 Ok(v)

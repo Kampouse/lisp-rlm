@@ -52,7 +52,10 @@ fn run(what: &str, method: &str, input: &str) -> String {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(out.status.success(), "{what}/{method}: near-mock failed:\n{s}");
+    assert!(
+        out.status.success(),
+        "{what}/{method}: near-mock failed:\n{s}"
+    );
     for line in s.lines() {
         if let Some(rest) = line.strip_prefix("📄 ") {
             return rest.trim_end().to_string();
@@ -71,15 +74,27 @@ fn compiles_and_typechecks() {
 fn ternary_with_bool_literal_branches() {
     // the motivating construct
     assert_eq!(
-        run("bool_surface", "ternaryIncludes", r#"{"hay":"hello world","needle":"world"}"#),
+        run(
+            "bool_surface",
+            "ternaryIncludes",
+            r#"{"hay":"hello world","needle":"world"}"#
+        ),
         "true"
     );
     assert_eq!(
-        run("bool_surface", "ternaryIncludes", r#"{"hay":"hello","needle":"xyz"}"#),
+        run(
+            "bool_surface",
+            "ternaryIncludes",
+            r#"{"hay":"hello","needle":"xyz"}"#
+        ),
         "false"
     );
     assert_eq!(
-        run("bool_surface", "ternaryIncludes", r#"{"hay":"","needle":"x"}"#),
+        run(
+            "bool_surface",
+            "ternaryIncludes",
+            r#"{"hay":"","needle":"x"}"#
+        ),
         "false"
     );
 }
@@ -123,6 +138,12 @@ fn boolean_template_rendering() {
 
 #[test]
 fn comparison_ternary_literal_branches() {
-    assert_eq!(run("bool_surface", "compareTern", r#"{"a":2,"b":1}"#), "true");
-    assert_eq!(run("bool_surface", "compareTern", r#"{"a":1,"b":2}"#), "false");
+    assert_eq!(
+        run("bool_surface", "compareTern", r#"{"a":2,"b":1}"#),
+        "true"
+    );
+    assert_eq!(
+        run("bool_surface", "compareTern", r#"{"a":1,"b":2}"#),
+        "false"
+    );
 }

@@ -1,3 +1,4 @@
+/// <reference path="../../ts/lisp-rlm.d.ts" />
 // pool.ts — one-sided xyk pool (pump-style) for lisp-rlm launchpad tokens.
 //
 // One pool per token, keyed by the token's account id. The launchpad seeds
@@ -20,6 +21,19 @@
 //     configured ref:acct and halts trading for the token
 //   - trade events: EVENT_JSON standard intear_launch event "trade"
 //   - buy()/quote_buy()/quote_sell() return JSON: {"gross","fee","net"}
+//
+// v3.7 (2026-10-03, TWAP — spot-manipulation resistance):
+//   every state-changing trade calls touch(): maintains a Uniswap-V2-style
+//   cumulative-price accumulator (pcum + price-timestamp + last-stamp, all
+//   per token, decimal strings). graduation requires BOTH spot reserve ≥ th
+//   AND time-weighted evidence over the last 60s (TWAP_MAX_AGE) — an atomic
+//   pump (same-block buy spam, ~0.024 TGas/swap in-call) moves spot but
+//   contributes ZERO weighted time, so migration cannot be triggered by a
+//   one-block flash attack. twap(token, window?) view for consumers;
+//   Views stay read-only: quotes cannot advance anchors (storage writes in
+//   view are prohibited on-chain), so only REAL trades (fee-paying) move
+//   the accumulator. Units: pcum/price in yoctoNEAR per whole token × 1e12
+//   (Q112-ish scale, exact decimal arithmetic); stamps in ns (u128).
 //
 // v3 (2026-09-28, internal balances — NEP-611 gas-key trading):
 //   A scoped gas key (GasKeyFunctionCall) can NEVER attach a deposit —
@@ -60,6 +74,14 @@ function feeTokKey(t: string): string { return "fees_tok:" + t; }
 function gradThKey(t: string): string { return "grad_th:" + t; }
 function gradKey(t: string): string { return "grad:" + t; }
 function migKey(t: string): string { return "migrated:" + t; }
+
+// v3.7 TWAP state (per token, decimal strings — never i64-parsed)
+function pcumKey(t: string): string { return "pcum:" + t; }   // cumulative Σ price·dt (scaled)
+function ptkKey(t: string): string { return "ptk:" + t; }     // price at last touch (scaled)
+function wstampKey(t: string): string { return "wstamp:" + t; } // last touch, ns
+
+const TWAP_MAX_AGE = "60000000000";  // 60s in ns (60 × 1e9): graduation window
+const TWAP_SCALE = "1000000000000";      // price scale 1e12: yN/token × 1e12 keeps 40-bit headroom
 
 // v3 internal ledgers: global NEAR pad (one per trader, crosses every token
 // curve) + per-token internal token ledger (gas-key trading)
@@ -139,6 +161,8 @@ function autoRefuel(tid: string, pk: string): void {
   const pad = near.storageGet(nk) ?? "0";
   if (u128Lt(pad, refuelAmt)) { return; }
   near.storageSet(nk, u128Sub(pad, refuelAmt));
+  nbSumSub(refuelAmt); // pad NEAR genuinely leaves the contract -> the key
+  floatSub(refuelAmt); // shadow float tracks the outbound transfer
   near.storageSet(gfKey(pk), u128Add(funded, refuelAmt)); // refuel raises est
   const idx = near.promiseBatchCreate(near.currentAccountId());
   // host fn wants the RAW 33-byte borsh key at public_key_ptr — pk is our
@@ -151,6 +175,61 @@ function autoRefuel(tid: string, pk: string): void {
 // "fees_near" stays as a MAINTAINED RUNNING TOTAL (view-only; claims
 // decrement it), since on-chain storage iteration is unavailable.
 function feeNearKey(t: string): string { return "fees_near:" + t; }
+
+// ── v3.8 solvency invariant ────────────────────────────────────────
+// Pads are demand liabilities payable 1:1 on withdraw(); they share the
+// contract's NEAR with AMM reserves, accrued fees and a safety margin.
+// Maintained running totals (storage iteration unavailable):
+//   nbsum = Σ all pad balances   pnsum = Σ all pool NEAR reserves
+// float_bal = exact shadow of NEAR held by the contract, maintained at
+// every NEAR boundary (attach in / transfer out). We do NOT read
+// near.accountBalance() here: the TS surface lowers to the host's low-64
+// read and wraps on u128-scale balances (types.rs account_balance → int).
+// Enforced at every pad credit: nbsum + attached ≤ floatBal − pnsum − fees.
+function floatAdd(delta: string): void {
+  near.storageSet("float_bal", u128Add(near.storageGet("float_bal") ?? "0", delta));
+}
+function floatSub(delta: string): void {
+  near.storageSet("float_bal", u128Sub(near.storageGet("float_bal") ?? "0", delta));
+}
+function padBacking(): string {
+  const flt = near.storageGet("float_bal") ?? "0";
+  const pnSum = near.storageGet("pnsum") ?? "0";
+  const fees = near.storageGet("fees_near") ?? "0";
+  const owed = u128Add(pnSum, fees);
+  if (u128Lt(flt, owed)) { return "0"; }
+  return u128Sub(flt, owed);
+}
+function nbSumAdd(delta: string): void {
+  near.storageSet("nbsum", u128Add(near.storageGet("nbsum") ?? "0", delta));
+}
+function nbSumSub(delta: string): void {
+  near.storageSet("nbsum", u128Sub(near.storageGet("nbsum") ?? "0", delta));
+}
+function pnSumAdd(delta: string): void {
+  near.storageSet("pnsum", u128Add(near.storageGet("pnsum") ?? "0", delta));
+}
+function pnSumSub(delta: string): void {
+  near.storageSet("pnsum", u128Sub(near.storageGet("pnsum") ?? "0", delta));
+}
+// full backing: every pad 1:1 (equality-preserving across deposit/trade/
+// withdraw paths — no margin, so regression scenarios size deposits 1:1)
+// hex-validation for gas-key identity args (deposit/fund_gas/
+// register_gas_key take pk hex; garbage would poison own:/nb: keys).
+// Pure hex, even length 64–128: covers raw-borsh hex (66) AND the mock's
+// hex(signer-pk-string) form. NOT length-pinned to 66 — the mock identity
+// derives traderId from hexEncode(signerAccountPk()) and must round-trip.
+function isPkHex(s: string): number {
+  const n = strLength(s);
+  if (n < 64 || n > 128 || (n % 2) != 0) { return 0; }
+  let i = 0;
+  while (i < n) {
+    const c = strSlice(s, i, i + 1);
+    if (strIndexOf("0123456789abcdef", c) < 0 && strIndexOf("0123456789ABCDEF", c) < 0) { return 0; }
+    i = i + 1;
+  }
+  return 1;
+}
 
 // single-char digit test via proven builtins only (strIndexOf) — strict,
 // no i64 parse anywhere near u128-scale input
@@ -348,6 +427,114 @@ function recordTrade(token: string, side: string, trader: string, nearAmt: strin
   return 0;
 }
 
+// ── v3.7 TWAP accumulator ──────────────────────────────────────────
+// spot = pn/pt in yN per WHOLE token (1e12-scaled), exact decimal math.
+// Pure-string path for the compare (cmpDec) — the u128 lane for the rest
+// (shape matches the GAPS.md 2026-09-28 safe matrix: flat statements,
+// loop-free, no nested u128 chains in loop-carried positions).
+function isZeroDec(s: string): number {
+  const t = trimZeros(s);
+  if (strLength(t) == 0) { return 1; }
+  if (t == "0") { return 1; }
+  return 0;
+}
+
+function spotScaled(pn: string, pt: string): string {
+  if (isZeroDec(pt) == 1) { return "0"; }
+  // flat: no call-in-operand-position (GAPS.md layout hazard)
+  const prod = bigMul(pn, TWAP_SCALE);
+  return bigDiv(prod, pt);
+}
+
+// advance the accumulator. ts = near.blockTimestamp() (ns decimal string).
+// prevPn/prevPt = reserves BEFORE this trade (call sites hold them as
+// locals — reserves are overwritten before touch runs); newPn/newPt after.
+// First touch (wstamp 0/absent): anchor at current spot, no dt credit.
+function touch(token: string, prevPn: string, prevPt: string,
+               newPn: string, newPt: string, ts: string): number {
+  const wRaw = near.storageGet(wstampKey(token)) ?? "0";
+  const spot = spotScaled(newPn, newPt);
+  if (wRaw == "0") {
+    near.storageSet(pcumKey(token), "0");
+    near.storageSet(ptkKey(token), spot);
+    near.storageSet(wstampKey(token), ts);
+    return 0;
+  }
+  // prev price = the one STORED at the last touch (ptk) — true segment price
+  const prev = near.storageGet(ptkKey(token)) ?? "0";
+  let dt = "0";
+  if (cmpDec(ts, wRaw) > 0) { dt = u128Sub(ts, wRaw); }
+  // Only the last W of history belongs in the accumulator: segments older
+  // than the window are dropped (dt ≥ W → fresh), and the current segment
+  // contributes min(dt, W) — this keeps pcum ≤ W·price, so the view formula
+  // (pcum + spot·dt)/W is a true trailing-window average, never overcounted.
+  let eff = dt;
+  if (cmpDec(dt, TWAP_MAX_AGE) > 0) { eff = TWAP_MAX_AGE; }
+  const pcum = near.storageGet(pcumKey(token)) ?? "0";
+  let base = pcum;
+  if (cmpDec(dt, TWAP_MAX_AGE) >= 0) { base = "0"; }
+  let term = "0";
+  if (isZeroDec(prev) == 0) {
+    // pcum units: (yN/token × 1e12)·ns — price_scaled × dt, NO further scaling
+    term = bigMul(prev, eff);
+  }
+  near.storageSet(pcumKey(token), u128Add(base, term));
+  near.storageSet(ptkKey(token), spot);
+  near.storageSet(wstampKey(token), ts);
+  return 0;
+}
+
+// time-weighted price over the trailing TWAP_MAX_AGE ns — a LOWER BOUND on
+// the true window TWAP: tw = (pcum + spot·dt) / W. Properties (the defense):
+//   - same-block flash pump: dt = 0 → contributes ZERO (tw = history avg)
+//   - price sustained for the full window: tw → that price (honest signal)
+//   - stale accumulator (>W since last touch): reset in touch(), fresh window
+// touch() resets pcum when dt > W, so pcum never holds more than W of history.
+// `window` arg dilutes (larger denominator = weaker bound); gate uses W.
+function twapRaw(token: string, window: string): string {
+  const spot = near.storageGet(ptkKey(token)) ?? "0";
+  const wRaw = near.storageGet(wstampKey(token)) ?? "0";
+  if (wRaw == "0") { return spot; }
+  const ts = near.blockTimestamp();
+  let dt = "0";
+  if (cmpDec(ts, wRaw) > 0) { dt = u128Sub(ts, wRaw); }
+  const pcum = near.storageGet(pcumKey(token)) ?? "0";
+  // flat statements — nested u128/big call in operand position loses chars
+  // (GAPS.md layout hazard; pool.ts house style, see bigDiv comment)
+  const spotDt = bigMul(spot, dt);
+  const acc = u128Add(pcum, spotDt);
+  return bigDiv(acc, window);
+}
+
+// graduation, gated on TWAP not spot. Fires from buy() only (the NEAR
+// reserve only grows there) — same single-fire + event contract as v2.
+// Two-stage gate (each stage is a LOWER bound, so this is strictly stronger
+// than v2's spot check — never graduates on less evidence):
+//   1. spot reserve < th → return (v2 hot path cost, no accumulator work)
+//   2. TIME-WEIGHTED evidence: twapReserve = ((pcum + spot·dt)/W)·pt/scale
+//      must ALSO be ≥ th. Flash pump: dt=0 and ptk = old price → twapReserve
+//      stays at the pre-pump level → gate refuses.
+// grad_th KEEPS ITS v2 UNITS (raw yoctoNEAR reserve): existing thresholds on
+// live pools keep their meaning; only the measurement changed (spot → both).
+function twapGatedGrad(token: string, pn: string, ptv: string): number {
+  if ((near.storageGet(gradKey(token)) ?? "") == "1") { return 0; }
+  const th = near.storageGet(gradThKey(token)) ?? "0";
+  if (th == "0") { return 0; }
+  if (u128Lt(pn, th)) { return 0; }
+  const tw = twapRaw(token, TWAP_MAX_AGE);
+  // flat statements (GAPS.md layout hazard) — bind before combining
+  const twPt = bigMul(tw, ptv);
+  const twRes = bigDiv(twPt, TWAP_SCALE);
+  if (u128Lt(twRes, th)) { return 0; }
+  near.storageSet(gradKey(token), "1");
+  const ev = jsonSet(
+    jsonSet(jsonSet(`{}`, "token_account_id", jsonQuote(token)),
+      "near", jsonQuote(pn)),
+    "twap", jsonQuote(twRes));
+  near.log("EVENT_JSON:" + `{"standard":"intear_launch","version":"1.0.0","event":"pool_graduated","data":${ev}}`);
+  return 0;
+}
+
 // ── pool lifecycle ─────────────────────────────────────────────────
 
 // init: owner = whoever deploys/initializes (the launchpad factory)
@@ -357,6 +544,9 @@ export function new_(): number {
   near.storageSet("owner", near.predecessorAccountId());
   near.storageSet("fee_bps", "100");            // 1% default
   near.storageSet("fees_near", "0");
+  near.storageSet("nbsum", "0");
+  near.storageSet("pnsum", "0");
+  near.storageSet("float_bal", "0");
   near.log(`pool_init:${near.predecessorAccountId()}`);
   return 0;
 }
@@ -373,6 +563,8 @@ export function seed_pool(): number {
   // anyone front-run the factory with a dust reserve and own the curve
   if (isOwner() == 0) { near.abort("ERR_OWNER_ONLY"); return 0; }
   near.storageSet(pnKey(token), attached);
+  pnSumAdd(attached); // reserve asset total (for the solvency invariant)
+  floatAdd(attached); // attached NEAR physically arrived
   near.storageSet(ptKey(token), "0");
   // the token CONTRACT id — the predecessor here is the launchpad (the
   // caller), not the token; buy() needs the contract to call ftTransfer on
@@ -385,6 +577,9 @@ export function seed_pool(): number {
   th = trimZeros(th);
   if (allDigits(th) == 0) { near.abort("ERR_GRAD_TH"); return 0; }
   near.storageSet(gradThKey(token), th);
+  near.storageSet(pcumKey(token), "0");
+  near.storageSet(ptkKey(token), "0");
+  near.storageSet(wstampKey(token), "0");
   near.log(`seeded:${token}:${attached}`);
   return 0;
 }
@@ -462,6 +657,7 @@ export function claim_fees(): number {
   if (!u128IsZero(feesNear)) {
     near.storageSet(fk, "0");
     near.storageSet("fees_near", u128Sub(near.storageGet("fees_near") ?? "0", feesNear));
+    floatSub(feesNear); // NEAR fee leaves the contract to the claimant
     near.transferU128(to, feesNear);
   }
   if (!u128IsZero(feesTok)) {
@@ -485,8 +681,13 @@ export function migrate(): number {
   const ref = near.storageGet("ref:acct") ?? "";
   if (strLength(ref) == 0) { near.abort("ERR_NO_REF"); return 0; }
   near.storageSet(pnKey(token), "0");
+  pnSumSub(pn); // reserve leaves the contract to the Ref target
+  floatSub(pn); // shadow float tracks the outbound transfer
   near.storageSet(ptKey(token), "0");
   near.storageSet(migKey(token), "1");
+  near.storageRemove(pcumKey(token));
+  near.storageRemove(ptkKey(token));
+  near.storageRemove(wstampKey(token));
   near.transferU128(ref, pn);
   const ev = jsonSet(
     jsonSet(jsonSet(`{}`, "token_account_id", jsonQuote(token)),
@@ -506,12 +707,19 @@ export function deposit(): number {
   if (u128IsZero(attached)) { near.abort("ERR_ZERO"); return 0; }
   const pkArg = near.jsonGetStr("pk") ?? "";
   if (pkArg != "") {
+    // strict identity check: garbage pk would poison own:/nb: storage keys
+    if (isPkHex(pkArg) == 0) { near.abort("ERR_PK"); return 0; }
     const own = near.jsonGetStr("owner") ?? "";
     if (own != "") { near.storageSet(ownKey(pkArg), own); }
   }
   const k = pkArg != "" ? nbKey("pk:" + pkArg) : nbKey(near.predecessorAccountId());
   const cur = near.storageGet(k) ?? "0";
   near.storageSet(k, u128Add(cur, attached));
+  nbSumAdd(attached);
+  floatAdd(attached); // attached NEAR physically arrived (shadow tracks it)
+  // NB: no backing guard here — a deposit carries its own backing (float
+  // and pad liabilities grow by the same amount), so it can never deepen
+  // insolvency. The invariant to police is visibility: get_solvency().
   near.log(`deposit:${near.predecessorAccountId()}:${attached}${pkArg != "" ? ":pk:" + pkArg : ""}`);
   return 0;
 }
@@ -526,8 +734,14 @@ export function fund_gas(): number {
   if (u128IsZero(attached)) { near.abort("ERR_ZERO"); return 0; }
   const pk = near.jsonGetStr("pk") ?? "";
   if (pk == "") { near.abort("ERR_PK"); return 0; }
+  // strict 66-char hex check BEFORE touching ledgers or firing promises:
+  // a garbage pk would set gf: ledger NEAR the key can never spend (the
+  // TransferToGasKey promise fails + refunds, ledger keeps lying)
+  if (isPkHex(pk) == 0) { near.abort("ERR_PK_FORMAT"); return 0; }
   const own = near.jsonGetStr("owner") ?? "";
   if (own != "") { near.storageSet(ownKey(pk), own); }
+  // NOTE: no solvency guard here — attached NEAR passes straight through to
+  // the gas key (promise), the contract never holds it as a liability.
   const k = gfKey(pk);
   near.storageSet(k, u128Add(near.storageGet(k) ?? "0", attached));
   const idx = near.promiseBatchCreate(near.currentAccountId());
@@ -545,6 +759,8 @@ export function register_gas_key(): number {
   if (u128IsZero(attached)) { near.abort("ERR_ZERO"); return 0; }
   const pk = near.jsonGetStr("pk") ?? "";
   if (pk == "") { near.abort("ERR_PK"); return 0; }
+  // same strict pk check as fund_gas (ledger + both promises downstream)
+  if (isPkHex(pk) == 0) { near.abort("ERR_PK_FORMAT"); return 0; }
   const own = near.jsonGetStr("owner") ?? near.predecessorAccountId();
   near.storageSet(ownKey(pk), own);
   const k = gfKey(pk);
@@ -560,6 +776,31 @@ export function register_gas_key(): number {
   near.promiseBatchActionTransferToGasKey(idx, near.hexDecode(pk), attached);
   near.log(`register_gas_key:${pk}:${attached}:${own}`);
   return 0;
+}
+
+// v3.8: public solvency view — liabilities the contract owes on demand
+// (pads + gas-key floats via nbsum) vs the NEAR actually held, net of
+// reserves, fees and the storage/gas margin. coverage < 100% = pads are
+// fractional-reserve and withdraw() may bounce at bank-run scale.
+export function get_solvency(): string {
+  const bal = near.storageGet("float_bal") ?? "0"; // exact shadow (u128-safe)
+  const nbSum = near.storageGet("nbsum") ?? "0";
+  const pnSum = near.storageGet("pnsum") ?? "0";
+  const backed = padBacking();
+  // coverage = bal / nbsum in percent (×100), floor; "∞" when nbsum=0.
+  // Kept as exact u128 string (no i64 conversion) — capped at 100000%.
+  let cov = "∞";
+  if (!u128IsZero(nbSum)) {
+    cov = u128Div(u128Mul(bal, "100"), nbSum);
+    if (u128Gt(cov, "100000")) { cov = "100000"; }
+    cov = trimZeros(cov);
+  }
+  return "{\"balance\":\"" + bal
+    + "\",\"pad_liabilities\":\"" + nbSum
+    + "\",\"reserves\":\"" + pnSum
+    + "\",\"fees\":\"" + (near.storageGet("fees_near") ?? "0")
+    + "\",\"unbacked_capacity\":\"" + backed
+    + "\",\"coverage_pct\":\"" + cov + "\"}";
 }
 
 // view: gas-key status for dashboards/bots — {funded, burn_gas, est}
@@ -578,10 +819,15 @@ export function get_gas_status(): string {
 export function withdraw(): number {
   const attached = near.attachedDepositU128();
   if (attached != "1") { near.abort("ERR_YOCTO"); return 0; }
+  // the lock yocto physically stays in the contract (dust sink, second
+  // lock) — the shadow float must count it or drift by 1 yocto/withdraw
+  floatAdd(attached);
   const k = nbKey(near.predecessorAccountId());
   const bal = near.storageGet(k) ?? "0";
   if (u128IsZero(bal)) { near.abort("ERR_EMPTY_PAD"); return 0; }
   near.storageSet(k, "0");
+  nbSumSub(bal); // effects before the transfer (CEI)
+  floatSub(bal); // shadow float tracks the outbound transfer
   near.transferU128(near.predecessorAccountId(), bal);
   near.log(`withdraw:${near.predecessorAccountId()}:${bal}`);
   return 0;
@@ -611,14 +857,20 @@ export function sell_internal(): string {
   const minOut = near.jsonGetStr("min_near_out") ?? "0";
   if (!u128IsZero(minOut) && u128Lt(net, minOut)) { near.abort("ERR_SLIPPAGE"); return ""; }
   near.storageSet(tk, u128Sub(held, amount));
-  near.storageSet(ptKey(token), u128Add(pt, amount));
-  near.storageSet(pnKey(token), u128Sub(pn, gross));
+  const newPt = u128Add(pt, amount);
+  const newPn = u128Sub(pn, gross);
+  near.storageSet(ptKey(token), newPt);
+  near.storageSet(pnKey(token), newPn);
+  pnSumSub(gross);
+  touch(token, pn, pt, newPn, newPt, near.blockTimestamp());
   if (!u128IsZero(fee)) {
     accrueNearFee(token, fee);
   }
   const nk = nbKey(trader);
   const padNow = near.storageGet(nk) ?? "0";
   near.storageSet(nk, u128Add(padNow, net));
+  // backing came out of pn (freed by pnSumSub above; net ≤ gross) — no guard
+  nbSumAdd(net);
   autoRefuel(trader, gkPk);
   tradeEvent(token, "sell", trader, net, amount, fee);
   recordTrade(token, "sell", trader, net, amount);
@@ -652,8 +904,12 @@ export function sell(): string {
   const minOut = near.jsonGetStr("min_near_out") ?? "0";
   if (!u128IsZero(minOut) && u128Lt(net, minOut)) { near.abort("ERR_SLIPPAGE"); return ""; }
   near.storageSet(ik, u128Sub(held, amount));
-  near.storageSet(ptKey(token), u128Add(pt, amount));
-  near.storageSet(pnKey(token), u128Sub(pn, gross));
+  const newPt = u128Add(pt, amount);
+  const newPn = u128Sub(pn, gross);
+  near.storageSet(ptKey(token), newPt);
+  near.storageSet(pnKey(token), newPn);
+  pnSumSub(gross);
+  touch(token, pn, pt, newPn, newPt, near.blockTimestamp());
   if (!u128IsZero(fee)) {
     accrueNearFee(token, fee);
   }
@@ -663,8 +919,11 @@ export function sell(): string {
   if (toPad) {
     const nk = nbKey(trader);
     near.storageSet(nk, u128Add(near.storageGet(nk) ?? "0", net));
+    // backing came out of pn (freed by pnSumSub above; net ≤ gross) — no guard
+    nbSumAdd(net);
   } else {
     near.transferU128(rcpt, net);
+    floatSub(net); // NEAR out to the seller's wallet
   }
   autoRefuel(trader, gkPk);
   tradeEvent(token, "sell", trader, net, amount, fee);
@@ -717,21 +976,7 @@ function tradingHalt(token: string): number {
   return 0;
 }
 
-// graduated? emits the standard event once (checked after buys — the NEAR
-// reserve only grows there)
-function checkGrad(token: string, pn: string): number {
-  if ((near.storageGet(gradKey(token)) ?? "") == "1") { return 0; }
-  const th = near.storageGet(gradThKey(token)) ?? "0";
-  if (th == "0") { return 0; }   // v3.1: exact string compare (ingress-normalized)
-  if (u128Lt(pn, th)) { return 0; }
-  near.storageSet(gradKey(token), "1");
-  const ev = jsonSet(
-    jsonSet(jsonSet(`{}`, "token_account_id", jsonQuote(token)),
-      "near", jsonQuote(pn)),
-    "threshold", jsonQuote(th));
-  near.log("EVENT_JSON:" + `{"standard":"intear_launch","version":"1.0.0","event":"pool_graduated","data":${ev}}`);
-  return 0;
-}
+// graduated? v3.7: see twapGatedGrad (spot check replaced by the TWAP gate)
 
 // buy: @payable — NEAR in → tokens out to the buyer (predecessor)
 // args: { token, min_tokens_out? }  (0/omitted = no slippage guard)
@@ -754,6 +999,9 @@ export function buy(): string {
     if (u128Lt(pad, want)) { near.abort("ERR_BALANCE"); return ""; }
     nearIn = want;
   }
+  // NOTE: no backing guard needed at buy() — a pad-funded buy converts pad
+  // NEAR into reserves (nbsum down, pnsum up), which only IMPROVES the
+  // solvency invariant; attached buys grow balance and reserves equally.
   const pt = near.storageGet(ptKey(token)) ?? "0";
   if (u128IsZero(pt)) { near.abort("ERR_NO_TOKENS"); return ""; }
   const trader = near.predecessorAccountId();
@@ -767,12 +1015,18 @@ export function buy(): string {
   const newPn = u128Add(pn, nearIn);
   near.storageSet(ptKey(token), newPt);
   near.storageSet(pnKey(token), newPn);
+  pnSumAdd(nearIn);
+  touch(token, pn, pt, newPn, newPt, near.blockTimestamp());
   if (u128IsZero(attached)) {
     const nk = nbKey(tid);
     const padNow = near.storageGet(nk) ?? "0";
     const padAfter = u128Sub(padNow, nearIn);
     near.storageSet(nk, padAfter);
+    nbSumSub(nearIn);
     autoRefuel(tid, gkPk);
+  } else {
+    // attached buys: NEAR physically arrived — shadow float must track it
+    floatAdd(nearIn);
   }
   if (!u128IsZero(fee)) {
     const feeKey = feeTokKey(token);
@@ -798,7 +1052,7 @@ export function buy(): string {
   tradeEvent(token, "buy", trader, nearIn, net, fee);
   recordTrade(token, "buy", trader, nearIn, net);
   near.log(`buy:${trader}:${nearIn}:${net}`);
-  checkGrad(token, newPn);
+  twapGatedGrad(token, newPn, newPt);
   return `{"gross":${jsonQuote(gross)},"fee":${jsonQuote(fee)},"net":${jsonQuote(net)}}`;
 }
 
@@ -838,12 +1092,17 @@ export function ft_on_transfer(): string {
     if (u128IsZero(net)) { near.abort("ERR_DUST"); return "0"; }
     const minOut = ci >= 0 ? strSlice(msg, ci + 1, strLength(msg)) : "0";
     if (!u128IsZero(minOut) && u128Lt(net, minOut)) { near.abort("ERR_SLIPPAGE"); return "0"; }
-    near.storageSet(ptKey(token), u128Add(pt, amount));
-    near.storageSet(pnKey(token), u128Sub(pn, gross));
+    const newPt = u128Add(pt, amount);
+    const newPn = u128Sub(pn, gross);
+    near.storageSet(ptKey(token), newPt);
+    near.storageSet(pnKey(token), newPn);
+    pnSumSub(gross);
+    touch(token, pn, pt, newPn, newPt, near.blockTimestamp());
     if (!u128IsZero(fee)) {
       accrueNearFee(token, fee);
     }
     near.transferU128(sender, net);
+    floatSub(net); // NEAR out to the seller
     tradeEvent(token, "sell", sender, net, amount, fee);
     recordTrade(token, "sell", sender, net, amount);
     near.log(`sell:${sender}:${amount}:${net}`);
@@ -867,7 +1126,13 @@ export function get_pool(): string {
   if ((near.storageGet(gradKey(token)) ?? "") == "1") { grad = "true"; }
   let mig = "false";
   if ((near.storageGet(migKey(token)) ?? "") == "1") { mig = "true"; }
-  return `{"near":${jsonQuote(pn)},"tokens":${jsonQuote(near.storageGet(ptKey(token)) ?? "0")},"grad_th":${jsonQuote(gradTh)},"graduated":${grad},"migrated":${mig},"fees_tok":${jsonQuote(near.storageGet(feeTokKey(token)) ?? "0")}}`;
+  return `{"near":${jsonQuote(pn)},"tokens":${jsonQuote(near.storageGet(ptKey(token)) ?? "0")},"grad_th":${jsonQuote(gradTh)},"graduated":${grad},"migrated":${mig},"fees_tok":${jsonQuote(near.storageGet(feeTokKey(token)) ?? "0")},"twap":${jsonQuote(twapRaw(token, TWAP_MAX_AGE))},"spot_yN_per_tok":${jsonQuote(spotScaled(pn, near.storageGet(ptKey(token)) ?? "0"))}}`;
+}
+// v3.7: time-weighted price over `window?` ns (default 60s) — yN per token
+export function twap(): string {
+  const token = near.jsonGetStr("token") ?? "";
+  const w = near.jsonGetStr("window") ?? TWAP_MAX_AGE;
+  return `{"twap":${jsonQuote(twapRaw(token, w))},"window_ns":${jsonQuote(w)}}`;
 }
 export function get_fee(): string {
   let paused = "false";

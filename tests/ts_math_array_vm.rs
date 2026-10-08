@@ -97,9 +97,7 @@ fn array_reduce_mathmax_pipeline_compiles() {
 /// mapped (caught by ts_surface_dts_parity on its first run, 2026-10-05).
 #[test]
 fn strjoin_free_function_compiles() {
-    compile(
-        "function f(parts: string[]): string { return strJoin(\",\", parts); }",
-    );
+    compile("function f(parts: string[]): string { return strJoin(\",\", parts); }");
 }
 
 /// near_* free functions — same catch class as strJoin.

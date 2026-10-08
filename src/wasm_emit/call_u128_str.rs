@@ -20,6 +20,9 @@ use super::*;
 pub(crate) const U128_A: i64 = 8480; // operand A / arithmetic destination
 pub(crate) const U128_B: i64 = 8496; // operand B
 pub(crate) const U128_R: i64 = 8512; // remainder (divmod)
+pub(crate) const U128_C: i64 = 8528; // muldiv third operand (divisor)
+pub(crate) const U128_Q: i64 = 8544; // muldiv quotient result
+pub(crate) const U128_RM: i64 = 8560; // muldiv remainder result
 
 /// Function-table indices of the synthesized helpers (positions in `funcs`).
 #[derive(Clone, Copy)]
@@ -30,6 +33,7 @@ pub(crate) struct U128Helpers {
     pub(crate) sub: u32,
     pub(crate) mul: u32,
     pub(crate) divmod: u32,
+    pub(crate) muldiv: u32,
     pub(crate) i64_to_str: u32,
     // Checked variants (try/catch, round 4): same math, but every error trap
     // returns TAGGED_FALSE instead of trapping. Call sites under an active
@@ -39,6 +43,7 @@ pub(crate) struct U128Helpers {
     pub(crate) sub_ck: u32,
     pub(crate) mul_ck: u32,
     pub(crate) divmod_ck: u32,
+    pub(crate) muldiv_ck: u32,
 }
 
 fn ma() -> wasm_encoder::MemArg {
@@ -123,6 +128,15 @@ impl WasmEmitter {
             local_entries: None,
             custom_type: None,
         });
+        let muldiv = self.funcs.len();
+        self.funcs.push(FuncDef {
+            name: "__h_u128_muldiv".into(),
+            param_count: 5,
+            local_count: 44,
+            instrs: Self::h_muldiv(),
+            local_entries: None,
+            custom_type: None,
+        });
         let i64_to_str = self.funcs.len();
         self.funcs.push(FuncDef {
             name: "__h_i64_to_str".into(),
@@ -180,6 +194,15 @@ impl WasmEmitter {
             local_entries: None,
             custom_type: None,
         });
+        let muldiv_ck = self.funcs.len();
+        self.funcs.push(FuncDef {
+            name: "__h_u128_muldiv_ck".into(),
+            param_count: 5,
+            local_count: 44,
+            instrs: Self::h_muldiv_ck(),
+            local_entries: None,
+            custom_type: None,
+        });
         let h = U128Helpers {
             parse: parse as u32,
             to_str: to_str as u32,
@@ -187,12 +210,14 @@ impl WasmEmitter {
             sub: sub as u32,
             mul: mul as u32,
             divmod: divmod as u32,
+            muldiv: muldiv as u32,
             i64_to_str: i64_to_str as u32,
             parse_ck: parse_ck as u32,
             add_ck: add_ck as u32,
             sub_ck: sub_ck as u32,
             mul_ck: mul_ck as u32,
             divmod_ck: divmod_ck as u32,
+            muldiv_ck: muldiv_ck as u32,
         };
         self.u128h = Some(h);
         h
@@ -1112,6 +1137,414 @@ impl WasmEmitter {
         v
     }
 
+    // __h_u128_muldiv(a, b, d, q, rem_ptr) — CLMM core intrinsic:
+    // q = a * b / d over the FULL 256-bit product (restoring binary long
+    // division), *rem_ptr(8B cell) = a * b % d (skipped when rem_ptr == 0).
+    // Traps: d == 0, or quotient ≥ 2^128 — the same contract as Raydium's
+    // FullMath::mulDiv (callers pre-size liquidity so the quotient fits).
+    // Locals: 0=a 1=b 2=d 3=q 4=rem_ptr | A=5..8 B=9..12 D=13..16 (u32×4)
+    //         P=17..24 Q=25..32 R=33..36 | dvlo=37 dvhi=38 t=39 bit=40
+    //         cnd=41 tmp=42 subw=43
+    fn h_muldiv() -> Vec<Instruction<'static>> {
+        let mut v = vec![];
+        let mut e = |i: &Instruction<'static>| v.push(i.clone());
+        let a_l = [5usize, 6, 7, 8];
+        let b_l = [9usize, 10, 11, 12];
+        let d_l = [13usize, 14, 15, 16];
+        let p_l = [17usize, 18, 19, 20, 21, 22, 23, 24];
+        let q_l = [25usize, 26, 27, 28, 29, 30, 31, 32];
+        let r_l = [33usize, 34, 35, 36];
+        let dvlo = 37usize;
+        let dvhi = 38usize;
+        let t = 39usize;
+        let bit = 40usize;
+        let cnd = 41usize;
+        let tmp = 42usize;
+        let subw = 43usize;
+        // load a 16-byte cell → 4 u32 limbs (low→high)
+        for (ptr_local, base) in [(0usize, a_l[0]), (1usize, b_l[0]), (2usize, d_l[0])] {
+            for half in 0..2usize {
+                e(&Instruction::LocalGet(ptr_local as u32));
+                if half == 1 {
+                    e(&Instruction::I64Const(8));
+                    e(&Instruction::I64Add);
+                }
+                e(&Instruction::I32WrapI64);
+                e(&Instruction::I64Load(ma8()));
+                e(&Instruction::LocalSet(t as u32));
+                e(&Instruction::LocalGet(t as u32));
+                e(&Instruction::I64Const(0xFFFF_FFFF));
+                e(&Instruction::I64And);
+                e(&Instruction::LocalSet((base + half * 2) as u32));
+                e(&Instruction::LocalGet(t as u32));
+                e(&Instruction::I64Const(32));
+                e(&Instruction::I64ShrU);
+                e(&Instruction::LocalSet((base + half * 2 + 1) as u32));
+            }
+        }
+        // d == 0 → trap
+        e(&Instruction::LocalGet(d_l[0] as u32));
+        e(&Instruction::LocalGet(d_l[1] as u32));
+        e(&Instruction::I64Or);
+        e(&Instruction::LocalGet(d_l[2] as u32));
+        e(&Instruction::I64Or);
+        e(&Instruction::LocalGet(d_l[3] as u32));
+        e(&Instruction::I64Or);
+        e(&Instruction::I64Eqz);
+        e(&Instruction::If(BlockType::Empty));
+        e(&Instruction::Unreachable);
+        e(&Instruction::End);
+        // precompute dvlo/dvhi (i64-assembled halves) for the loop compare
+        e(&Instruction::LocalGet(d_l[1] as u32));
+        e(&Instruction::I64Const(32));
+        e(&Instruction::I64Shl);
+        e(&Instruction::LocalGet(d_l[0] as u32));
+        e(&Instruction::I64Or);
+        e(&Instruction::LocalSet(dvlo as u32));
+        e(&Instruction::LocalGet(d_l[3] as u32));
+        e(&Instruction::I64Const(32));
+        e(&Instruction::I64Shl);
+        e(&Instruction::LocalGet(d_l[2] as u32));
+        e(&Instruction::I64Or);
+        e(&Instruction::LocalSet(dvhi as u32));
+        // P = 0, Q = 0, R = 0
+        for l in p_l.iter().chain(q_l.iter()).chain(r_l.iter()) {
+            e(&Instruction::I64Const(0));
+            e(&Instruction::LocalSet(*l as u32));
+        }
+        // ── schoolbook 4×4 → 8 ──
+        // P += A_i * B_j << (32·(i+j)); carry propagates unconditionally to
+        // the top limb — the full product always fits 8 u32 limbs, so the
+        // limb-7 carry-out is 0 by math.
+        for i in 0..4usize {
+            for j in 0..4usize {
+                let pos = i + j;
+                // t = A_i * B_j (u32·u32 < 2^64 — fits i64)
+                e(&Instruction::LocalGet(a_l[i] as u32));
+                e(&Instruction::LocalGet(b_l[j] as u32));
+                e(&Instruction::I64Mul);
+                e(&Instruction::LocalSet(t as u32));
+                // u = P_pos + (t & M); P_pos = u & M
+                e(&Instruction::LocalGet(p_l[pos] as u32));
+                e(&Instruction::LocalGet(t as u32));
+                e(&Instruction::I64Const(0xFFFF_FFFF));
+                e(&Instruction::I64And);
+                e(&Instruction::I64Add);
+                e(&Instruction::LocalSet(tmp as u32));
+                e(&Instruction::LocalGet(tmp as u32));
+                e(&Instruction::I64Const(0xFFFF_FFFF));
+                e(&Instruction::I64And);
+                e(&Instruction::LocalSet(p_l[pos] as u32));
+                // t = (t >> 32) + (u >> 32) — carry
+                e(&Instruction::LocalGet(t as u32));
+                e(&Instruction::I64Const(32));
+                e(&Instruction::I64ShrU);
+                e(&Instruction::LocalGet(tmp as u32));
+                e(&Instruction::I64Const(32));
+                e(&Instruction::I64ShrU);
+                e(&Instruction::I64Add);
+                e(&Instruction::LocalSet(t as u32));
+                // propagate carry pos+1 ..= 7
+                for k in (pos + 1)..8 {
+                    e(&Instruction::LocalGet(p_l[k] as u32));
+                    e(&Instruction::LocalGet(t as u32));
+                    e(&Instruction::I64Add);
+                    e(&Instruction::LocalSet(tmp as u32));
+                    e(&Instruction::LocalGet(tmp as u32));
+                    e(&Instruction::I64Const(0xFFFF_FFFF));
+                    e(&Instruction::I64And);
+                    e(&Instruction::LocalSet(p_l[k] as u32));
+                    e(&Instruction::LocalGet(tmp as u32));
+                    e(&Instruction::I64Const(32));
+                    e(&Instruction::I64ShrU);
+                    e(&Instruction::LocalSet(t as u32));
+                }
+            }
+        }
+        // ── 256-bit restoring binary long division ──
+        // for bit 255..=0: R = (R << 1) | P[bit]; R>=D ⇒ R-=D, Q[bit]=1.
+        // R < D ≤ 2^128-1 as the invariant ⇒ R's two high u32 limbs stay
+        // 0 (they only matter for the shift-in of P bits ≥ 128, where the
+        // invariant R' < D still caps R at 2^128-1). Q's limbs 4..7 collect
+        // the quotient's "high" bits — any nonzero ⇒ quotient ≥ 2^128 ⇒
+        // overflow trap after the loop.
+        e(&Instruction::I64Const(255));
+        e(&Instruction::LocalSet(bit as u32));
+        e(&Instruction::Block(BlockType::Empty));
+        e(&Instruction::Loop(BlockType::Empty));
+        // 129-bit shift: rcarry = r3's old bit 31 (the bit that falls off
+        // the 128-bit R when shifted — algebraically it adds 2^128 to
+        // R', which we fold into the compare below via cnd; the wraparound
+        // subtract stays correct because R' - D < 2^128 always).
+        e(&Instruction::LocalGet(r_l[3] as u32));
+        e(&Instruction::I64Const(31));
+        e(&Instruction::I64ShrU);
+        e(&Instruction::LocalSet(subw as u32)); // subw reused as rcarry outside the subtract
+        for k in (0..4).rev() {
+            e(&Instruction::LocalGet(r_l[k] as u32));
+            e(&Instruction::I64Const(1));
+            e(&Instruction::I64Shl);
+            // mask: limbs hold exactly 32 bits — an unmasked shl leaves old
+            // bit 31 at bit 32 where it spills upward and double-counts the
+            // bit carried via the >>31 or-in below (corrupts rlo/rhi compares)
+            e(&Instruction::I64Const(0xFFFF_FFFF));
+            e(&Instruction::I64And);
+            e(&Instruction::LocalSet(r_l[k] as u32));
+            if k > 0 {
+                e(&Instruction::LocalGet(r_l[k - 1] as u32));
+                e(&Instruction::I64Const(31));
+                e(&Instruction::I64ShrU);
+                e(&Instruction::LocalGet(r_l[k] as u32));
+                e(&Instruction::I64Or);
+                e(&Instruction::LocalSet(r_l[k] as u32));
+            }
+        }
+        // select P limb: t = P[bit >> 5] (4-way select on bit>>5 0..3)
+        e(&Instruction::LocalGet(bit as u32));
+        e(&Instruction::I64Const(5));
+        e(&Instruction::I64ShrU);
+        e(&Instruction::LocalSet(tmp as u32)); // tmp = bit >> 5 (0..7 — P halves)
+        e(&Instruction::LocalGet(tmp as u32));
+        e(&Instruction::I64Eqz);
+        e(&Instruction::If(BlockType::Result(ValType::I64)));
+        e(&Instruction::LocalGet(p_l[0] as u32));
+        e(&Instruction::Else);
+        e(&Instruction::LocalGet(tmp as u32));
+        e(&Instruction::I64Const(1));
+        e(&Instruction::I64Eq);
+        e(&Instruction::If(BlockType::Result(ValType::I64)));
+        e(&Instruction::LocalGet(p_l[1] as u32));
+        e(&Instruction::Else);
+        e(&Instruction::LocalGet(tmp as u32));
+        e(&Instruction::I64Const(2));
+        e(&Instruction::I64Eq);
+        e(&Instruction::If(BlockType::Result(ValType::I64)));
+        e(&Instruction::LocalGet(p_l[2] as u32));
+        e(&Instruction::Else);
+        e(&Instruction::LocalGet(tmp as u32));
+        e(&Instruction::I64Const(3));
+        e(&Instruction::I64Eq);
+        e(&Instruction::If(BlockType::Result(ValType::I64)));
+        e(&Instruction::LocalGet(p_l[3] as u32));
+        e(&Instruction::Else);
+        e(&Instruction::LocalGet(tmp as u32));
+        e(&Instruction::I64Const(4));
+        e(&Instruction::I64Eq);
+        e(&Instruction::If(BlockType::Result(ValType::I64)));
+        e(&Instruction::LocalGet(p_l[4] as u32));
+        e(&Instruction::Else);
+        e(&Instruction::LocalGet(tmp as u32));
+        e(&Instruction::I64Const(5));
+        e(&Instruction::I64Eq);
+        e(&Instruction::If(BlockType::Result(ValType::I64)));
+        e(&Instruction::LocalGet(p_l[5] as u32));
+        e(&Instruction::Else);
+        e(&Instruction::LocalGet(tmp as u32));
+        e(&Instruction::I64Const(6));
+        e(&Instruction::I64Eq);
+        e(&Instruction::If(BlockType::Result(ValType::I64)));
+        e(&Instruction::LocalGet(p_l[6] as u32));
+        e(&Instruction::Else);
+        e(&Instruction::LocalGet(p_l[7] as u32));
+        e(&Instruction::End);
+        e(&Instruction::End);
+        e(&Instruction::End);
+        e(&Instruction::End);
+        e(&Instruction::End);
+        e(&Instruction::End);
+        e(&Instruction::End);
+        // t now = P's u32 limb for this bit; shift = bit & 31
+        e(&Instruction::LocalGet(bit as u32));
+        e(&Instruction::I64Const(31));
+        e(&Instruction::I64And);
+        e(&Instruction::I64ShrU);
+        e(&Instruction::I64Const(1));
+        e(&Instruction::I64And);
+        e(&Instruction::LocalGet(r_l[0] as u32));
+        e(&Instruction::I64Or);
+        e(&Instruction::LocalSet(r_l[0] as u32));
+        // compare R vs D: cnd = (rhi >u dvhi) | ((rhi == dvhi) & (rlo >=u dvlo))
+        e(&Instruction::LocalGet(r_l[3] as u32));
+        e(&Instruction::I64Const(32));
+        e(&Instruction::I64Shl);
+        e(&Instruction::LocalGet(r_l[2] as u32));
+        e(&Instruction::I64Or);
+        e(&Instruction::LocalSet(tmp as u32)); // rhi
+        e(&Instruction::LocalGet(tmp as u32));
+        e(&Instruction::LocalGet(dvhi as u32));
+        e(&Instruction::I64GtU);
+        e(&Instruction::I64ExtendI32U);
+        e(&Instruction::LocalGet(tmp as u32));
+        e(&Instruction::LocalGet(dvhi as u32));
+        e(&Instruction::I64Eq);
+        e(&Instruction::I64ExtendI32U);
+        e(&Instruction::LocalGet(r_l[1] as u32));
+        e(&Instruction::I64Const(32));
+        e(&Instruction::I64Shl);
+        e(&Instruction::LocalGet(r_l[0] as u32));
+        e(&Instruction::I64Or);
+        e(&Instruction::LocalSet(t as u32)); // rlo
+        e(&Instruction::LocalGet(t as u32));
+        e(&Instruction::LocalGet(dvlo as u32));
+        e(&Instruction::I64GeU);
+        e(&Instruction::I64ExtendI32U);
+        e(&Instruction::I64And);
+        e(&Instruction::I64Or);
+        e(&Instruction::LocalGet(subw as u32)); // rcarry: R' ≥ 2^128 ⇒ R' > D
+        e(&Instruction::I64Or);
+        e(&Instruction::LocalSet(cnd as u32));
+        // Q <<= 1 (8 limbs, shift-in from below = 0 — Q's top 128 bits carry
+        // the overflow evidence)
+        for k in (0..8).rev() {
+            e(&Instruction::LocalGet(q_l[k] as u32));
+            e(&Instruction::I64Const(1));
+            e(&Instruction::I64Shl);
+            // mask: same 32-bit limb invariant as the R shift above —
+            // unmasked shl spills old bit 31 upward and double-counts
+            e(&Instruction::I64Const(0xFFFF_FFFF));
+            e(&Instruction::I64And);
+            e(&Instruction::LocalSet(q_l[k] as u32));
+            if k > 0 {
+                e(&Instruction::LocalGet(q_l[k - 1] as u32));
+                e(&Instruction::I64Const(31));
+                e(&Instruction::I64ShrU);
+                e(&Instruction::LocalGet(q_l[k] as u32));
+                e(&Instruction::I64Or);
+                e(&Instruction::LocalSet(q_l[k] as u32));
+            }
+        }
+        // if cnd: R -= D; Q |= 1 — cnd is an i64 (0/1); If needs i32
+        e(&Instruction::LocalGet(cnd as u32));
+        e(&Instruction::I32WrapI64);
+        e(&Instruction::If(BlockType::Empty));
+        // 4-limb subtract with borrow: per limb u = R_k - D_k (- borrow)
+        e(&Instruction::LocalGet(r_l[0] as u32));
+        e(&Instruction::LocalGet(d_l[0] as u32));
+        e(&Instruction::I64Sub);
+        e(&Instruction::LocalSet(tmp as u32));
+        e(&Instruction::LocalGet(tmp as u32));
+        e(&Instruction::LocalGet(r_l[0] as u32));
+        e(&Instruction::I64GtU);
+        e(&Instruction::I64ExtendI32U);
+        e(&Instruction::LocalSet(subw as u32)); // borrow out of limb 0 (wraparound)
+        e(&Instruction::LocalGet(tmp as u32));
+        e(&Instruction::I64Const(0xFFFF_FFFF));
+        e(&Instruction::I64And);
+        e(&Instruction::LocalSet(r_l[0] as u32));
+        e(&Instruction::LocalGet(r_l[1] as u32));
+        e(&Instruction::LocalGet(d_l[1] as u32));
+        e(&Instruction::I64Sub);
+        e(&Instruction::LocalGet(subw as u32));
+        e(&Instruction::I64Sub);
+        e(&Instruction::LocalSet(tmp as u32));
+        e(&Instruction::LocalGet(tmp as u32));
+        e(&Instruction::LocalGet(r_l[1] as u32));
+        e(&Instruction::I64GtU);
+        e(&Instruction::I64ExtendI32U);
+        e(&Instruction::LocalSet(subw as u32));
+        e(&Instruction::LocalGet(tmp as u32));
+        e(&Instruction::I64Const(0xFFFF_FFFF));
+        e(&Instruction::I64And);
+        e(&Instruction::LocalSet(r_l[1] as u32));
+        e(&Instruction::LocalGet(r_l[2] as u32));
+        e(&Instruction::LocalGet(d_l[2] as u32));
+        e(&Instruction::I64Sub);
+        e(&Instruction::LocalGet(subw as u32));
+        e(&Instruction::I64Sub);
+        e(&Instruction::LocalSet(tmp as u32));
+        e(&Instruction::LocalGet(tmp as u32));
+        e(&Instruction::LocalGet(r_l[2] as u32));
+        e(&Instruction::I64GtU);
+        e(&Instruction::I64ExtendI32U);
+        e(&Instruction::LocalSet(subw as u32));
+        e(&Instruction::LocalGet(tmp as u32));
+        e(&Instruction::I64Const(0xFFFF_FFFF));
+        e(&Instruction::I64And);
+        e(&Instruction::LocalSet(r_l[2] as u32));
+        e(&Instruction::LocalGet(r_l[3] as u32));
+        e(&Instruction::LocalGet(d_l[3] as u32));
+        e(&Instruction::I64Sub);
+        e(&Instruction::LocalGet(subw as u32));
+        e(&Instruction::I64Sub);
+        e(&Instruction::I64Const(0xFFFF_FFFF));
+        e(&Instruction::I64And);
+        e(&Instruction::LocalSet(r_l[3] as u32));
+        // Q |= 1
+        e(&Instruction::LocalGet(q_l[0] as u32));
+        e(&Instruction::I64Const(1));
+        e(&Instruction::I64Or);
+        e(&Instruction::LocalSet(q_l[0] as u32));
+        e(&Instruction::End);
+        // bit -= 1; loop while bit >= 0 (br_if -1 when bit wraps below 0)
+        e(&Instruction::LocalGet(bit as u32));
+        e(&Instruction::I64Eqz);
+        e(&Instruction::BrIf(1)); // done at bit 0 (inclusive)
+        e(&Instruction::LocalGet(bit as u32));
+        e(&Instruction::I64Const(1));
+        e(&Instruction::I64Sub);
+        e(&Instruction::LocalSet(bit as u32));
+        e(&Instruction::Br(0));
+        e(&Instruction::End); // loop
+        e(&Instruction::End); // block
+                              // quotient overflow: any Q limb ≥ 2^128 nonzero → trap
+        e(&Instruction::LocalGet(q_l[4] as u32));
+        e(&Instruction::LocalGet(q_l[5] as u32));
+        e(&Instruction::I64Or);
+        e(&Instruction::LocalGet(q_l[6] as u32));
+        e(&Instruction::I64Or);
+        e(&Instruction::LocalGet(q_l[7] as u32));
+        e(&Instruction::I64Or);
+        // Eqz here is load-bearing twice: i64→i32 for If, and polarity —
+        // 1 = all high limbs zero = no overflow. If branches on NONZERO,
+        // so `If(unreachable)` with the Eqz would trap on the SUCCESS
+        // path; the trap must live in the Else arm.
+        e(&Instruction::I64Eqz);
+        e(&Instruction::If(BlockType::Empty));
+        e(&Instruction::Else);
+        e(&Instruction::Unreachable); // muldiv: quotient ≥ 2^128
+        e(&Instruction::End);
+        // store q: [q] = (q1 << 32 | q0), [q+8] = (q3 << 32 | q2)
+        e(&Instruction::LocalGet(3 as u32));
+        e(&Instruction::I32WrapI64);
+        e(&Instruction::LocalGet(q_l[1] as u32));
+        e(&Instruction::I64Const(32));
+        e(&Instruction::I64Shl);
+        e(&Instruction::LocalGet(q_l[0] as u32));
+        e(&Instruction::I64Or);
+        e(&Instruction::I64Store(ma8()));
+        e(&Instruction::LocalGet(3 as u32));
+        e(&Instruction::I64Const(8));
+        e(&Instruction::I64Add);
+        e(&Instruction::I32WrapI64);
+        e(&Instruction::LocalGet(q_l[3] as u32));
+        e(&Instruction::I64Const(32));
+        e(&Instruction::I64Shl);
+        e(&Instruction::LocalGet(q_l[2] as u32));
+        e(&Instruction::I64Or);
+        e(&Instruction::I64Store(ma8()));
+        // if rem_ptr != 0: [rem] = (r1 << 32 | r0)
+        e(&Instruction::LocalGet(4 as u32));
+        e(&Instruction::I64Eqz);
+        e(&Instruction::If(BlockType::Empty));
+        e(&Instruction::LocalGet(4 as u32));
+        e(&Instruction::I32WrapI64);
+        e(&Instruction::LocalGet(r_l[1] as u32));
+        e(&Instruction::I64Const(32));
+        e(&Instruction::I64Shl);
+        e(&Instruction::LocalGet(r_l[0] as u32));
+        e(&Instruction::I64Or);
+        e(&Instruction::I64Store(ma8()));
+        e(&Instruction::End);
+        e(&Instruction::I64Const(TAG_NIL));
+        v
+    }
+
+    // Checked variant: Unreachable → TAGGED_FALSE (same sentinel discipline
+    // as the other _ck helpers — legit returns are nil(4), never 1).
+    fn h_muldiv_ck() -> Vec<Instruction<'static>> {
+        Self::to_checked(Self::h_muldiv())
+    }
+
     // __i64_to_str(n) -> tagged string. Locals: 0=n 1=neg 2=u 3=dst 4=pos 5=digit 6=len
     fn h_i64_to_str(mem_limit: i64) -> Vec<Instruction<'static>> {
         let mut v = vec![];
@@ -1317,6 +1750,46 @@ impl WasmEmitter {
                 }
                 let src = if op == "u128/div" { U128_A } else { U128_R };
                 v.push(Instruction::I64Const(src));
+                v.push(Self::call_user(h.to_str));
+                Ok(v)
+            }
+            "u128/muldiv" => {
+                // CLMM core: q = a * b / d over the full 256-bit product.
+                // Same operand discipline as the add/sub/mul arm; the
+                // 256-bit product + restoring division live in the
+                // __h_u128_muldiv helper (d==0 and quotient ≥ 2^128 trap).
+                if a.len() != 3 {
+                    return Err("u128/muldiv: need 3 args".into());
+                }
+                let h = self.ensure_u128_str_helpers();
+                let gen = self.limb_call_count;
+                self.limb_call_count += 1;
+                let alo = self.local_idx(&format!("__u128la_{gen}"));
+                let ahi = self.local_idx(&format!("__u128ha_{gen}"));
+                let blo = self.local_idx(&format!("__u128lb_{gen}"));
+                let bhi = self.local_idx(&format!("__u128hb_{gen}"));
+                let clo = self.local_idx(&format!("__u128lc_{gen}"));
+                let chi = self.local_idx(&format!("__u128hc_{gen}"));
+                let mut v = Vec::new();
+                self.emit_u128_operand(&mut v, &a[0], alo, ahi)?;
+                self.emit_u128_operand(&mut v, &a[1], blo, bhi)?;
+                self.emit_u128_operand(&mut v, &a[2], clo, chi)?;
+                v.extend(self.limb_pair_store(alo, ahi, U128_A));
+                v.extend(self.limb_pair_store(blo, bhi, U128_B));
+                v.extend(self.limb_pair_store(clo, chi, U128_C));
+                v.push(Instruction::I64Const(U128_A));
+                v.push(Instruction::I64Const(U128_B));
+                v.push(Instruction::I64Const(U128_C));
+                v.push(Instruction::I64Const(U128_Q));
+                v.push(Instruction::I64Const(U128_RM));
+                if self.try_stack.is_empty() {
+                    v.push(Self::call_user(h.muldiv));
+                    v.push(Instruction::Drop);
+                } else {
+                    let call = Self::call_user(h.muldiv_ck);
+                    self.ck_guarded(&mut v, call, "u128: muldiv overflow");
+                }
+                v.push(Instruction::I64Const(U128_Q));
                 v.push(Self::call_user(h.to_str));
                 Ok(v)
             }

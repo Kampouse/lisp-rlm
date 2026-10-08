@@ -1246,7 +1246,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // ptr
                 v.push(Self::host_call(25)); // value_return
-                // Set return flag so export wrapper skips its value_return
+                                             // Set return flag so export wrapper skips its value_return
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::GlobalSet(RETURN_FLAG));
                 v.push(Instruction::I64Const(TAG_NIL));
@@ -1374,6 +1374,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // ptr
+                self.need_host(29);
                 v.push(Self::host_call(29)); // log_utf16
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)

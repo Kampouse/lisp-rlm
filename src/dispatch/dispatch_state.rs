@@ -436,7 +436,9 @@ pub fn handle(
             };
             // Missing key → Nil (NOT Ok(None) — that means "unknown builtin"
             // to the dispatcher and cascades into a bogus error).
-            Ok(Some(state.rlm_state.get(&key).cloned().unwrap_or(LispVal::Nil)))
+            Ok(Some(
+                state.rlm_state.get(&key).cloned().unwrap_or(LispVal::Nil),
+            ))
         }
         "final" => {
             let v = args.first().cloned().unwrap_or(LispVal::Nil);

@@ -77,7 +77,9 @@ fn str_contains_dynamic_needle_interpreter() {
             let _ = run_program(&exprs, &mut env, &mut state).expect("run");
             // the program's last top-level form is the call itself
             run_program(
-                &[types::LispVal::List(vec![types::LispVal::Sym("main".into())])],
+                &[types::LispVal::List(vec![types::LispVal::Sym(
+                    "main".into(),
+                )])],
                 &mut env,
                 &mut state,
             )

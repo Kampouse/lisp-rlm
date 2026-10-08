@@ -650,7 +650,7 @@ pub fn build_combined_wit_metadata() -> Result<(wit_parser::Resolve, wit_parser:
     }
     #[cfg(target_arch = "wasm32")]
     {
-        crate::wit_embed::build_http_wit_metadata_embedded()
+        crate::wit_embed::build_combined_wit_metadata_embedded()
     }
 }
 
@@ -686,7 +686,13 @@ pub fn build_outlayer_nohttp_wit_metadata(
             }
         }
         resolve
-            .push_file(&wit_dir.parent().and_then(|p| p.parent()).unwrap().join("alt-wit/outlayer-nohttp.wit"))
+            .push_file(
+                &wit_dir
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .unwrap()
+                    .join("alt-wit/outlayer-nohttp.wit"),
+            )
             .map_err(|e| format!("push_file outlayer-nohttp.wit failed: {}", e))?;
 
         let mut found_world = None;

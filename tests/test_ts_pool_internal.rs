@@ -210,14 +210,17 @@ fn pool_internal_balances_gaskey_trading() {
         "pad = 2 NEAR after deposit: {out}"
     );
 
-    // ── gas-key buy: attach = 0, near_in from the pad ──
+    // ── gas-key buy via the v3.5 to_pad lane: attach = 0, near_in from ──
+    // the pad, tokens PARKED in inventory (internal-ledger buys were
+    // removed in v3.3 — prod pays out real tokens; to_pad is the lane a
+    // restricted key trades on without popups).
     // pt=2.5e26, pn=2e24 (classic buy moved the curve), in=0.5e24
     // → gross = 2.5e26*5e23/2.5e24 = 5e25, fee 1% → net 4.95e25
     let out = mock(
         &manifest,
         POOL,
         "buy",
-        r#"{"token":"token.test.near","near_in":"500000000000000000000000"}"#,
+        r#"{"token":"token.test.near","near_in":"500000000000000000000000","to_pad":"1"}"#,
         None, // attach = 0 — the only thing a gas key CAN do
         GASKEY,
     );
@@ -225,7 +228,7 @@ fn pool_internal_balances_gaskey_trading() {
     assert!(out.contains("✅ Success"), "gas buy: {out}");
     assert!(
         out.contains("49500000000000000000000000"),
-        "gas buy net in return value: {out}"
+        "gas buy net (return/log): {out}"
     );
     let out = mock(
         &manifest,
@@ -241,8 +244,8 @@ fn pool_internal_balances_gaskey_trading() {
         "pad debited to 1.5 NEAR: {out}"
     );
     assert!(
-        out.contains("49500000000000000000000000"),
-        "internal token ledger credited: {out}"
+        out.contains(r#"\"parked\":\"49500000000000000000000000\""#),
+        "net tokens parked in inventory: {out}"
     );
 
     // ── lane volley: 3 more pad buys (each call = one lane's tx) ──
@@ -251,7 +254,7 @@ fn pool_internal_balances_gaskey_trading() {
             &manifest,
             POOL,
             "buy",
-            r#"{"token":"token.test.near","near_in":"100000000000000000000000"}"#,
+            r#"{"token":"token.test.near","near_in":"100000000000000000000000","to_pad":"1"}"#,
             None,
             GASKEY,
         );
@@ -259,7 +262,7 @@ fn pool_internal_balances_gaskey_trading() {
         assert!(out.contains("✅ Success"), "lane buy: {out}");
     }
 
-    // ── sell_internal: whole ledger back to NEAR in the pad ──
+    // ── sell from parked inventory back into the pad (v3.4 sell to_pad) ──
     let out = mock(
         &manifest,
         POOL,
@@ -269,29 +272,28 @@ fn pool_internal_balances_gaskey_trading() {
         GASKEY,
     );
     out_clean(&out, "get_balance before sell");
-    // extract the ledger amount from the view. near-mock wraps the return
-    // value escaped inside a result field (\"tokens\":\"<amt>\"), so
-    // split on the escaped key and read up to the next backslash.
-    let tokens = out
-        .split("\\\"tokens\\\":\\\"")
+    // near-mock prints the return value escaped inside the result field,
+    // so split on the escaped key and read up to the next backslash.
+    let parked = out
+        .split("\\\"parked\\\":\\\"")
         .nth(1)
         .and_then(|s| s.split('\\').next())
         .unwrap_or("")
         .to_string();
     assert!(
-        !tokens.is_empty() && tokens != "0",
-        "ledger before sell: {out}"
+        !parked.is_empty() && parked != "0",
+        "parked inventory before sell: {out}"
     );
     let out = mock(
         &manifest,
         POOL,
-        "sell_internal",
-        &format!(r#"{{"token":"token.test.near","tokens_in":"{tokens}"}}"#),
+        "sell",
+        &format!(r#"{{"token":"token.test.near","tokens_in":"{parked}","to_pad":"1"}}"#),
         None,
         GASKEY,
     );
-    out_clean(&out, "sell_internal");
-    assert!(out.contains("✅ Success"), "sell_internal: {out}");
+    out_clean(&out, "parked sell");
+    assert!(out.contains("✅ Success"), "parked sell: {out}");
     let out = mock(
         &manifest,
         POOL,
@@ -301,10 +303,9 @@ fn pool_internal_balances_gaskey_trading() {
         GASKEY,
     );
     out_clean(&out, "get_balance after sell");
-    // near-mock prints the return value escaped: \"tokens\":\"0\"
     assert!(
-        out.contains(r#"\"tokens\":\"0\""#),
-        "ledger fully sold: {out}"
+        out.contains(r#"\"parked\":\"0\""#),
+        "inventory fully sold: {out}"
     );
     assert!(
         !out.contains(r#"\"near\":\"0\""#),

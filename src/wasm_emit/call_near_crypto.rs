@@ -332,7 +332,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64ExtendI32U); // data_ptr
                 v.push(Instruction::I64Const(0)); // register_id=0
                 v.push(Self::host_call(21)); // sha256
-                // read_register(0, heap) — heap-backed result (stable)
+                                             // read_register(0, heap) — heap-backed result (stable)
                 let hp = self.local_idx("__sha_hp");
                 v.extend(self.emit_heap_bump(64));
                 v.push(Instruction::LocalSet(hp));
@@ -365,7 +365,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64ExtendI32U); // data_ptr
                 v.push(Instruction::I64Const(0)); // register_id=0
                 v.push(Self::host_call(22)); // keccak256
-                // read_register(0, heap) — heap-backed result (stable)
+                                             // read_register(0, heap) — heap-backed result (stable)
                 let hp = self.local_idx("__k256_hp");
                 v.extend(self.emit_heap_bump(64));
                 v.push(Instruction::LocalSet(hp));
@@ -1021,7 +1021,7 @@ impl WasmEmitter {
                 vv.extend(self.emit_untag()); // malleability: tagged num -> raw
                 vv.push(Instruction::I64Const(0)); // register_id
                 vv.push(Self::host_call(54)); // ecrecover -> 0/1 (i64)
-                // branch on success; publish pubkey-or-empty into __ec_pk
+                                              // branch on success; publish pubkey-or-empty into __ec_pk
                 let pk_l = self.local_idx("__ec_pk");
                 vv.push(Instruction::I64Const(1));
                 vv.push(Instruction::I64Eq);

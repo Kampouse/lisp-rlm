@@ -62,6 +62,9 @@ fn is_builtin_wildcard(name: &str) -> bool {
                 | "schnorr-sign-pk"
                 | "schnorr-pubkey"
                 | "schnorr-pubkey33"
+                // (error msg) — portable hard-error: panic_utf8 in NEAR mode,
+                // Unreachable trap in WASI/P2 (call.rs:60). 2026-10-04, H3.
+                | "error"
         )
 }
 
@@ -154,6 +157,15 @@ const KNOWN_NEAR_FUNCS: &[&str] = &[
     "promise_batch_action_state_init",
     "promise_batch_action_state_init_by_account_id",
     "promise_batch_action_transfer_to_gas_key",
+    // Promise-batch sugar (call_near_promise.rs:954) — was missing here,
+    // so factory.lisp's (near/batch ...) failed the scope check even
+    // though the emitter implements it. 2026-10.
+    "batch",
+    "batch-add-key",
+    "batch-call",
+    "batch-create-account",
+    "batch-deploy",
+    "batch-transfer",
     "call",
     "log_utf8",
     "log_utf16",
@@ -270,6 +282,24 @@ impl TcEnv {
     /// Insert a monomorphic (no quantified vars) binding.
     pub fn insert_mono(&mut self, name: String, ty: TcType) {
         self.insert(name, Scheme { vars: vec![], ty });
+    }
+
+    /// Sorted builtin inventory as "name<TAB>signature" lines — the single
+    /// source of truth behind the browser playground's autocomplete + hover
+    /// (published via browser-compiler `publish_builtins`). Rendered from the
+    /// checker's own env, so the editor can never drift from the compiler.
+    pub fn builtin_signatures() -> String {
+        let env = Self::with_near_builtins();
+        let mut items: Vec<(String, String)> = env
+            .bindings
+            .iter()
+            .map(|(name, scheme)| (name.clone(), scheme.ty.to_string()))
+            .collect();
+        items.sort();
+        items
+            .into_iter()
+            .map(|(name, sig)| format!("{}\t{}\n", name, sig))
+            .collect()
     }
 
     /// Standard pure builtins with their type schemes.
@@ -785,23 +815,30 @@ impl TcEnv {
             );
         }
 
-        // JSON path accessors
-        // json-get: (str, str) → num  — extracts numeric value at dot-path
+        // JSON path accessors — 2-arg forms scan an arbitrary tagged string
+        // buffer and return a dynamically-typed tagged value (str OR num).
+        // The emitter resolves the type at runtime (call_json.rs: tagged
+        // auto), so the honest checker type is Any. Typing them (str,str)→Int
+        // broke real programs (btc_avg.lisp: "type mismatch: str ≠ int",
+        // 2026-10). The 1-arg input-read variants below are KEPT so old
+        // sources produce a clean arity error instead of slipping through
+        // the `json` wildcard as Any (the emitter removed them — the WASI
+        // entry fn receives stdin as its parameter; NEAR reads (near/input)).
         env.insert_mono(
             "json-get".to_string(),
             TcType::Arrow(
                 vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
-                Box::new(TcType::Con(TcCon::Int)),
+                Box::new(TcType::Con(TcCon::Any)),
             ),
         );
-        // json-get-str: (str, str) → str  — extracts string value at dot-path
         env.insert_mono(
             "json-get-str".to_string(),
             TcType::Arrow(
                 vec![TcType::Con(TcCon::Str), TcType::Con(TcCon::Str)],
-                Box::new(TcType::Con(TcCon::Str)),
+                Box::new(TcType::Con(TcCon::Any)),
             ),
         );
+
         // json-get-str? (2026-09-15, JSON v3): NIL-on-miss variant for
         // `o.a.b ?? fb` on input handles. NOT explicitly typed — the
         // `json` prefix wildcard types it Any, which is what lets
@@ -1081,7 +1118,14 @@ impl TcEnv {
             let str_ty = TcType::Con(TcCon::Str);
             let int_ty = TcType::Con(TcCon::Int);
             let bool_ty = TcType::Con(TcCon::Bool);
-            for name in &["u128/add", "u128/sub", "u128/mul", "u128/div", "u128/mod"] {
+            for name in &[
+                "u128/add",
+                "u128/sub",
+                "u128/mul",
+                "u128/muldiv",
+                "u128/div",
+                "u128/mod",
+            ] {
                 env.insert_mono(
                     name.to_string(),
                     TcType::Arrow(
@@ -1090,6 +1134,16 @@ impl TcEnv {
                     ),
                 );
             }
+            // muldiv = CLMM core (a·b over the full 256-bit product / d):
+            // 3 operands (str, str, str) → str
+            env.insert_mono(
+                "u128/muldiv".to_string(),
+                TcType::Arrow(
+                    vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+                    Box::new(str_ty.clone()),
+                ),
+            );
+
             for name in &["u128/lt", "u128/gt", "u128/eq"] {
                 env.insert_mono(
                     name.to_string(),
@@ -1136,10 +1190,7 @@ impl TcEnv {
                 opaque_host.into(),
                 Scheme {
                     vars: vec![0],
-                    ty: TcType::Arrow(
-                        vec![TcType::Var(0); arity],
-                        Box::new(TcType::Var(0)),
-                    ),
+                    ty: TcType::Arrow(vec![TcType::Var(0); arity], Box::new(TcType::Var(0))),
                 },
             );
         }
@@ -1513,6 +1564,25 @@ impl TcEnv {
             "schnorr-pubkey".into(),
             TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
         );
+        // schnorr-pubkey33 : str -> str (SEC1 02/03 prefix + x — cacheable
+        // form consumed by schnorr-sign-pk; wasm call_near_crypto.rs)
+        env.insert_mono(
+            "schnorr-pubkey33".into(),
+            TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+        );
+        // schnorr-sign-pk : str -> str -> str -> str -> str (cached-pk sign)
+        env.insert_mono(
+            "schnorr-sign-pk".into(),
+            TcType::Arrow(
+                vec![
+                    str_ty.clone(),
+                    str_ty.clone(),
+                    str_ty.clone(),
+                    str_ty.clone(),
+                ],
+                Box::new(str_ty.clone()),
+            ),
+        );
         // near/schnorr_verify : str -> str -> str -> int (BIP-340 secp256k1, stitched WASM)
         env.insert_mono(
             "near/schnorr_verify".into(),
@@ -1570,7 +1640,12 @@ impl TcEnv {
             "near/panic".into(),
             TcType::Arrow(vec![str_ty.clone()], Box::new(any_ty.clone())),
         );
-        // near/promise_create : str → str → str → int → int → int
+        // near/promise_create : str → str → str → str → int → int
+        // (account, method, args, deposit u128 decimal STR, gas int)
+        // Deposit unified to decimal string 2026-10-07 — same ABI truth as
+        // promise_then / batch_action_function_call; the old int form made
+        // `number` mean three things at the TS surface and let the fixture
+        // attach 20T yocto as a deposit (slot-swap bug).
         env.insert_mono(
             "near/promise_create".into(),
             TcType::Arrow(
@@ -1578,7 +1653,7 @@ impl TcEnv {
                     str_ty.clone(),
                     str_ty.clone(),
                     str_ty.clone(),
-                    int_ty.clone(),
+                    str_ty.clone(),
                     int_ty.clone(),
                 ],
                 Box::new(int_ty.clone()),
@@ -2170,7 +2245,14 @@ impl TcEnv {
 
         // ── u128 builtins (string-based decimal values) ──
         // Arithmetic: str → str → str
-        for name in &["u128/add", "u128/sub", "u128/mul", "u128/div", "u128/mod"] {
+        for name in &[
+            "u128/add",
+            "u128/sub",
+            "u128/mul",
+            "u128/muldiv",
+            "u128/div",
+            "u128/mod",
+        ] {
             env.insert_mono(
                 name.to_string(),
                 TcType::Arrow(
@@ -2179,6 +2261,16 @@ impl TcEnv {
                 ),
             );
         }
+        // muldiv = CLMM core (a·b over the full 256-bit product / d):
+        // 3 operands (str, str, str) → str
+        env.insert_mono(
+            "u128/muldiv".to_string(),
+            TcType::Arrow(
+                vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+                Box::new(str_ty.clone()),
+            ),
+        );
+
         // Comparisons: str → str → bool
         for name in &["u128/lt", "u128/gt", "u128/eq"] {
             env.insert_mono(
@@ -2252,4 +2344,30 @@ impl std::fmt::Display for TcCon {
             TcCon::Any => write!(f, "any"),
         }
     }
+}
+
+#[test]
+fn builtin_signatures_parses() {
+    let s = TcEnv::builtin_signatures();
+    let lines: Vec<&str> = s.lines().collect();
+    assert!(
+        lines.len() > 50,
+        "suspiciously few builtins: {}",
+        lines.len()
+    );
+    // format: name<TAB>signature, sorted
+    for l in &lines {
+        let tab = l.find('\t').expect("no tab");
+        assert!(tab > 0, "empty name: {}", l);
+    }
+    // sorted + spot-checks
+    let mut names: Vec<&str> = lines.iter().map(|l| &l[..l.find('\t').unwrap()]).collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "not sorted");
+    assert!(names.contains(&"str-cat"), "missing str-cat");
+    assert!(
+        names.iter().any(|n| n.starts_with("near/")),
+        "missing near/*"
+    );
 }

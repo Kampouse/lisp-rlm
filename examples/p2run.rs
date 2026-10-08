@@ -13,10 +13,10 @@ use std::collections::HashMap;
 use wasmtime::component::{bindgen, Component, Linker};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
-use wasmtime_wasi::{WasiCtxView, WasiView};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder};
-use wasmtime_wasi_http::WasiHttpCtx;
+use wasmtime_wasi::{WasiCtxView, WasiView};
 use wasmtime_wasi_http::p2::{WasiHttpCtxView, WasiHttpView};
+use wasmtime_wasi_http::WasiHttpCtx;
 
 bindgen!({
     path: [
@@ -146,8 +146,8 @@ fn main() {
     wasmtime_wasi_http::p2::add_only_http_to_linker_sync(&mut linker).expect("http p2 linker");
     HarnessRoot::add_to_linker::<_, HostState>(&mut linker, |h| h).expect("near linker");
 
-    let bindings = HarnessRoot::instantiate(&mut store, &component, &mut linker)
-        .expect("instantiate");
+    let bindings =
+        HarnessRoot::instantiate(&mut store, &component, &mut linker).expect("instantiate");
 
     eprintln!("[harness] calling wasi:cli/run ...");
     match bindings.wasi_cli_run().call_run(&mut store) {

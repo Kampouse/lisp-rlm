@@ -130,7 +130,9 @@ impl WasmEmitter {
                 // gas (untagged Num)
                 v.extend(gas);
                 v.extend(self.emit_untag());
+                self.need_host(30);
                 v.push(Self::host_call(30)); // promise_create → promise_idx on stack
+                self.need_host(35);
                 v.push(Self::host_call(35)); // promise_return(promise_idx) — forward result to caller
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::GlobalSet(RETURN_FLAG)); // skip wrapper's value_return
@@ -192,6 +194,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(t_l));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                self.need_host(39);
                 v.push(Self::host_call(39));
                 v.extend(self.emit_tag_num());
                 v.push(Instruction::LocalSet(idx_l));
@@ -238,6 +241,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TEMP_MEM as i64));
                 v.extend(gas);
                 v.extend(self.emit_untag());
+                self.need_host(43);
                 v.push(Self::host_call(43));
 
                 // — cb = promise_batch_then(idx, current_account_id) —
@@ -252,6 +256,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                self.need_host(40);
                 v.push(Self::host_call(40));
                 v.extend(self.emit_tag_num());
                 v.push(Instruction::LocalSet(cb_l));
@@ -291,11 +296,13 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TEMP_MEM as i64));
                 v.extend(cbgas);
                 v.extend(self.emit_untag());
+                self.need_host(43);
                 v.push(Self::host_call(43));
 
                 // — promise_return(cb) → NIL —
                 v.push(Instruction::LocalGet(cb_l));
                 v.extend(self.emit_untag());
+                self.need_host(35);
                 v.push(Self::host_call(35));
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
@@ -309,6 +316,52 @@ impl WasmEmitter {
                 let amount = self.expr(&a[3])?;
                 let gas = self.expr(&a[4])?;
                 let mut v = Vec::new();
+                // Deposit: Num OR u128 decimal string — same dual-path as
+                // promise_then / near/call (typing now requires str; the
+                // raw tagged-int store here was the last int-deposit ABI).
+                let h = self.ensure_u128_str_helpers();
+                let dep_local = self.local_idx("__pc_dep");
+                v.extend(amount);
+                v.push(Instruction::LocalSet(dep_local));
+                v.push(Instruction::LocalGet(dep_local));
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                // — str path: decimal → u128 LE at TEMP_MEM —
+                v.push(Instruction::LocalGet(dep_local));
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::call_user(h.parse));
+                v.push(Instruction::Drop);
+                v.push(Instruction::Else);
+                // — num path (back-compat with old int ABI): untagged i64 —
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 8,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(dep_local));
+                v.extend(self.emit_untag()); // local holds the TAGGED value
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::End);
                 // account_id: untag → len >> 32, ptr & 0xFFFF_FFFF
                 v.extend(account.clone());
                 v.extend(self.emit_untag());
@@ -336,19 +389,12 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
-                // amount: untag, store at mem[0], pass ptr=0
-                v.push(Instruction::I32Const(0));
-                v.extend(amount.clone());
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Store(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                }));
-                v.push(Instruction::I64Const(0)); // amount_ptr
-                                                  // gas: untag for host
+                // amount_ptr (TEMP_MEM — u128 LE limbs written above)
+                v.push(Instruction::I64Const(TEMP_MEM));
+                // gas: untag for host
                 v.extend(gas);
                 v.extend(self.emit_untag());
+                self.need_host(30);
                 v.push(Self::host_call(30)); // returns promise_index
                 v.extend(self.emit_tag_num()); // tag return
                 Ok(v)
@@ -361,6 +407,54 @@ impl WasmEmitter {
                 let amount = self.expr(&a[4])?;
                 let gas = self.expr(&a[5])?;
                 let mut v = Vec::new();
+                // Deposit: Num OR u128 decimal string — same dual-path as the
+                // near/call sugar (typing promises str-deposit; the raw store
+                // here wrote the TAGGED STRING BITS as the amount — the host
+                // read descriptor bytes as yocto, caught by the promise
+                // differential harness 2026-10-07).
+                let h = self.ensure_u128_str_helpers();
+                let dep_local = self.local_idx("__pt_dep");
+                v.extend(amount);
+                v.push(Instruction::LocalSet(dep_local));
+                v.push(Instruction::LocalGet(dep_local));
+                v.push(Instruction::I64Const(7));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Eq);
+                v.push(Instruction::If(BlockType::Empty));
+                // — str path: decimal → u128 LE at TEMP_MEM —
+                v.push(Instruction::LocalGet(dep_local));
+                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Self::call_user(h.parse));
+                v.push(Instruction::Drop);
+                v.push(Instruction::Else);
+                // — num path (old behavior): zero high 64, store low 64 —
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 8,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::I64Const(TEMP_MEM));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::LocalGet(dep_local));
+                v.extend(self.emit_untag()); // local holds the TAGGED value
+                v.push(Instruction::I64Store(wasm_encoder::MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                }));
+                v.push(Instruction::End);
                 v.extend(pidx);
                 v.extend(self.emit_untag()); // untag promise idx
                 v.extend(account.clone());
@@ -387,19 +481,14 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
-                v.push(Instruction::I32Const(0));
-                v.extend(amount.clone());
-                v.push(Instruction::I64Store(wasm_encoder::MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                }));
-                v.push(Instruction::I64Const(0));
+                // amount_ptr (TEMP_MEM — u128 LE limbs written above)
+                v.push(Instruction::I64Const(TEMP_MEM));
                 v.extend(gas);
                 v.extend(self.emit_untag()); // BUG FIX 2026-09-10: gas reached the
                                              // host still 3-bit-TAGGED (8× the intended value — found by the
                                              // promise differential harness, tests/test_promise_differential.rs).
                                              // promise_create/batch untag their gas; this arm missed it.
+                self.need_host(31);
                 v.push(Self::host_call(31));
                 // TAG the returned promise idx — the raw host i64 flowed into
                 // user bindings; a later untag shifted it to 0 (promise_return
@@ -427,6 +516,7 @@ impl WasmEmitter {
                 }
                 v.push(Instruction::I64Const(64)); // ptr
                 v.push(Instruction::I64Const(a.len() as i64)); // count
+                self.need_host(32);
                 v.push(Self::host_call(32));
                 v.extend(self.emit_tag_num()); // tag the combined promise idx
                 Ok(v)
@@ -610,6 +700,7 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 v.extend(idx);
                 v.extend(self.emit_untag());
+                self.need_host(35);
                 v.push(Self::host_call(35));
                 // Set return flag so the export wrapper skips its trailing
                 // value_return — that call OVERWRITES the host-side
@@ -641,6 +732,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                self.need_host(39);
                 v.push(Self::host_call(39));
                 v.extend(self.emit_tag_num()); // return tagged promise idx
                 Ok(v)
@@ -663,6 +755,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                self.need_host(40);
                 v.push(Self::host_call(40));
                 v.extend(self.emit_tag_num()); // return tagged promise idx
                 Ok(v)
@@ -677,6 +770,7 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 v.extend(self.expr(&a[0])?);
                 v.extend(self.emit_untag()); // idx
+                self.need_host(41);
                 v.push(Self::host_call(41));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -701,6 +795,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(code_len);
                 v.extend(code_ptr);
+                self.need_host(42);
                 v.push(Self::host_call(42));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -753,6 +848,7 @@ impl WasmEmitter {
                 // gas (untag)
                 v.extend(gas);
                 v.extend(self.emit_untag());
+                self.need_host(43);
                 v.push(Self::host_call(43));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -794,6 +890,7 @@ impl WasmEmitter {
                 // module's import signature wins at validation!)
                 v.push(Instruction::LocalGet(idx_local));
                 v.push(Instruction::I64Const(TEMP_MEM as i64));
+                self.need_host(44);
                 v.push(Self::host_call(44));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -822,6 +919,7 @@ impl WasmEmitter {
                 v.extend(amount_len);
                 v.extend(pk_ptr);
                 v.extend(pk_len);
+                self.need_host(45);
                 v.push(Self::host_call(45));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -848,6 +946,7 @@ impl WasmEmitter {
                 v.extend(pk_ptr);
                 v.extend(pk_len);
                 v.extend(nonce);
+                self.need_host(46);
                 v.push(Self::host_call(46));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -880,6 +979,7 @@ impl WasmEmitter {
                 v.extend(method_ptr);
                 v.extend(method_len);
                 v.extend(allowance);
+                self.need_host(47);
                 v.push(Self::host_call(47));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -907,6 +1007,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(pk_ptr);
                 v.extend(pk_len);
+                self.need_host(48);
                 v.push(Self::host_call(48));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -934,6 +1035,7 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(batch_idx_l));
                 v.extend(ptr);
                 v.extend(len);
+                self.need_host(49);
                 v.push(Self::host_call(49));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -1106,6 +1208,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // code_ptr
+                self.need_host(50);
                 v.push(Self::host_call(50)); // deploy_contract(len, ptr)
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -1135,6 +1238,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // ptr
+                self.need_host(68);
                 v.push(Self::host_call(68));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -1168,6 +1272,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.extend(amt);
+                self.need_host(69);
                 v.push(Self::host_call(69));
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -1199,6 +1304,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.extend(amt);
+                self.need_host(70);
                 v.push(Self::host_call(70));
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -1232,6 +1338,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                self.need_host(71);
                 v.push(Self::host_call(71));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -1276,6 +1383,7 @@ impl WasmEmitter {
                 v.extend(amount.clone());
                 v.extend(gas);
                 v.extend(weight);
+                self.need_host(74);
                 v.push(Self::host_call(74));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -1308,6 +1416,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                self.need_host(75);
                 v.push(Self::host_call(75));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -1337,6 +1446,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                self.need_host(76);
                 v.push(Self::host_call(76));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -1456,6 +1566,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I32Const(scratch as i32));
                 v.push(Instruction::I64ExtendI32U);
+                self.need_host(77);
                 v.push(Self::host_call(77));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -1485,6 +1596,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                self.need_host(78);
                 v.push(Self::host_call(78));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -1530,6 +1642,7 @@ impl WasmEmitter {
                 v.push(Self::call_user(h.parse));
                 v.push(Instruction::Drop);
                 v.push(Instruction::I64Const(TEMP_MEM as i64));
+                self.need_host(79);
                 v.push(Self::host_call(79));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -1561,6 +1674,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
                 v.extend(nonces);
+                self.need_host(80);
                 v.push(Self::host_call(80));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -1629,6 +1743,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                self.need_host(81);
                 v.push(Self::host_call(81));
                 v.push(Instruction::I64Const(0));
                 Ok(v)
@@ -1663,6 +1778,7 @@ impl WasmEmitter {
                 v.extend(gas);
                 v.extend(weight);
                 v.push(Instruction::I64Const(0)); // register_id
+                self.need_host(82);
                 v.push(Self::host_call(82));
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -1690,6 +1806,7 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                self.need_host(83);
                 v.push(Self::host_call(83));
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -1749,12 +1866,14 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U);
+                self.need_host(39);
                 v.push(Self::host_call(39));
                 v.push(Instruction::Drop);
                 // promise_batch_action_transfer(promise_idx=0, amount_ptr=AMOUNT_MEM)
                 // NEAR reads 16 bytes (u128) from amount_ptr
                 v.push(Instruction::I64Const(0)); // promise_idx (just created)
                 v.push(Instruction::I64Const(AMOUNT_MEM)); // amount_ptr as i64
+                self.need_host(44);
                 v.push(Self::host_call(44)); // returns void
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)

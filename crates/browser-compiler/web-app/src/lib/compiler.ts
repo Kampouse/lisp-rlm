@@ -1,9 +1,16 @@
-import init, { compile_p1, compile_p2, compile_p2_core, compile_pure, compile_ts, ts_to_lisp, disassemble_wasm } from '../../public/wasm/lisp_rlm_browser.js';
+import init, {
+  compile_p1, compile_p2, compile_p2_core, compile_pure, compile_ts, ts_to_lisp,
+  disassemble_wasm, publish_builtins, instrument_for_gas,
+} from '../../public/wasm/lisp_rlm_browser.js';
+import { p256 } from '@noble/curves/nist.js';
+import { annotateErrorLines } from './errorLines.ts';
+import { compileViaWorker } from './compileWorkerClient.ts';
+import { feed as feedBuiltins } from './builtins.ts';
 
 let initialized = false;
 let initPromise: Promise<void> | null = null;
 
-export type CompileTarget = 'p1' | 'p2' | 'pure';
+export type CompileTarget = 'p1' | 'p2' | 'pure' | 'near';
 export type SourceLang = 'lisp' | 'ts';
 
 export interface CompileResult {
@@ -22,6 +29,13 @@ export async function initCompiler(): Promise<void> {
   if (initPromise) return initPromise;
 
   initPromise = init().then(() => {
+    // One-time builtin inventory pull — powers lisp completion + hover
+    // (App.svelte registers the providers once this resolves).
+    try {
+      feedBuiltins(publish_builtins());
+    } catch (e) {
+      console.warn('publish_builtins failed — autocomplete disabled', e);
+    }
     initialized = true;
   });
 
@@ -30,6 +44,64 @@ export async function initCompiler(): Promise<void> {
 
 export function isInitialized(): boolean {
   return initialized;
+}
+
+/**
+ * Compile via the dedicated worker (crash isolation for wasm32 stack
+ * overflows / hangs) with typed fallback:
+ *
+ *   - normal compile error  -> surfaced as { success:false, error } (the
+ *     worker stays alive; annotateErrorLines ran worker-side and again
+ *     here is a no-op thanks to its `line N` guard).
+ *   - WORKER_CRASHED / WORKER_TIMEOUT -> returned as a failed result with
+ *     a clear message; NO main-thread re-run (same poison would freeze
+ *     the tab). Fresh worker spawns automatically for the next compile.
+ *   - WORKER_UNSUPPORTED (no worker support / CSP) -> transparent
+ *     main-thread compile, identical UX.
+ */
+export async function compileWithFallback(
+  source: string,
+  target: CompileTarget,
+  lang: SourceLang = 'lisp',
+): Promise<CompileResult> {
+  try {
+    const r = await compileViaWorker({ source, target, lang });
+    return {
+      success: true,
+      wasmBytes: r.wasmBytes,
+      size: r.size,
+      timeMs: r.timeMs,
+      error: null,
+      wat: r.wat,
+      exports: extractExportsSafe(r.wat),
+      runResult: null,
+    };
+  } catch (workerErr: unknown) {
+    const msg = workerErr instanceof Error ? workerErr.message : String(workerErr);
+    if (msg.startsWith('WORKER_UNSUPPORTED:')) {
+      // Environment can't run workers — old path, same behavior as before.
+      return compile(source, target, lang);
+    }
+    return {
+      success: false,
+      wasmBytes: null,
+      size: 0,
+      timeMs: 0,
+      error: msg.startsWith('WORKER_') ? msg : msg,
+      wat: null,
+      exports: [],
+      runResult: null,
+    };
+  }
+}
+
+function extractExportsSafe(wat: string | null): string[] {
+  if (!wat) return [];
+  try {
+    return extractExports(wat);
+  } catch {
+    return [];
+  }
 }
 
 export function compile(source: string, target: CompileTarget, lang: SourceLang = 'lisp'): CompileResult {
@@ -42,9 +114,10 @@ export function compile(source: string, target: CompileTarget, lang: SourceLang 
         throw new Error(`TS dialect currently supports the P1 (NEAR) target only, got "${target}"`);
       }
     }
+    // 'near' compiles to P1 (the NEAR run happens separately via runNear —
+    // see the UI), so the wasm build is identical to 'p1'.
     let wasmBytes: Uint8Array;
     switch (target) {
-      case 'p1': wasmBytes = lang === 'ts' ? compile_ts(source) : compile_p1(source); break;
       case 'p2': wasmBytes = compile_p2_core(source); break;
       case 'pure': wasmBytes = compile_pure(source); break;
       default: wasmBytes = lang === 'ts' ? compile_ts(source) : compile_p1(source); break;
@@ -73,7 +146,7 @@ export function compile(source: string, target: CompileTarget, lang: SourceLang 
     };
   } catch (err: unknown) {
     const timeMs = performance.now() - start;
-    const message = err instanceof Error ? err.message : String(err);
+    const message = annotateErrorLines(err instanceof Error ? err.message : String(err), source);
 
     return {
       success: false,
@@ -661,13 +734,27 @@ function buildNearEnv(): Record<string, Function> {
     },
     ed25519_verify: (): bigint => 1n,
     // p256_verify(sig_len, sig_ptr, msg_len, msg_ptr, pk_len, pk_ptr) → u64
-    // Uses Web Crypto API SubtleCrypto to verify P-256 ECDSA signatures.
-    // sig: 64 bytes (r||s big-endian), pk: 33 bytes (compressed SEC1), msg: prehashed digest
-    // Returns 1 = valid, 0 = invalid.
-    // NOTE: This mock is synchronous but SubtleCrypto is async; for the browser playground
-    // we return 1 (always passes) as a stub. Real verification requires async integration.
-    // TODO: Integrate real P-256 verification via async worker or sync crypto library.
-    p256_verify: (): bigint => 1n,
+    // REAL verification (no stub): @noble/curves p256, sync — fits the wasm
+    // host-fn ABI without pre-pass plumbing.
+    // sig: 64 bytes (r||s big-endian compact), pk: 33 bytes (compressed
+    // SEC1), msg: the PREHASHED digest (32 bytes).
+    // Returns 1 = valid, 0 = invalid format/signature.
+    p256_verify: (sigLen: bigint, sigPtr: bigint, msgLen: bigint, msgPtr: bigint, pkLen: bigint, pkPtr: bigint): bigint => {
+      const mem = nearMemBytes();
+      const sig = mem.slice(Number(sigPtr), Number(sigPtr + sigLen));
+      const msg = mem.slice(Number(msgPtr), Number(msgPtr + msgLen));
+      const pk = mem.slice(Number(pkPtr), Number(pkPtr + pkLen));
+      try {
+        if (sigLen !== 64n) return 0n; // r||s compact only
+        // pk: NEAR passes compressed SEC1 (33B); noble's Point.fromBytes also
+        // accepts uncompressed — accept both, reject garbage.
+        const pubKey = p256.Point.fromBytes(new Uint8Array(pk));
+        const ok = p256.verify(new Uint8Array(sig), new Uint8Array(msg), pubKey.toBytes(true));
+        return ok ? 1n : 0n;
+      } catch {
+        return 0n; // malformed sig/pk — same contract as the real host fn
+      }
+    },
 
     // ===== Promise (cross-contract view calls via RPC) =====
     // promise_create(account_id_len, account_id_ptr, method_name_len, method_name_ptr,
@@ -832,6 +919,11 @@ export async function runNear(
   returnValue: Uint8Array | null;
   methods: string[];
   gasUsed: number;
+  gasBreakdown: { opcodes: number; opcodeGas: number; hostGas: number } | null;
+  logs: string[];
+  panic: string | null;
+  storageDiff: Array<{ key: string; oldVal: string | null; newVal: string | null }>;
+  receipts: Array<{ index: number; accountId: string; methodName: string; argsSize: number; type: string }>;
 }> {
   nearStorage.clear();
   nearRegisters.clear();
@@ -863,8 +955,45 @@ export async function runNear(
     },
   };
 
-  const { instance } = await WebAssembly.instantiate(wasmBytes.buffer as ArrayBuffer, imports) as any;
+  // REAL gas metering: the exact finite-wasm PV155 instrument nearcore's
+  // prepare (and near-mock) applies to every mainnet contract. The
+  // instrumented module exposes `remaining_gas` (mutable i64) + 3 hook
+  // imports; burned = prepaid − remaining. Falls back to the static
+  // opcode-walk estimate only if instrumentation fails (opaque module).
+  let instrumented = false;
+  let instrumentedBytes: Uint8Array | null = null;
+  let meteredExtra = 0; // pass-2 (promise re-run) burn, added to the total
+  const prepaidGas = BigInt(gasLimit as unknown as bigint);
+  try {
+    instrumentedBytes = new Uint8Array(instrument_for_gas(new Uint8Array(wasmBytes)));
+    // same contract as nearcore: the exhausted hooks abort the call; the
+    // gas hook fires only on the failing charge, right before the trap
+    imports.internal = {
+      finite_wasm_gas_exhausted: () => { throw new Error('NEAR panic: Exceeded the prepaid gas'); },
+      finite_wasm_stack_exhausted: () => { throw new Error('WasmTrap: StackOverflow'); },
+      // the report hook IS the failing-charge abort (same as near-mock)
+      finite_wasm_gas: (_charge: bigint) => { throw new Error('NEAR panic: Exceeded the prepaid gas'); },
+    };
+    instrumented = true;
+  } catch (e) {
+    console.warn('gas instrumentation unavailable, falling back to static estimate:', e);
+  }
+
+  const { instance } = await WebAssembly.instantiate(
+    (instrumented ? instrumentedBytes! : new Uint8Array(wasmBytes)).buffer as ArrayBuffer,
+    imports,
+  ) as any;
   const exports = instance.exports as Record<string, unknown>;
+  let remainingGasGlobal: WebAssembly.Global | null = null;
+  if (instrumented) {
+    const g = exports.remaining_gas as WebAssembly.Global | undefined;
+    if (g) {
+      remainingGasGlobal = g;
+      try { g.value = prepaidGas as unknown as bigint; } catch { /* shouldn't happen: mutable */ }
+    } else {
+      instrumented = false; // exotic module without the global — fall back
+    }
+  }
 
   // Set memory reference from the module's exported memory (has data segments loaded)
   nearMemory = exports.memory as WebAssembly.Memory;
@@ -985,9 +1114,18 @@ export async function runNear(
       nearPromiseNodes = []; // Clear nodes from pass 1 to avoid duplicates
       nearStdout += `Methods: ${methods.join(', ')}\n`;
 
-      // Re-instantiate WASM for clean state
-      const { instance: inst2 } = await WebAssembly.instantiate(wasmBytes.buffer as ArrayBuffer, imports) as any;
+      // Re-instantiate WASM for clean state (same instrumented binary;
+      // pass-2 burn is read below into meteredExtra)
+      const pass2UsesMeter = instrumented;
+      const { instance: inst2 } = await WebAssembly.instantiate(
+        (instrumented ? instrumentedBytes! : new Uint8Array(wasmBytes)).buffer as ArrayBuffer,
+        imports,
+      ) as any;
       const exports2 = inst2.exports as Record<string, unknown>;
+      if (pass2UsesMeter) {
+        const g2 = exports2.remaining_gas as WebAssembly.Global | undefined;
+        if (g2) { try { g2.value = prepaidGas as unknown as bigint; } catch {} }
+      }
       nearMemory = exports2.memory as WebAssembly.Memory;
       loadNearStorage();
 
@@ -1008,6 +1146,14 @@ export async function runNear(
           }
         }
       }
+      // Pass-2 burn (fresh instrumented global, same prepaid basis)
+      if (pass2UsesMeter) {
+        const g2 = (inst2.exports as Record<string, unknown>).remaining_gas as WebAssembly.Global | undefined;
+        if (g2) {
+          const rem2 = BigInt(g2.value as unknown as bigint);
+          meteredExtra = prepaidGas > rem2 ? Number(prepaidGas - rem2) : 0;
+        }
+      }
     }
   } catch (err: unknown) {
     if (!(err instanceof Error && (err.message === 'NEAR_RETURN' || err.message === 'NEAR panic' || err.message?.startsWith('NEAR panic:')))) {
@@ -1018,13 +1164,21 @@ export async function runNear(
   // Compute storage diff
   nearStorageDiff = computeDiff(storageBefore);
 
-  // Static gas estimation from WASM binary
-  const targetMethod = options?.method ?? (methods.length === 1 ? methods[0] : undefined);
-  if (targetMethod) {
-    const est = estimateGas(wasmBytes, targetMethod);
-    if (est) {
-      gasUsed = est.totalGas;
-      gasBreakdown = { opcodes: est.opcodes, opcodeGas: est.opcodeGas, hostGas: est.hostGas };
+  // Gas: PV155-metered burn when instrumented (matches near-mock), else
+  // the static opcode-walk estimate as labeled fallback.
+  if (instrumented && remainingGasGlobal) {
+    const remaining = BigInt(remainingGasGlobal.value as unknown as bigint);
+    const burned = prepaidGas > remaining ? Number(prepaidGas - remaining) : 0;
+    gasUsed = burned + meteredExtra;
+    gasBreakdown = null; // metered — no static breakdown to show
+  } else {
+    const targetMethod = options?.method ?? (methods.length === 1 ? methods[0] : undefined);
+    if (targetMethod) {
+      const est = estimateGas(wasmBytes, targetMethod);
+      if (est) {
+        gasUsed = est.totalGas;
+        gasBreakdown = { opcodes: est.opcodes, opcodeGas: est.opcodeGas, hostGas: est.hostGas };
+      }
     }
   }
 
@@ -1037,12 +1191,6 @@ export async function runNear(
   return {
     stdout: nearStdout, returnValue: nearReturnValue, methods, gasUsed, gasBreakdown,
     logs: nearLogs, panic: nearPanicMsg, storageDiff: nearStorageDiff, receipts: nearPromiseNodes,
-  } as {
-    stdout: string; returnValue: Uint8Array | null; methods: string[]; gasUsed: number;
-    gasBreakdown: { opcodes: number; opcodeGas: number; hostGas: number } | null;
-    logs: string[]; panic: string | null;
-    storageDiff: Array<{ key: string; oldVal: string | null; newVal: string | null }>;
-    receipts: typeof nearPromiseNodes;
   };
 }
 

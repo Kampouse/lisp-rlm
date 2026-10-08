@@ -57,7 +57,8 @@ fn main() {
             eprintln!("Target: NEAR (TypeScript frontend)");
             let ir = lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(&src)?;
             let exprs = lisp_rlm_wasm::parse_all(&ir)?;
-            lisp_rlm_wasm::typing::type_check_program(&exprs, true)?;
+            lisp_rlm_wasm::typing::type_check_program(&exprs, true)
+                .map_err(|e| lisp_rlm_wasm::annotate_type_error_label(&e, &ir, "ir"))?;
             let (w, m) = lisp_rlm_wasm::wasm_emit::compile_near_from_exprs_with_map(&exprs)?;
             sidecar.replace(Some(m));
             Ok(w)

@@ -22,13 +22,16 @@
   // reference via /// <reference path>. Canonical copy lives at ts/.
   // @ts-ignore -- vite ?raw (no vite-env.d.ts typing needed at runtime)
   import lispRlmDts from '../../../../ts/lisp-rlm.d.ts?raw';
-  import { initCompiler, compile, runPure, runNear, compileP2Core, toHexDump, getNearStorage, clearNearStorage, getNearContext, setNearContext, resetNearContext, decodeReturnValue, formatGas, lowerTs, type CompileTarget, type CompileResult, type NearContext, type SourceLang } from './lib/compiler.ts';
+  import { typescriptDefaults as monacoTsDefaults } from 'monaco-editor/esm/vs/language/typescript/monaco.contribution';
+  import { initCompiler, compile, compileWithFallback, runPure, runNear, compileP2Core, toHexDump, getNearStorage, clearNearStorage, getNearContext, setNearContext, resetNearContext, decodeReturnValue, formatGas, lowerTs, type CompileTarget, type CompileResult, type NearContext, type SourceLang } from './lib/compiler.ts';
   import { runWasiWithWorker } from './lib/runWasiWithWorker.ts';
   import { examples } from './lib/examples.ts';
   import { runMulti } from './lib/contracts-runtime.ts';
+  import { list as builtinList, signatureOf } from './lib/builtins.ts';
   import { connectWallet, disconnectWallet, deployP1, deployP2, getWalletState, type WalletState, type DeployResult, type Network } from './lib/wallet.ts';
   import { parseTests, buildTestCode, type TestRunResult } from './lib/test-runner.ts';
-  import { Play, Box, Cloud, Zap, Link, FlaskConical, Wallet, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X, BookOpen, CheckCircle, XCircle, Hammer, Database, Trash2, FolderOpen, FileCode, ChevronRight } from '@lucide/svelte';
+  import { compressToBase64Url, decompressFromBase64Url } from './lib/share.ts';
+  import { Play, Box, Cloud, Zap, Link, FlaskConical, Wallet, Rocket, CircleDot, Loader2, ChevronDown, ChevronUp, Menu, X, BookOpen, CheckCircle, Check, XCircle, Hammer, Database, Trash2, FolderOpen, FileCode, ChevronRight } from '@lucide/svelte';
 
   // ============================================
   // Code Outline
@@ -77,7 +80,6 @@
   }
 
   let showOutline: boolean = $state(true);
-  let outlineItems: OutlineItem[] = $derived(parseOutline(source));
 
   // ============================================
   // API Reference (per target)
@@ -400,12 +402,12 @@
     return core;
   }
 
-  let apiForTarget: ApiGroup[] = $derived(getApiForTarget(target));
 
   function insertSnippet(fn: string) {
     if (!editorInstance) return;
     const snippet = SNIPPETS[fn] || `(${fn} )`;
     const pos = editorInstance.getPosition();
+    if (!pos) return;
     editorInstance.executeEdits('api-ref', [{
       range: new monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column),
       text: snippet,
@@ -421,6 +423,9 @@
   // ============================================
   let target: CompileTarget = $state('pure');
   let source: string = $state('');
+
+  let outlineItems: OutlineItem[] = $derived(parseOutline(source));
+  let apiForTarget: ApiGroup[] = $derived(getApiForTarget(target));
   let wasmReady: boolean = $state(false);
   let compiling: boolean = $state(false);
   let deploying: boolean = $state(false);
@@ -441,6 +446,8 @@
 
   // Feature 5: Auto-compile toggle
   let autoCompile: boolean = $state(true);
+  let shareCopied: boolean = $state(false);
+  let wasmSha256: string = $state('');
   let compileDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Feature 9: REPL mode
@@ -689,11 +696,10 @@
   // ============================================
   function updateUrlHash() {
     try {
+      // Live URL stays lean: target + example only. Source travels via the
+      // Share button (deflate-compressed `c=`) or localStorage — embedding
+      // btoa'd source per keystroke bloated the address bar 2-3x.
       const params = new URLSearchParams();
-      if (source && source !== examples[activeExample]?.source) {
-        // Custom source - encode it
-        params.set('code', btoa(encodeURIComponent(source)));
-      }
       params.set('target', target);
       if (activeExample > 0) params.set('example', String(activeExample));
       const hash = '#' + params.toString();
@@ -705,14 +711,20 @@
     }
   }
 
-  function loadFromUrl(): { source?: string; target?: CompileTarget; example?: number } {
+  function loadFromUrl(): { source?: string; target?: CompileTarget; example?: number; shared?: boolean } {
     try {
       const hash = window.location.hash.slice(1);
       if (!hash) return {};
       const params = new URLSearchParams(hash);
-      const result: { source?: string; target?: CompileTarget; example?: number } = {};
+      const result: { source?: string; target?: CompileTarget; example?: number; shared?: boolean } = {};
       if (params.has('code')) {
         result.source = decodeURIComponent(atob(params.get('code')!));
+      }
+      if (params.has('c')) {
+        // v2 share links: deflate-raw + base64url (share.ts). Decoded
+        // asynchronously during boot via replaySharedCode — here we only
+        // flag presence so legacy branches don't clobber the hash state.
+        result.shared = true;
       }
       if (params.has('target')) {
         result.target = params.get('target') as CompileTarget;
@@ -823,7 +835,7 @@
     // Dialect surface for the TS worker: autocomplete + typo squiggles for
     // strCat/near.* etc. Without this every valid builtin shows red and
     // real typos are invisible (the LSP knows nothing about our globals).
-    const tsDefaults = monaco.languages.typescript.typescriptDefaults;
+    const tsDefaults = monacoTsDefaults;
     tsDefaults.addExtraLib(lispRlmDts as string, 'ts:lisp-rlm/lisp-rlm.d.ts');
     tsDefaults.setDiagnosticsOptions({
       noSemanticValidation: false,
@@ -940,8 +952,57 @@
         increaseIndentPattern: /[(\[{]\s*$/,
         decreaseIndentPattern: /^\s*[)\]}]/,
       },
-      wordPattern: /[*!?+\-<>=/.a-zA-Z_][*!?+\-<>=/.a-zA-Z0-9_]*/,
+      wordPattern: /[*!?+\-<>=/.a-zA-Z_][*!?+\-<>=/.a-zA-Z0-9_]*/,    });
+
+    // Builtin autocomplete + hover — fed from the checker's own type env via
+    // the wasm module (publish_builtins). Cannot drift from the compiler:
+    // a builtin missing there is never suggested here.
+    monaco.languages.registerCompletionItemProvider('lisp-rlm', {
+      triggerCharacters: ['/', '-'],
+      provideCompletionItems(model, position) {
+        const word = model.getWordUntilPosition(position);
+        const range = {
+          startLineNumber: position.lineNumber,
+          endLineNumber: position.lineNumber,
+          startColumn: word.startColumn,
+          endColumn: word.endColumn,
+        };
+        const suggestions: any[] = [];
+        for (const b of builtinList()) {
+          if (word.word && !b.name.startsWith(word.word)) continue;
+          suggestions.push({
+            label: b.name,
+            kind: b.name.includes('/')
+              ? monaco.languages.CompletionItemKind.Function
+              : monaco.languages.CompletionItemKind.Keyword,
+            detail: b.sig,
+            insertText: `${b.name} `,
+            range,
+            sortText: `0_${b.name}`,
+          });
+        }
+        return { suggestions };
+      },
     });
+
+    monaco.languages.registerHoverProvider('lisp-rlm', {
+      provideHover(model, position) {
+        const w = model.getWordAtPosition(position);
+        if (!w) return null;
+        const sig = signatureOf(w.word);
+        if (!sig) return null;
+        return {
+          range: new monaco.Range(
+            position.lineNumber, w.startColumn, position.lineNumber, w.endColumn,
+          ),
+          contents: [
+            { value: `**${w.word}** — builtin` },
+            { value: `\`${sig}\`` },
+          ],
+        };
+      },
+    });
+
 
     monaco.editor.defineTheme('lisp-dark', {
       base: 'vs-dark',
@@ -1040,7 +1101,7 @@
     clearMonacoMarkers();
     await new Promise(r => setTimeout(r, 50));
     try {
-      result = compile(source, target, sourceLang);
+      result = await compileWithFallback(source, target, sourceLang);
       if (result.success && sourceLang === 'ts') {
         try { lispIr = lowerTs(source); } catch { lispIr = null; }
       } else {
@@ -1168,13 +1229,14 @@
           lines.push(`Return: ${retDecoded}`);
         }
 
-        // Show gas (static WASM estimation with NEAR pricing)
+        // Show gas — PV155-metered when available (matches nearcore/near-mock),
+        // else the static opcode fallback
         nearGasUsed = formatGas(nearResult.gasUsed);
         const bd = nearResult.gasBreakdown;
         if (bd) {
-          lines.push(`Gas: ${nearGasUsed} (${bd.opcodes} opcodes, ${formatGas(bd.opcodeGas)} compute, ${formatGas(bd.hostGas)} host)`);
+          lines.push(`Gas: ${nearGasUsed} est. (${bd.opcodes} opcodes, ${formatGas(bd.opcodeGas)} compute, ${formatGas(bd.hostGas)} host)`);
         } else {
-          lines.push(`Gas: ${nearGasUsed}`);
+          lines.push(`Gas: ${nearGasUsed} (PV155 metered)`);
         }
 
         runResult = lines.join('\n');
@@ -1385,6 +1447,13 @@
       try {
         await initCompiler();
         wasmReady = true;
+        // Build badge: sha256 of the exact wasm the site is serving
+        try {
+          const resp = await fetch(`${import.meta.env.BASE_URL}wasm/lisp_rlm_browser_bg.wasm`);
+          const buf = await resp.arrayBuffer();
+          const digest = await crypto.subtle.digest('SHA-256', buf);
+          wasmSha256 = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).slice(0, 8).join('');
+        } catch { wasmSha256 = ''; }
       } catch (err) {
         console.error('Failed to initialize WASM:', err);
       }
@@ -1461,6 +1530,11 @@
     // Feature 5: Global keyboard shortcut
     document.addEventListener('keydown', handleGlobalKeydown);
 
+    // v2 shared links decode async — replay after the sync bootstrap
+    if (urlState.shared) {
+      void replaySharedCode(true, urlState.target);
+    }
+
     return () => {
       editorInstance?.dispose();
       document.removeEventListener('keydown', handleGlobalKeydown);
@@ -1483,16 +1557,56 @@
     return `${(ms / 1000).toFixed(2)} s`;
   }
 
-  // Feature 7: Copy share URL
+  // Feature 7: Copy share URL (v2: deflate-compressed `c=` param — 3-5x
+  // shorter than the legacy btoa chain, survives chat-app URL truncation)
   async function copyShareUrl() {
-    updateUrlHash();
-    const url = window.location.href;
     try {
+      const params = new URLSearchParams();
+      if (source && source !== examples[activeExample]?.source) {
+        params.set('c', await compressToBase64Url(source));
+      }
+      params.set('target', target);
+      if (activeExample > 0) params.set('example', String(activeExample));
+      const url = `${window.location.origin}${window.location.pathname}#${params.toString()}`;
+      history.replaceState(null, '', `#${params.toString()}`);
       await navigator.clipboard.writeText(url);
-      // Could add a toast notification here
+      shareCopied = true;
+      setTimeout(() => { shareCopied = false; }, 1500);
     } catch {
-      // Fallback: show URL in prompt
-      prompt('Share this URL:', url);
+      // Fallback: prompt with whatever we can build synchronously
+      updateUrlHash();
+      prompt('Share this URL:', window.location.href);
+    }
+  }
+
+  // v2 shared links (`#c=...`) decode asynchronously after the sync bootstrap.
+  // Replays the example-load branch of onMount with the decoded source, then
+  // clears the hash so a reload falls back to localStorage instead of
+  // re-importing shared code over local edits.
+  async function replaySharedCode(shared: boolean, urlTarget?: CompileTarget) {
+    if (!shared) return;
+    try {
+      const params = new URLSearchParams(window.location.hash.slice(1));
+      const data = params.get('c');
+      if (!data) return;
+      const decoded = await decompressFromBase64Url(data);
+      source = decoded;
+      if (urlTarget) target = urlTarget;
+      activeExample = -1;
+      if (editorInstance) {
+        editorInstance.setValue(source);
+        const model = editorInstance.getModel();
+        if (model) monaco.editor.setModelLanguage(model, 'lisp-rlm');
+      }
+      const file: VFile = { id: generateId(), name: 'shared.lisp', source, target, updatedAt: Date.now() };
+      files = [file];
+      activeFileId = file.id;
+      saveFiles();
+      saveState();
+      history.replaceState(null, '', window.location.pathname);
+      setTimeout(() => handleCompile(true), 100);
+    } catch (err) {
+      console.error('Failed to decode shared code:', err);
     }
   }
 </script>
@@ -1509,6 +1623,8 @@
 
   <!-- Mobile Examples Drawer -->
   {#if showExamplesMenu}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <!-- Backdrop: pointer convenience only; Esc + drawer-close button cover keyboard -->
     <div class="drawer-overlay" onclick={() => { showExamplesMenu = false; }}></div>
     <div class="drawer">
       <div class="drawer-header">
@@ -1518,6 +1634,54 @@
         </button>
       </div>
       <div class="drawer-content">
+        <!-- Mobile-only controls (decluttered from the header ≤767px) -->
+        <div class="drawer-mobile-section">
+          <div class="drawer-section-label">Controls</div>
+          <div class="drawer-lang-row" role="group" aria-label="Source language">
+            <button
+              class="drawer-lang-btn"
+              class:active={sourceLang === 'lisp'}
+              onclick={() => setSourceLang('lisp')}
+            >LISP</button>
+            <button
+              class="drawer-lang-btn"
+              class:active={sourceLang === 'ts'}
+              onclick={() => setSourceLang('ts')}
+            >TS</button>
+          </div>
+          <button
+            class="drawer-item"
+            class:active={autoCompile}
+            onclick={() => { autoCompile = !autoCompile; saveState(); }}
+          >
+            <Zap size={16} />
+            Auto-compile: {autoCompile ? 'On' : 'Off'}
+          </button>
+          <button
+            class="drawer-item"
+            class:active={shareCopied}
+            onclick={copyShareUrl}
+          >
+            {#if shareCopied}<Check size={16} />{:else}<Link size={16} />{/if}
+            {shareCopied ? 'Link copied!' : 'Share link'}
+          </button>
+          <button
+            class="drawer-item"
+            onclick={() => { network = network === 'testnet' ? 'mainnet' : 'testnet'; }}
+          >
+            <FlaskConical size={16} />
+            Network: {network}
+          </button>
+          <button
+            class="drawer-item"
+            disabled={!result?.success || testing || sourceLang === 'ts'}
+            onclick={handleRunTests}
+          >
+            {#if testing}<Loader2 size={16} class="spinner-icon" />{:else}<CheckCircle size={16} />{/if}
+            Run tests
+          </button>
+        </div>
+        <div class="drawer-divider"></div>
         {#each examples as example, i}
           <button
             class="drawer-item"
@@ -1589,7 +1753,7 @@
       {/if}
     </button>
 
-    <div class="header-brand" onclick={() => { showLearn = false; }} role="button" tabindex="0">
+    <div class="header-brand" onclick={() => { showLearn = false; }} role="button" tabindex="0" onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") showLearn = false; }}>
       <div class="header-logo">λ</div>
       <span class="header-title">Lisp → WASM</span>
     </div>
@@ -1637,10 +1801,11 @@
 
     <button
       class="header-icon-btn"
+      class:copied={shareCopied}
       onclick={copyShareUrl}
       title="Copy shareable URL"
     >
-      <Link size={16} />
+      {#if shareCopied}<Check size={16} />{:else}<Link size={16} />{/if}
     </button>
 
     <!-- Network toggle -->
@@ -1978,14 +2143,14 @@
               <div class="api-ref-body">
                 {#each apiForTarget as group}
                   <div class="api-group">
-                    <div class="api-group-title" onclick={() => apiExpanded[group.title] = !apiExpanded[group.title]}>
+                    <div class="api-group-title" role="button" tabindex="0" onclick={() => apiExpanded[group.title] = !apiExpanded[group.title]} onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") apiExpanded[group.title] = !apiExpanded[group.title]; }}>
                       <span>{apiExpanded[group.title] ? '▾' : '▸'} {group.title}</span>
                       <span class="api-count">{group.items.length}</span>
                     </div>
                     {#if apiExpanded[group.title]}
                       <div class="api-items">
                         {#each group.items as fn}
-                          <span class="api-fn" onclick={() => insertSnippet(fn)}>{fn}</span>
+                          <span class="api-fn" role="button" tabindex="0" onclick={() => insertSnippet(fn)} onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") insertSnippet(fn); }}>{fn}</span>
                         {/each}
                       </div>
                     {/if}
@@ -2063,6 +2228,8 @@
 
         <!-- File Context Menu -->
         {#if fileContextMenu}
+          <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+          <!-- Backdrop: pointer convenience only; menu buttons + Esc cover keyboard -->
           <div class="ctx-overlay" onclick={closeContextMenu}></div>
           <div class="ctx-menu" style="left: {fileContextMenu.x}px; top: {fileContextMenu.y}px;">
             <button class="ctx-item" onclick={() => startRename(fileContextMenu!.fileId)}>
@@ -2125,6 +2292,8 @@
         </button>
       {:else}
         <!-- Resizer -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <!-- Pointer-drag resizer (outputPaneWidth is clamped in startResize) -->
         <div class="resizer" onmousedown={startResize}></div>
 
         <!-- Output Pane -->
@@ -2233,22 +2402,22 @@
                       {#if showNearContext}
                         <div class="near-context-form">
                           <div class="near-ctx-row">
-                            <label>Signer</label>
-                            <input type="text" bind:value={nearCtx.signerAccount} placeholder="user.testnet" onchange={() => setNearContext(nearCtx)} />
+                            <label for="near-ctx-signer">Signer</label>
+                            <input id="near-ctx-signer" type="text" bind:value={nearCtx.signerAccount} placeholder="user.testnet" onchange={() => setNearContext(nearCtx)} />
                           </div>
                           <div class="near-ctx-row">
-                            <label>Deposit</label>
-                            <input type="text" value={nearCtx.attachedDeposit.toString()} oninput={(e) => { try { nearCtx.attachedDeposit = BigInt((e.target as HTMLInputElement).value); setNearContext(nearCtx); } catch {} }} placeholder="0" />
+                            <label for="near-ctx-deposit">Deposit</label>
+                            <input id="near-ctx-deposit" type="text" value={nearCtx.attachedDeposit.toString()} oninput={(e) => { try { nearCtx.attachedDeposit = BigInt((e.target as HTMLInputElement).value); setNearContext(nearCtx); } catch {} }} placeholder="0" />
                             <span class="near-ctx-unit">yoctoⓃ</span>
                           </div>
                           <div class="near-ctx-row">
-                            <label>Balance</label>
-                            <input type="text" value={nearCtx.accountBalance.toString()} oninput={(e) => { try { nearCtx.accountBalance = BigInt((e.target as HTMLInputElement).value); setNearContext(nearCtx); } catch {} }} placeholder="1000000..." />
+                            <label for="near-ctx-balance">Balance</label>
+                            <input id="near-ctx-balance" type="text" value={nearCtx.accountBalance.toString()} oninput={(e) => { try { nearCtx.accountBalance = BigInt((e.target as HTMLInputElement).value); setNearContext(nearCtx); } catch {} }} placeholder="1000000..." />
                             <span class="near-ctx-unit">yoctoⓃ</span>
                           </div>
                           <div class="near-ctx-row">
-                            <label>Block</label>
-                            <input type="text" value={nearCtx.blockIndex.toString()} oninput={(e) => { try { nearCtx.blockIndex = BigInt((e.target as HTMLInputElement).value); setNearContext(nearCtx); } catch {} }} placeholder="12345678" />
+                            <label for="near-ctx-block">Block</label>
+                            <input id="near-ctx-block" type="text" value={nearCtx.blockIndex.toString()} oninput={(e) => { try { nearCtx.blockIndex = BigInt((e.target as HTMLInputElement).value); setNearContext(nearCtx); } catch {} }} placeholder="12345678" />
                           </div>
                         </div>
                       {/if}
@@ -2424,9 +2593,11 @@
                         <div class="deploy-form">
                           {#if target === 'p1'}
                             <div class="deploy-field">
-                              <label class="deploy-label">Contract Name</label>
+                              <label class="deploy-label" for="deploy-contract-name">Contract Name</label>
                               <div class="deploy-input-group">
                                 <input
+                                  id="deploy-contract-name"
+
                                   type="text"
                                   class="deploy-input"
                                   bind:value={contractName}
@@ -2437,7 +2608,7 @@
                             </div>
                           {:else}
                             <div class="deploy-field">
-                              <label class="deploy-label">OutLayer Contract</label>
+                              <span class="deploy-label">OutLayer Contract</span>
                               <span class="deploy-readonly">
                                 {network === 'testnet' ? 'outlayer.testnet' : 'outlayer.kampouse.near'}
                               </span>
@@ -2544,7 +2715,13 @@
   </main>
 
   <footer class="footer">
-    Lisp RLM — Write Lisp, Deploy Smart Contracts
+    <span>Lisp RLM — Write Lisp, Deploy Smart Contracts</span>
+    <span
+      class="build-badge"
+      title={`${__BUILD_INFO__.time} —${__BUILD_INFO__.dirty ? ' dirty working tree' : ' clean'}`}
+    >
+      {__BUILD_INFO__.rev}{__BUILD_INFO__.dirty ? '*' : ''} · {wasmSha256}
+    </span>
   </footer>
 </div>
 
@@ -3047,9 +3224,6 @@
   .examples-scroll {
     overflow-y: auto;
   }
-  .output-pane.collapsed .output-body {
-    display: none;
-  }
   .header-run-btn {
     display: flex;
     align-items: center;
@@ -3074,9 +3248,6 @@
     opacity: 0.6;
     cursor: not-allowed;
   }
-  .header-run-btn .spinner-icon {
-    animation: spin 1s linear infinite;
-  }
   .header-test-btn {
     display: flex;
     align-items: center;
@@ -3098,9 +3269,6 @@
   .header-test-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
-  }
-  .header-test-btn .spinner-icon {
-    animation: spin 1s linear infinite;
   }
   .output-pane.collapsed {
     min-height: auto;
@@ -3274,6 +3442,52 @@
     background: var(--color-border);
     margin: var(--space-sm) var(--space-md);
   }
+  /* Drawer Controls section (mobile declutter: moved from header ≤767px) */
+  .drawer-section-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-text-secondary);
+    padding: 14px var(--space-md) 6px;
+  }
+  .drawer-lang-row {
+    display: flex;
+    gap: 8px;
+    padding: 4px var(--space-md) 10px;
+  }
+  .drawer-lang-btn {
+    flex: 1;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    color: var(--color-text-secondary);
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .drawer-lang-btn.active {
+    color: var(--color-accent);
+    border-color: var(--color-accent);
+    background: rgba(57, 255, 142, 0.08);
+  }
+  .drawer-item:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  /* Controls section is mobile-only (desktop header already has these) */
+  @media (min-width: 768px) {
+    .drawer-mobile-section,
+    .drawer-mobile-section + .drawer-divider {
+      display: none;
+    }
+  }
   .output-section {
     height: 100%;
     overflow-y: auto;
@@ -3291,6 +3505,46 @@
     height: 100%;
   }
 
+  .header-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-surface);
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .header-icon-btn:hover {
+    background: var(--color-accent-subtle);
+    color: var(--color-accent);
+  }
+  .header-icon-btn.copied {
+    color: #39ff8e;
+    border-color: #39ff8e;
+  }
+
+  .footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 16px;
+    border-top: 1px solid var(--color-border);
+    font-size: 11px;
+    color: var(--color-text-secondary);
+  }
+  .build-badge {
+    font-family: var(--font-mono, monospace);
+    font-size: 10px;
+    opacity: 0.75;
+    user-select: text;
+  }
+
   /* Mobile styles */
   @media (max-width: 767px) {
     .header-title {
@@ -3299,28 +3553,37 @@
     .pill-label {
       display: none;
     }
-    .header-toggle {
-      display: none;
+    /* --- Nav declutter (≤767px): header = ☰ · brand · pills · Run · Compile.
+       Everything else lives in the ☰ drawer's Controls section. --- */
+    .header-toggle,
+    .header-icon-btn,
+    .network-badge,
+    .wallet-btn,
+    .lang-toggle,
+    .header-test-btn {
+      display: none !important;
     }
-    .header-icon-btn {
-      display: none;
-    }
-    .network-badge {
-      font-size: 11px;
-      padding: 4px 6px;
-    }
-    .wallet-btn {
-      display: none;
-    }
+    /* Touch targets: 44px+ (design standard) */
     .pill-tab {
-      padding: 6px 10px;
+      padding: 6px 12px;
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+    }
+    .header-run-btn,
+    .header-compile-btn {
+      min-height: 44px;
+      min-width: 44px;
     }
     .header {
       gap: 8px;
       padding: 6px 8px;
     }
+    /* Bottom Output toggle: bar is shown, so its button must be too
+       (was display:none — rendered a dead 25px strip) */
     .mobile-toggle-btn {
-      display: none;
+      display: flex;
+      min-height: 44px;
     }
     .mobile-toggle-bar {
       display: block;
