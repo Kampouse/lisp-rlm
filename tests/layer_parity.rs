@@ -49,8 +49,6 @@ const SCAN_NOISE: &[&str] = &["name", "predecessor", "signer", "predecessor_id",
 /// forms consumed at compile time, and a few trivial aliases (== /= inc dec).
 /// The wasm contract surface intentionally does not grow these.
 const INTERP_ONLY: &[(&str, &str)] = &[
-    ("/=", "comparison alias: interp accepts, wasm spells it !="),
-    ("==", "comparison alias: interp accepts, wasm spells it ="),
     ("account-balance", "legacy bare-name near alias (near/* is the wasm surface; surface_parity covers the probe set)"),
     ("account_balance", "legacy bare-name near alias (near/* is the wasm surface; surface_parity covers the probe set)"),
     ("acos", "float/rational host math (wasm surface is the f64 subset: floor/ceil/round/sqrt)"),
