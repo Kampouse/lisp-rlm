@@ -77,6 +77,24 @@ fn fixtures() -> Vec<Fixture> {
         ),
         // runtime (not const-folded) checked overflow: both engines must
         // reject — interp errors, wasm traps
+        // ── str->num payload-range gate (item 5, 2026-10-08) ──
+        // Both engines must REJECT values past the 61-bit payload boundary:
+        // interp via check_num_range, wasm via the checked retag in
+        // __str_to_num (the old unchecked `shl 3` sign-flipped +2^60).
+        Fixture::new(
+            "convert/str-num-payload-reject",
+            "(define (main) (str->num \"1152921504606846976\"))",
+        ),
+        // ...and round-trip the boundary itself (2^60-1) plus the negative
+        // extreme (-2^60) as VALUES both engines agree on.
+        Fixture::new(
+            "convert/str-num-payload-max",
+            "(define (main) (str->num \"1152921504606846975\"))",
+        ),
+        Fixture::new(
+            "convert/str-num-payload-min",
+            "(define (main) (str->num \"-1152921504606846976\"))",
+        ),
         Fixture::new(
             "arith/checked-overflow",
             "(define n (str->num \"1000000000\"))\n(define (main) (* n 1152921504606846975))",

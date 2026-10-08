@@ -7628,7 +7628,13 @@ pub fn eval_builtin(
         "str->num" | "string->number" => match args.get(0) {
             Some(LispVal::Str(s)) => {
                 if let Ok(n) = s.parse::<i64>() {
-                    Ok(LispVal::Num(n))
+                    // Payload-range gate (TASK-DX-AGREE item 5, 2026-10-08):
+                    // the tagged scheme can only hold [-2^60, 2^60-1], and the
+                    // wasm emitter's str->num now traps on the same boundary.
+                    // Before: interp returned the raw i64 (e.g. +2^60) while
+                    // wasm's unchecked retag silently sign-flipped it — found
+                    // by lisp-diff on `(str->num "1152921504606846976")`.
+                    check_num_range(n, "str->num").map(LispVal::Num)
                 } else if let Ok(f) = s.parse::<f64>() {
                     Ok(LispVal::Float(f))
                 } else {
