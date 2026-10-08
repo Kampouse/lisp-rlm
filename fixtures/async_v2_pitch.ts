@@ -9,7 +9,10 @@ type Amount = string;
 const TOKS = ["toka.v2.test.near", "tokb.v2.test.near"];
 const GAS = 20000000000000;
 
-export async function portfolioTotal(user: string): Promise<Amount> {
+// Return-contract check (2026-10-08): "total:" + x is CONCAT — display
+// text, not an amount — so the honest annotation is Promise<string>.
+// Promise<Amount> would be rejected: the u128 value must be returned raw.
+export async function portfolioTotal(user: string): Promise<string> {
   const [a, b] = await near.all([
     near.call(TOKS[0], "ftBalanceRaw", { who: user }, GAS, "0"),
     near.call(TOKS[1], "ftBalanceRaw", { who: user }, GAS, "0"),

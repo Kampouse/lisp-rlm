@@ -468,7 +468,13 @@ interface JSON {
  *  accountBalance(), transferU128 amounts. Arithmetic ONLY via u128.* —
  *  ENFORCED at compile time (2026-10-08): raw `+ - * / %` on two money
  *  values is an error (`+` concatenates decimal strings; i64 ops
- *  truncate). One-sided `+` stays legal ("total:" + amt). */
+ *  truncate). One-sided `+` stays legal ("total:" + amt).
+ *  Return contract: `: Yocto` / `: Promise<Yocto>` must return a provable
+ *  u128 value — await result, u128Add(...), deposit/balance read, decimal
+ *  string. `"label:" + x` is concat (display text): annotate
+ *  `: Promise<string>`, not `: Promise<Yocto>`.
+ *  `const d: Yocto = ...` must also initialize from a provable u128
+ *  value, and d itself carries the arithmetic rule. */
 type Yocto = string;
 
 /** u128 raw amount in TOKEN DECIMALS (NEP-141 `amount`) as a DECIMAL
@@ -477,7 +483,8 @@ type Yocto = string;
  *  error. */
 type Amount = string;
 
-/** @deprecated — use Yocto (NEAR-denominated) or Amount (FT raw). */
+/** @deprecated — use Yocto (NEAR-denominated) or Amount (FT raw).
+ *  Same return contract as Yocto: annotated returns/consts are checked. */
 type Money = string;
 
 /** Fail the transaction with msg when cond is false (full state

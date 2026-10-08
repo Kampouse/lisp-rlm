@@ -394,3 +394,32 @@ export async function ok2(user: string): string {
 "#;
     assert!(ts_to_lisp_source(src).is_ok(), "u128Add must stay legal");
 }
+
+#[test]
+fn v2_return_contract_money_annotation_is_enforced() {
+    let _l = lock(); // compile-only, but keep test-state hygiene
+    // OK: await result returned raw under Promise<Yocto>
+    let ok = "export async function f(user: string): Promise<Yocto> { const a = await near.call(\"toka.v2.test.near\", \"ftBalanceRaw\", { who: user }, 20000000000000, \"0\"); return a; }";
+    assert!(ts_to_lisp_source(ok).is_ok(), "raw await return must compile");
+
+    // REJECT: labeled concat under a money annotation — display text is
+    // not an amount. This is the exact dishonesty the contract check kills.
+    let bad = "export async function f(user: string): Promise<Yocto> { const a = await near.call(\"toka.v2.test.near\", \"ftBalanceRaw\", { who: user }, 20000000000000, \"0\"); return \"total:\" + u128Add(a, a); }";
+    let e = ts_to_lisp_source(bad).unwrap_err();
+    assert!(e.contains("promises a money type"), "got: {e}");
+    assert!(e.contains("concatenation"), "got: {e}");
+
+    // REJECT: plain param returned under Yocto
+    let bad2 = "export function g(user: string): Yocto { return user; }";
+    let e2 = ts_to_lisp_source(bad2).unwrap_err();
+    assert!(e2.contains("not a provable u128 value"), "got: {e2}");
+
+    // OK: money-annotated const feeds the return (taint pre-pass)
+    let ok2 = "export function h(): Yocto { const d: Yocto = \"5\"; return u128Add(d, d); }";
+    assert!(ts_to_lisp_source(ok2).is_ok(), "money const return must compile");
+
+    // REJECT: money const initialized from a non-u128 source
+    let bad3 = "export function h(fn: () => string): string { const d: Yocto = fn(); return d; }";
+    let e3 = ts_to_lisp_source(bad3).unwrap_err();
+    assert!(e3.contains("annotated as a money type"), "got: {e3}");
+}

@@ -887,6 +887,7 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         .as_ref()
         .ok_or("ts_frontend: async function missing body")?;
     let stmts = &body.statements;
+    check_return_contract(&name, stmts, return_ann_money(f))?;
 
     // Forward-scan the WHOLE body: bigint lets / string locals / input
     // handles must be registered before any segment lowers (segments lower
@@ -1792,6 +1793,11 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
         .body
         .as_ref()
         .ok_or("ts_frontend: function overloads/declarations unsupported")?;
+    check_return_contract(
+        &name,
+        &body.statements,
+        return_ann_money(f),
+    )?;
 
     // forward-scan bigint lets (CPS lowering means let-site registration
     // runs after statements that reference the binding — see scan_bigint_lets)
@@ -2248,6 +2254,11 @@ fn lower_prefix_around_with_return(
                 if expr_is_stringy(init_e) || expr_is_str_method_call(init_e) {
                     mark_string_local(&name);
                 }
+                check_and_register_money_const(
+                    &name,
+                    declarator_ann_is_money(d),
+                    init_e,
+                )?;
                 if expr_has_call(init_e) {
                     // Impure initializer — hoist the binding with a nil dummy
                     // (unifies with any type per the checker), then guard the
@@ -2598,6 +2609,11 @@ fn lower_prefix_around(
                 if expr_is_stringy(init_e) || expr_is_str_method_call(init_e) {
                     mark_string_local(&name);
                 }
+                check_and_register_money_const(
+                    &name,
+                    declarator_ann_is_money(d),
+                    init_e,
+                )?;
                 register_shape_fields(d, init_e);
                 bindings.push(list(vec![Sym(name), lower_expr(init_e)?]));
             }
@@ -5283,6 +5299,231 @@ fn money_arithmetic<'a, 'b>(
     r: &Expression<'b>,
 ) -> bool {
     expr_is_money(l) && expr_is_money(r)
+}
+
+/// u128 free-function family that RETURNS a u128 decimal string (the
+/// comparison fns return boolean and are excluded).
+fn u128_arith_call(c: &oxc_ast::ast::CallExpression<'_>) -> bool {
+    matches!(
+        &c.callee,
+        Expression::Identifier(id) if matches!(
+            id.name.as_str(),
+            "u128Add" | "u128Sub" | "u128Mul" | "u128MulDiv" | "u128Div" | "u128Mod"
+        )
+    )
+}
+
+/// STRICT: this expression's VALUE is a u128 decimal string — provable
+/// money, not display text. Deliberately NO binary ops: `"total:" + amt`
+/// is concat (a labeled string), not an amount — that is the whole point
+/// of the return-contract check.
+fn expr_is_u128_value(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::ParenthesizedExpression(pe) => expr_is_u128_value(&pe.expression),
+        Expression::Identifier(id) => {
+            let n = id.name.as_str();
+            MONEY_NAMES.with(|s| s.borrow().iter().any(|x| *x == n))
+                || BIGINT_NAMES.with(|s| s.borrow().iter().any(|x| *x == n))
+                || BIGINT_LOCALS.with(|s| s.borrow().iter().any(|x| *x == n))
+        }
+        Expression::AwaitExpression(a) => expr_is_u128_value(&a.argument),
+        Expression::StringLiteral(s) => s.value.parse::<u128>().is_ok(),
+        Expression::ConditionalExpression(c) => {
+            expr_is_u128_value(&c.consequent) && expr_is_u128_value(&c.alternate)
+        }
+        Expression::CallExpression(c) => {
+            u128_arith_call(c)
+                || matches!(&c.callee, Expression::StaticMemberExpression(sm)
+                    if matches!(&sm.object, Expression::Identifier(obj) if obj.name == "near")
+                    && matches!(
+                        sm.property.name.as_str(),
+                        "attachedDeposit" | "attachedDepositU128"
+                            | "accountBalance" | "loadU128" | "readU128"
+                    ))
+        }
+        _ => false,
+    }
+}
+
+/// Does this function's return annotation promise money — either directly
+/// (`: Yocto`) or wrapped (`Promise<Yocto>`)? Names the built-in trio or a
+/// registered alias.
+fn return_ann_money(f: &oxc_ast::ast::Function<'_>) -> bool {
+    let Some(t) = f.return_type.as_ref().map(|v| &**v) else {
+        return false;
+    };
+    let is_money_name = |n: &str| {
+        matches!(n, "Yocto" | "Amount" | "Money")
+            || MONEY_ALIASES.with(|m| m.borrow().iter().any(|x| x == n))
+    };
+    match &t.type_annotation {
+        oxc_ast::ast::TSType::TSTypeReference(r) => {
+            let oxc_ast::ast::TSTypeName::IdentifierReference(id) = &r.type_name else {
+                return false;
+            };
+            if id.name.as_str() == "Promise" {
+                if let Some(ta) = r.type_arguments.as_ref() {
+                    if let Some(first) = ta.params.first() {
+                        if let oxc_ast::ast::TSType::TSTypeReference(inner) = first {
+                            if let oxc_ast::ast::TSTypeName::IdentifierReference(iid) =
+                                &inner.type_name
+                            {
+                                return is_money_name(iid.name.as_str());
+                            }
+                        }
+                    }
+                }
+                return false;
+            }
+            is_money_name(id.name.as_str())
+        }
+        _ => false,
+    }
+}
+
+/// Walk a statement slice recursively; invoke `f` on every return argument.
+/// Mirrors stmts_have_deep_return's traversal (blocks, if/else, while, for).
+fn for_each_return_arg(
+    stmts: &[Statement<'_>],
+    f: &mut dyn FnMut(&Expression<'_>),
+) {
+    for s in stmts {
+        match s {
+            Statement::ReturnStatement(r) => {
+                if let Some(e) = r.argument.as_ref() {
+                    f(e);
+                }
+            }
+            Statement::BlockStatement(b) => {
+                for_each_return_arg(&b.body, f);
+            }
+            Statement::IfStatement(i) => {
+                for_each_return_arg(stmts_of(&i.consequent), f);
+                if let Some(alt) = i.alternate.as_ref() {
+                    for_each_return_arg(stmts_of(alt), f);
+                }
+            }
+            Statement::WhileStatement(w) => {
+                for_each_return_arg(stmts_of(&w.body), f);
+            }
+            Statement::ForStatement(fo) => {
+                for_each_return_arg(stmts_of(&fo.body), f);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Pre-pass for check_return_contract: register every
+/// `const x = await ...` / destructured-await binding as money so the
+/// return walk sees it. Mirrors the AwaitPoint scan's semantics.
+fn register_await_names(stmts: &[Statement<'_>]) {
+    for s in stmts {
+        match s {
+            Statement::VariableDeclaration(v) => {
+                for d in &v.declarations {
+                    let await_init = matches!(&d.init, Some(Expression::AwaitExpression(_)));
+                    let money_ann = declarator_ann_is_money(d);
+                    if await_init || money_ann {
+                        if let Ok(names) = pattern_names(&d.id) {
+                            for n in names {
+                                MONEY_NAMES.with(|s| s.borrow_mut().push(n));
+                            }
+                        }
+                    }
+                }
+            }
+            Statement::BlockStatement(b) => register_await_names(&b.body),
+            Statement::IfStatement(i) => {
+                register_await_names(stmts_of(&i.consequent));
+                if let Some(alt) = i.alternate.as_ref() {
+                    register_await_names(stmts_of(alt));
+                }
+            }
+            Statement::WhileStatement(w) => register_await_names(stmts_of(&w.body)),
+            Statement::ForStatement(fo) => register_await_names(stmts_of(&fo.body)),
+            _ => {}
+        }
+    }
+}
+
+/// Return CONTRACT: a function promising `Yocto`/`Amount` (or a Promise of
+/// one) must return a provable u128 value — await result, u128 arithmetic
+/// call, deposit/balance read, or a decimal string literal. Labeled strings
+/// (`"total:" + x`) are display text, not money: annotate `: Promise<string>`
+/// instead. This is the annotation made checkable.
+fn check_return_contract(
+    fname: &str,
+    body_stmts: &[Statement<'_>],
+    ret_money: bool,
+) -> Result<(), String> {
+    if !ret_money {
+        return Ok(());
+    }
+    // The lowering registers await-result names AFTER this check runs (the
+    // AwaitPoint scan at lowering time) — pre-register them here so
+    // `return a` after `const a = await ...` is provably money. The later
+    // registration pushing the same names again is harmless (membership).
+    register_await_names(body_stmts);
+    let mut bad: Option<String> = None;
+    for_each_return_arg(body_stmts, &mut |e| {
+        if bad.is_none() && !expr_is_u128_value(e) {
+            bad = Some(match e {
+                Expression::BinaryExpression(b)
+                    if matches!(
+                        b.operator,
+                        oxc_ast::ast::BinaryOperator::Addition
+                            | oxc_ast::ast::BinaryOperator::Subtraction
+                            | oxc_ast::ast::BinaryOperator::Multiplication
+                            | oxc_ast::ast::BinaryOperator::Division
+                            | oxc_ast::ast::BinaryOperator::Remainder
+                    ) && money_arithmetic(&b.left, &b.right) =>
+                    // the return IS money-op-money — the canonical raw-
+                    // arithmetic error is the precise diagnosis; the
+                    // contract check just caught it earlier (entry, not
+                    // lowering). Match the taint lint's wording verbatim.
+                    "raw arithmetic on money values (Yocto/Amount) corrupts u128 decimal strings — `+` concatenates, other ops use i64 math. Use the u128* family: u128Add(a, b), u128Sub(a, b), ...".into(),
+                Expression::BinaryExpression(b)
+                    if matches!(b.operator, oxc_ast::ast::BinaryOperator::Addition) =>
+                    "concatenation (`+` with a label) — annotate the fn `: Promise<string>`, or return the raw u128 value".into(),
+                _ => "not a provable u128 value — return an await result, u128Add(...), a deposit/balance read, or a decimal string".into(),
+            });
+        }
+    });
+    match bad {
+        Some(why) => Err(format!(
+            "ts_frontend: `{fname}` promises a money type (Yocto/Amount) but its return is {why}"
+        )),
+        None => Ok(()),
+    }
+}
+
+/// `const d: Yocto = ...` — a money-annotated declaration must initialize
+/// from a provable u128 value, and the name joins the taint registry.
+fn check_and_register_money_const(
+    name: &str,
+    ann_is_money: bool,
+    init: &Expression<'_>,
+) -> Result<(), String> {
+    if !ann_is_money {
+        return Ok(());
+    }
+    if !expr_is_u128_value(init) {
+        return Err(format!(
+            "ts_frontend: `const {name}` is annotated as a money type but its initializer is not a provable u128 value — use an await result, u128Add(...), a deposit/balance read, or a decimal string"
+        ));
+    }
+    MONEY_NAMES.with(|s| s.borrow_mut().push(name.to_string()));
+    Ok(())
+}
+
+/// `const d: Yocto = ...` — the declarator's id annotation names a money
+/// alias. BindingPattern has no type_annotation field; the idiom mirrors
+/// the type-alias walk at the top of the file (ann → TSTypeAnnotation).
+fn declarator_ann_is_money(d: &oxc_ast::ast::VariableDeclarator<'_>) -> bool {
+    // oxc 0.147: the annotation lives on the DECLARATOR (estree
+    // VariableDeclaratorId hoist), not on the binding identifier.
+    ann_is_money_alias(d.type_annotation.as_ref().map(|v| &**v))
 }
 
 /// `d: Yocto` / `x: Amount` / `m: Money` — the annotation names a money
