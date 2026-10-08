@@ -5732,8 +5732,8 @@ async fn test_lisp_p2_multi_url_http_get() {
 (define (compare)
   (let ((mtl (http-get "https://api.open-meteo.com/v1/forecast?latitude=45.50&longitude=-73.57&current=temperature_2m"))
         (tor (http-get "https://api.open-meteo.com/v1/forecast?latitude=43.65&longitude=-79.38&current=temperature_2m")))
-    (let ((mtl-temp (json-get "temperature_2m" mtl))
-          (tor-temp (json-get "temperature_2m" tor)))
+    (let ((mtl-temp (json-get mtl "temperature_2m"))
+          (tor-temp (json-get tor "temperature_2m")))
       (if (> mtl-temp tor-temp)
           "Montreal is warmer!"
           "Toronto is warmer!"))))
