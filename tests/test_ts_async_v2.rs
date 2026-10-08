@@ -332,6 +332,66 @@ fn v2_pitch_shape_destructuring_object_args() {
 }
 
 #[test]
+fn v2_money_source_only_seeding_getname_is_not_yocto() {
+    let _l = lock();
+
+    // An await of a NON-balance method is a plain string (Value) —
+    // returning it as Promise<Yocto> is a contract violation. Money
+    // comes from money SOURCES (typed-surface rule 2).
+    let src = r#"
+type Yocto = string;
+export async function f(): Promise<Yocto> {
+  const n = await near.call("tokx.v2.test.near", "getName", { who: "a" }, 20000000000000, "0");
+  return n;
+}
+"#;
+    let err = ts_to_lisp_source(src).unwrap_err();
+    assert!(
+        err.contains("promises a money type"),
+        "expected the return-contract error, got: {err}"
+    );
+
+    // Control: a balance read IS a money source — same shape compiles.
+    let ok = r#"
+type Yocto = string;
+export async function f(): Promise<Yocto> {
+  const b = await near.call("tokx.v2.test.near", "ftBalanceRaw", "{}", 20000000000000, 0);
+  return b;
+}
+"#;
+    ts_to_lisp_source(ok).unwrap();
+}
+
+#[test]
+fn v2_transfer_u128_sink_demands_provable_u128() {
+    let _l = lock();
+
+    // The SINK: transferU128 moves real value — an unbranded string is
+    // not checked money (the customs seal). Fix: `: Yocto` at birth.
+    let src = r#"
+export function f(): void {
+  const s = "5";
+  near.transferU128("carol.v2.test.near", s);
+}
+"#;
+    let err = ts_to_lisp_source(src).unwrap_err();
+    assert!(
+        err.contains("transferU128 amount must be a provable u128"),
+        "expected the sink error, got: {err}"
+    );
+
+    // Control: the annotated const carries the seal — compiles.
+    let ok = r#"
+type Yocto = string;
+export function f(): void {
+  const s: Yocto = "5";
+  near.transferU128("carol.v2.test.near", s);
+}
+"#;
+    ts_to_lisp_source(ok).unwrap();
+}
+
+#[test]
 fn v2_money_taint_raw_arithmetic_on_amounts_is_compile_error() {
     let _l = lock(); // compile-only, but keep the family serialized anyway
 
