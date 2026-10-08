@@ -51,22 +51,33 @@ Defn-local syntactic pass:
 - `promise_batch_action_*` is NOT a consuming position — batch actions
   legally accumulate on one handle (create → action… → then → return is the
   canonical ft2.lisp idiom). Only the three callbacks above consume.
-- Second consuming use → hard error naming both lines:
-  `error: promise 'p' consumed twice (L41, L67)`.
+- Second consuming use → hard error naming both lines (actual format,
+  shipped 2026-10-08):
+  `error: promise 'p' consumed 2 times (promise_then (line 4), promise_then (line 5)) — a promise handle is single-use; both callbacks would fire on chain`.
+- Scope is defn-local: each defn is checked on its own body. A handle passed
+  to two different callee defns passes the lint — Tier 2 catches that at
+  runtime (verified: probe x10).
 
 No type system, no flow analysis beyond defn-local bindings — affine checking
 collapsed to one op family. Kills the class for hand-written `.lisp` and for
 TS-authored code at the emitted surface.
 
-## Tier 2 — mock-enforced single-use at test time (hours; do now)
+## Tier 2 — mock-enforced single-use at test time (SHIPPED 2026-10-08)
 
-`near-mock` maintains a promise-id registry:
+`near-mock` maintains a promise-id registry (`CONSUMED_PROMISES`), shipped in
+the vendored near-mock (`src/bin/near_mock/mod.rs`):
 
-- Each id accepts at most **one** consumer (`promise_then` / `promise_return`).
-- Second consumer → trap + report (op, state, promise id).
-- The 10k-op invariant battery then catches double-consume paths the syntactic
+- Each id accepts at most **one** consumer. Consuming hosts:
+  `promise_then`, `promise_batch_then`, `promise_return`, and every element
+  of `promise_and`. `promise_batch_action_*` marks nothing (non-consuming).
+- Second consumer → trap:
+  `promise 0 already consumed: promise_then on an already-consumed handle (promises are move-only, single-use)`.
+- The invariant batteries then catch double-consume paths the syntactic
   lint cannot see through: dynamically chosen promises, handles round-tripped
   through storage, callback re-entries.
+- Verified in-tree 2026-10-08: single-use chains run green; a cross-defn
+  double-`promise_then` that passes the compile-time lint traps at the DAG
+  resolution boundary (probes `x11_single_use.lisp` / `x10_cross_defn.lisp`).
 
 Defense in depth: the lint guards the source you write; the mock guards the
 code that runs.
