@@ -8,7 +8,7 @@ fn to_wat(wasm: &[u8]) -> String {
 fn test_json_get_compiles() {
     let src = r#"
 (define (my-price resp)
-    (json-get "price" resp))
+    (json-get resp "price"))
 "#;
     let wasm = compile_pure(src).expect("json-get should compile");
     let wat = to_wat(&wasm);
@@ -64,12 +64,26 @@ fn test_json_extract_compiles() {
     );
 }
 
-// ── 1-arg json-get (implicit input scanner) — near-compile + near-mock pins ──
+// ── 1-arg json-get (implicit input scanner) — near compile + near-mock pins ──
 // Regression for the __json_get not-found guard: the scan loop exits when
 // scan_i + pat_len > json_len, but the old guard only checked
 // scan_i >= json_len, so key-misses fell through to value extraction and
 // returned garbage (len-0 spans) instead of NIL.
+//
+// 2026-10-07: these used to shell out to ./target/debug/near-compile — a
+// binary that never existed (the near compiler is `compile`), so all three
+// were permanently red on a clean checkout. Fixed: resolve the binary from
+// CARGO_TARGET_DIR when set (non-default target dir), else ./target — the
+// same contract tests/test_compile_cli.rs::bin() now follows.
+//
+// 2-arg json-get pins live in tests/differential.rs (both engines must
+// agree) — arg order unified 2026-10-07: (json-get <json> "key").
 use std::process::Command;
+
+fn target_debug() -> std::path::PathBuf {
+    let dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "./target".into());
+    std::path::PathBuf::from(dir).join("debug")
+}
 
 fn near_json_probe(body: &str, args_json: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -79,19 +93,19 @@ fn near_json_probe(body: &str, args_json: &str) -> String {
     let wasm = format!("/tmp/__json_probe_{id}.wasm");
     let src = format!("(define (run x) {})\n", body);
     std::fs::write(&lisp, &src).unwrap();
-    let out = Command::new("./target/debug/near-compile")
+    let out = Command::new(target_debug().join("compile"))
         .args([&lisp, "-o", &wasm])
         .output()
-        .expect("near-compile");
+        .expect("compile (build it: cargo build --bin compile --bin near-mock)");
     assert!(
         out.status.success(),
         "compile failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let out = Command::new("./target/debug/near-mock")
+    let out = Command::new(target_debug().join("near-mock"))
         .args([&wasm, "_run", args_json])
         .output()
-        .expect("near-mock");
+        .expect("near-mock (build it: cargo build --bin compile --bin near-mock)");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     stdout
         .lines()
@@ -120,10 +134,12 @@ fn test_json_get_1arg_string() {
 
 #[test]
 fn test_json_get_1arg_missing_key_returns_nil() {
+    // miss now returns TAG_NIL(4); near-mock prints the untagged payload
+    // (4 >> 3 == 0), same visible "0 (raw" line the old pin asserted.
     let line = near_json_probe(r#"(json-get "amount")"#, r#"{"name":"world"}"#);
     assert!(
         line.contains("0 (raw"),
-        "missing key must return NIL/0: {}",
+        "missing key must return NIL: {}",
         line
     );
 }

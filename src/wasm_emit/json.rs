@@ -2519,7 +2519,11 @@ impl WasmEmitter {
             v.push(Instruction::I64Const(0));
             v.push(Instruction::I64Eq);
             v.push(Instruction::If(BlockType::Empty));
-            v.push(Instruction::I64Const(0)); // TAG_NIL
+            v.push(Instruction::I64Const(TAG_NIL)); // was raw 0 — which is
+            // indistinguishable from a FOUND numeric 0 (Num(0) also tags to
+            // 0); every (nil? …) guard downstream misfired. 2026-10-07,
+            // with the json-get arg-order unification (interp parity:
+            // miss ⇒ Nil, found-zero ⇒ Num(0)).
             v.push(Instruction::LocalSet(result_l));
             v.push(Instruction::Else);
             // Extract ptr and len
@@ -2552,6 +2556,16 @@ impl WasmEmitter {
             {
                 let i_local = self.local_idx("__jg_int_i");
                 let int_result = self.local_idx("__jg_int_result");
+                // sign: a leading '-' is skipped, result negated at the end
+                // (was: '-' went through 'c' - 48 → 4294967293, so every
+                // negative JSON number parsed to garbage; caught by the
+                // 2026-10-07 differential json-get fixtures)
+                let neg_l = self.local_idx("__jg_neg");
+                v.push(Instruction::LocalGet(first_byte_l));
+                v.push(Instruction::I32Const(0x2D)); // '-'
+                v.push(Instruction::I32Eq); // 1/0 — no if/else needed
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(neg_l));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::LocalSet(int_result));
                 v.push(Instruction::I64Const(0));
@@ -2561,12 +2575,17 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(i_local));
                 v.push(Instruction::LocalGet(len_l));
                 v.push(Instruction::I64ExtendI32S);
+                v.push(Instruction::LocalGet(neg_l));
+                v.push(Instruction::I64Sub);
                 v.push(Instruction::I64GeS);
                 v.push(Instruction::BrIf(1));
                 v.push(Instruction::LocalGet(ptr_l));
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::LocalGet(i_local));
+                v.push(Instruction::I64Add);
+                v.push(Instruction::LocalGet(neg_l));
+                v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I32Add);
                 v.push(Instruction::I32Load8U(ma1.clone()));
                 v.push(Instruction::I32Const(48)); // '0'
                 v.push(Instruction::I32Sub);
@@ -2583,15 +2602,36 @@ impl WasmEmitter {
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
+                // negate if sign was seen: Select pops (cond, val2, val1)
+                // and yields val1 when cond≠0 — val1 = -int_result
                 v.push(Instruction::LocalGet(int_result));
+                v.push(Instruction::I64Const(0));
+                v.push(Instruction::I64Sub); // 0 - int_result = -int_result
+                v.push(Instruction::LocalGet(int_result));
+                v.push(Instruction::LocalGet(neg_l));
+                v.push(Instruction::I32WrapI64); // select condition is i32
+                v.push(Instruction::Select);
                 v.extend(self.emit_tag_num());
                 v.push(Instruction::LocalSet(result_l));
             }
             v.push(Instruction::Else);
-            // String → copy to heap, return TAG_STR
+            // String → copy to the RUNTIME heap, return TAG_STR
             {
-                let heap_dst = self.heap_bump(65536);
-                v.push(Instruction::I32Const(heap_dst as i32));
+                // Was heap_bump(65536): a 64KB COMPILE-TIME slot PER CALL
+                // SITE. The 2-arg json-get unification (2026-10-07) routed
+                // ~30 nostr-gov sites through "auto" → ~1.9MB reserved →
+                // tripped the 1MiB stitched-module ceiling. Runtime bump
+                // instead: zero per-site data cost, recursion-safe (same
+                // allocator json-get-str's unescape uses).
+                self.ensure_heap_init();
+                let rh_len = self.local_idx("__jg_rhlen");
+                let rh_dst64 = self.local_idx("__jg_rh64");
+                v.push(Instruction::LocalGet(len_l));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(rh_len));
+                v.extend(self.emit_rtheap_alloc(rh_dst64, rh_len));
+                v.push(Instruction::LocalGet(rh_dst64));
+                v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(ptr_l));
                 v.push(Instruction::LocalGet(len_l));
                 v.push(Instruction::MemoryCopy {
@@ -2602,8 +2642,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64ExtendI32U);
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::I32Const(heap_dst as i32));
-                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalGet(rh_dst64));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 v.push(Instruction::LocalSet(result_l));

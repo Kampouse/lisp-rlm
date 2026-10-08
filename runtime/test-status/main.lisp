@@ -11,9 +11,9 @@
         (count-pending (cdr tasks))))))
 
 (define (parse-task json-str)
-  (let ((id (json-get "id" json-str))
-        (desc (json-get "desc" json-str))
-        (status (json-get "status" json-str)))
+  (let ((id (json-get json-str "id"))
+        (desc (json-get json-str "desc"))
+        (status (json-get json-str "status")))
     (dict "id" (if (nil? id) "" id)
           "desc" (if (nil? desc) "" desc)
           "status" (if (nil? status) "pending" status))))

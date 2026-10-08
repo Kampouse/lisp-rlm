@@ -5194,6 +5194,13 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 }
             }
             if head == "json-get" {
+                // TS surface keeps its documented jsonGet(key, json) order
+                // (ts/lisp-rlm.d.ts); the lisp op is (json-get <json> "key")
+                // since the 2026-10-07 unification — swap the 2-arg form at
+                // lowering. 1-arg jsonGet(key) passes through untouched.
+                if items.len() == 3 {
+                    items.swap(1, 2);
+                }
                 return Ok(list(vec![Sym("to-string"), list(items)]));
             }
             // json-set's 3rd arg is JSON-ENCODED value text — but TS users

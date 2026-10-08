@@ -21,13 +21,14 @@
 //! the shared fixture set cannot silently rot to nothing.
 //!
 //! KNOWN DIVERGENCES DOCUMENTED (do not "fix" by deleting):
-//!   * `json-get` argument order: interp is (json-get <json> <key>), the
-//!     wasm emitter treats arg0 as the KEY. json-get is therefore NOT in
-//!     the shared fixtures; fixing the order needs its own task (it is a
-//!     user-facing semantic gap, not a harness bug). Found 2026-10-07
-//!     while building this matrix.
 //!   * str->num parse-failure payload differs by design (Nil vs 0-ish);
 //!     fixtures only use well-formed numerics.
+//!   * json-get float values: the wasm auto-scan parses digit-leading
+//!     values as i64 (1.5 → 1), the interp parses f64 — fixtures use
+//!     integer and string values only (2026-10-07 unification).
+//!   * json-get NEGATIVE numbers: the wasm side returns |n| (sign lost in
+//!     the __json_get span / auto parse) while the interp returns -n.
+//!     Wat-audited 2026-10-07; needs a __json_get span audit (own task).
 
 use lisp_rlm_wasm::parser;
 use lisp_rlm_wasm::run_program;
@@ -198,6 +199,22 @@ fn fixtures() -> Vec<Fixture> {
             "input/cond-dispatch",
             "(define (main)\n  (let ((op (str->num (near/input))))\n    (cond ((= op 1) (* 6 7)) ((= op 2) (- 0 1)) (else 0))))",
             "1",
+        ),
+        // ── json-get (unified order 2026-10-07: (json-get <json> "key")) ──
+        Fixture::new(
+            "json/get-num",
+            r#"(define (main) (json-get "{\"x\":42}" "x"))"#,
+        ),
+        Fixture::new(
+            "json/get-str",
+            r#"(define (main) (json-get "{\"name\":\"bob\"}" "name"))"#,
+        ),
+        Fixture::new(
+            "json/get-mixed",
+            r#"(define (jx s)
+                 (let ((n (json-get s "n")) (t (json-get s "t")))
+                   (list n t)))
+                 (define (main) (jx "{\"n\":3,\"t\":\"hi\"}"))"#,
         ),
         // ── deep nesting / mixed ──
         Fixture::new(
