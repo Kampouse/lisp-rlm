@@ -774,12 +774,33 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
     Ok(result)
 }
 
-/// Lower an async function into entry + continuation via near/call-await.
-/// V1 (fail-loud): exactly one await, `const x = await near.call(...)`,
-/// and it must be the FIRST statement (their original V1 silently dropped
-/// pre-await statements — we hard-error instead).
-/// Returns forms: entry define, entry export, continuation define, cont. export.
+/// Lower an async function — async v2 (2026-10-08).
+///
+/// Awaits anywhere, multiple awaits, `near.all([...])` fanout, payable.
+/// CPS split at each await point: the entry runs pre-await statements,
+/// snapshots the params into storage and fires await 0; resume k restores
+/// the frame, binds await k's results, runs its segment and fires the next
+/// await. The LAST resume runs the final segment as the function value.
+///
+/// Frame = entry params ONLY (the V1-proven `__await:<fn>:<param>` storage
+/// path). A `let` local read after an await, or an assignment to a
+/// param/pre-await local after an await, is a COMPILE ERROR naming the
+/// variable (T4 — locals die at the await boundary; the frame is the only
+/// state that crosses). Pre-await reassignment of params is fine: the
+/// snapshot happens after the pre-await statements run, so the final
+/// values are what the continuations see.
+///
+/// `await near.call(t, m, args, gas, dep)` and
+/// `const [a, b] = await near.all([c1, c2])` both lower to the manual
+/// promise shape (promise_create → [promise_and] → ONE promise_then →
+/// promise_return) — the same DAG the portfolio fixture hand-writes — so
+/// deposits flow through untouched (V1's zero-deposit restriction is gone)
+/// and every join has exactly ONE resume reading promise_result(0..n) in
+/// dependency order.
+///
+/// Returns forms: entry define + export, then per await: resume define + export.
 fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
+    const CB_GAS: i64 = 50_000_000_000_000;
     let name =
         f.id.as_ref()
             .map(|i| i.name.as_str().to_string())
@@ -831,86 +852,381 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         .ok_or("ts_frontend: async function missing body")?;
     let stmts = &body.statements;
 
-    // Find `const x = await expr;`
-    let mut await_idx = None;
-    let mut await_var = None;
-    let mut await_expr = None;
+    // Forward-scan the WHOLE body: bigint lets / string locals / input
+    // handles must be registered before any segment lowers (segments lower
+    // in CPS order — see scan_bigint_lets).
+    scan_bigint_lets(stmts);
+
+    let state_key = format!("__await:{}", name);
+
+    // ── collect top-level await points ──────────────────────────────
+    enum Bind {
+        Plain,
+        Object,
+        Positional,
+    }
+    struct AwaitPoint<'a> {
+        idx: usize,
+        names: Vec<String>,
+        bind: Bind,
+        // near.call(...) for Plain/Object, the array literal for Positional
+        src_expr: &'a Expression<'a>,
+    }
+    let mut awaits: Vec<AwaitPoint<'_>> = Vec::new();
     for (i, s) in stmts.iter().enumerate() {
-        if let oxc_ast::ast::Statement::VariableDeclaration(vd) = s {
-            if vd.declarations.len() == 1 {
-                let decl = &vd.declarations[0];
-                if let Some(init) = &decl.init {
-                    if let oxc_ast::ast::Expression::AwaitExpression(ae) = init {
-                        await_idx = Some(i);
-                        await_var = Some(binding_name(&decl.id)?);
-                        await_expr = Some(&ae.argument);
-                        break;
+        let Statement::VariableDeclaration(vd) = s else {
+            continue;
+        };
+        if vd.declarations.len() != 1 {
+            continue;
+        }
+        let decl = &vd.declarations[0];
+        let Some(Expression::AwaitExpression(ae)) = &decl.init else {
+            continue;
+        };
+        let names = pattern_names(&decl.id)?;
+        let arg = &ae.argument;
+        // near.all([...]) detection — must be the bare member call
+        let mut all_arr: Option<&oxc_ast::ast::ArrayExpression<'_>> = None;
+        if let Expression::CallExpression(c) = arg {
+            if let Expression::StaticMemberExpression(sm) = &c.callee {
+                if let Expression::Identifier(obj) = &sm.object {
+                    if obj.name == "near" && sm.property.name == "all" {
+                        if c.arguments.len() != 1 {
+                            return Err(
+                                "ts_frontend: near.all takes exactly one array argument".into()
+                            );
+                        }
+                        match c.arguments[0].as_expression() {
+                            Some(Expression::ArrayExpression(arr)) => all_arr = Some(arr),
+                            _ => {
+                                return Err(
+                                    "ts_frontend: near.all takes an ARRAY LITERAL of near.call(...) expressions"
+                                        .into(),
+                                )
+                            }
+                        }
                     }
                 }
             }
         }
-    }
-    let await_idx =
-        await_idx.ok_or("ts_frontend: async function must contain `const x = await expr;`")?;
-    if await_idx != 0 {
-        return Err(
-            "ts_frontend: V1 async — await must be the first statement (pre-await code unsupported)"
-                .into(),
-        );
-    }
-    let await_var = await_var.unwrap();
-    let await_expr = await_expr.unwrap();
-    let after_stmts = &stmts[await_idx + 1..];
-
-    let state_key = format!("__await:{}", name);
-    let cb_name = format!("{}__resume", name);
-
-    // ── entry: read params from tx json, save state, fire call-await ──
-    let mut entry_inner: Vec<LispVal> = Vec::new(); // begin-items after bindings
-    for (n, kind) in &param_names {
-        let v = if *kind == 1 {
-            list(vec![Sym("to-string"), Sym(n.clone())])
-        } else {
-            Sym(n.clone())
-        };
-        entry_inner.push(list(vec![
-            Sym("near/storage_set"),
-            Str(format!("{}:{}", state_key, n)),
-            v,
-        ]));
-    }
-    // await near.call(target, method, args, gas, deposit)
-    //   → near/call-await(target, method, args, gas, cb, 50Tgas, "{}")
-    let await_lisp = lower_expr(await_expr)?;
-    let call_await = match &await_lisp {
-        LispVal::List(items) if items.len() >= 6 && items[0] == Sym("near/call") => {
-            // fail-loud: dropped deposit must be zero
-            let dep_ok = matches!(&items[5], LispVal::Num(0))
-                || matches!(&items[5], LispVal::Str(x) if x == "0");
-            if !dep_ok {
+        if let Some(arr) = all_arr {
+            if !matches!(decl.id, oxc_ast::ast::BindingPattern::ArrayPattern(_)) {
                 return Err(
-                    "ts_frontend: await near.call(...) — deposit must be 0 (call-await is zero-deposit; use the raw near/call-await form for payable)"
+                    "ts_frontend: `await near.all([...])` binds with an array pattern: `const [a, b] = await near.all([...])`"
                         .into(),
                 );
             }
-            let mut new_items = vec![Sym("near/call-await")];
-            new_items.extend(items[1..5].iter().cloned());
-            new_items.push(Str(cb_name.clone()));
-            new_items.push(Num(50_000_000_000_000));
-            new_items.push(Str("{}".to_string()));
-            list(new_items)
+            if arr.elements.len() != names.len() {
+                return Err(format!(
+                    "ts_frontend: near.all — {} name(s) bound but {} call(s) in the array",
+                    names.len(),
+                    arr.elements.len()
+                )
+                .into());
+            }
+            awaits.push(AwaitPoint {
+                idx: i,
+                names,
+                bind: Bind::Positional,
+                src_expr: arg,
+            });
+        } else if names.len() > 1 {
+            return Err(
+                "ts_frontend: only `await near.all([...])` binds multiple names".into(),
+            );
+        } else {
+            let bind = match &decl.id {
+                oxc_ast::ast::BindingPattern::BindingIdentifier(_) => Bind::Plain,
+                oxc_ast::ast::BindingPattern::ObjectPattern(_) => Bind::Object,
+                _ => {
+                    return Err(
+                        "ts_frontend: `await near.call(...)` binds a name or object pattern"
+                            .into(),
+                    )
+                }
+            };
+            awaits.push(AwaitPoint {
+                idx: i,
+                names,
+                bind,
+                src_expr: arg,
+            });
         }
-        LispVal::List(items) if !items.is_empty() && items[0] == Sym("near/call") => {
-            return Err("ts_frontend: await must wrap near.call() with 5 args (target, method, args, gas, 0)".into());
-        }
-        _ => return Err("ts_frontend: V1 async — await expression must be near.call(...)".into()),
-    };
-    entry_inner.push(call_await);
+    }
+    if awaits.is_empty() {
+        return Err(
+            "ts_frontend: async function must contain `const x = await near.call(...);`".into(),
+        );
+    }
 
-    let entry_body = if param_names.is_empty() {
+    // ── T4 frame rule ───────────────────────────────────────────────
+    // Params cross every await (entry snapshot). Await results are bound
+    // at their await and FRAME-PERSISTED for all later continuations (each
+    // resume storage_sets its results; later resumes restore them — the
+    // join-at-the-end pattern is the point). Plain `let` locals die at the
+    // await boundary: reading one after an await, or assigning to a
+    // param/pre-await local/await result after an await, is a COMPILE
+    // ERROR naming the variable.
+    let param_set: Vec<String> = param_names.iter().map(|(n, _)| n.clone()).collect();
+    let n_awaits = awaits.len();
+    // region 0 = entry (stmts before await 0), region k = resume k-1's stmts
+    let mut region_stmts: Vec<&[Statement<'_>]> = Vec::new();
+    region_stmts.push(&stmts[0..awaits[0].idx]);
+    for k in 0..n_awaits {
+        let start = awaits[k].idx + 1;
+        let end = if k + 1 < n_awaits {
+            awaits[k + 1].idx
+        } else {
+            stmts.len()
+        };
+        region_stmts.push(&stmts[start..end]);
+    }
+    let mut region_decls: Vec<Vec<String>> = Vec::new();
+    for rs in &region_stmts {
+        let mut d = Vec::new();
+        for s in *rs {
+            if let Statement::VariableDeclaration(vd) = s {
+                for dd in &vd.declarations {
+                    d.extend(pattern_names(&dd.id)?);
+                }
+            }
+        }
+        region_decls.push(d);
+    }
+    // await-result owner table: name → await index. Result of await j is
+    // live in regions j+1..=n (bound locally at j+1, frame-restored after).
+    let mut await_owner: Vec<(String, usize)> = Vec::new();
+    for (j, a) in awaits.iter().enumerate() {
+        for nm in &a.names {
+            await_owner.push((nm.clone(), j));
+        }
+    }
+    let owner_of =
+        |n: &str| await_owner.iter().find(|(nm, _)| nm == n).map(|(_, j)| *j);
+    for k in 0..region_stmts.len() {
+        let mut reads: Vec<String> = Vec::new();
+        let mut assigns: Vec<String> = Vec::new();
+        for s in region_stmts[k] {
+            stmt_walk_idents(s, &mut reads, &mut assigns);
+        }
+        let decl_here = &region_decls[k];
+        // redeclare: a region cannot rebind an await-result name — the
+        // resume's let would double-bind the frame restore
+        for d in decl_here {
+            if owner_of(d).is_some() {
+                return Err(format!(
+                    "ts_frontend: async `{name}`: cannot redeclare `{d}` — await results are frame-persisted for later continuations; bind a fresh name"
+                )
+                .into());
+            }
+        }
+        for a in &assigns {
+            if owner_of(a).is_some() {
+                return Err(format!(
+                    "ts_frontend: async `{name}`: `{a}` is an await result — await results are const; bind a new name"
+                )
+                .into());
+            }
+        }
+        if k >= 1 {
+            // assignment targets first (sharper message than a read error)
+            for a in &assigns {
+                if param_set.contains(a) {
+                    return Err(format!(
+                        "ts_frontend: async `{name}`: cannot assign to parameter `{a}` after an await — the frame snapshot happens in the entry; make `{a}` final before the first await"
+                    )
+                    .into());
+                }
+                if (0..k).any(|j| region_decls[j].contains(a)) {
+                    return Err(format!(
+                        "ts_frontend: async `{name}`: cannot assign to `{a}` after an await — locals die at the await boundary; declare `{a}` inside this continuation segment"
+                    )
+                    .into());
+                }
+            }
+        }
+        for r in &reads {
+            if assigns.contains(r) || decl_here.contains(r) || param_set.contains(r) {
+                continue;
+            }
+            if let Some(j) = owner_of(r) {
+                if j + 1 <= k {
+                    continue; // bound this resume (j+1==k) or frame-restored (j+1<k)
+                }
+                return Err(format!(
+                    "ts_frontend: async `{name}`: await result `{r}` used before its await runs — move the await earlier or restructure"
+                )
+                .into());
+            }
+            if k >= 1 && (0..k).any(|j| region_decls[j].contains(r)) {
+                return Err(format!(
+                    "ts_frontend: async `{name}`: local `{r}` crosses an await boundary — only parameters and await results survive; make `{r}` a parameter or recompute it after the await"
+                )
+                .into());
+            }
+        }
+    }
+
+    // ── fire forms: one per await, built once, moved into their body ──
+    // (near/call T M A G DEP) → (near/promise_create T M A DEP G)
+    let to_pcreate = |items: &[LispVal], ctx: &str| -> Result<LispVal, String> {
+        if items.len() != 6 || items[0] != Sym("near/call") {
+            return Err(format!(
+                "ts_frontend: {ctx} must be near.call(target, method, args, gas, deposit)"
+            ));
+        }
+        // TS surface types deposit as number; the promise ABI is a u128
+        // decimal STR (unified 2026-10-07 — see the promise_create typing
+        // row). Coerce literals; Str deposits (near.attachedDeposit(),
+        // decimal amounts) pass through untouched.
+        let dep = match &items[5] {
+            LispVal::Num(n) => Str(n.to_string()),
+            other => other.clone(),
+        };
+        Ok(list(vec![
+            Sym("near/promise_create"),
+            items[1].clone(),
+            items[2].clone(),
+            items[3].clone(),
+            dep,
+            items[4].clone(),
+        ]))
+    };
+    let fire = |create: LispVal, cb: &str| -> LispVal {
+        list(vec![
+            Sym("near/promise_return"),
+            list(vec![
+                Sym("near/promise_then"),
+                create,
+                list(vec![Sym("near/current_account_id")]),
+                Str(cb.to_string()),
+                Str("{}".to_string()),
+                Str("0".to_string()),
+                Num(CB_GAS),
+            ]),
+        ])
+    };
+    let cb_name = |k: usize| -> String {
+        if n_awaits == 1 {
+            format!("{name}__resume")
+        } else {
+            format!("{name}__resume{k}")
+        }
+    };
+    let mut fire_forms: Vec<LispVal> = Vec::with_capacity(n_awaits);
+    for (k, ap) in awaits.iter().enumerate() {
+        match &ap.bind {
+            Bind::Positional => {
+                let arr = match &ap.src_expr {
+                    Expression::CallExpression(c) => match c.arguments[0].as_expression() {
+                        Some(Expression::ArrayExpression(arr)) => arr,
+                        _ => unreachable!("checked at scan"),
+                    },
+                    _ => unreachable!("checked at scan"),
+                };
+                let mut creates: Vec<LispVal> = Vec::new();
+                for (j, el) in arr.elements.iter().enumerate() {
+                    let Some(elex) = el.as_expression() else {
+                        return Err(format!(
+                            "ts_frontend: near.all element {j} is empty (`[a, , b]` holes are not calls)"
+                        ));
+                    };
+                    let l = lower_expr(elex)?;
+                    let LispVal::List(items) = &l else {
+                        return Err(format!(
+                            "ts_frontend: near.all element {j} must be near.call(target, method, args, gas, deposit)"
+                        ));
+                    };
+                    creates.push(to_pcreate(
+                        items,
+                        &format!("near.all element {j}"),
+                    )?);
+                }
+                let joined = list({
+                    let mut v = vec![Sym("near/promise_and")];
+                    v.extend(creates);
+                    v
+                });
+                fire_forms.push(fire(joined, &cb_name(k)));
+            }
+            _ => {
+                let l = lower_expr(ap.src_expr)?;
+                let LispVal::List(items) = l else {
+                    return Err(format!(
+                        "ts_frontend: await must wrap near.call(target, method, args, gas, deposit) — async `{name}`"
+                    ));
+                };
+                let create = to_pcreate(&items, "await expression")?;
+                fire_forms.push(fire(create, &cb_name(k)));
+            }
+        }
+    }
+
+    // ── entry: param reads from tx json, pre-await stmts, snapshot, fire ──
+    let save_bindings: Vec<LispVal> = param_names
+        .iter()
+        .map(|(nm, kind)| {
+            let v = if *kind == 1 {
+                list(vec![Sym("to-string"), Sym(nm.clone())])
+            } else {
+                Sym(nm.clone())
+            };
+            list(vec![
+                Sym("near/storage_set"),
+                Str(format!("{}:{}", state_key, nm)),
+                v,
+            ])
+        })
+        .collect();
+    // Tail of the entry = snapshot + fire await 0. Composed THROUGH the
+    // pre-await statements (lower_prefix_around) so the first await's
+    // near.call arguments can reference pre-await locals.
+    let mut entry_tail_items = save_bindings;
+    entry_tail_items.push(fire_forms[0].clone());
+    let entry_tail = if entry_tail_items.len() == 1 {
+        entry_tail_items.pop().unwrap()
+    } else {
         let mut b = vec![Sym("begin")];
-        b.extend(entry_inner);
+        b.extend(entry_tail_items);
         list(b)
+    };
+    // Compose pre-await statements with a tail that may FIRE the next
+    // await. Early `return`s inside bind function-level __fn_done/__fn_res
+    // locally (mirroring lower_block_tail's flag-guard path) and SUPPRESS
+    // the tail-fire — a returned function must not keep the promise chain
+    // going. Segment value: __fn_res on early return (done_value), else
+    // the tail's value.
+    let compose_seg =
+        |pre: &[Statement<'_>], tail: LispVal, done_value: LispVal| -> Result<LispVal, String> {
+            if pre.is_empty() {
+                return Ok(tail);
+            }
+            if !stmts_have_deep_return(pre) {
+                return lower_prefix_around(pre, tail, false);
+            }
+            let guarded = list(vec![
+                Sym("if"),
+                list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+                tail,
+                done_value,
+            ]);
+            let saved = FN_FLAGS_BOUND.with(|f| f.replace(true));
+            let inner = lower_prefix_around_with_return(pre, guarded, false);
+            FN_FLAGS_BOUND.with(|f| f.set(saved));
+            Ok(list(vec![
+                Sym("let"),
+                list(vec![
+                    list(vec![Sym("__fn_done"), Num(0)]),
+                    list(vec![Sym("__fn_res"), list(vec![Sym("quote"), LispVal::Nil])]),
+                ]),
+                inner?,
+            ]))
+        };
+    let pre = &stmts[0..awaits[0].idx];
+    let entry_seq = compose_seg(pre, entry_tail, Sym("__fn_res"))?;
+    let entry_body = if param_names.is_empty() {
+        entry_seq
     } else {
         let bindings = param_names
             .iter()
@@ -924,11 +1240,7 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
                 list(vec![Sym(n.clone()), v])
             })
             .collect();
-        list(vec![Sym("let"), list(bindings), {
-            let mut b = vec![Sym("begin")];
-            b.extend(entry_inner);
-            list(b)
-        }])
+        list(vec![Sym("let"), list(bindings), entry_seq])
     };
     let entry_define = list(vec![
         Sym("define"),
@@ -943,43 +1255,329 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         if view { Sym("#t") } else { Sym("#f") },
     ]);
 
-    // ── continuation: restore state, bind promise result, run the rest ──
-    let mut let_bindings: Vec<LispVal> = Vec::new();
-    for (n, kind) in &param_names {
-        // storage_get returns (opt str) — unwrap with default before use
-        let getter = list(vec![
-            Sym("default"),
-            list(vec![
-                Sym("near/storage_get"),
-                Str(format!("{}:{}", state_key, n)),
-            ]),
-            Str(String::new()),
-        ]);
-        let val = if *kind == 1 {
-            list(vec![Sym("str->num"), getter])
-        } else {
-            getter
+    // ── resumes: restore frame + bind await results + segment (+ fire) ──
+    let mut out: Vec<LispVal> = vec![entry_define, entry_export];
+    for k in 0..n_awaits {
+        let cbk = cb_name(k);
+        let mut let_bindings: Vec<LispVal> = Vec::new();
+        for (nm, kind) in &param_names {
+            let getter = list(vec![
+                Sym("default"),
+                list(vec![
+                    Sym("near/storage_get"),
+                    Str(format!("{}:{}", state_key, nm)),
+                ]),
+                Str(String::new()),
+            ]);
+            let val = if *kind == 1 {
+                list(vec![Sym("str->num"), getter])
+            } else {
+                getter
+            };
+            let_bindings.push(list(vec![Sym(nm.clone()), val]));
+        }
+        let ap = &awaits[k];
+        for (j, nm) in ap.names.iter().enumerate() {
+            let res = list(vec![Sym("near/promise_result"), Num(j as i64)]);
+            let v = match ap.bind {
+                Bind::Object => {
+                    // const {a, b} = await near.call(...) — property reads
+                    // on the returned JSON text
+                    list(vec![Sym("json-get-str"), Str(nm.clone()), res])
+                }
+                _ => res, // Plain: index 0; Positional: index = position
+            };
+            let_bindings.push(list(vec![Sym(nm.clone()), v]));
+        }
+        // restore every EARLIER await's results (each was storage_set by its
+        // own resume; default "" keeps a failed/missing result readable)
+        for (j, aj) in awaits.iter().enumerate() {
+            if j >= k {
+                continue;
+            }
+            for nm in &aj.names {
+                let getter = list(vec![
+                    Sym("default"),
+                    list(vec![
+                        Sym("near/storage_get"),
+                        Str(format!("{}:{}", state_key, nm)),
+                    ]),
+                    Str(String::new()),
+                ]);
+                let_bindings.push(list(vec![Sym(nm.clone()), getter]));
+            }
+        }
+        let seg = region_stmts[k + 1];
+        // Tail = persist THIS await's results for later resumes (the resume's
+        // let binds them), then fire the next await — composed THROUGH the
+        // segment via lower_prefix_around so the tail sees segment locals
+        // (`const dep = ...` before an await is common and legal).
+        let mut tail_items: Vec<LispVal> = Vec::new();
+        if k + 1 < n_awaits {
+            for nm in &ap.names {
+                tail_items.push(list(vec![
+                    Sym("near/storage_set"),
+                    Str(format!("{}:{}", state_key, nm)),
+                    Sym(nm.clone()),
+                ]));
+            }
+            tail_items.push(fire_forms[k + 1].clone());
+        }
+        let tail = match tail_items.len() {
+            1 => tail_items.pop().unwrap(),
+            0 => Num(0),
+            _ => {
+                let mut b = vec![Sym("begin")];
+                b.extend(tail_items);
+                list(b)
+            }
         };
-        let_bindings.push(list(vec![Sym(n.clone()), val]));
+        // Segment composition mirrors the entry: early `return`s inside the
+        // segment bind LOCAL __fn_done/__fn_res and suppress the tail-fire;
+        // the resume exports the last segment's value with a plain-value
+        // export (the __resume contract has no flag channel — V1 same).
+        let done_value = if k + 1 < n_awaits {
+            Num(0)
+        } else {
+            Sym("__fn_res")
+        };
+        let body_inner = if seg.is_empty() {
+            tail
+        } else if !stmts_have_deep_return(seg) {
+            lower_prefix_around(seg, tail, false)?
+        } else {
+            let guarded = list(vec![
+                Sym("if"),
+                list(vec![Sym("="), Sym("__fn_done"), Num(0)]),
+                tail,
+                done_value,
+            ]);
+            let saved = FN_FLAGS_BOUND.with(|f| f.replace(true));
+            let inner = lower_prefix_around_with_return(seg, guarded, false);
+            FN_FLAGS_BOUND.with(|f| f.set(saved));
+            list(vec![
+                Sym("let"),
+                list(vec![
+                    list(vec![Sym("__fn_done"), Num(0)]),
+                    list(vec![
+                        Sym("__fn_res"),
+                        list(vec![Sym("quote"), LispVal::Nil]),
+                    ]),
+                ]),
+                inner?,
+            ])
+        };
+        out.push(list(vec![
+            Sym("define"),
+            list(vec![Sym(cbk.clone())]),
+            list(vec![Sym("let"), list(let_bindings), body_inner]),
+        ]));
+        out.push(list(vec![
+            Sym("export"),
+            Str(cbk),
+            Sym(cb_name(k)),
+            Sym("#f"),
+        ]));
     }
-    let_bindings.push(list(vec![
-        Sym(await_var.clone()),
-        list(vec![Sym("near/promise_result"), Num(0)]),
-    ]));
-    let after_body = lower_block_tail(after_stmts, false)?;
-    let cb_define = list(vec![
-        Sym("define"),
-        list(vec![Sym(cb_name.clone())]),
-        list(vec![Sym("let"), list(let_bindings), after_body]),
-    ]);
-    let cb_export = list(vec![
-        Sym("export"),
-        Str(cb_name.clone()),
-        Sym(cb_name.clone()),
-        Sym("#f"),
-    ]);
 
-    Ok(vec![entry_define, entry_export, cb_define, cb_export])
+    Ok(out)
+}
+
+/// Every binding NAME in a declaration pattern — flat, positional.
+/// `x` → [x]; `{a, b}` → [a, b]; `[p, q]` → [p, q]. Holes/rest/nested
+/// patterns are refused (fail-loud, name the syntax).
+fn pattern_names(p: &oxc_ast::ast::BindingPattern<'_>) -> Result<Vec<String>, String> {
+    use oxc_ast::ast::BindingPattern::*;
+    match p {
+        BindingIdentifier(b) => Ok(vec![b.name.as_str().to_string()]),
+        ObjectPattern(op) => {
+            let mut out = Vec::new();
+            for prop in &op.properties {
+                out.extend(pattern_names(&prop.value)?);
+            }
+            if let Some(rest) = &op.rest {
+                return Err(format!(
+                    "ts_frontend: rest element `{}` unsupported in await bindings",
+                    match &rest.argument {
+                        BindingIdentifier(b) => b.name.as_str().to_string(),
+                        _ => "...".to_string(),
+                    }
+                ));
+            }
+            Ok(out)
+        }
+        ArrayPattern(ap) => {
+            let mut out = Vec::new();
+            for el in &ap.elements {
+                match el {
+                    Some(e) => out.extend(pattern_names(e)?),
+                    None => {
+                        return Err(
+                            "ts_frontend: near.all bindings cannot have holes (`[a, , b]`)"
+                                .into(),
+                        )
+                    }
+                }
+            }
+            if let Some(rest) = &ap.rest {
+                return Err(
+                    "ts_frontend: rest elements unsupported in await bindings".into(),
+                );
+            }
+            Ok(out)
+        }
+        _ => Err("ts_frontend: unsupported await binding pattern".into()),
+    }
+}
+
+/// Statement-level walker for the T4 await-frame rule: collects identifier
+/// READS and bare-identifier ASSIGNMENT/UPDATE targets (recursing through
+/// control flow). Arrow bodies are the lambda's own scope — skipped, same
+/// policy as expr_idents.
+fn stmt_walk_idents(
+    s: &Statement<'_>,
+    reads: &mut Vec<String>,
+    assigns: &mut Vec<String>,
+) {
+    match s {
+        Statement::ExpressionStatement(es) => walk_expr_idents(&es.expression, reads, assigns),
+        Statement::VariableDeclaration(vd) => {
+            for d in &vd.declarations {
+                if let Some(init) = &d.init {
+                    walk_expr_idents(init, reads, assigns);
+                }
+            }
+        }
+        Statement::BlockStatement(b) => {
+            for st in &b.body {
+                stmt_walk_idents(st, reads, assigns);
+            }
+        }
+        Statement::IfStatement(i) => {
+            walk_expr_idents(&i.test, reads, assigns);
+            for st in stmts_of(&i.consequent) {
+                stmt_walk_idents(st, reads, assigns);
+            }
+            if let Some(alt) = &i.alternate {
+                for st in stmts_of(alt) {
+                    stmt_walk_idents(st, reads, assigns);
+                }
+            }
+        }
+        Statement::WhileStatement(w) => {
+            walk_expr_idents(&w.test, reads, assigns);
+            for st in stmts_of(&w.body) {
+                stmt_walk_idents(st, reads, assigns);
+            }
+        }
+        Statement::DoWhileStatement(d) => {
+            for st in stmts_of(&d.body) {
+                stmt_walk_idents(st, reads, assigns);
+            }
+            walk_expr_idents(&d.test, reads, assigns);
+        }
+        Statement::ForStatement(fs) => {
+            if let Some(init) = &fs.init {
+                match init {
+                    oxc_ast::ast::ForStatementInit::VariableDeclaration(vd) => {
+                        for dd in &vd.declarations {
+                            if let Some(init) = &dd.init {
+                                walk_expr_idents(init, reads, assigns);
+                            }
+                        }
+                    }
+                    other => {
+                        if let Some(e) = other.as_expression() {
+                            walk_expr_idents(e, reads, assigns);
+                        }
+                    }
+                }
+            }
+            if let Some(test) = &fs.test {
+                walk_expr_idents(test, reads, assigns);
+            }
+            if let Some(update) = &fs.update {
+                walk_expr_idents(update, reads, assigns);
+            }
+            for st in stmts_of(&fs.body) {
+                stmt_walk_idents(st, reads, assigns);
+            }
+        }
+        Statement::ReturnStatement(r) => {
+            if let Some(a) = &r.argument {
+                walk_expr_idents(a, reads, assigns);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Expression walker: reads via the proven expr_idents, plus a side-walk
+/// for assignment/update TARGETS (expr_idents conflates them into reads —
+/// the T4 rule wants the sharper "cannot assign" message).
+fn walk_expr_idents(e: &Expression<'_>, reads: &mut Vec<String>, assigns: &mut Vec<String>) {
+    use oxc_ast::ast::AssignmentTarget;
+    expr_idents(e, reads);
+    fn aw(e: &Expression<'_>, assigns: &mut Vec<String>) {
+        match e {
+            Expression::AssignmentExpression(a) => {
+                if let AssignmentTarget::AssignmentTargetIdentifier(id) = &a.left {
+                    assigns.push(id.name.as_str().to_string());
+                }
+                aw(&a.right, assigns);
+            }
+            Expression::UpdateExpression(u) => {
+                if let oxc_ast::ast::SimpleAssignmentTarget::AssignmentTargetIdentifier(id) =
+                    &u.argument
+                {
+                    assigns.push(id.name.as_str().to_string());
+                }
+            }
+            Expression::ParenthesizedExpression(p) => aw(&p.expression, assigns),
+            Expression::BinaryExpression(b) => {
+                aw(&b.left, assigns);
+                aw(&b.right, assigns);
+            }
+            Expression::LogicalExpression(l) => {
+                aw(&l.left, assigns);
+                aw(&l.right, assigns);
+            }
+            Expression::UnaryExpression(u) => aw(&u.argument, assigns),
+            Expression::SequenceExpression(sq) => {
+                for x in &sq.expressions {
+                    aw(x, assigns);
+                }
+            }
+            Expression::ConditionalExpression(c) => {
+                aw(&c.test, assigns);
+                aw(&c.consequent, assigns);
+                aw(&c.alternate, assigns);
+            }
+            Expression::CallExpression(c) => {
+                aw(&c.callee, assigns);
+                for a in &c.arguments {
+                    if let Argument::SpreadElement(_) = a {
+                        continue;
+                    }
+                    if let Some(ae) = a.as_expression() {
+                        aw(ae, assigns);
+                    }
+                }
+            }
+            Expression::StaticMemberExpression(m) => aw(&m.object, assigns),
+            Expression::ComputedMemberExpression(m) => {
+                aw(&m.object, assigns);
+                aw(&m.expression, assigns);
+            }
+            Expression::TemplateLiteral(t) => {
+                for x in &t.expressions {
+                    aw(x, assigns);
+                }
+            }
+            _ => {}
+        }
+    }
+    aw(e, assigns);
 }
 
 /// Forward scan: register every `let x = <bigint-init>;` in a function
@@ -6257,6 +6855,7 @@ pub const KNOWN_NEAR_MEMBERS: &[&str] = &[
     "blsG1Sum",
     "blsG2Sum",
     // promises
+    "all",
     "promiseCreate",
     "promiseThen",
     "promiseAnd",

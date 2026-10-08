@@ -324,11 +324,18 @@ declare const near: {
   // Returns the payload string, "" on failure (fail-closed; branch on strLength < 1) — branch on it, fail closed.
   promiseResult(idx: number): string;
 
-  // ── async/await (V1) ──
-  // `export async function` with `const x = await near.call(...)` as the
-  // FIRST statement compiles to entry + <name>__resume continuation:
-  // params saved to storage, result bound in the continuation. Zero deposit.
+  // ── async/await (v2, 2026-10-08) ──
+  // `export async function` + `const x = await near.call(...)`: compiles to
+  // entry + <name>__resume continuation (params saved to storage, result
+  // bound in the continuation). v2: awaits ANYWHERE, MULTIPLE awaits
+  // (resume names get an index: <name>__resume0, …), deposits flow through
+  // (payable awaits are legal — the deposit argument is carried by the
+  // promise DAG), and pre-await statements run in the entry.
   call(target: string, method: string, argsJson: string, gas: number, deposit: number): void;
+  // Parallel fanout: `const [a, b] = await near.all([near.call(...), near.call(...)])`
+  // compiles to promise_create ×N → promise_and → ONE <name>__resume reading
+  // promise_result(0..n) in array order. Array literal of near.call(...) only.
+  all(calls: void[]): void;
 
   // ── promise yield (NEAR resumable calls) ──
   // yieldCreate: schedule SELF.<method>(args) and yield execution — gas
