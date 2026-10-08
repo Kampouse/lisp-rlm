@@ -25,6 +25,7 @@ const TOKEN_SRC: &str = include_str!("../fixtures/token_view.ts");
 const SEQ_SRC: &str = include_str!("../fixtures/async_v2_seq.ts");
 const ALL_SRC: &str = include_str!("../fixtures/async_v2_all.ts");
 const PAY_SRC: &str = include_str!("../fixtures/async_v2_pay.ts");
+const PITCH_SRC: &str = include_str!("../fixtures/async_v2_pitch.ts");
 
 fn lock() -> std::sync::MutexGuard<'static, ()> {
     static L: OnceLock<Mutex<()>> = OnceLock::new();
@@ -283,4 +284,49 @@ fn v2_surface_contract() {
     let ir = ts_to_lisp_source(SEQ_SRC).expect("lower");
     assert!(ir.contains("depositTwice__resume0"), "indexed resume 0: {ir}");
     assert!(ir.contains("depositTwice__resume1"), "indexed resume 1: {ir}");
+}
+
+#[test]
+fn v2_pitch_shape_destructuring_object_args() {
+    let _l = lock();
+    state_path("av2-test-state.bin");
+    let u: u128 = 10u128.pow(18);
+
+    let tok = w(TOKEN_SRC, "pitch_tok");
+    let pitch = w(PITCH_SRC, "pitch");
+    let manifest = format!(
+        "toka.v2.test.near={},tokb.v2.test.near={},pitch.v2.test.near={}",
+        tok, tok, pitch
+    );
+
+    assert!(run(
+        &manifest,
+        "toka.v2.test.near",
+        "ftMint",
+        &format!(r#"{{"to":"carol.test.near","amount":"{}"}}"#, 700_000 * u),
+        ""
+    )
+    .contains("supply:"));
+    assert!(run(
+        &manifest,
+        "tokb.v2.test.near",
+        "ftMint",
+        &format!(r#"{{"to":"carol.test.near","amount":"{}"}}"#, 300_000 * u),
+        ""
+    )
+    .contains("supply:"));
+
+    // THE BASE EXAMPLE (2026-10-07 pitch, verbatim shape): destructured
+    // near.all + object args auto-quoted + Promise<Money> annotation.
+    let out = run(
+        &manifest,
+        "pitch.v2.test.near",
+        "portfolioTotal",
+        r#"{"user":"carol.test.near"}"#,
+        "",
+    );
+    assert!(
+        out.contains(&format!("total:{}", 1_000_000 * u)),
+        "pitch shape failed: {out}"
+    );
 }
