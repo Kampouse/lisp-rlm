@@ -165,7 +165,7 @@ fn print_usage() {
     eprintln!("  near-compile create <account-id> [funder-account-id]");
     eprintln!("    --network, --key-path, --seed-phrase");
     eprintln!("    --fund              Auto-fund from testnet faucet");
-    eprintln!("  near-compile test [dir]               Build and run tests");
+    eprintln!("  near-compile test [dir]               Build + inline tests + near-mock scenarios (*.scn.json)");
     eprintln!("  near-compile skill [--stdout|--force]  Install the AI-agent skill");
     eprintln!("    --stdout           Print SKILL.md instead of installing");
     eprintln!("    --force            Overwrite an existing skill");
@@ -192,6 +192,10 @@ const TS_BUILD_SH: &str = include_str!("../skills/ts-template-build.sh");
 const TS_E2E: &str = include_str!("../skills/ts-template-e2e-mock.py");
 const TS_DTS: &str = include_str!("../skills/ts-template-lisp-rlm.d.ts");
 const TS_BIP340: &str = include_str!("../skills/ts-template-bip340.py");
+// Tier D (2026-10-07): scaffold ships a near-mock scenario so `near-compile
+// test` exercises the REAL wasm end-to-end (init guard, increment, double-init
+// abort, view read) — the same runner the repo's own scenarios use.
+const TS_SCENARIO: &str = include_str!("../skills/ts-template-scenario.json");
 
 /// Write the skill files into <dir>/.agents/skills/near-compile/.
 /// Returns the paths written. Skips existing files unless `force`.
@@ -320,6 +324,11 @@ fn run_init_ts(name: &str) {
     // tests/bip340.py — BIP-340 signing helper for e2e tests
     fs::write(base.join("tests/bip340.py"), TS_BIP340).expect("write tests/bip340.py");
 
+    // tests/counter.scn.json — near-mock scenario (Tier D): `near-compile
+    // test` runs this against the freshly built wasm, hermetic state
+    fs::write(base.join("tests/counter.scn.json"), TS_SCENARIO)
+        .expect("write tests/counter.scn.json");
+
     println!("✅ Created TypeScript project '{}' with:", name);
     println!("   {}/near.json", name);
     println!("   {}/src/main.ts", name);
@@ -327,6 +336,7 @@ fn run_init_ts(name: &str) {
     println!("   {}/build.sh", name);
     println!("   {}/tests/e2e-mock.py", name);
     println!("   {}/tests/bip340.py", name);
+    println!("   {}/tests/counter.scn.json", name);
     // agent skill — every scaffolded project is agent-aware from birth
     match install_skill(name, true) {
         Ok(_) => println!("   {}/.agents/skills/near-compile/SKILL.md", name),
@@ -1865,7 +1875,7 @@ fn run_project_test(dir: Option<&str>) {
             }
         };
 
-        // Find test files
+        // Find test files: inline-lisp (.lisp) + near-mock scenarios (*.scn.json)
         let tests_dir = Path::new(project_dir).join(&config.tests);
         if !tests_dir.exists() {
             println!("No tests directory found at {}", config.tests);
@@ -1873,56 +1883,104 @@ fn run_project_test(dir: Option<&str>) {
         }
 
         let mut test_files: Vec<PathBuf> = Vec::new();
+        let mut scenarios: Vec<PathBuf> = Vec::new();
         if let Ok(entries) = fs::read_dir(&tests_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().map(|e| e == "lisp").unwrap_or(false) {
                     test_files.push(path);
+                } else if path.extension().map(|e| e == "json").unwrap_or(false)
+                    && path.to_string_lossy().ends_with(".scn.json")
+                {
+                    scenarios.push(path);
                 }
             }
         }
         test_files.sort();
+        scenarios.sort();
 
-        if test_files.is_empty() {
-            println!("No test files found in {}", config.tests);
+        if test_files.is_empty() && scenarios.is_empty() {
+            println!(
+                "No test files found in {} (inline *.lisp or near-mock *.scn.json)",
+                config.tests
+            );
             return;
         }
-
-        // Read source for non-test definitions
-        let src_path = Path::new(project_dir).join(&config.src);
-        let source = fs::read_to_string(&src_path).expect("read source");
-        let clean_source = strip_test_forms(&source);
 
         let mut total_passed = 0;
         let mut total_failed = 0;
 
-        for test_file in &test_files {
-            let test_src = fs::read_to_string(test_file).expect("read test file");
-            println!("📋 {}:", test_file.display());
+        if !test_files.is_empty() {
+            // Read source for non-test definitions
+            let src_path = Path::new(project_dir).join(&config.src);
+            let source = fs::read_to_string(&src_path).expect("read source");
+            let clean_source = strip_test_forms(&source);
 
-            // Parse tests from file
-            let mut exprs = match lisp_rlm_wasm::parser::parse_all(&test_src) {
-                Ok(e) => e,
-                Err(e) => {
-                    eprintln!("  ❌ Parse error: {}", e);
+            for test_file in &test_files {
+                let test_src = fs::read_to_string(test_file).expect("read test file");
+                println!("📋 {}:", test_file.display());
+
+                // Parse tests from file
+                let mut exprs = match lisp_rlm_wasm::parser::parse_all(&test_src) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        eprintln!("  ❌ Parse error: {}", e);
+                        continue;
+                    }
+                };
+                lisp_rlm_wasm::clojure::desugar(&mut exprs);
+
+                let tests = extract_tests(&exprs);
+                if tests.is_empty() {
+                    println!("  (no test cases)");
                     continue;
                 }
-            };
-            lisp_rlm_wasm::clojure::desugar(&mut exprs);
 
-            let tests = extract_tests(&exprs);
-            if tests.is_empty() {
-                println!("  (no test cases)");
-                continue;
+                let (passed, failed) = run_tests(&clean_source, &tests);
+                total_passed += passed;
+                total_failed += failed;
             }
 
-            let (passed, failed) = run_tests(&clean_source, &tests);
-            total_passed += passed;
-            total_failed += failed;
+            if !test_files.is_empty() {
+                println!("\n{} passed, {} failed", total_passed, total_failed);
+            }
         }
 
-        println!("\n{} passed, {} failed", total_passed, total_failed);
-        if total_failed > 0 {
+        // near-mock scenarios (Tier D): drive the freshly built wasm through
+        // the sandbox runner — same runner the repo's own scenarios use.
+        let mut scn_passed = 0;
+        let mut scn_failed = 0;
+        if !scenarios.is_empty() {
+            match do_build(project_dir) {
+                Err(e) => {
+                    eprintln!("❌ build failed: {}", e);
+                    scn_failed += scenarios.len();
+                }
+                Ok(_) => {
+                    for scn in &scenarios {
+                        println!("🎬 {}:", scn.display());
+                        match run_scenario_file(scn, project_dir, &config.output, &config.account) {
+                            Ok(()) => {
+                                scn_passed += 1;
+                                println!("  ✓ passed");
+                            }
+                            Err(e) => {
+                                eprintln!("  ❌ {}", e);
+                                scn_failed += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !scenarios.is_empty() {
+            println!(
+                "scenarios: {} passed, {} failed",
+                scn_passed, scn_failed
+            );
+        }
+
+        if total_failed + scn_failed > 0 {
             std::process::exit(1);
         }
     } else {
@@ -1952,6 +2010,107 @@ fn run_test_legacy(_dir: Option<&str>) {
 
 fn run_test_from_source(src: &str) {
     run_test_from_source_target(src, "near")
+}
+
+// ── near-mock scenario runner (Tier D) ──
+// `near-compile test` drives *.scn.json files through the near-mock binary
+// (spawned, not linked: near_mock owns the sandbox/state format and this
+// crate must not grow a dependency on it). Each scenario boots hermetic
+// fresh state unless it declares its own "state" path.
+
+fn find_near_mock() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            // Same target dir (shared workspace build)
+            let sibling = dir.join("near-mock");
+            if sibling.exists() {
+                return sibling;
+            }
+            // near-compile built in its own crate: target/<mode>/near-mock
+            // lives two levels up from target/<mode>/near-compile
+            if let Some(root) = dir.parent().and_then(|p| p.parent()) {
+                for mode in ["debug", "release"] {
+                    let candidate = root.join("target").join(mode).join("near-mock");
+                    if candidate.exists() {
+                        return candidate;
+                    }
+                }
+            }
+        }
+    }
+    // Last resort: PATH
+    PathBuf::from("near-mock")
+}
+
+fn run_scenario_file(
+    scn: &Path,
+    project_dir: &str,
+    output_rel: &str,
+    account: &str,
+) -> Result<(), String> {
+    // The scenario drives the wasm `do_build` just wrote to config.output.
+    let wasm = Path::new(project_dir).join(output_rel);
+    let wasm_abs = fs::canonicalize(&wasm)
+        .map_err(|e| format!("canonicalize {}: {}", wasm.display(), e))?;
+    let contract_acct = if account.is_empty() {
+        "contract.test.near".to_string()
+    } else {
+        account.to_string()
+    };
+
+    // Inject hermetic defaults unless the scenario declares its own:
+    // manifest (contract account → wasm path) and a per-run state file.
+    let raw = fs::read_to_string(scn)
+        .map_err(|e| format!("read {}: {}", scn.display(), e))?;
+    let mut spec: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("parse {}: {}", scn.display(), e))?;
+    if spec.get("manifest").is_none() {
+        spec["manifest"] = serde_json::Value::String(format!(
+            "{}={}",
+            contract_acct,
+            wasm_abs.display()
+        ));
+    }
+    let pid = std::process::id();
+    let scn_name = scn
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "scenario".to_string());
+    let state = std::env::temp_dir().join(format!("near-compile-scn-{}-{}.bin", pid, scn_name));
+    let _ = fs::remove_file(&state); // nonexistent state = fresh boot = hermetic
+    if spec.get("state").is_none() {
+        spec["state"] = serde_json::Value::String(state.display().to_string());
+    }
+
+    let wrapped = std::env::temp_dir().join(format!("near-compile-scn-{}-{}.json", pid, scn_name));
+    let wrapped_json = serde_json::to_string_pretty(&spec)
+        .map_err(|e| format!("serialize scenario: {}", e))?;
+    fs::write(&wrapped, wrapped_json)
+        .map_err(|e| format!("write {}: {}", wrapped.display(), e))?;
+
+    let mock = find_near_mock();
+    let status = std::process::Command::new(&mock)
+        .arg("scenario")
+        .arg(&wrapped)
+        .status()
+        .map_err(|e| {
+            format!(
+                "spawn near-mock ({}): {} — build it first: cargo build --bin near-mock",
+                mock.display(),
+                e
+            )
+        })?;
+
+    if status.success() {
+        let _ = fs::remove_file(&state); // green: clean up
+        Ok(())
+    } else {
+        Err(format!(
+            "scenario failed (near-mock exit {}) — state kept for inspection: {}",
+            status.code().unwrap_or(-1),
+            state.display()
+        ))
+    }
 }
 
 fn run_tests(base_src: &str, tests: &[TestCase]) -> (usize, usize) {

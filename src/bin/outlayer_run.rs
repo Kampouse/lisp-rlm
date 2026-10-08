@@ -170,82 +170,86 @@ fn main() {
         {
             let post_scratch = post_scratch.clone();
             move |mut caller, args, _| {
-            let (up, ul, bp, bl, cp, cl, ra) = (
-                args[0].unwrap_i32() as usize,
-                args[1].unwrap_i32() as usize,
-                args[2].unwrap_i32() as usize,
-                args[3].unwrap_i32() as usize,
-                args[4].unwrap_i32() as usize,
-                args[5].unwrap_i32() as usize,
-                args[6].unwrap_i32() as usize,
-            );
-            if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
-                let data = mem.data_mut(&mut caller);
-                let ok = up + ul <= data.len()
-                    && bp + bl <= data.len()
-                    && cp + cl <= data.len()
-                    && ra + 16 <= data.len();
-                if ok {
-                    let url = String::from_utf8_lossy(&data[up..up + ul]).to_string();
-                    let body = data[bp..bp + bl].to_vec();
-                    let ct = String::from_utf8_lossy(&data[cp..cp + cl]).to_string();
-                    eprintln!("🌐 http-post {url} ({ct}, {} bytes)", body.len());
-                    use std::io::Write as _;
-                    let body_path = format!("/tmp/__outlayer_post_body_{}", std::process::id());
-                    std::fs::write(&body_path, &body).ok();
-                    // Header block: newline-separated "Name: value" lines.
-                    // Single line (no \n) = plain Content-Type — fully backward
-                    // compatible. Needed for Authorization: Bearer on OutLayer
-                    // wallet API (2026-10-05, solana sign test).
-                    let headers: Vec<String> = ct
-                        .split('\n')
-                        .map(|l| l.trim())
-                        .filter(|l| !l.is_empty())
-                        .map(|l| {
-                            if l.contains(':') && !l.to_ascii_lowercase().starts_with("content-type:") {
-                                l.to_string()
-                            } else if l.to_ascii_lowercase().starts_with("content-type:") {
-                                l.to_string()
-                            } else {
-                                format!("Content-Type: {l}")
-                            }
-                        })
-                        .collect();
-                    eprintln!("🧾 headers: {headers:?}");
-                    let mut cmd = std::process::Command::new("curl");
-                    cmd.args(["-s", "--max-time", "10", "-X", "POST"]);
-                    for h in &headers {
-                        cmd.arg("-H").arg(h);
+                let (up, ul, bp, bl, cp, cl, ra) = (
+                    args[0].unwrap_i32() as usize,
+                    args[1].unwrap_i32() as usize,
+                    args[2].unwrap_i32() as usize,
+                    args[3].unwrap_i32() as usize,
+                    args[4].unwrap_i32() as usize,
+                    args[5].unwrap_i32() as usize,
+                    args[6].unwrap_i32() as usize,
+                );
+                if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                    let data = mem.data_mut(&mut caller);
+                    let ok = up + ul <= data.len()
+                        && bp + bl <= data.len()
+                        && cp + cl <= data.len()
+                        && ra + 16 <= data.len();
+                    if ok {
+                        let url = String::from_utf8_lossy(&data[up..up + ul]).to_string();
+                        let body = data[bp..bp + bl].to_vec();
+                        let ct = String::from_utf8_lossy(&data[cp..cp + cl]).to_string();
+                        eprintln!("🌐 http-post {url} ({ct}, {} bytes)", body.len());
+                        use std::io::Write as _;
+                        let body_path = format!("/tmp/__outlayer_post_body_{}", std::process::id());
+                        std::fs::write(&body_path, &body).ok();
+                        // Header block: newline-separated "Name: value" lines.
+                        // Single line (no \n) = plain Content-Type — fully backward
+                        // compatible. Needed for Authorization: Bearer on OutLayer
+                        // wallet API (2026-10-05, solana sign test).
+                        let headers: Vec<String> = ct
+                            .split('\n')
+                            .map(|l| l.trim())
+                            .filter(|l| !l.is_empty())
+                            .map(|l| {
+                                if l.contains(':')
+                                    && !l.to_ascii_lowercase().starts_with("content-type:")
+                                {
+                                    l.to_string()
+                                } else if l.to_ascii_lowercase().starts_with("content-type:") {
+                                    l.to_string()
+                                } else {
+                                    format!("Content-Type: {l}")
+                                }
+                            })
+                            .collect();
+                        eprintln!("🧾 headers: {headers:?}");
+                        let mut cmd = std::process::Command::new("curl");
+                        cmd.args(["-s", "--max-time", "10", "-X", "POST"]);
+                        for h in &headers {
+                            cmd.arg("-H").arg(h);
+                        }
+                        cmd.arg("--data-binary")
+                            .arg(&format!("@{body_path}"))
+                            .arg(&url);
+                        let resp = cmd.output();
+                        std::fs::remove_file(&body_path).ok();
+                        let (err, out): (u32, Vec<u8>) = match resp {
+                            Ok(o) if o.status.success() => (0, o.stdout),
+                            _ => (1, Vec::new()),
+                        };
+                        // Rotate DOWNWARD from the ret area: the only free HTTP
+                        // region is [HTTP_SBUF, OL_RET_AREA_BASE) (~1MB). Slot N
+                        // writes at RET_AREA-8KB*(N+1) — never touching the ret
+                        // area itself (slot1 at HTTP_SBUF+1MB == OL_RET_AREA_BASE
+                        // clobbered the return ptr/len — the corrupted-response-
+                        // head bug, 2026-10-05). 128 slots × 8KB.
+                        let slot = post_scratch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let stride = 8192usize;
+                        let dst =
+                            (HTTP_SBUF + 1_048_576 - stride * ((slot % 127) + 1)).max(HTTP_SBUF);
+                        let n = out.len().min(stride).min(data.len().saturating_sub(dst));
+                        if n > 0 {
+                            data[dst..dst + n].copy_from_slice(&out[..n]);
+                        }
+                        data[ra..ra + 4].copy_from_slice(&err.to_le_bytes());
+                        data[ra + 4..ra + 8].copy_from_slice(&(dst as u32).to_le_bytes());
+                        data[ra + 8..ra + 12].copy_from_slice(&(n as u32).to_le_bytes());
+                    } else {
+                        data[ra..ra + 4].copy_from_slice(&1u32.to_le_bytes());
                     }
-                    cmd.arg("--data-binary").arg(&format!("@{body_path}")).arg(&url);
-                    let resp = cmd.output();
-                    std::fs::remove_file(&body_path).ok();
-                    let (err, out): (u32, Vec<u8>) = match resp {
-                        Ok(o) if o.status.success() => (0, o.stdout),
-                        _ => (1, Vec::new()),
-                    };
-                    // Rotate DOWNWARD from the ret area: the only free HTTP
-                    // region is [HTTP_SBUF, OL_RET_AREA_BASE) (~1MB). Slot N
-                    // writes at RET_AREA-8KB*(N+1) — never touching the ret
-                    // area itself (slot1 at HTTP_SBUF+1MB == OL_RET_AREA_BASE
-                    // clobbered the return ptr/len — the corrupted-response-
-                    // head bug, 2026-10-05). 128 slots × 8KB.
-                    let slot = post_scratch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    let stride = 8192usize;
-                    let dst = (HTTP_SBUF + 1_048_576 - stride * ((slot % 127) + 1))
-                        .max(HTTP_SBUF);
-                    let n = out.len().min(stride).min(data.len().saturating_sub(dst));
-                    if n > 0 {
-                        data[dst..dst + n].copy_from_slice(&out[..n]);
-                    }
-                    data[ra..ra + 4].copy_from_slice(&err.to_le_bytes());
-                    data[ra + 4..ra + 8].copy_from_slice(&(dst as u32).to_le_bytes());
-                    data[ra + 8..ra + 12].copy_from_slice(&(n as u32).to_le_bytes());
-                } else {
-                    data[ra..ra + 4].copy_from_slice(&1u32.to_le_bytes());
                 }
-            }
-            Ok(())
+                Ok(())
             }
         },
     );

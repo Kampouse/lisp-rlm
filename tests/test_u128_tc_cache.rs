@@ -23,23 +23,36 @@ fn wasm_eval(src: &str) -> Result<String, String> {
     let mut store = Store::new(&engine, ());
     let mut linker = Linker::new(&engine);
     linker
-        .func_wrap("env", "read_register", |_: Caller<'_, ()>, _: i64, _: i64| {})
+        .func_wrap(
+            "env",
+            "read_register",
+            |_: Caller<'_, ()>, _: i64, _: i64| {},
+        )
         .map_err(|e| e.to_string())?;
     linker
         .func_wrap("env", "register_len", |_: i64| -> i64 { 0 })
         .map_err(|e| e.to_string())?;
-    linker.func_wrap("env", "input", |_: Caller<'_, ()>, _: i64| {}).map_err(|e| e.to_string())?;
     linker
-        .func_wrap("env", "value_return", |_: Caller<'_, ()>, _: i64, _: i64| {})
+        .func_wrap("env", "input", |_: Caller<'_, ()>, _: i64| {})
         .map_err(|e| e.to_string())?;
-    let inst = linker.instantiate(&mut store, &module).map_err(|e| e.to_string())?;
+    linker
+        .func_wrap(
+            "env",
+            "value_return",
+            |_: Caller<'_, ()>, _: i64, _: i64| {},
+        )
+        .map_err(|e| e.to_string())?;
+    let inst = linker
+        .instantiate(&mut store, &module)
+        .map_err(|e| e.to_string())?;
     let run = inst
         .get_typed_func::<(), ()>(&mut store, "run")
         .map_err(|e| e.to_string())?;
     run.call(&mut store, ()).map_err(|e| e.to_string())?;
     let mem = inst.get_memory(&mut store, "memory").unwrap();
     let mut rb = [0u8; 8];
-    mem.read(&mut store, 64, &mut rb).map_err(|e| e.to_string())?;
+    mem.read(&mut store, 64, &mut rb)
+        .map_err(|e| e.to_string())?;
     let v = i64::from_le_bytes(rb);
     let tag = v & 7;
     let payload = ((v as u64) >> 3) as u64;
@@ -47,7 +60,8 @@ fn wasm_eval(src: &str) -> Result<String, String> {
         let ptr = (payload & 0xFFFF_FFFF) as usize;
         let len = ((payload as u64) >> 32) as usize;
         let mut buf = vec![0u8; len];
-        mem.read(&mut store, ptr, &mut buf).map_err(|e| e.to_string())?;
+        mem.read(&mut store, ptr, &mut buf)
+            .map_err(|e| e.to_string())?;
         Ok(String::from_utf8_lossy(&buf).to_string())
     } else {
         Ok(format!("num:{}", (v >> 3) as i64))
@@ -72,7 +86,11 @@ fn tailrec_accumulator_parse_cache() {
     for &b in &bs {
         exp = exp * 256 + b;
     }
-    assert_eq!(r, format!("{}", exp), "accumulator folded wrong — stale parse cache");
+    assert_eq!(
+        r,
+        format!("{}", exp),
+        "accumulator folded wrong — stale parse cache"
+    );
 }
 
 /// Same staleness via tc_let: a let binding rebound each loop iteration.

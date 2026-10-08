@@ -1300,10 +1300,12 @@ impl WasmEmitter {
                 // storage_iter_prefix(prefix_len, prefix_ptr) → iterator id
                 v.push(Instruction::LocalGet(p_l));
                 v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32)); v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
                 v.push(Instruction::LocalGet(p_l));
                 v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64); v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64ExtendI32U);
                 v.push(Self::host_call(36));
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -1313,8 +1315,8 @@ impl WasmEmitter {
                     return Err("near/storage_iter_next: need exactly 1 arg (iterator id)".into());
                 }
                 self.need_host(38); // storage_iter_next
-                self.need_host(1);  // register_len
-                self.need_host(0);  // read_register
+                self.need_host(1); // register_len
+                self.need_host(0); // read_register
                 let id = self.expr(&a[0])?;
                 let id_l = self.local_idx("__sin_id");
                 let len_l = self.local_idx("__sin_len");

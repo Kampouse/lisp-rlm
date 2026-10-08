@@ -66,7 +66,10 @@ fn run_plain(what: &str, method: &str, input: &str) -> String {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(out.status.success(), "{what}/{method}: near-mock failed:\n{s}");
+    assert!(
+        out.status.success(),
+        "{what}/{method}: near-mock failed:\n{s}"
+    );
     for line in s.lines() {
         if let Some(rest) = line.strip_prefix("📄 ") {
             return strip_mock_debug(rest.trim_end());
@@ -98,7 +101,10 @@ fn run_stateful(what: &str, state: &str, method: &str, input: &str) -> String {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(out.status.success(), "{what}/{method}: near-mock failed:\n{s}");
+    assert!(
+        out.status.success(),
+        "{what}/{method}: near-mock failed:\n{s}"
+    );
     for line in s.lines() {
         if let Some(rest) = line.strip_prefix("📄 ") {
             return strip_mock_debug(rest.trim_end());
@@ -160,10 +166,20 @@ fn left_operand_evaluated_once() {
 fn and_short_circuits_right_operand() {
     let _ = std::fs::remove_file("/tmp/lv-t2.bin");
     // falsy left → right NOT evaluated, falsy VALUE returned
-    assert_eq!(run_stateful("lv", "/tmp/lv-t2.bin", "onceRight", r#"{"a":0}"#), "0");
-    assert_eq!(read_counter("/tmp/lv-t2.bin"), 0, "no bump when short-circuited");
+    assert_eq!(
+        run_stateful("lv", "/tmp/lv-t2.bin", "onceRight", r#"{"a":0}"#),
+        "0"
+    );
+    assert_eq!(
+        read_counter("/tmp/lv-t2.bin"),
+        0,
+        "no bump when short-circuited"
+    );
     // truthy left → right evaluated exactly once, its value returned
-    assert_eq!(run_stateful("lv", "/tmp/lv-t2.bin", "onceRight", r#"{"a":1}"#), "9");
+    assert_eq!(
+        run_stateful("lv", "/tmp/lv-t2.bin", "onceRight", r#"{"a":1}"#),
+        "9"
+    );
     assert_eq!(read_counter("/tmp/lv-t2.bin"), 1, "exactly one bump");
 }
 

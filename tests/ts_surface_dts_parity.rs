@@ -124,9 +124,48 @@ fn near_member_surface_matches_gate() {
         .next()
         .unwrap();
     let mut documented: Vec<String> = Vec::new();
+    // `db: { … }` namespace block: its method lines (key/put/has/del/keys)
+    // are DB surface, parsed separately against KNOWN_DB_MEMBERS — the
+    // namespace entry itself is documented by the block's PRESENCE.
+    let db_block = dts
+        .split("  db: {\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  };").next());
+    let mut db_documented: Vec<String> = Vec::new();
+    if let Some(dbb) = db_block {
+        for line in dbb.lines() {
+            let l = line.trim_start();
+            if l.starts_with("//") {
+                continue;
+            }
+            if let Some(paren) = l.find('(') {
+                let name = &l[..paren];
+                if !name.is_empty()
+                    && !name.contains(':')
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && name.chars().next().map_or(false, |c| c.is_lowercase())
+                {
+                    db_documented.push(name.to_string());
+                }
+            }
+        }
+    }
+    assert!(
+        !db_documented.is_empty(),
+        "d.ts has no near.db methods in its `db: {{ … }}` block — \
+         expected key/put/has/del/keys"
+    );
     for line in block.lines() {
         let l = line.trim_start();
         if l.starts_with("//") {
+            continue;
+        }
+        // Skip lines that belong to the nested db block (they were parsed
+        // above); a cheap containment check keeps the main parser honest.
+        if db_block.map_or(false, |dbb| dbb.contains(l)) && l.contains('(') && l.contains(':')
+        {
             continue;
         }
         if let Some(paren) = l.find('(') {
@@ -142,6 +181,11 @@ fn near_member_surface_matches_gate() {
                 documented.push(name.to_string());
             }
         }
+    }
+    // The `db` namespace entry is documented by its block's presence (the
+    // `db: {` line itself has no parens, so the line parser can't see it).
+    if db_block.is_some() {
+        documented.push("db".to_string());
     }
     assert!(
         documented.len() >= 80,
@@ -202,6 +246,38 @@ fn near_member_surface_matches_gate() {
             documented.contains(m),
             "KNOWN_NEAR_MEMBERS accepts near.{m} but the d.ts never documents it — \
              add a d.ts entry in the same commit (the gate is derived data now)"
+        );
+    }
+
+    // near.db.* methods: d.ts `db: { … }` block ↔ KNOWN_DB_MEMBERS,
+    // both directions — same no-drift rule as the main gate.
+    let db_table = fe
+        .split("pub const KNOWN_DB_MEMBERS: &[&str] = &[")
+        .nth(1)
+        .expect("KNOWN_DB_MEMBERS table present")
+        .split("];")
+        .next()
+        .unwrap();
+    let mut db_gated: Vec<String> = Vec::new();
+    for tok in db_table.split(',') {
+        let t = tok.trim().trim_matches('"');
+        if !t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            db_gated.push(t.to_string());
+        }
+    }
+    assert!(!db_gated.is_empty(), "KNOWN_DB_MEMBERS parsed empty");
+    for m in &db_documented {
+        assert!(
+            db_gated.contains(m),
+            "d.ts documents near.db.{m} but KNOWN_DB_MEMBERS omits it — \
+             update the table in the same commit"
+        );
+    }
+    for m in &db_gated {
+        assert!(
+            db_documented.contains(m),
+            "KNOWN_DB_MEMBERS accepts near.db.{m} but the d.ts db block never documents it — \
+             add a db-block entry in the same commit"
         );
     }
 }

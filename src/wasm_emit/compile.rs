@@ -737,7 +737,11 @@ fn parse_and_compile(source: &str, near: bool) -> Result<WasmEmitter, String> {
 /// line-label variant: .ts inputs lower to lisp IR first, so source-line
 /// pins on them refer to the IR ("ir line N"), never the author's TS file —
 /// TS-line resolution is augment_with_ts_line's job (CLI, ident map).
-fn parse_and_compile_labelled(source: &str, near: bool, label: &str) -> Result<WasmEmitter, String> {
+fn parse_and_compile_labelled(
+    source: &str,
+    near: bool,
+    label: &str,
+) -> Result<WasmEmitter, String> {
     parse_and_compile_opts_labelled(source, near, true, label)
 }
 

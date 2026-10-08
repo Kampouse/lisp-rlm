@@ -158,6 +158,33 @@ declare const near: {
    */
   iterNext(iterId: number): string | null;
 
+  // db namespace — strings-at-rest key/value store (near.db.*)
+  // Methods live in the `db` block below; this entry only silences the
+  // typo-warning for the namespace itself.
+  db: {
+    /** Stored value, or null when the key is missing. Unwrap with
+     *  `?? "default"`. u128 amounts are decimal STRINGS. */
+    key(key: string): string | null;
+    /** Store a value EXACTLY as given (strings at rest — no magic
+     *  encoding). Overwrites any existing value. */
+    put(key: string, value: string): void;
+    /** true when the key exists (even if its value is ""). */
+    has(key: string): boolean;
+    /** Remove a key. Absent key deletes nothing (no error). */
+    del(key: string): void;
+    /** All existing keys under a prefix, lexicographic order. Rides the
+     *  engine iter builtins (near-mock / RLM lab). The PROTOCOL removed
+     *  raw trie enumeration (storage_iter_* answers Deprecated on
+     *  mainnet) — production code keeps its own key index (near-sdk
+     *  UnorderedMap pattern) instead of relying on keys(). */
+    keys(prefix: string): string[];
+  };
+
+  // events
+  /** Emit a contract event: NEAR log line `{"event":name,"data":{…}}`
+   *  (standard events.json shape). Payload must be an object literal. */
+  event(name: string, data: object): void;
+
   // args / returns
   /**
    * Read a string arg from the transaction input JSON.
@@ -427,6 +454,16 @@ interface JSON {
   /** JSON array text via map(json-quote). */
   stringifyArr(arr: LispArr<string | number>): string;
 }
+
+// ── ergonomics-v2 (2026-10-07) ──────────────────────────────────────────
+/** u128-precision amount — decimal STRING at every boundary. Hover
+ *  documentation over the string ABI: the type does not change what is
+ *  transmitted (garbage traps at runtime with a full rollback). */
+type Money = string;
+
+/** Fail the transaction with msg when cond is false (full state
+ *  rollback — nothing the entry wrote before the assert survives). */
+declare function assert(cond: boolean, msg: string): void;
 
 // ── legacy snake_case builtins (pass through to lisp names verbatim) ──
 declare function near_storage_get(key: string): any;

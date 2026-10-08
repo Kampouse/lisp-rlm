@@ -101,5 +101,8 @@ fn top_level_for_of_lowers() {
         "const xs: number[] = [1, 2, 3];\nlet s: number = 0;\nfor (const x of xs) { s = s + x; }\nrlm_set(\"total\", s);\n",
     );
     assert!(ir.contains("(while"), "got: {ir}");
-    assert!(ir.contains("vec-nth") || ir.contains("vec-length"), "iter machinery missing: {ir}");
+    assert!(
+        ir.contains("vec-nth") || ir.contains("vec-length"),
+        "iter machinery missing: {ir}"
+    );
 }

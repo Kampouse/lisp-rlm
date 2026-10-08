@@ -478,13 +478,22 @@ pub fn annotate_type_error_label(err: &str, input: &str, label: &str) -> String 
     let mut candidates: Vec<String> = Vec::new();
     if let Some(rest) = head.split('\'').nth(1) {
         let id = rest.split('\'').next().unwrap_or("");
-        if !id.is_empty() && id.chars().all(|c| c.is_alphanumeric() || "-_./:!<>?*+=@#$%&".contains(c)) {
+        if !id.is_empty()
+            && id
+                .chars()
+                .all(|c| c.is_alphanumeric() || "-_./:!<>?*+=@#$%&".contains(c))
+        {
             candidates.push(id.to_string());
         }
     }
     for w in head.split_whitespace() {
         let w = w.trim_matches(|c: char| !c.is_alphanumeric() && !"-_.".contains(c));
-        if w.len() > 1 && w.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false) {
+        if w.len() > 1
+            && w.chars()
+                .next()
+                .map(|c| c.is_alphabetic() || c == '_')
+                .unwrap_or(false)
+        {
             candidates.push(w.to_string());
         }
     }
@@ -492,7 +501,10 @@ pub fn annotate_type_error_label(err: &str, input: &str, label: &str) -> String 
     for cand in &candidates {
         for (t, off) in &toks {
             // string tokens carry their quotes — compare both ways
-            let t_bare = t.strip_suffix('"').and_then(|x| x.strip_prefix('"')).unwrap_or(t);
+            let t_bare = t
+                .strip_suffix('"')
+                .and_then(|x| x.strip_prefix('"'))
+                .unwrap_or(t);
             if t_bare == cand {
                 let (line, _col) = offset_to_line_col(input, *off);
                 return format!("{err} ({label} line {line})");

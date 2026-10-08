@@ -66,7 +66,9 @@ fn mock_run(wasm: &[u8], method: &str, input: &str) -> String {
 }
 
 fn err_of(src: &str) -> String {
-    ts_to_lisp_source(src).err().unwrap_or_else(|| panic!("expected error, got Ok"))
+    ts_to_lisp_source(src)
+        .err()
+        .unwrap_or_else(|| panic!("expected error, got Ok"))
 }
 
 // ── positives ──────────────────────────────────────────────────────────
@@ -120,13 +122,15 @@ export function run(a: number): number {
 
 #[test]
 fn mutable_capture_hard_errors_t4() {
-    let e = err_of(r#"
+    let e = err_of(
+        r#"
 export function run(a: number): number {
   let c = 0;
   c = a + 1;
   const f = (x: number): number => x + c;
   return f(1);
-}"#);
+}"#,
+    );
     assert!(e.contains("mutable local `c`"), "got: {e}");
     assert!(e.contains("T4"), "got: {e}");
 }
@@ -134,13 +138,15 @@ export function run(a: number): number {
 #[test]
 fn compound_assign_marks_mutable_for_capture() {
     // F1 interplay: `c += …` is also set! — same T4 capture error
-    let e = err_of(r#"
+    let e = err_of(
+        r#"
 export function run(a: number): number {
   let c = 0;
   c += a;
   const f = (x: number): number => x + c;
   return f(1);
-}"#);
+}"#,
+    );
     assert!(e.contains("mutable local `c`"), "got: {e}");
 }
 
@@ -148,24 +154,28 @@ export function run(a: number): number {
 fn map_callback_calling_lambda_local_hard_errors() {
     // probed 2026-10-04: this shape emits an INVALID wasm module — the
     // frontend must hard-error BEFORE codegen with the dispatch-freeze msg
-    let e = err_of(r#"
+    let e = err_of(
+        r#"
 export function run(xs: number[]): number {
   const f = (x: number): number => x * 3;
   const out = xs.map((x: number): number => f(x));
   let s = 0;
   for (const v of out) { s += v; }
   return s;
-}"#);
+}"#,
+    );
     assert!(e.contains("dispatch-freeze"), "got: {e}");
     assert!(e.contains("`f`"), "got: {e}");
 }
 
 #[test]
 fn arrow_as_call_argument_hard_errors() {
-    let e = err_of(r#"
+    let e = err_of(
+        r#"
 function apply2(g: any, v: number): number { return 0; }
 export function run(a: number): number {
   return apply2((x: number): number => x * 2, a);
-}"#);
+}"#,
+    );
     assert!(e.contains("arrow as call argument"), "got: {e}");
 }

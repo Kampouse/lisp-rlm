@@ -33,8 +33,7 @@ const DEPS_IO_ERROR_WIT: &str = include_str!("../wit/deps/io/error.wit");
 const DEPS_IO_POLL_WIT: &str = include_str!("../wit/deps/io/poll.wit");
 const DEPS_IO_STREAMS_WIT: &str = include_str!("../wit/deps/io/streams.wit");
 const DEPS_IO_WORLD_WIT: &str = include_str!("../wit/deps/io/world.wit");
-const DEPS_RANDOM_INSECURE_SEED_WIT: &str =
-    include_str!("../wit/deps/random/insecure-seed.wit");
+const DEPS_RANDOM_INSECURE_SEED_WIT: &str = include_str!("../wit/deps/random/insecure-seed.wit");
 const DEPS_RANDOM_INSECURE_WIT: &str = include_str!("../wit/deps/random/insecure.wit");
 const DEPS_RANDOM_RANDOM_WIT: &str = include_str!("../wit/deps/random/random.wit");
 const DEPS_RANDOM_WORLD_WIT: &str = include_str!("../wit/deps/random/world.wit");
@@ -68,7 +67,11 @@ const COMBINED_WIT: &str = include_str!("../wit/deps/combined.wit");
 pub fn build_http_wit_metadata_embedded(
 ) -> Result<(wit_parser::Resolve, wit_parser::WorldId), String> {
     let mut resolve = build_deps()?;
-    push_world(&mut resolve, &[("simple-http.wit", SIMPLE_HTTP_WIT)], "simple-http")?;
+    push_world(
+        &mut resolve,
+        &[("simple-http.wit", SIMPLE_HTTP_WIT)],
+        "simple-http",
+    )?;
     let world = find_world(&resolve, &["simple-http"])?;
     Ok((resolve, world))
 }
@@ -81,7 +84,11 @@ pub fn build_http_wit_metadata_embedded(
 pub fn build_combined_wit_metadata_embedded(
 ) -> Result<(wit_parser::Resolve, wit_parser::WorldId), String> {
     let mut resolve = build_deps()?;
-    push_world(&mut resolve, &[("combined.wit", COMBINED_WIT)], "outlayer-http")?;
+    push_world(
+        &mut resolve,
+        &[("combined.wit", COMBINED_WIT)],
+        "outlayer-http",
+    )?;
     let world = find_world(&resolve, &["outlayer-http"])?;
     Ok((resolve, world))
 }
@@ -100,13 +107,19 @@ fn build_deps() -> Result<wit_parser::Resolve, String> {
             ("deps/io/world.wit", DEPS_IO_WORLD_WIT),
         ],
         &[
-            ("deps/clocks/monotonic-clock.wit", DEPS_CLOCKS_MONOTONIC_CLOCK_WIT),
+            (
+                "deps/clocks/monotonic-clock.wit",
+                DEPS_CLOCKS_MONOTONIC_CLOCK_WIT,
+            ),
             ("deps/clocks/timezone.wit", DEPS_CLOCKS_TIMEZONE_WIT),
             ("deps/clocks/wall-clock.wit", DEPS_CLOCKS_WALL_CLOCK_WIT),
             ("deps/clocks/world.wit", DEPS_CLOCKS_WORLD_WIT),
         ],
         &[
-            ("deps/random/insecure-seed.wit", DEPS_RANDOM_INSECURE_SEED_WIT),
+            (
+                "deps/random/insecure-seed.wit",
+                DEPS_RANDOM_INSECURE_SEED_WIT,
+            ),
             ("deps/random/insecure.wit", DEPS_RANDOM_INSECURE_WIT),
             ("deps/random/random.wit", DEPS_RANDOM_RANDOM_WIT),
             ("deps/random/world.wit", DEPS_RANDOM_WORLD_WIT),
@@ -117,12 +130,24 @@ fn build_deps() -> Result<wit_parser::Resolve, String> {
             ("deps/filesystem/world.wit", DEPS_FILESYSTEM_WORLD_WIT),
         ],
         &[
-            ("deps/sockets/instance-network.wit", DEPS_SOCKETS_INSTANCE_NETWORK_WIT),
-            ("deps/sockets/ip-name-lookup.wit", DEPS_SOCKETS_IP_NAME_LOOKUP_WIT),
+            (
+                "deps/sockets/instance-network.wit",
+                DEPS_SOCKETS_INSTANCE_NETWORK_WIT,
+            ),
+            (
+                "deps/sockets/ip-name-lookup.wit",
+                DEPS_SOCKETS_IP_NAME_LOOKUP_WIT,
+            ),
             ("deps/sockets/network.wit", DEPS_SOCKETS_NETWORK_WIT),
-            ("deps/sockets/tcp-create-socket.wit", DEPS_SOCKETS_TCP_CREATE_SOCKET_WIT),
+            (
+                "deps/sockets/tcp-create-socket.wit",
+                DEPS_SOCKETS_TCP_CREATE_SOCKET_WIT,
+            ),
             ("deps/sockets/tcp.wit", DEPS_SOCKETS_TCP_WIT),
-            ("deps/sockets/udp-create-socket.wit", DEPS_SOCKETS_UDP_CREATE_SOCKET_WIT),
+            (
+                "deps/sockets/udp-create-socket.wit",
+                DEPS_SOCKETS_UDP_CREATE_SOCKET_WIT,
+            ),
             ("deps/sockets/udp.wit", DEPS_SOCKETS_UDP_WIT),
             ("deps/sockets/world.wit", DEPS_SOCKETS_WORLD_WIT),
         ],
@@ -144,24 +169,12 @@ fn build_deps() -> Result<wit_parser::Resolve, String> {
         // rpc.wit defines a world importing the other four, and a SourceMap
         // group can only resolve foreign imports against ALREADY-PUSHED
         // packages (push_dir semantics), so they must not share a group.
-        &[
-            ("deps/outlayer-api/host.wit", DEPS_OUTLAYER_API_HOST_WIT),
-        ],
-        &[
-            ("deps/near-payment/payment.wit", DEPS_NEAR_PAYMENT_WIT),
-        ],
-        &[
-            ("deps/near-vrf/vrf.wit", DEPS_NEAR_VRF_WIT),
-        ],
-        &[
-            ("deps/outlayer-wallet/wallet.wit", DEPS_OUTLAYER_WALLET_WIT),
-        ],
-        &[
-            ("deps/near-rpc/rpc.wit", DEPS_NEAR_RPC_WIT),
-        ],
-        &[
-            ("deps/near-storage/storage.wit", DEPS_NEAR_STORAGE_WIT),
-        ],
+        &[("deps/outlayer-api/host.wit", DEPS_OUTLAYER_API_HOST_WIT)],
+        &[("deps/near-payment/payment.wit", DEPS_NEAR_PAYMENT_WIT)],
+        &[("deps/near-vrf/vrf.wit", DEPS_NEAR_VRF_WIT)],
+        &[("deps/outlayer-wallet/wallet.wit", DEPS_OUTLAYER_WALLET_WIT)],
+        &[("deps/near-rpc/rpc.wit", DEPS_NEAR_RPC_WIT)],
+        &[("deps/near-storage/storage.wit", DEPS_NEAR_STORAGE_WIT)],
         // NOTE: world files are NOT pushed here — each builder pushes exactly
         // one world (simple-http.wit or combined.wit); pushing a package twice
         // makes push_group fail with a duplicate-package error.

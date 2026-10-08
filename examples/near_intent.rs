@@ -6,13 +6,13 @@
 
 use std::sync::Arc;
 
+use near_parameters::vm::VMKind;
 use near_parameters::{RuntimeConfigStore, RuntimeFeesConfig};
 use near_primitives_core::code::ContractCode;
 use near_primitives_core::types::{Balance, Gas};
+use near_vm_runner::internal::VMKindExt;
 use near_vm_runner::logic::mocks::mock_external::MockedExternal;
 use near_vm_runner::logic::VMContext;
-use near_vm_runner::internal::VMKindExt;
-use near_parameters::vm::VMKind;
 
 const DAO: &str = "dao.testnet";
 
@@ -60,7 +60,10 @@ fn ctx(signer: &str, input: &str, attach: u128) -> VMContext {
 
 fn run_step(c: &mut Ctx, s: &Step) -> Result<Option<Vec<u8>>, String> {
     let store = RuntimeConfigStore::test();
-    let config = store.get_config(near_primitives_core::version::PROTOCOL_VERSION).wasm_config.clone();
+    let config = store
+        .get_config(near_primitives_core::version::PROTOCOL_VERSION)
+        .wasm_config
+        .clone();
     let fees = Arc::new(RuntimeFeesConfig::test());
     let context = ctx(s.signer, s.input, s.attach);
     let gas_counter = context.make_gas_counter(&config);
@@ -93,30 +96,126 @@ fn main() {
     };
 
     let steps: Vec<Step> = vec![
-        Step { signer: "gov.testnet", method: "init", input: r#"{"threshold":2,"admin":"gov.testnet"}"#, attach: 0, expect: Expect::Ok },
-        Step { signer: "gov.testnet", method: "admin_add", input: r#"{"candidate":"carol.testnet"}"#, attach: 0, expect: Expect::Ok },
-        Step { signer: "gov.testnet", method: "admin_add", input: r#"{"candidate":"dave.testnet"}"#, attach: 0, expect: Expect::Ok },
+        Step {
+            signer: "gov.testnet",
+            method: "init",
+            input: r#"{"threshold":2,"admin":"gov.testnet"}"#,
+            attach: 0,
+            expect: Expect::Ok,
+        },
+        Step {
+            signer: "gov.testnet",
+            method: "admin_add",
+            input: r#"{"candidate":"carol.testnet"}"#,
+            attach: 0,
+            expect: Expect::Ok,
+        },
+        Step {
+            signer: "gov.testnet",
+            method: "admin_add",
+            input: r#"{"candidate":"dave.testnet"}"#,
+            attach: 0,
+            expect: Expect::Ok,
+        },
         // I1+I2: no self-admission / no sybil vouch
-        Step { signer: "mallory.testnet", method: "vouch", input: r#"{"voter":"mallory.testnet","candidate":"mallory.testnet"}"#, attach: 0, expect: Expect::Trap("not vetted") },
-        Step { signer: "gov.testnet", method: "vouch", input: r#"{"voter":"gov.testnet","candidate":"mallory.testnet"}"#, attach: 0, expect: Expect::Trap("not vetted") },
+        Step {
+            signer: "mallory.testnet",
+            method: "vouch",
+            input: r#"{"voter":"mallory.testnet","candidate":"mallory.testnet"}"#,
+            attach: 0,
+            expect: Expect::Trap("not vetted"),
+        },
+        Step {
+            signer: "gov.testnet",
+            method: "vouch",
+            input: r#"{"voter":"gov.testnet","candidate":"mallory.testnet"}"#,
+            attach: 0,
+            expect: Expect::Trap("not vetted"),
+        },
         // deposit gate
-        Step { signer: "mallory.testnet", method: "apply", input: r#"{"candidate":"mallory.testnet"}"#, attach: 0, expect: Expect::Trap("deposit") },
-        Step { signer: "mallory.testnet", method: "apply", input: r#"{"candidate":"mallory.testnet"}"#, attach: 1_000_000_000_000_000_000_000, expect: Expect::Ok },
+        Step {
+            signer: "mallory.testnet",
+            method: "apply",
+            input: r#"{"candidate":"mallory.testnet"}"#,
+            attach: 0,
+            expect: Expect::Trap("deposit"),
+        },
+        Step {
+            signer: "mallory.testnet",
+            method: "apply",
+            input: r#"{"candidate":"mallory.testnet"}"#,
+            attach: 1_000_000_000_000_000_000_000,
+            expect: Expect::Ok,
+        },
         // applicant cannot self-vouch (status 1 != member)
-        Step { signer: "mallory.testnet", method: "vouch", input: r#"{"voter":"mallory.testnet","candidate":"mallory.testnet"}"#, attach: 0, expect: Expect::Trap("not vetted") },
-        Step { signer: "carol.testnet", method: "vouch", input: r#"{"voter":"carol.testnet","candidate":"mallory.testnet"}"#, attach: 0, expect: Expect::Ok },
+        Step {
+            signer: "mallory.testnet",
+            method: "vouch",
+            input: r#"{"voter":"mallory.testnet","candidate":"mallory.testnet"}"#,
+            attach: 0,
+            expect: Expect::Trap("not vetted"),
+        },
+        Step {
+            signer: "carol.testnet",
+            method: "vouch",
+            input: r#"{"voter":"carol.testnet","candidate":"mallory.testnet"}"#,
+            attach: 0,
+            expect: Expect::Ok,
+        },
         // 1 vouch < threshold 2: not yet promoted
-        Step { signer: "dave.testnet", method: "vouch", input: r#"{"voter":"dave.testnet","candidate":"mallory.testnet"}"#, attach: 0, expect: Expect::Ok },
+        Step {
+            signer: "dave.testnet",
+            method: "vouch",
+            input: r#"{"voter":"dave.testnet","candidate":"mallory.testnet"}"#,
+            attach: 0,
+            expect: Expect::Ok,
+        },
         // double vouch
-        Step { signer: "carol.testnet", method: "vouch", input: r#"{"voter":"carol.testnet","candidate":"mallory.testnet"}"#, attach: 0, expect: Expect::Trap("not pending") }, // re-vouch after promotion
+        Step {
+            signer: "carol.testnet",
+            method: "vouch",
+            input: r#"{"voter":"carol.testnet","candidate":"mallory.testnet"}"#,
+            attach: 0,
+            expect: Expect::Trap("not pending"),
+        }, // re-vouch after promotion
         // now member: promote works, gain vouch power (I4)
-        Step { signer: "mallory.testnet", method: "vouch", input: r#"{"voter":"mallory.testnet","candidate":"eve.testnet"}"#, attach: 0, expect: Expect::Trap("not pending") }, // never applied
+        Step {
+            signer: "mallory.testnet",
+            method: "vouch",
+            input: r#"{"voter":"mallory.testnet","candidate":"eve.testnet"}"#,
+            attach: 0,
+            expect: Expect::Trap("not pending"),
+        }, // never applied
         // I4: promoted member gains vouch power — eve applies, mallory (promoted) vouches
-        Step { signer: "eve.testnet", method: "apply", input: r#"{"candidate":"eve.testnet"}"#, attach: 1_000_000_000_000_000_000_000, expect: Expect::Ok },
-        Step { signer: "mallory.testnet", method: "vouch", input: r#"{"voter":"mallory.testnet","candidate":"eve.testnet"}"#, attach: 0, expect: Expect::Ok },
+        Step {
+            signer: "eve.testnet",
+            method: "apply",
+            input: r#"{"candidate":"eve.testnet"}"#,
+            attach: 1_000_000_000_000_000_000_000,
+            expect: Expect::Ok,
+        },
+        Step {
+            signer: "mallory.testnet",
+            method: "vouch",
+            input: r#"{"voter":"mallory.testnet","candidate":"eve.testnet"}"#,
+            attach: 0,
+            expect: Expect::Ok,
+        },
         // renounce kills admin (I6)
-        Step { signer: "gov.testnet", method: "renounce_admin", input: "{}", attach: 0, expect: Expect::Ok },
-        Step { signer: "gov.testnet", method: "admin_add", input: r#"{"candidate":"zed.testnet"}"#, attach: 0, expect: Expect::Trap("not admin") },
+        Step {
+            signer: "gov.testnet",
+            method: "renounce_admin",
+            input: "{}",
+            attach: 0,
+            expect: Expect::Ok,
+        },
+        Step {
+            signer: "gov.testnet",
+            method: "admin_add",
+            input: r#"{"candidate":"zed.testnet"}"#,
+            attach: 0,
+            expect: Expect::Trap("not admin"),
+        },
     ];
 
     let mut pass = 0usize;
@@ -133,7 +232,13 @@ fn main() {
             println!("PASS {:2} {}({})", i + 1, s.method, s.signer);
         } else {
             fail += 1;
-            println!("FAIL {:2} {}({}): got {:?}", i + 1, s.method, s.signer, r.as_ref().err());
+            println!(
+                "FAIL {:2} {}({}): got {:?}",
+                i + 1,
+                s.method,
+                s.signer,
+                r.as_ref().err()
+            );
         }
     }
     println!("\n{pass} passed, {fail} failed (real near-vm-runner, wasmtime backend)");

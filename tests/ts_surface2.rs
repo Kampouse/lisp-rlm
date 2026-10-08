@@ -34,7 +34,10 @@ fn strict_gate_rejects_lisp_passthrough() {
         "array(1, 2, 3);",
     ] {
         let e = lower_err(src);
-        assert!(e.contains("unknown function") || e.contains("not in M1"), "{src}: {e}");
+        assert!(
+            e.contains("unknown function") || e.contains("not in M1"),
+            "{src}: {e}"
+        );
     }
 }
 
@@ -124,7 +127,12 @@ fn do_while_lowers_pre_run_then_while() {
     // body runs ONCE unconditionally (i=11 > 3), then the while is dead
     assert!(ir.contains("(while (< i 3)"), "{ir}");
     let parts: Vec<&str> = ir.lines().collect();
-    assert!(parts.iter().any(|l| l.contains("(begin (set! i (+ i 1))") && l.contains("while")), "{ir}");
+    assert!(
+        parts
+            .iter()
+            .any(|l| l.contains("(begin (set! i (+ i 1))") && l.contains("while")),
+        "{ir}"
+    );
 }
 
 #[test]

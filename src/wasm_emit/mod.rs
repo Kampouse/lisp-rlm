@@ -62,10 +62,9 @@ pub mod wasm_link;
 // Re-exports: public API lives in compile.rs
 pub use compile::{
     compile_fuzz, compile_near, compile_near_from_exprs, compile_near_from_exprs_with_map,
-    compile_near_to_wat, compile_near_to_wat_from_exprs, compile_near_untyped,
-    compile_near_labelled_ir, compile_near_with_map, compile_near_with_map_labelled,
-    compile_pure, compile_pure_to_wat, compile_standalone,
-    compile_standalone_opts, resolve_modules,
+    compile_near_labelled_ir, compile_near_to_wat, compile_near_to_wat_from_exprs,
+    compile_near_untyped, compile_near_with_map, compile_near_with_map_labelled, compile_pure,
+    compile_pure_to_wat, compile_standalone, compile_standalone_opts, resolve_modules,
 };
 
 // ── NEAR host functions (name, params, results) ──

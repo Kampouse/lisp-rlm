@@ -664,10 +664,7 @@ pub fn schnorr_sign_impl(sk: &[u8; 32], msg: &[u8; 32], aux: &[u8; 32]) -> [u8; 
     challenge_input[..32].copy_from_slice(&r_bytes);
     challenge_input[32..64].copy_from_slice(&p_bytes);
     challenge_input[64..96].copy_from_slice(msg);
-    let e = be_bytes_to_fe(&tagged_hash_impl(
-        b"BIP0340/challenge",
-        &challenge_input,
-    ));
+    let e = be_bytes_to_fe(&tagged_hash_impl(b"BIP0340/challenge", &challenge_input));
     let sig_s = sc_add_mod_n(kp, sc_mul_mod_n(e, dp));
     let mut sig = [0u8; 64];
     sig[..32].copy_from_slice(&r_bytes);
@@ -729,10 +726,7 @@ pub fn schnorr_sign_pk_impl(
     challenge_input[..32].copy_from_slice(&r_bytes);
     challenge_input[32..64].copy_from_slice(&p_bytes);
     challenge_input[64..96].copy_from_slice(msg);
-    let e = be_bytes_to_fe(&tagged_hash_impl(
-        b"BIP0340/challenge",
-        &challenge_input,
-    ));
+    let e = be_bytes_to_fe(&tagged_hash_impl(b"BIP0340/challenge", &challenge_input));
     let sig_s = sc_add_mod_n(kp, sc_mul_mod_n(e, dp));
     let mut sig = [0u8; 64];
     sig[..32].copy_from_slice(&r_bytes);

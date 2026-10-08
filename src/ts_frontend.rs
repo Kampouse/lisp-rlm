@@ -76,6 +76,7 @@ fn ts_to_lisp_source_inner(src: &str) -> Result<String, String> {
     STRING_LOCALS.with(|s| s.borrow_mut().clear());
     SHAPE_BIGINT_FIELDS.with(|s| s.borrow_mut().clear());
     TYPE_ALIASES.with(|s| s.borrow_mut().clear());
+    OBJECT_PARAMS.with(|s| s.borrow_mut().clear());
     CONST_FOLDS.with(|s| s.borrow_mut().clear());
     BIGINT_CONSTS.with(|s| s.borrow_mut().clear());
     USER_FNS.with(|m| m.borrow_mut().clear());
@@ -144,6 +145,15 @@ thread_local! {
     /// `type X = { ... }` aliases collected at statement level; resolved
     /// when a param is annotated with a named type. Compile-time only.
     static TYPE_ALIASES: std::cell::RefCell<Vec<(String, Vec<(String, bool)>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Object-shaped params by NAME (`params`, `ctx`…): their property
+    /// reads lower against the CACHED-INPUT contract (near/json_get_str
+    /// with a dotted path) instead of the param's dead binding. Before
+    /// this registry the read lowered to (json-get-str "to" params) —
+    /// params binds (near/json_get_str "params"), a top-level key that's
+    /// never in the args JSON — so `params.to` was silently nil at
+    /// runtime (documented BUG, fixed 2026-10-07).
+    static OBJECT_PARAMS: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// Top-level `const K = <literal>;` — folded into every use site.
     /// (2026-08-31) a value-define at top level emits a stub (known emitter
@@ -779,6 +789,7 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
     // (object = JSON-text binding; numeric props auto-decode on read)
     NUM_PARAM_NAMES.with(|s| s.borrow_mut().clear());
     OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
+    OBJECT_PARAMS.with(|s| s.borrow_mut().clear());
     BIGINT_NAMES.with(|s| s.borrow_mut().clear());
     BIGINT_LOCALS.with(|s| s.borrow_mut().clear());
     STRING_LOCALS.with(|s| s.borrow_mut().clear());
@@ -1096,6 +1107,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
     // (object = JSON-text binding; numeric props auto-decode on read)
     NUM_PARAM_NAMES.with(|s| s.borrow_mut().clear());
     OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
+    OBJECT_PARAMS.with(|s| s.borrow_mut().clear());
     BIGINT_NAMES.with(|s| s.borrow_mut().clear());
     BIGINT_LOCALS.with(|s| s.borrow_mut().clear());
     STRING_LOCALS.with(|s| s.borrow_mut().clear());
@@ -1178,6 +1190,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
             let inner = lower_block_tail(&body.statements, view)?;
             NUM_PARAM_NAMES.with(|s| s.borrow_mut().clear());
             OBJ_PARAM_PROPS.with(|s| s.borrow_mut().clear());
+            OBJECT_PARAMS.with(|s| s.borrow_mut().clear());
             // Raw-twin entry split (2026-10-03): when every param is
             // `number` and the return is `number`, emit
             //   (define (__impl_f x y) :: int int -> int BODY)
@@ -4731,30 +4744,56 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 list(vec![Sym("near/json_get_str"), Str(top)]),
                             ]));
                         }
-                    }
-                    let recv = lower_expr(base)?;
-                    // Object-param numeric prop: `user.votes` where the
-                    // annotation says number → auto str->num decode
-                    if let (Expression::Identifier(id), 1) = (base, path.len()) {
-                        if let Some(is_num) = OBJ_PARAM_PROPS.with(|s| {
-                            s.borrow()
-                                .iter()
-                                .find(|(n, _)| n == id.name.as_str())
-                                .and_then(|(_, props)| {
-                                    props
+                        // Object-param property read (`params.to`): the
+                        // param binds a DEAD nil — its entry prologue binds
+                        // (near/json_get_str "params"), a top-level args
+                        // key that never exists — so reads go through the
+                        // cached input getter with the dotted path. Same
+                        // nil-on-miss contract as the input handles above.
+                        // (BUG fix 2026-10-07: this read used to lower to
+                        // (json-get-str "to" params) → silent nil at
+                        // runtime while compiling clean.) Number-typed
+                        // leaf fields keep the auto str->num decode the
+                        // old dead-binding arm performed.
+                        if OBJECT_PARAMS
+                            .with(|s| s.borrow().iter().any(|x| x == id.name.as_str()))
+                        {
+                            let dotted: Vec<&str> = path.iter().rev().map(|s| s.as_str()).collect();
+                            let get = if dotted.len() == 1 {
+                                list(vec![
+                                    Sym("near/json_get_str"),
+                                    Str(dotted.join(".")),
+                                ])
+                            } else {
+                                let top = dotted[0].to_string();
+                                let rest = dotted[1..].join(".");
+                                list(vec![
+                                    Sym("json-get-str"),
+                                    Str(rest),
+                                    list(vec![Sym("near/json_get_str"), Str(top)]),
+                                ])
+                            };
+                            let is_num_leaf = dotted.len() == 1
+                                && OBJ_PARAM_PROPS.with(|s| {
+                                    s.borrow()
                                         .iter()
-                                        .find(|(k, _)| k.as_str() == path[0].as_str())
-                                        .map(|(_, num)| *num)
+                                        .find(|(n, _)| n == id.name.as_str())
+                                        .and_then(|(_, props)| {
+                                            props
+                                                .iter()
+                                                .find(|(k, _)| k.as_str() == dotted[0])
+                                                .map(|(_, num)| *num)
+                                        })
                                 })
-                        }) {
-                            if is_num {
-                                return Ok(list(vec![
-                                    Sym("str->num"),
-                                    list(vec![Sym("json-get-str"), Str(path[0].clone()), recv]),
-                                ]));
-                            }
+                                .unwrap_or(false);
+                            return Ok(if is_num_leaf {
+                                list(vec![Sym("str->num"), get])
+                            } else {
+                                get
+                            });
                         }
                     }
+                    let recv = lower_expr(base)?;
                     let dotted = path.iter().rev().cloned().collect::<Vec<_>>().join(".");
                     Ok(list(vec![Sym("json-get-str"), Str(dotted), recv]))
                 }
@@ -5634,9 +5673,206 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     }
                 }
             }
+            // near.db.* (2026-10-07): MUST run before callee_name — the
+            // callee `near.db.key` is a 2-level member chain, which
+            // callee_name rejects ("nested member chains not in M1").
+            // near.db.<method>(…) desugars onto the PROVEN storage family
+            // — pure frontend aliasing, checker/emitter/runtime untouched:
+            //   key(k) → (near/storage_get k)     opt str; `?? "d"` unwraps
+            //   put(k,v) → (near/storage_set k v) string in, string at rest
+            //   has(k) → (near/storage_has k)     bool
+            //   del(k) → (near/storage_remove k)  nil
+            //   keys(p) → the storage_cleaner drain loop
+            //     (examples/storage_cleaner.lisp shape — nil-guard exits,
+            //     NOT truthiness: numeric 0 is truthy in this lisp),
+            //     compiled to a vec via (list) + vec-push. Rides the
+            //     ENGINE-level storage-iter builtins (host fns 36/38,
+            //     tests/test_storage_iter.rs) — the PROTOCOL's
+            //     storage_iter_* host ABI is deprecated (near-vm-runner
+            //     0.37.3 answers HostError::Deprecated) and is never
+            //     emitted.
+            if let Expression::StaticMemberExpression(sm2) = &c.callee {
+                if let Expression::StaticMemberExpression(db2) = &sm2.object {
+                    if let Expression::Identifier(ns_o) = &db2.object {
+                    if ns_o.name == "near" && db2.property.name.as_str() == "db" {
+                            let method = sm2.property.name.as_str();
+                            let mut db_args = Vec::new();
+                            for a in &c.arguments {
+                                db_args.push(
+                                    a.as_expression()
+                                        .ok_or("ts_frontend: bad near.db argument (M1)")?,
+                                );
+                            }
+                            return match (method, db_args.len()) {
+                                ("key", 1) => Ok(list(vec![
+                                    Sym("near/storage_get"),
+                                    lower_expr(db_args[0])?,
+                                ])),
+                                ("put", 2) => Ok(list(vec![
+                                    Sym("near/storage_set"),
+                                    lower_expr(db_args[0])?,
+                                    lower_expr(db_args[1])?,
+                                ])),
+                                ("has", 1) => Ok(list(vec![
+                                    Sym("near/storage_has"),
+                                    lower_expr(db_args[0])?,
+                                ])),
+                                ("del", 1) => Ok(list(vec![
+                                    Sym("near/storage_remove"),
+                                    lower_expr(db_args[0])?,
+                                ])),
+                                ("keys", 1) => {
+                                    let kv = lower_expr(db_args[0])?;
+                                    Ok(list(vec![
+                                        Sym("let*"),
+                                        list(vec![
+                                            list(vec![
+                                                Sym("__dbk_it"),
+                                                list(vec![
+                                                    Sym("storage-iter-prefix"),
+                                                    kv,
+                                                ]),
+                                            ]),
+                                            list(vec![
+                                                Sym("__dbk_cur"),
+                                                list(vec![
+                                                    Sym("storage-iter-next"),
+                                                    Sym("__dbk_it"),
+                                                ]),
+                                            ]),
+                                            list(vec![
+                                                Sym("__dbk_acc"),
+                                                list(vec![Sym("list")]),
+                                            ]),
+                                        ]),
+                                        list(vec![
+                                            Sym("begin"),
+                                            list(vec![
+                                                Sym("while"),
+                                                list(vec![
+                                                    Sym("!="),
+                                                    Sym("__dbk_cur"),
+                                                    LispVal::Nil,
+                                                ]),
+                                                list(vec![
+                                                    Sym("begin"),
+                                                    list(vec![
+                                                        Sym("set!"),
+                                                        Sym("__dbk_acc"),
+                                                        list(vec![
+                                                            Sym("vec-push"),
+                                                            Sym("__dbk_acc"),
+                                                            Sym("__dbk_cur"),
+                                                        ]),
+                                                    ]),
+                                                    list(vec![
+                                                        Sym("set!"),
+                                                        Sym("__dbk_cur"),
+                                                        list(vec![
+                                                            Sym("storage-iter-next"),
+                                                            Sym("__dbk_it"),
+                                                        ]),
+                                                    ]),
+                                                    Num(0),
+                                                ]),
+                                            ]),
+                                            Sym("__dbk_acc"),
+                                        ]),
+                                    ]))
+                                }
+                                ("key", _) => {
+                                    Err("ts_frontend: near.db.key takes (key)".into())
+                                }
+                                ("put", _) => {
+                                    Err("ts_frontend: near.db.put takes (key, value)".into())
+                                }
+                                ("has", _) => {
+                                    Err("ts_frontend: near.db.has takes (key)".into())
+                                }
+                                ("del", _) => {
+                                    Err("ts_frontend: near.db.del takes (key)".into())
+                                }
+                                ("keys", _) => {
+                                    Err("ts_frontend: near.db.keys takes (prefix)".into())
+                                }
+                                _ => Err(format!(
+                                    "ts_frontend: unknown near.db method `{method}` — key/put/has/del/keys"
+                                )),
+                            };
+                        }
+                    }
+                }
+            }
             let head = callee_name(&c.callee)?;
             // blockTimestampNum() → RAW numeric ns (alias for the host op
             // — near/block_timestamp_num doesn't exist)
+            // ── ergonomics-v2 builtins (2026-10-07) ─────────────────────
+            // assert(cond, msg) → (if cond 0 (near/panic msg)). Special
+            // form (not a function): near/panic : str → any makes ANY
+            // typed branch unify. Statement position discards the 0.
+            if head == "assert" {
+                if c.arguments.len() != 2 {
+                    return Err("ts_frontend: assert takes exactly (cond, msg)".into());
+                }
+                let a0 = c.arguments[0]
+                    .as_expression()
+                    .ok_or("ts_frontend: bad assert cond")?;
+                let a1 = c.arguments[1]
+                    .as_expression()
+                    .ok_or("ts_frontend: bad assert msg")?;
+                return Ok(list(vec![
+                    Sym("if"),
+                    lower_expr(a0)?,
+                    Num(0),
+                    list(vec![Sym("near/panic"), lower_expr(a1)?]),
+                ]));
+            }
+            // near.event(name, {…}) → (near/log (json-quote …)). Host op
+            // exists (near/log, fn 28); object literal already encodes to
+            // JSON text via lower_object_literal. Standard event JSON:
+            // {"event":name,"data":{…}}.
+            if head == "near/event" {
+                if c.arguments.len() != 2 {
+                    return Err(
+                        "ts_frontend: near.event takes exactly (name, objectLiteral)".into(),
+                    );
+                }
+                let a1 = c.arguments[1]
+                    .as_expression()
+                    .ok_or("ts_frontend: bad near.event payload")?;
+                let payload = match a1 {
+                    Expression::ObjectExpression(_) => lower_expr(a1)?,
+                    _ => {
+                        return Err(
+                            "ts_frontend: near.event payload must be an object literal".into()
+                        )
+                    }
+                };
+                let name_e = c.arguments[0]
+                    .as_expression()
+                    .ok_or("ts_frontend: bad near.event name")?;
+                // payload is ALREADY encoded JSON text (lower_object_literal
+                // → json-set chain) — json-set embeds it raw as the "data"
+                // value. json-quote wraps the assembled object text.
+                let name_v = lower_expr(name_e)?;
+                return Ok(list(vec![
+                    Sym("near/log"),
+                    list(vec![
+                        Sym("json-quote"),
+                        list(vec![
+                            Sym("json-set"),
+                            list(vec![
+                                Sym("json-set"),
+                                Str("{}".to_string()),
+                                Str("event".to_string()),
+                                list(vec![Sym("json-quote"), name_v]),
+                            ]),
+                            Str("data".to_string()),
+                            payload,
+                        ]),
+                    ]),
+                ]));
+            }
             let head = if head == "near/block_timestamp_num" {
                 "near/block_timestamp".to_string()
             } else {
@@ -5908,7 +6144,10 @@ fn callee_name(e: &Expression<'_>) -> Result<String, String> {
             // (or worse, silently no-ops). Warn at compile time instead
             // (2026-09-30). Generic lowering stays — the d.ts surface is a
             // convention, not a whitelist (near.returnStr works pre-d.ts).
-            if obj == "near" && !known_near_member(s.property.name.as_str()) {
+            if obj == "near" && s.property.name.as_str() == "event" {
+                // documented surface (d.ts + KNOWN_NEAR_MEMBERS); lowering
+                // is the near/event special form in the call path below
+            } else if obj == "near" && !known_near_member(s.property.name.as_str()) {
                 eprintln!(
                     "[warn] ts_frontend: near.{} is not in the known host surface — \
                      lowering to `{}`. If that op doesn't exist, this traps at \
@@ -5929,6 +6168,10 @@ fn callee_name(e: &Expression<'_>) -> Result<String, String> {
 /// builtin means: d.ts entry + this table in the same commit, or the
 /// parity test fails. Keep order alphabetical within each group.
 pub const KNOWN_NEAR_MEMBERS: &[&str] = &[
+    // namespaces (near.db.* — methods gated by KNOWN_DB_MEMBERS below)
+    "db",
+    // events
+    "event",
     // input/args
     "jsonGetStr",
     "jsonGetInt",
@@ -6053,6 +6296,15 @@ pub const KNOWN_NEAR_MEMBERS: &[&str] = &[
 /// ops).
 fn known_near_member(p: &str) -> bool {
     KNOWN_NEAR_MEMBERS.contains(&p)
+}
+
+/// Known near.db.* method surface — parity-enforced against the d.ts
+/// `db: { … }` block by tests/ts_surface_dts_parity.rs (both directions),
+/// same rule as KNOWN_NEAR_MEMBERS.
+pub const KNOWN_DB_MEMBERS: &[&str] = &["del", "has", "key", "keys", "put"];
+
+fn known_db_member(p: &str) -> bool {
+    KNOWN_DB_MEMBERS.contains(&p)
 }
 
 /// Bare getter calls that yield NIL on a miss (jsonGetStr / near.jsonGetStr /
@@ -6299,7 +6551,15 @@ fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool)>> {
                 m.borrow()
                     .iter()
                     .find(|(k, _)| *k == name)
-                    .map(|(_, props)| props.clone())
+                    .and_then(|(_, props)| {
+                        if props.first().map(|(k, _)| k == SCALAR_ALIAS_MARK).unwrap_or(false) {
+                            // scalar alias (`type Money = string`) — a plain
+                            // param, not an object shape
+                            None
+                        } else {
+                            Some(props.clone())
+                        }
+                    })
             })
         }
         _ => None,
@@ -6322,30 +6582,47 @@ fn param_is_type_ref(p: &FormalParameter<'_>) -> bool {
     false
 }
 
+/// Marker first-element for SCALAR type aliases (`type Money = string`):
+/// param_object_props sees this and resolves the alias to None — the param
+/// is a plain str/int, NOT a kind-3 object param (an empty-props kind-3
+/// used to register a dead object binding and corrupt the entry ABI).
+const SCALAR_ALIAS_MARK: &str = "\u{0}scalar";
+
 /// Shape of a `type X = { prop: string; num: number; ... }` alias.
 fn alias_props(a: &oxc_ast::ast::TSTypeAliasDeclaration<'_>) -> Vec<(String, bool)> {
-    let oxc_ast::ast::TSType::TSTypeLiteral(lit) = &a.type_annotation else {
-        return Vec::new();
-    };
-    let mut props = Vec::new();
-    for m in &lit.members {
-        if let oxc_ast::ast::TSSignature::TSPropertySignature(sig) = m {
-            if let oxc_ast::ast::PropertyKey::StaticIdentifier(id) = &sig.key {
-                let is_num = matches!(
-                    sig.type_annotation.as_ref().map(|t| &t.type_annotation),
-                    Some(TSType::TSNumberKeyword(_))
-                );
-                props.push((id.name.as_str().to_string(), is_num));
+    match &a.type_annotation {
+        // `type Money = string` (u128-decimal ABI hover docs, 2026-10-07):
+        // SCALAR aliases record as marker ([] + is_scalar) so
+        // param_object_props resolves the ref to None (plain str param)
+        // instead of kind-3-empty (which used to register a dead
+        // object-param binding and corrupt the entry ABI).
+        oxc_ast::ast::TSType::TSStringKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false)],
+        oxc_ast::ast::TSType::TSNumberKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false)],
+        oxc_ast::ast::TSType::TSBigIntKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false)],
+        oxc_ast::ast::TSType::TSTypeLiteral(lit) => {
+            let mut props = Vec::new();
+            for m in &lit.members {
+                if let oxc_ast::ast::TSSignature::TSPropertySignature(sig) = m {
+                    if let oxc_ast::ast::PropertyKey::StaticIdentifier(id) = &sig.key {
+                        let is_num = matches!(
+                            sig.type_annotation.as_ref().map(|t| &t.type_annotation),
+                            Some(oxc_ast::ast::TSType::TSNumberKeyword(_))
+                        );
+                        props.push((id.name.as_str().to_string(), is_num));
+                    }
+                }
             }
+            props
         }
+        _ => Vec::new(),
     }
-    props
 }
 
 /// Register an object param's shape for read-time numeric decoding and
 /// encode-time raw embedding (side-channel, cleared with NUM_PARAM_NAMES
 /// after body lowering).
 fn register_obj_param(name: &str, props: Vec<(String, bool)>) {
+    OBJECT_PARAMS.with(|s| s.borrow_mut().push(name.to_string()));
     OBJ_PARAM_PROPS.with(|s| {
         s.borrow_mut().push((name.to_string(), props));
     });

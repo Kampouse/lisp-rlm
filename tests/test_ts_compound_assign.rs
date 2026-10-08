@@ -98,7 +98,9 @@ export function compound(a: number, b: number): string {
 fn mul_assign_value() {
     assert_eq!(run_mock(MUL_SRC, "compound", r#"{"a":6,"b":7}"#), "126");
     assert_eq!(
-        run_interp_lisp(r#"(define (compound a b) (let ((x a)) (set! x (* x b)) (set! x (* x 3)) (to-string x))) (println (compound 6 7))"#),
+        run_interp_lisp(
+            r#"(define (compound a b) (let ((x a)) (set! x (* x b)) (set! x (* x 3)) (to-string x))) (println (compound 6 7))"#
+        ),
         "126"
     );
 }
@@ -221,8 +223,9 @@ fn exponent_hard_errors() {
         e1.contains("**") && e1.contains("no power builtin"),
         "binary ** message: {e1}"
     );
-    let e2 = ts_to_lisp_source("export function f(x: number): string { x **= 2; return `${x}`; }\n")
-        .unwrap_err();
+    let e2 =
+        ts_to_lisp_source("export function f(x: number): string { x **= 2; return `${x}`; }\n")
+            .unwrap_err();
     assert!(
         e2.contains("**=") && e2.contains("no power builtin"),
         "**= message: {e2}"
@@ -232,10 +235,9 @@ fn exponent_hard_errors() {
 /// obj.x += e stays a descriptive hard error.
 #[test]
 fn property_compound_still_rejected() {
-    let e = ts_to_lisp_source(
-        "export function f(o: string): string { o.length += 1; return o; }\n",
-    )
-    .unwrap_err();
+    let e =
+        ts_to_lisp_source("export function f(o: string): string { o.length += 1; return o; }\n")
+            .unwrap_err();
     assert!(
         e.contains("property assignment") || e.contains("jsonSet"),
         "property write message: {e}"

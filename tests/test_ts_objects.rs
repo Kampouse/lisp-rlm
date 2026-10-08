@@ -169,7 +169,7 @@ fn object_param_numeric_prop_auto_decodes() {
         "export function f(u: { name: string; votes: number }): number {\n  return u.votes;\n}",
     );
     assert!(
-        out.contains(r#"(str->num (json-get-str "votes" u))"#),
+        out.contains(r#"(str->num (near/json_get_str "votes"))"#),
         "annotated numeric prop auto str->num: {out}"
     );
 }
@@ -178,8 +178,8 @@ fn object_param_numeric_prop_auto_decodes() {
 fn object_param_string_prop_plain_read() {
     let out = lower("export function f(u: { name: string }): string {\n  return u.name;\n}");
     assert!(
-        out.contains(r#"(json-get-str "name" u)"#),
-        "string prop reads plain: {out}"
+        out.contains(r#"(near/json_get_str "name")"#),
+        "string prop reads through the cached-input getter (nil-on-miss): {out}"
     );
 }
 
@@ -200,7 +200,7 @@ fn object_param_type_alias_resolves() {
         "type U = { name: string; votes: number };\nexport function f(u: U): number {\n  return u.votes;\n}",
     );
     assert!(
-        out.contains(r#"(str->num (json-get-str "votes" u))"#),
+        out.contains(r#"(str->num (near/json_get_str "votes"))"#),
         "type alias resolves with numeric prop: {out}"
     );
 }

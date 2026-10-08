@@ -38,8 +38,8 @@ pub(crate) use hosts::{build_env_linker, host_fn};
 // Lifted to the lib (src/instrument.rs): browser compiler + near-mock now
 // share ONE meter, so JS and CLI can never disagree on gas.
 pub(crate) use lisp_rlm_wasm::instrument::{
-    instrument, REMAINING_GAS_EXPORT, InstrumentError,
-    REGULAR_OP_COST, LINEAR_OP_BASE_COST, LINEAR_OP_UNIT_COST, MAX_STACK_HEIGHT,
+    instrument, InstrumentError, LINEAR_OP_BASE_COST, LINEAR_OP_UNIT_COST, MAX_STACK_HEIGHT,
+    REGULAR_OP_COST, REMAINING_GAS_EXPORT,
 };
 
 /// Function-call action fee (execution side, protocol-86): burned by the
@@ -1516,6 +1516,19 @@ fn build_promise_hosts(
                 args[5].unwrap_i64(),
                 "promise-host",
             )?;
+            // dep_ptr (args[6]) → 16-byte u128 LE — same ABI as
+            // promise_batch_action_function_call; was hardcoded dep: 0.
+            let dep = {
+                let ptr = args[6].unwrap_i64() as usize;
+                let mut buf = [0u8; 16];
+                if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                    let md = mem.data(&caller);
+                    if ptr + 16 <= md.len() {
+                        buf.copy_from_slice(&md[ptr..ptr + 16]);
+                    }
+                }
+                u128::from_le_bytes(buf)
+            };
             let idx = dag_push(
                 vec![],
                 acct,
@@ -1523,7 +1536,7 @@ fn build_promise_hosts(
                     method,
                     args: args_json.into_bytes(),
                     gas: args[7].unwrap_i64() as u64,
-                    dep: 0,
+                    dep,
                 }],
             );
             results[0] = Val::I64(idx as i64);
@@ -1555,6 +1568,19 @@ fn build_promise_hosts(
                 args[6].unwrap_i64(),
                 "promise-host",
             )?;
+            // dep_ptr (args[7]) → 16-byte u128 LE — same ABI as the batch
+            // action host; was hardcoded dep: 0.
+            let dep = {
+                let ptr = args[7].unwrap_i64() as usize;
+                let mut buf = [0u8; 16];
+                if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                    let md = mem.data(&caller);
+                    if ptr + 16 <= md.len() {
+                        buf.copy_from_slice(&md[ptr..ptr + 16]);
+                    }
+                }
+                u128::from_le_bytes(buf)
+            };
             let new_idx = dag_push(
                 vec![idx],
                 acct,
@@ -1562,7 +1588,7 @@ fn build_promise_hosts(
                     method,
                     args: args_json.into_bytes(),
                     gas: args[8].unwrap_i64() as u64,
-                    dep: 0,
+                    dep,
                 }],
             );
             results[0] = Val::I64(new_idx as i64);
@@ -1875,11 +1901,7 @@ pub(crate) fn run_asset_asserts(
         let prefix = cfg.get("prefix").and_then(|p| p.as_str()).unwrap_or("");
         let total_key = cfg.get("total").and_then(|t| t.as_str()).unwrap_or("");
         if prefix.is_empty() || total_key.is_empty() {
-            return Err(format!(
-                "step {}: assert_sum_matches needs {{prefix, total}}",
-                i
-            )
-            .into());
+            return Err(format!("step {}: assert_sum_matches needs {{prefix, total}}", i).into());
         }
         let pre = prefixed_key(contract, prefix.as_bytes());
         let sum: u128 = {
@@ -1899,7 +1921,10 @@ pub(crate) fn run_asset_asserts(
                 .unwrap_or(0)
         };
         if sum == total {
-            println!("✓ assert_sum_matches Σ{}({}) == {} ✓", prefix, sum, total_key);
+            println!(
+                "✓ assert_sum_matches Σ{}({}) == {} ✓",
+                prefix, sum, total_key
+            );
         } else {
             println!(
                 "✗ assert_sum_matches Σ{} = {} ≠ {} = {}",
@@ -1931,7 +1956,10 @@ impl FuzzRng {
     }
     /// uniform lo..=hi inclusive, string (yocto-scale amounts overflow u64)
     pub(crate) fn range_str(&mut self, lo: &str, hi: &str) -> String {
-        let (lo_n, hi_n) = (lo.parse::<u128>().unwrap_or(1), hi.parse::<u128>().unwrap_or(2));
+        let (lo_n, hi_n) = (
+            lo.parse::<u128>().unwrap_or(1),
+            hi.parse::<u128>().unwrap_or(2),
+        );
         if hi_n <= lo_n {
             return lo.to_string();
         }
@@ -1952,17 +1980,27 @@ impl FuzzRng {
 /// Accepted fields: seed, steps (count, default 200), ops [method names],
 /// as [accounts], attach_lo/attach_hi (yocto strings), args (template obj),
 /// between {advance}, expect_trap_all, asserts (applied after each op).
-pub(crate) fn expand_fuzz_steps(spec: &serde_json::Value) -> Result<Vec<serde_json::Value>, String> {
+pub(crate) fn expand_fuzz_steps(
+    spec: &serde_json::Value,
+) -> Result<Vec<serde_json::Value>, String> {
     let f = match spec.get("fuzz") {
         Some(f) => f,
         None => return Ok(Vec::new()),
     };
     let mut rng = FuzzRng(f.get("seed").and_then(|s| s.as_u64()).unwrap_or(0x5EED));
-    let count = f.get("steps").and_then(|s| s.as_u64()).unwrap_or(200).min(5000);
+    let count = f
+        .get("steps")
+        .and_then(|s| s.as_u64())
+        .unwrap_or(200)
+        .min(5000);
     let mut ops: Vec<String> = f
         .get("ops")
         .and_then(|o| o.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     if ops.is_empty() {
         return Err("fuzz needs ops: [\"buy\",\"sell\",...]".into());
@@ -1970,12 +2008,28 @@ pub(crate) fn expand_fuzz_steps(spec: &serde_json::Value) -> Result<Vec<serde_js
     let actors: Vec<String> = f
         .get("as")
         .and_then(|o| o.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-        .unwrap_or_else(|| vec!["owner.test.near".into(), "alice.test.near".into(), "bob.test.near".into()]);
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            vec![
+                "owner.test.near".into(),
+                "alice.test.near".into(),
+                "bob.test.near".into(),
+            ]
+        });
     let lo = f.get("attach_lo").and_then(|s| s.as_str()).unwrap_or("1");
-    let hi = f.get("attach_hi").and_then(|s| s.as_str()).unwrap_or("500000000000000000000000");
+    let hi = f
+        .get("attach_hi")
+        .and_then(|s| s.as_str())
+        .unwrap_or("500000000000000000000000");
     let mut args_tmpl = f.get("args").cloned().unwrap_or(serde_json::json!({}));
-    let between = f.get("between").and_then(|b| b.get("advance")).and_then(|a| a.as_i64());
+    let between = f
+        .get("between")
+        .and_then(|b| b.get("advance"))
+        .and_then(|a| a.as_i64());
     let after_asserts = f.get("asserts").cloned().unwrap_or(serde_json::Value::Null);
     let mut out = Vec::new();
     if f.get("setup_steps").is_some() {
@@ -1997,7 +2051,11 @@ pub(crate) fn expand_fuzz_steps(spec: &serde_json::Value) -> Result<Vec<serde_js
             let tokens: Vec<String> = f
                 .get("tokens")
                 .and_then(|t| t.as_array())
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             for (_, v) in map.iter_mut() {
                 let s = match v {
@@ -2005,9 +2063,16 @@ pub(crate) fn expand_fuzz_steps(spec: &serde_json::Value) -> Result<Vec<serde_js
                     ref other => other.to_string(),
                 };
                 let sub = if s == "{token}" {
-                    if tokens.is_empty() { s } else { rng.pick(&tokens).to_string() }
+                    if tokens.is_empty() {
+                        s
+                    } else {
+                        rng.pick(&tokens).to_string()
+                    }
                 } else if let Some(rest) = s.strip_prefix("{rng:") {
-                    let (l, h) = rest.trim_end_matches('}').split_once(',').unwrap_or((lo, hi));
+                    let (l, h) = rest
+                        .trim_end_matches('}')
+                        .split_once(',')
+                        .unwrap_or((lo, hi));
                     rng.range_str(l.trim(), h.trim())
                 } else {
                     s.clone()
@@ -2029,7 +2094,10 @@ pub(crate) fn expand_fuzz_steps(spec: &serde_json::Value) -> Result<Vec<serde_js
         } else {
             step["attach"] = serde_json::Value::String("1".into());
         }
-        if f.get("expect_trap_all").and_then(|t| t.as_bool()).unwrap_or(false) {
+        if f.get("expect_trap_all")
+            .and_then(|t| t.as_bool())
+            .unwrap_or(false)
+        {
             step["expect"] = serde_json::Value::String("trap".into());
         }
         out.push(step);
@@ -2119,7 +2187,9 @@ pub(crate) fn run_scenario_opts(
                 println!(
                     "🎲 fuzz: +{} generated steps (seed {:?})",
                     fuzz_count,
-                    spec.get("fuzz").and_then(|f| f.get("seed")).and_then(|s| s.as_u64())
+                    spec.get("fuzz")
+                        .and_then(|f| f.get("seed"))
+                        .and_then(|s| s.as_u64())
                 );
                 owned_steps.extend(gen);
             }
@@ -2175,8 +2245,7 @@ pub(crate) fn run_scenario_opts(
             }
             // asset assertions can run without a method (post-check a prior
             // step's settled state, incl. promises/refunds)
-            if step.get("assert_bal_matches").is_some()
-                || step.get("assert_sum_matches").is_some()
+            if step.get("assert_bal_matches").is_some() || step.get("assert_sum_matches").is_some()
             {
                 let failed = run_asset_asserts(&state, &default_acct, step, i)?;
                 if failed {
@@ -2188,10 +2257,12 @@ pub(crate) fn run_scenario_opts(
             // travel without a method call (fuzz `between`, TWAP scenarios)
             if !did {
                 let adv = step.get("advance").and_then(|a| {
-                    a.as_i64().or_else(|| a.as_str().and_then(|s| s.parse().ok()))
+                    a.as_i64()
+                        .or_else(|| a.as_str().and_then(|s| s.parse().ok()))
                 });
                 let nowv = step.get("now").and_then(|a| {
-                    a.as_i64().or_else(|| a.as_str().and_then(|s| s.parse().ok()))
+                    a.as_i64()
+                        .or_else(|| a.as_str().and_then(|s| s.parse().ok()))
                 });
                 if adv.is_some() || nowv.is_some() {
                     RUN_CFG.with(|c| {
@@ -2206,7 +2277,11 @@ pub(crate) fn run_scenario_opts(
                     });
                     println!(
                         "  ⏱ clock shift {}",
-                        if nowv.is_some() { "(absolute)" } else { "(+secs)" }
+                        if nowv.is_some() {
+                            "(absolute)"
+                        } else {
+                            "(+secs)"
+                        }
                     );
                     did = true;
                 }
@@ -2415,8 +2490,7 @@ pub(crate) fn run_scenario_opts(
         let trapped = result.is_err();
         // trap message for trap_ok fuzzy-matching (owned String — result
         // gets consumed by the match below)
-        let trap_msg: Option<String> =
-            result.as_ref().err().map(|e| format!("{e}"));
+        let trap_msg: Option<String> = result.as_ref().err().map(|e| format!("{e}"));
         let mut step_failed = false;
 
         match &result {
@@ -2453,9 +2527,7 @@ pub(crate) fn run_scenario_opts(
                     // (existing substring asserts depend on it).
                     let st = state.lock().unwrap();
                     if let Some(ref data) = st.return_data {
-                        if data.len() == 8
-                            && !data.iter().all(|b| (0x20..0x7f).contains(b))
-                        {
+                        if data.len() == 8 && !data.iter().all(|b| (0x20..0x7f).contains(b)) {
                             let val = i64::from_le_bytes(data[..8].try_into().unwrap());
                             let line = format!("{} (raw i64, untagged: {})", val, val >> 3);
                             println!("📄 {}", line);
@@ -2508,7 +2580,7 @@ pub(crate) fn run_scenario_opts(
             } else if msg_hit {
                 println!("  ✓ trapped with allowed cause ('{}…')", substr);
                 step_failed = false; // the Err arm flagged it; un-flag
-                // trap already reverted state — not a failure
+                                     // trap already reverted state — not a failure
             } else {
                 println!(
                     "✗ trapped with DISALLOWED cause (log {:?}) — trap_ok '{}' — step failed",
@@ -2658,21 +2730,16 @@ pub(crate) fn run_scenario_opts(
             if update_pins {
                 if let Some(want) = step.get("expect").and_then(|e| e.as_str()) {
                     if let Some((prefix, old)) = want.rsplit_once('=') {
-                        let old_digits =
-                            !old.is_empty() && old.chars().all(|c| c.is_ascii_digit());
-                        let plain_prefix =
-                            !prefix.contains(' ') && !prefix.contains('{');
+                        let old_digits = !old.is_empty() && old.chars().all(|c| c.is_ascii_digit());
+                        let plain_prefix = !prefix.contains(' ') && !prefix.contains('{');
                         if old_digits && plain_prefix {
                             let with_eq = format!("{prefix}=");
-                            if let Some(kv) =
-                                stored.iter().find(|kv| kv.starts_with(&with_eq))
-                            {
+                            if let Some(kv) = stored.iter().find(|kv| kv.starts_with(&with_eq)) {
                                 let actual = &kv[with_eq.len()..];
-                                let actual_digits =
-                                    !actual.is_empty() && actual.chars().all(|c| c.is_ascii_digit());
+                                let actual_digits = !actual.is_empty()
+                                    && actual.chars().all(|c| c.is_ascii_digit());
                                 if actual_digits && want != kv.as_str() {
-                                    pin_rewrites
-                                        .push((want.to_string(), kv.clone()));
+                                    pin_rewrites.push((want.to_string(), kv.clone()));
                                 }
                             }
                         }
@@ -2693,10 +2760,7 @@ pub(crate) fn run_scenario_opts(
     // state-budget check (#8): assert_state_under kills runaway storage
     // growth (the TOO_LARGE_CONTRACT_STATE death: >~200KB view_state makes
     // the live contract unobservabale — 431KB went unnoticed for 14 days).
-    if let Some(cap) = spec
-        .get("assert_state_under")
-        .and_then(|c| c.as_u64())
-    {
+    if let Some(cap) = spec.get("assert_state_under").and_then(|c| c.as_u64()) {
         let contract_key = default_acct.as_bytes().to_vec();
         let total: usize = st
             .storage

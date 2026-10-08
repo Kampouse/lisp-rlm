@@ -1246,7 +1246,7 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64ExtendI32U); // ptr
                 v.push(Self::host_call(25)); // value_return
-                // Set return flag so export wrapper skips its value_return
+                                             // Set return flag so export wrapper skips its value_return
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::GlobalSet(RETURN_FLAG));
                 v.push(Instruction::I64Const(TAG_NIL));
