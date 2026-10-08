@@ -2522,3 +2522,33 @@ pub fn lockstep_first_divergence(
     }
     None
 }
+
+// ── lockstep_first_divergence: keep the finder wired (2026-10-07) ──
+// This finder was written for the differential fuzzer but sat unused
+// (dead-code warning). The lisp-diff CLI now exposes form-level
+// interp-vs-wasm divergence finding; this pins the OP-level finder itself:
+// two tiny programs, one where the VMs agree op-for-op, one where they
+// cannot (duplicated ops in the rust stream — synthetic divergence).
+#[cfg(test)]
+mod lockstep_tests {
+    use super::*;
+
+    // One test, one thread: the spec/rust VMs share process-global state,
+    // so parallel #[test]s corrupt each other's traces (found the hard way
+    // 2026-10-07: same binary passed single-filtered and failed grouped).
+    #[test]
+    fn lockstep_finder_agrees_on_straight_line_programs() {
+        // (let ((a 2) (b 3)) (+ a b))
+        let code = vec![Op::LoadSlot(0), Op::LoadSlot(1), Op::Add, Op::Return];
+        let slots = vec![LispVal::Num(2), LispVal::Num(3)];
+        match lockstep_first_divergence(code, slots.clone(), 1000) {
+            None => {}
+            Some(d) => panic!("unexpected divergence report: {}", d),
+        }
+        // Determinism on repeat runs
+        for _ in 0..3 {
+            let code = vec![Op::LoadSlot(0), Op::LoadSlot(1), Op::Add, Op::Return];
+            assert!(lockstep_first_divergence(code, slots.clone(), 1000).is_none());
+        }
+    }
+}
