@@ -240,6 +240,16 @@ impl WasmEmitter {
         ins.push(Instruction::LocalGet(json_len));
         ins.push(Instruction::I32GtS);
         open_if!();
+        // Bounds exit == definitive MISS. temp must be forced to 0 here:
+        // it doubles as byte-scratch inside the loop, and when the final
+        // iteration skipped the compare (depth != 1 — nested objects,
+        // string-valued spans), it still held a raw buffer byte. The
+        // not-found gate below then misread that byte as "match found"
+        // and the value extractor ran from end-of-buffer, returning tail
+        // garbage (e.g. key "nope" over {"server":{"port":"XYZ"}} →
+        // `YZ"`). 2026-10-09, differential probes r2/r6.
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(temp));
         br_to!(scan_block);
         close!();
         ins.push(Instruction::LocalGet(json_ptr));

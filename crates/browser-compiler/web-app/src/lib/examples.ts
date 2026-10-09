@@ -179,18 +179,19 @@ export function get_profile(): string {
   return near.storageGet("profile") ?? "{}";
 }
 
-// Nested reads: pass nested objects as a JSON STRING (objects are JSON
-// strings in this dialect — a raw nested literal in the args box is not
-// yet decoded by the input scanner):
-//   { "cfg": "{\\"server\\":{\\"port\\":\\"80\\"}}" }
+// Nested reads: RAW nested object/array literals in the args box decode
+// natively (balanced-span input scanner, 2026-09-14) — both forms work:
+//   { "cfg": {"server":{"port":"80"}} }     ← raw (preferred)
+//   { "cfg": "{\"server\":{\"port\":\"80\"}}" } ← string-encoded (legacy)
 export function get_port(cfg: any): any {
   return cfg.server.port;
 }
 
 // ── Typed object params ──────────────────────────────────────
 // Inline shape or a type alias — numeric props AUTO-DECODE.
-// Same note: pass the object as a JSON string —
-//   { "b": "{\\"title\\":\\"prez\\",\\"votes\\":5}" }
+// Object-param fields read from the args ROOT (param name erased):
+//   cast({ "title": "prez", "votes": 5 })   ← raw
+//   cast({ "title": "{\"x\":1}", "votes": 5 }) — string VALUES fine too
 type Ballot = { title: string; votes: number };
 
 export function cast(b: Ballot) {
