@@ -5338,15 +5338,26 @@ fn money_arithmetic<'a, 'b>(
 }
 
 /// u128 free-function family that RETURNS a u128 decimal string (the
-/// comparison fns return boolean and are excluded).
+/// comparison fns return boolean and are excluded). Both spellings count —
+/// `u128Add(a, b)` and `u128.add(a, b)` lower to the same builtin, and the
+/// money seal must not depend on the author's spelling choice. Found via
+/// the TWAP TS twin: a `: Yocto` const initialized from member arithmetic
+/// was rejected as "not provable" while the identical free-fn form passed.
 fn u128_arith_call(c: &oxc_ast::ast::CallExpression<'_>) -> bool {
-    matches!(
-        &c.callee,
-        Expression::Identifier(id) if matches!(
+    match &c.callee {
+        Expression::Identifier(id) => matches!(
             id.name.as_str(),
             "u128Add" | "u128Sub" | "u128Mul" | "u128MulDiv" | "u128Div" | "u128Mod"
-        )
-    )
+        ),
+        Expression::StaticMemberExpression(sm) => {
+            matches!(&sm.object, Expression::Identifier(obj) if obj.name == "u128")
+                && matches!(
+                    sm.property.name.as_str(),
+                    "add" | "sub" | "mul" | "mulDiv" | "div" | "mod"
+                )
+        }
+        _ => false,
+    }
 }
 
 /// STRICT: this expression's VALUE is a u128 decimal string — provable
