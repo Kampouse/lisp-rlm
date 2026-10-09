@@ -4,25 +4,43 @@
 //! source text --existing parser/checker/emitters--> all backends (near wasm,
 //! bytecode, wasi) unchanged.
 //!
-//! M1 subset (deliberately small, differential-provable):
+//! M1+ subset (differential-provable; truth-up 2026-10-09 after F1–F3):
 //!   ✓ function declarations (exported or not) → define (+ export form)
 //!   ✓ const/let locals (single declarator, initializer required)
 //!   ✓ if / else (tail position: full expression; non-tail: side-effect begin)
-//!   ✓ return (tail position only)
+//!   ✓ ternary `c ? a : b`
+//!   ✓ early returns anywhere in a block (statement-level __fn_done
+//!     flag-guard protocol; in-loop exits via __wl_* flags)
 //!   ✓ numeric/string/boolean/null literals, template literals → (str ...)
+//!     (every interpolation auto-wrapped (to-string e))
 //!   ✓ binary ops: + - * / % < > <= >= == === != !== (numbers only)
-//!   ✓ && || (short-circuit, boolean-valued 0/1 — NOT JS value semantics)
-//!   ✓ ! - unary
+//!   ✓ compound assigns += -= *= /= %= (d47156b8): *= /= single-op,
+//!     %= JS truncated-mod with bind-once impure rhs; `**`/`**=` HARD ERROR
+//!     (no expt builtin in the NEAR set)
+//!   ✓ && || with JS VALUE semantics (431e1f3): a||b yields a-when-truthy
+//!     else b (and inverse for &&); truthy = not(false|nil|0); string
+//!     truthiness is M2. Left operand bound once (span-mangled temp),
+//!     short-circuit proven by tests/test_ts_logical_values.rs
+//!   ✓ ?? coalesce: handle-prop paths dispatch on the fallback's literal
+//!     type (number fb → INT getter, string fb → STR getter)
+//!   ✓ ! - unary (! is tag-aware — 920e79f6)
 //!   ✓ calls: bare identifiers + member calls via builtin mapping
-//!   ✓ arrow fns (2026-08-30): expression/single-return bodies, as
-//!     callbacks; (2026-08-31) full block bodies via lower_block_tail
-//!     (begin/let/if sequencing, early returns)
-//!     .map/.filter/.reduce callbacks — inlined by resolve_lambda_1/2,
-//!     so the T4 closure-aliasing landmine never triggers
-//!   ✓ array pipeline chaining (2026-08-30): join/map/filter/reduce take
-//!     any receiver — xs.filter(f).map(g).join(s) stacks
-//!   ✗ classes, async, general closures (non-callback position),
-//!     destructuring, optional chaining, early returns, imports
+//!   ✓ arrow fns: expression bodies, single-return blocks, full blocks via
+//!     lower_block_tail (begin/let/if sequencing, early returns).
+//!     .map/.filter/.reduce callbacks — inlined by resolve_lambda_1/2.
+//!     SCOPED CLOSURES (F3, d2fd048f): local `const f = (…) => …` bound to
+//!     a real lambda, called directly by name, IMMUTABLE capture of
+//!     enclosing locals — probed on wasm + interp. Whole-function static
+//!     analysis (check_fn_closure_safety) HARD-ERRORS the probed wasm
+//!     landmines: T4 mutable capture, dispatch freeze (lambda-local used
+//!     in a pipeline callback), arrow-as-call-argument
+//!   ✓ async/await (V2, 8e1b098b): awaits anywhere, near.all fanout,
+//!     payable; continuation is an on-chain entry (exported async only)
+//!   ✓ money taint (5665edc4): raw + - * / % on Yocto/Amount-domain values
+//!     is a compile error — use the u128.* calls
+//!   ✓ destructuring: `const {..} = near.args<{..}>()` param unpack only
+//!   ✗ classes, general closures beyond the F3 shapes (passing/returning a
+//!     lambda-valued var), optional chaining, imports
 //!
 //! Truthiness: JS `if (x)` → `(if (!= x 0) ...)` — numeric truthiness by
 //! decree (the lisp's 0-truthy landsmine sidestepped explicitly). String
