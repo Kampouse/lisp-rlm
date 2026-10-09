@@ -192,45 +192,173 @@
 
 ;; ── on_slice — receipt callback ──
 ;; cb_args (our input): order, k, amt. Pool returned slice_out.
-(define (on-slice)
-  (let ((id (default (near/json_get_str "order") ""))
-        (k  (default (near/json_get_str "k") "0"))
-        (out (near/promise_result 0)))
-    (let ((mo (g id "mo" "0")))
-      (if (= out "")
-          ;; swap receipt failed → slice stays due for a retry tick
-          (begin (near/log "SLICE_RETRY") (near/return "retry"))
-          (if (u128/lt out mo)
-              ;; slippage guard → stays due, retry until grace (doc §3.4,
-              ;; strict retry; no auto-narrow)
-              (begin (near/log "SLICE_RETRY") (near/return "retry"))
-              (let ((fc (g id "fc" FEE_BPS))
-                    (nx (g id "nx" "0")))
-                ;; fee_bps = min(market default, seller cap)
-                (let ((fb (if (u128/lt FEE_BPS fc) FEE_BPS fc)))
-                  (let ((fnum (u128/mul out fb)))
-                    (let ((fee (u128/div fnum BP_TOTAL)))
-                      (let ((pnum (u128/mul out PROTO_BPS)))
-                        (let ((cut (u128/div pnum BP_TOTAL)))
-                          (let ((net (u128/sub out fee)))
-                            (let ((net2 (u128/sub net cut)))
-                              (let ((fo (g id "fo" "0")))
-                                (let ((fo2 (u128/add fo net2)))
-                                  (let ((nx1 (u128/add nx "1")))
-                                    (p id "fo" fo2)
-                                    (p id "nx" nx1)
-                                    (if (u128/eq fee "0")
-                                        0
-                                        (near/transfer_u128
-                                         (sget (str-cat id "|ex") "")
-                                         fee))
-                                    (if (u128/eq cut "0")
-                                        0
-                                        (near/transfer_u128 BURN_ADDR cut))
-                                    (near/log (str-cat "filled:" k))
-                                    (near/return net2)))))))))))))))))
+;; Receipt fence: only the CURRENT slice may settle. The cursor advances
+;; on settle, so k == nx holds exactly once per slice; a duplicate
+;; receipt (k behind the cursor — the shape every double-tick replay
+;; produces) aborts with ERR_STALE before any money moves. Aborting (not
+;; discarding) is deliberate: state reverts atomically, the retry/
+;; slippage paths below keep their meaning, and the only producer of a
+;; stale receipt on-chain is a double-ticking executor — its own receipt
+;; failing is the desired outcome.
+;; ── on_slice — receipt callback ──
+;; cb_args (our input): order, k, amt. Pool returned slice_out.
+;; Receipt fence: only the CURRENT slice may settle. The cursor advances
+;; on settle, so k == nx holds exactly once per slice; a duplicate
+;; receipt (k behind the cursor — the shape every double-tick replay
+;; produces) aborts with ERR_STALE before any money moves. Aborting (not
+;; discarding) is deliberate: state reverts atomically, the retry/
+;; slippage paths below keep their meaning, and the only producer of a
+;; stale receipt on-chain is a double-ticking executor — its own receipt
+;; failing is the desired outcome.
+(define
+  (on-slice)
+  (let
+    (
+      (id
+        (default
+          (near/json_get_str "order")
+          ""
+        )
+      )
+      (k
+        (default
+          (near/json_get_str "k")
+          "0"
+        )
+      )
+      (out
+        (near/promise_result 0)
+      )
+    )
+    (if
+      (=
+        k
+        (g id "nx" "0")
+      )
+      (let
+        (
+          (mo
+            (g id "mo" "0")
+          )
+        )
+        (if
+          (= out "")
+          (begin
+            (near/log "SLICE_RETRY")
+            (near/return "retry")
+          )
+          (if
+            (u128/lt out mo)
+            (begin
+              (near/log "SLICE_RETRY")
+              (near/return "retry")
+            )
+            (let
+              (
+                (fc
+                  (g id "fc" FEE_BPS)
+                )
+                (nx
+                  (g id "nx" "0")
+                )
+              )
+              (let
+                (
+                  (fb
+                    (if
+                      (u128/lt FEE_BPS fc)
+                      FEE_BPS
+                      fc
+                    )
+                  )
+                )
+                (let
+                  (
+                    (fee
+                      (u128/div
+                        (u128/mul out fb)
+                        BP_TOTAL
+                      )
+                    )
+                  )
+                  (let
+                    (
+                      (cut
+                        (u128/div
+                          (u128/mul out PROTO_BPS)
+                          BP_TOTAL
+                        )
+                      )
+                    )
+                    (let
+                      (
+                        (net
+                          (u128/sub out fee)
+                        )
+                      )
+                      (let
+                        (
+                          (net2
+                            (u128/sub net cut)
+                          )
+                        )
+                        (let
+                          (
+                            (fo
+                              (g id "fo" "0")
+                            )
+                          )
+                          (let
+                            (
+                              (fo2
+                                (u128/add fo net2)
+                              )
+                            )
+                            (let
+                              (
+                                (nx1
+                                  (u128/add nx "1")
+                                )
+                              )
+                              (p id "fo" fo2)
+                              (p id "nx" nx1)
+                              (if
+                                (u128/eq fee "0")
+                                0
+                                (near/transfer_u128
+                                  (sget
+                                    (str-cat id "|ex")
+                                    ""
+                                  )
+                                  fee
+                                )
+                              )
+                              (if
+                                (u128/eq cut "0")
+                                0
+                                (near/transfer_u128 BURN_ADDR cut)
+                              )
+                              (near/log
+                                (str-cat "filled:" k)
+                              )
+                              (near/return net2)
+                            )
+                          )
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+      (fail "ERR_STALE")
+    )
+  )
+)
 
-;; ── cancel — seller only, before the first slice is due ──
 (define (cancel)
   (let ((id (default (near/json_get_str "order_id") ""))
         (who (near/predecessor_account_id))
