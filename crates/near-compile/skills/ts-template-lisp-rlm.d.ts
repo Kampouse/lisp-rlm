@@ -130,6 +130,9 @@ declare function u128Lt(a: any, b: any): boolean;
 declare function u128Gt(a: any, b: any): boolean;
 declare function u128Eq(a: any, b: any): boolean;
 declare function u128IsZero(s: string): boolean;
+// conversions: NUM (blockHeight-style) → decimal str, and back to i64
+declare function u128FromNum(n: number): string;
+declare function u128ToNum(s: string): number;
 
 // ── the `near` namespace (member passthrough, camelCase auto-snakifies) ─
 

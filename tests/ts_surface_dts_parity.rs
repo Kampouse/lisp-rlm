@@ -62,6 +62,49 @@ fn math_surface_is_documented_in_dts_and_cheatsheet() {
     }
 }
 
+/// The u128 free-function surface: every `"u128Xxx" => "u128/…"` arm in
+/// the frontend's free-fn lowering table must be declared in the d.ts.
+/// u128FromNum/u128ToNum drifted for the whole life of the u128 surface
+/// (caught 2026-10-09 on examples/twap.ts) because the Math gate above
+/// doesn't see this table — now it's gated too.
+#[test]
+fn u128_free_fn_surface_is_documented_in_dts() {
+    let fe = fs::read_to_string(FRONTEND).expect("ts_frontend.rs readable");
+    let dts = fs::read_to_string(DTS).expect("d.ts readable");
+
+    // frontend side: scan the `"<name>" => "u128/<lisp>"` arms. The
+    // u128- prefix on the TS name filters member-map arms ("add" etc)
+    // that may share the `=> "u128/…` shape.
+    let mut lowered: Vec<&str> = Vec::new();
+    let mut rest = fe.as_str();
+    while let Some(i) = rest.find(" => \"u128/") {
+        let head = &rest[..i];
+        // name sits between the last TWO quotes of the head
+        if let Some(q) = head.rfind('"') {
+            if let Some(q2) = head[..q].rfind('"') {
+                let name = &head[q2 + 1..q];
+                if name.starts_with("u128") && !lowered.contains(&name) {
+                    lowered.push(name);
+                }
+            }
+        }
+        rest = &rest[i + 1..];
+    }
+    assert!(
+        lowered.len() >= 12,
+        "expected the full u128 free-fn set (12), found {lowered:?} — parser drift?"
+    );
+    for f in &lowered {
+        assert!(
+            dts.contains(&format!("declare function {f}(")),
+            "{f} lowers to a u128 builtin but is missing from the d.ts — \
+             update ts/lisp-rlm.d.ts (and re-copy to \
+             crates/near-compile/skills/ts-template-lisp-rlm.d.ts) in the \
+             same commit"
+        );
+    }
+}
+
 #[test]
 fn dts_free_functions_exist_in_frontend() {
     let fe = fs::read_to_string(FRONTEND).expect("ts_frontend.rs readable");
