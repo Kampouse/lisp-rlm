@@ -763,25 +763,40 @@ fn parse_and_compile_opts_labelled(
     let mut exprs = exprs;
     crate::clojure::desugar(&mut exprs);
 
+    pipeline_from_exprs(exprs, Some(source), near, typecheck, label)
+}
+/// Shared post-parse pipeline: gates, typecheck, prescans, define
+/// emission, implicit toplevel. BOTH compile entrypoints delegate here —
+/// this is the dedup that closed the source-vs-exprs emitter split
+/// (2026-10-08: the exprs path hand-reimplemented a subset and produced
+/// byte-different, differently-exported wasm for the same fixture).
+fn pipeline_from_exprs(
+    mut exprs: Vec<LispVal>,
+    source: Option<&str>,
+    near: bool,
+    typecheck: bool,
+    label: &str,
+) -> Result<WasmEmitter, String> {
     // Promise single-use lint (docs/promise-single-use.md Tier 1) — runs on
     // pre-desugar shapes? No: AFTER desugar, so sugar-expanded bodies are
     // covered too; consuming calls are host ops desugar leaves intact.
     // Line labels come from the raw source via token occurrence alignment.
     if typecheck && near {
-        crate::typing::checker::check_promise_single_use(Some(source), &exprs)?;
+        crate::typing::checker::check_promise_single_use(source, &exprs)?;
+        crate::typing::checker::check_resource_flow(source, &exprs)?;
     }
 
     // Type check pass — catches undefined vars, arity mismatches, type errors
     if typecheck {
-        crate::typing::type_check_program(&exprs, near)
-            .map_err(|e| crate::parser::annotate_type_error_label(&e, source, label))?;
+        crate::typing::type_check_program(&exprs, near).map_err(|e| match source {
+            Some(s) => crate::parser::annotate_type_error_label(&e, s, label),
+            None => e,
+        })?;
     }
 
-    // Storage schema validation — warns about reads without matching writes
-    if near {
-        // crate::typing::check_storage_schema(&exprs);
-        // crate::typing::check_set_value_positions(&exprs);
-    }
+    // Storage schema validation: deliberately NOT run here — the source
+    // path never ran it either (commented out); exprs-path parity requires
+    // the same no-op. Re-enable for BOTH paths in one place.
 
     let mut em = WasmEmitter::new();
 
@@ -1400,189 +1415,41 @@ pub fn compile_near_from_exprs_with_map(
     crate::helpers::run_deep(move || compile_near_from_exprs_with_map_inner(exprs))
 }
 
+/// Default export selection shared by both pipelines: prefer `run`, then
+/// `main`, then the last non-helper define. Single source of truth — the
+/// exprs path previously picked the LAST function unconditionally, so the
+/// same fixture exported a different `_run` depending on entrypoint.
+fn add_default_run_export(em: &mut WasmEmitter, names: &[String]) {
+    if em.exports.is_empty() {
+        if let Some(f) = names.iter().find(|n| *n == "run") {
+            let n = f.clone();
+            em.add_export(&n, "_run", false);
+        } else if let Some(f) = names.iter().find(|n| *n == "main") {
+            let n = f.clone();
+            em.add_export(&n, "_run", false);
+        } else if let Some(f) = names.iter().rev().find(|n| !n.starts_with("__")) {
+            let n = f.clone();
+            em.add_export(&n, "_run", false);
+        }
+    }
+}
+
 fn compile_near_from_exprs_with_map_inner(
     exprs: &[LispVal],
 ) -> Result<(Vec<u8>, serde_json::Value), String> {
-    // Promise single-use lint (source-less path: labels degrade to "line ?",
-    // the rejection still fires — see check_promise_single_use)
-    crate::typing::checker::check_promise_single_use(None, exprs)?;
+    // Thin client of the shared post-parse pipeline (dedup 2026-10-08):
+    // gates with source: None, then the SAME prescans/emission the source
+    // path runs. Export selection is unified in add_default_run_export.
+    let owned: Vec<LispVal> = exprs.to_vec();
+    let mut em = pipeline_from_exprs(owned, None, true, true, "near")?;
 
-    // Type check pass (source-less path: caller passes exprs; errors get no
-    // line annotation here — annotate_type_error needs the source text and
-    // runs at the source-level choke points instead)
-    crate::typing::type_check_program(exprs, true)?;
-
-    // Storage schema validation
+    // Default export selection — identical to the source path (same helper).
+    let names: Vec<String> = em.funcs.iter().map(|f| f.name.clone()).collect();
+    add_default_run_export(&mut em, &names);
     crate::typing::check_storage_schema(exprs);
     crate::typing::check_set_value_positions(exprs);
-
-    let mut em = WasmEmitter::new();
-
-    // Pre-scan: register export names BEFORE any body emits — near/call-await
-    // callback validation needs the full export table (export forms commonly
-    // sit at the bottom of the file). Mirrors parse_and_compile's pre-scan
-    // (found via cross-contract vault: from_exprs path missed it, 2026-09-01).
-    for e in exprs {
-        if let LispVal::List(items) = e {
-            if items.len() >= 3 {
-                if let (LispVal::Sym(s), LispVal::Str(en), LispVal::Sym(fn_)) =
-                    (&items[0], &items[1], &items[2])
-                {
-                    if s == "export" {
-                        let view = items.len() > 3 && matches!(&items[3], LispVal::Bool(true));
-                        em.add_export(fn_, en, view);
-                    }
-                }
-            }
-        }
-    }
-
-    // Pre-scan: register ALL function + value define names BEFORE any body
-    // emits, so forward references (helper defined below its caller,
-    // mutual recursion, consts used before their define) resolve. Without
-    // this the from_exprs path compiled defines strictly in source order —
-    // a call to a later-defined function died with "unknown function"
-    // (the checker pre-registers names for mutual recursion, so the
-    // checker PASSED and the emitter failed — found compiling the PLONK
-    // verifier; parse_and_compile's source path always had this scan).
-    for e in exprs {
-        if let LispVal::List(items) = e {
-            if items.len() >= 3 {
-                if let LispVal::Sym(s) = &items[0] {
-                    if s == "define" {
-                        // Function define: (define (name params...) body)
-                        if let LispVal::List(sig) = &items[1] {
-                            if !sig.is_empty() {
-                                if let LispVal::Sym(name) = &sig[0] {
-                                    if !em.funcs.iter().any(|f| &f.name == name) {
-                                        em.funcs.push(FuncDef {
-                                            name: name.clone(),
-                                            param_count: sig.len() - 1,
-                                            local_count: 0,
-                                            instrs: Vec::new(),
-                                            local_entries: None,
-                                            custom_type: None,
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                        // Value define: (define name value)
-                        if let LispVal::Sym(name) = &items[1] {
-                            if !em.funcs.iter().any(|f| &f.name == name) {
-                                em.funcs.push(FuncDef {
-                                    name: name.clone(),
-                                    param_count: 0,
-                                    local_count: 0,
-                                    instrs: Vec::new(),
-                                    local_entries: None,
-                                    custom_type: None,
-                                });
-                            }
-                            em.value_defines.insert(name.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    for e in exprs {
-        if let LispVal::List(items) = e {
-            if items.is_empty() {
-                continue;
-            }
-            // Handle (borsh-schema ...) — can have any number of args
-            if let LispVal::Sym(s) = &items[0] {
-                if s == "borsh-schema" {
-                    super::borsh::process_borsh_schema(&mut em, items)?;
-                }
-            }
-            if items.len() >= 3 {
-                if let (LispVal::Sym(s), LispVal::List(sig)) = (&items[0], &items[1]) {
-                    if s == "define" && !sig.is_empty() {
-                        if let LispVal::Sym(name) = &sig[0] {
-                            let params: Vec<String> = sig[1..]
-                                .iter()
-                                .map(|p| match p {
-                                    LispVal::Sym(s) => Ok(s.clone()),
-                                    _ => Err("param must be symbol".into()),
-                                })
-                                .collect::<Result<_, String>>()?;
-                            let (_ann, body_items) =
-                                crate::helpers::split_define_annotation(&items[2..]);
-                            let body = if body_items.len() > 1 {
-                                let mut b = vec![LispVal::Sym("begin".into())];
-                                b.extend(body_items.iter().cloned());
-                                LispVal::List(b)
-                            } else {
-                                body_items.first().cloned().unwrap_or(LispVal::Nil)
-                            };
-
-                            // Collect `::` int annotations for the raw-twin path
-                            if let LispVal::List(sig2) = &items[1] {
-                                if let Some(LispVal::Sym(n2)) = sig2.first() {
-                                    let (ann, _b) =
-                                        crate::helpers::split_define_annotation(&items[2..]);
-                                    if let Some(parts) = ann {
-                                        if let Ok(arrow) = crate::typing::parse_type_list(&parts) {
-                                            if let crate::typing::TcType::Arrow(args, ret) = arrow {
-                                                let all_int = !args.is_empty()
-                                                    && args.iter().all(|t| {
-                                                        matches!(
-                                                            t,
-                                                            crate::typing::TcType::Con(
-                                                                crate::typing::TcCon::Int
-                                                            )
-                                                        )
-                                                    })
-                                                    && matches!(
-                                                        ret.as_ref(),
-                                                        crate::typing::TcType::Con(
-                                                            crate::typing::TcCon::Int
-                                                        )
-                                                    );
-                                                if all_int {
-                                                    em.fn_int_annotations
-                                                        .insert(n2.clone(), (args.len(), true));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            em.emit_define(name, &params, &body)?;
-                        }
-                    }
-                }
-                // Value define: (define name value) — top-level const with a
-                // non-literal initializer (array, str-cat, …). The TS frontend
-                // emits these for `const K = <expr>;` that can't fold inline.
-                // Without this arm the form was SILENTLY SKIPPED in the
-                // from_exprs path (only parse_and_compile_opts had it), so any
-                // use of K failed with "undefined variable" (2026-09-13).
-                if let (LispVal::Sym(s2), LispVal::Sym(name)) = (&items[0], &items[1]) {
-                    if s2 == "define" {
-                        let value = &items[2];
-                        // Evaluate-once (see the twin arm above)
-                        em.memoize_next = true;
-                        em.emit_define(name, &[], value)?;
-                        em.value_defines.insert(name.clone());
-                    }
-                }
-                // Handle (export "name" fn_name is_view)
-                if let LispVal::Sym(s) = &items[0] {
-                    if s == "export" {
-                        if let (LispVal::Str(en), LispVal::Sym(fn_)) = (&items[1], &items[2]) {
-                            let view = items.len() > 3 && matches!(&items[3], LispVal::Bool(true));
-                            em.add_export(fn_, en, view);
-                        }
-                    }
-                }
-            }
-        }
-    }
     em.print_gas_table();
+
     let wasm = em.finish("_run");
     let mut map = serde_json::Map::new();
     for f in &em.funcs {

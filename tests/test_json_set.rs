@@ -27,6 +27,19 @@ fn has_near_mock() -> bool {
 fn run_near_mock(src: &str) -> String {
     let wasm =
         lisp_rlm_wasm::compile_near(src).unwrap_or_else(|e| panic!("compile_near failed: {}", e));
+    // Pipeline parity guard (2026-10-08, corpus-wide): source-path and
+    // exprs-path compilation must emit BYTE-IDENTICAL wasm for every
+    // fixture that runs through this helper.
+    {
+        let __exprs = lisp_rlm_wasm::parse_all(src)
+            .unwrap_or_else(|e| panic!("parse_all failed: {}", e));
+        let __wasm2 = lisp_rlm_wasm::compile_near_from_exprs(&__exprs)
+            .unwrap_or_else(|e| panic!("compile_near_from_exprs failed: {}", e));
+        assert_eq!(
+            &wasm, &__wasm2,
+            "pipeline divergence: source-path and exprs-path wasm differ"
+        );
+    }
     // unique per call: parallel tests raced on a fixed path (2026-08-31)
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);

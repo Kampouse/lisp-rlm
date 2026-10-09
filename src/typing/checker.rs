@@ -2387,6 +2387,818 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
 }
 
 /// Line label for one consuming-op occurrence.
+// ===== resource flow gate (arity / gas / money domain / deposit) =====
+// House invariants: checker-only, Err not panic, no new host fns, and the
+// soundness rule — hard reject ONLY what is provably wrong; everything
+// model-dependent degrades to a warning (eprintln, same precedent as the
+// cond-without-else warning) or silence.
+//
+// Slot maps transcribed from src/wasm_emit/call_near_promise.rs emitter
+// arms (a[i] indexes = list[i+1] in checker coords). `near/call` sugar has
+// gas at emitter slot 3 / deposit at 4 — the REVERSE of near/promise_then.
+//
+// Gas units are source literals (10000000000000 = 10 Tgas).
+
+/// Conservative callback floor model (gas units). Documented as a MODEL,
+/// never a proof: fires as a warning, never a hard error.
+const CB_FLOOR_BASE: i128 = 1_000_000_000_000; // 1 Tgas: receive + exec any receipt
+const CB_FLOOR_PER_HOST: i128 = 10_000_000_000; // 10 Ggas per host op (>= realistic mins)
+/// Mainnet per-transaction prepaid gas cap.
+const GAS_TX_CAP: i128 = 300_000_000_000_000; // 300 Tgas
+const U128_MAX_DEC: &str = "340282366920938463463374607431768211455";
+
+/// (expected_arity, gas_slot, amount_slot) in emitter coords.
+fn resource_op_info(op: &str) -> (Option<usize>, Option<usize>, Option<usize>) {
+    match op {
+        "near/promise_then" => (Some(6), Some(5), Some(4)),
+        "near/promise_create" => (Some(5), Some(4), Some(3)),
+        "near/promise_batch_create" => (Some(1), None, None),
+        "near/promise_batch_then" => (Some(2), None, None),
+        "near/promise_batch_action_function_call" => (Some(5), Some(4), Some(3)),
+        "near/promise_batch_action_function_call_weight" => (None, Some(4), Some(3)),
+        "near/promise_batch_action_transfer" => (Some(2), None, Some(1)),
+        "near/transfer" => (Some(2), None, Some(1)),
+        "near/transfer_u128" => (Some(2), None, Some(1)),
+        "near/call" => (Some(5), Some(3), Some(4)),
+        _ => (None, None, None),
+    }
+}
+
+/// u128-domain producers (string-decimal money domain, helpers.rs).
+fn is_u128_producer(op: &str) -> bool {
+    matches!(
+        op,
+        "u128/add"
+            | "u128/sub"
+            | "u128/mul"
+            | "u128/muldiv"
+            | "u128/div"
+            | "u128/mod"
+            | "u128/from-i64"
+            | "u128/from_i64"
+            | "u128/from_yocto"
+            | "u128/from_str"
+            | "u128/new"
+            | "u128/store"
+    )
+}
+
+/// u128 -> i64 truncators: result leaves the money domain.
+fn is_u128_truncator(op: &str) -> bool {
+    matches!(op, "u128/to-i64" | "u128/to_i64" | "u128/checked_to_i64" | "u128/fit_i64")
+}
+
+fn str_as_u128(s: &str) -> bool {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let t = s.trim_start_matches('0');
+    let max = U128_MAX_DEC.trim_start_matches('0');
+    t.len() < max.len() || (t.len() == max.len() && t <= max)
+}
+
+/// Abstract money domain.
+#[derive(Clone, PartialEq, Debug)]
+enum MVal {
+    /// Provable u128-domain value (decimal literal, u128 family, deposit).
+    U128,
+    /// One specific `attached_deposit` call site (identity for the
+    /// double-attach spend check).
+    Deposit(u32),
+    /// u128 truncated to i64 — legal i64, corruption at a money sink.
+    TruncI64,
+    /// The contract's own account id — (near/current_account_id).
+    SelfAcct,
+    /// Anything else. No opinion.
+    Opaque,
+}
+
+fn mjoin(a: MVal, b: MVal) -> MVal {
+    if a == b {
+        a
+    } else {
+        MVal::Opaque
+    }
+}
+
+/// Top-level function defines: name -> param count.
+fn collect_top_defns(exprs: &[LispVal]) -> std::collections::HashMap<String, usize> {
+    let mut defns = std::collections::HashMap::new();
+    for e in exprs {
+        if let LispVal::List(items) = e {
+            if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") {
+                if let Some(LispVal::List(header)) = items.get(1) {
+                    if let Some(LispVal::Sym(name)) = header.first() {
+                        defns.insert(name.clone(), header.len().saturating_sub(1));
+                    }
+                }
+            }
+        }
+    }
+    defns
+}
+
+/// Defn bodies (top-level function defines only).
+fn collect_bodies(exprs: &[LispVal]) -> std::collections::HashMap<String, Vec<LispVal>> {
+    let mut bodies = std::collections::HashMap::new();
+    for e in exprs {
+        if let LispVal::List(items) = e {
+            if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") {
+                if let Some(LispVal::List(header)) = items.get(1) {
+                    if let Some(LispVal::Sym(name)) = header.first() {
+                        if header.len() >= 2 && items.len() >= 3 {
+                            bodies.insert(name.clone(), items[2..].to_vec());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    bodies
+}
+
+fn count_hosts(val: &LispVal, acc: &mut i128) {
+    if let LispVal::List(items) = val {
+        if let Some(LispVal::Sym(h)) = items.first() {
+            if h.starts_with("near/") || h.starts_with("u128/") {
+                *acc += 1;
+            }
+        }
+        let start = if matches!(items.first(), Some(LispVal::Sym(_))) { 1 } else { 0 };
+        for it in &items[start..] {
+            count_hosts(it, acc);
+        }
+    }
+}
+
+fn collect_callees(val: &LispVal, defns: &std::collections::HashMap<String, usize>, out: &mut std::collections::HashSet<String>) {
+    if let LispVal::List(items) = val {
+        if let Some(LispVal::Sym(h)) = items.first() {
+            if defns.contains_key(h) {
+                out.insert(h.clone());
+            }
+        }
+        let start = if matches!(items.first(), Some(LispVal::Sym(_))) { 1 } else { 0 };
+        for it in &items[start..] {
+            collect_callees(it, defns, out);
+        }
+    }
+}
+
+/// Static gas-literal floor of a defn closure: sum of attached-gas literals
+/// + transitive callees' sums, each defn counted once (cycle-safe). This is
+/// a LOWER bound on the happy-path attach total — every listed site must
+/// execute at least once for the method to do its job.
+fn gas_floor_of(
+    defn: &str,
+    bodies: &std::collections::HashMap<String, Vec<LispVal>>,
+    defns: &std::collections::HashMap<String, usize>,
+    memo: &mut std::collections::HashMap<String, i128>,
+    stack: &mut Vec<String>,
+) -> i128 {
+    if let Some(v) = memo.get(defn) {
+        return *v;
+    }
+    if stack.iter().any(|s| s == defn) {
+        return 0;
+    }
+    stack.push(defn.to_string());
+    let mut total = 0i128;
+    if let Some(bs) = bodies.get(defn) {
+        for b in bs {
+            count_gas_literals(b, &mut total);
+        }
+        let mut callees = std::collections::HashSet::new();
+        for b in bs {
+            collect_callees(b, defns, &mut callees);
+        }
+        for c in callees {
+            total += gas_floor_of(&c, bodies, defns, memo, stack);
+        }
+    }
+    stack.pop();
+    memo.insert(defn.to_string(), total);
+    total
+}
+
+/// Sum attached-gas literals inside an expression tree.
+fn count_gas_literals(val: &LispVal, acc: &mut i128) {
+    if let LispVal::List(items) = val {
+        if let Some(LispVal::Sym(h)) = items.first() {
+            let (_, gas_slot, _) = resource_op_info(h);
+            if let Some(g) = gas_slot {
+                if let Some(LispVal::Num(n)) = items.get(g + 1) {
+                    if *n > 0 {
+                        *acc += *n as i128;
+                    }
+                }
+            }
+        }
+        let start = if matches!(items.first(), Some(LispVal::Sym(_))) { 1 } else { 0 };
+        for it in &items[start..] {
+            count_gas_literals(it, acc);
+        }
+    }
+}
+
+/// Static host-op floor of a defn closure (each defn counted once).
+fn hosts_closure_of(
+    defn: &str,
+    bodies: &std::collections::HashMap<String, Vec<LispVal>>,
+    defns: &std::collections::HashMap<String, usize>,
+    memo: &mut std::collections::HashMap<String, i128>,
+    stack: &mut Vec<String>,
+) -> i128 {
+    if let Some(v) = memo.get(defn) {
+        return *v;
+    }
+    if stack.iter().any(|s| s == defn) {
+        return 0;
+    }
+    stack.push(defn.to_string());
+    let mut hosts = 0i128;
+    if let Some(bs) = bodies.get(defn) {
+        for b in bs {
+            count_hosts(b, &mut hosts);
+        }
+        let mut callees = std::collections::HashSet::new();
+        for b in bs {
+            collect_callees(b, defns, &mut callees);
+        }
+        for c in callees {
+            hosts += hosts_closure_of(&c, bodies, defns, memo, stack);
+        }
+    }
+    stack.pop();
+    memo.insert(defn.to_string(), hosts);
+    hosts
+}
+
+fn fmt_tgas(g: i128) -> String {
+    if g % 1_000_000_000_000 == 0 {
+        format!("{} Tgas", g / 1_000_000_000_000)
+    } else {
+        format!("{} gas", g)
+    }
+}
+
+/// Line label reusing the promise gate's scanner (consuming ops only;
+/// other ops degrade to `line ?` — same convention as the exprs path).
+fn res_line(
+    op_lines: &std::collections::HashMap<&str, Vec<usize>>,
+    op: &str,
+    nth: usize,
+) -> String {
+    match op_lines.get(op).and_then(|l| l.get(nth)) {
+        Some(l) => format!("line {}", l),
+        None => "line ?".to_string(),
+    }
+}
+
+/// Shared context for the check walker.
+struct ResCx<'a> {
+    defns: &'a std::collections::HashMap<String, usize>,
+    bodies: &'a std::collections::HashMap<String, Vec<LispVal>>,
+    param_u128: &'a std::collections::HashMap<(String, usize), MVal>,
+    op_lines: &'a std::collections::HashMap<&'a str, Vec<usize>>,
+    seen: std::collections::HashMap<String, usize>,
+    errs: Vec<String>,
+    warns: Vec<String>,
+    /// attached_deposit identity -> number of attach sites it reached.
+    deposit_sites: std::collections::HashMap<u32, usize>,
+    next_deposit: u32,
+    /// storage money stamps: key literal -> () — a key written with a
+    /// provable u128 value is a money key; reads of it seed U128.
+    money_keys: std::collections::HashSet<String>,
+}
+
+/// Pass 1: compute per-(defn, pos) param provenance (U128 or not) by walking
+/// each defn body with unknown params as Opaque and recording arg values at
+/// call sites; joined all-equal-or-Opaque across sites. Cross-defn recursion
+/// is one level deep (v1 boundary — documented): param provenance reflects
+/// DIRECT call sites only.
+fn seed_pass(
+    exprs: &[LispVal],
+    defns: &std::collections::HashMap<String, usize>,
+) -> std::collections::HashMap<(String, usize), MVal> {
+    fn swalk(
+        val: &LispVal,
+        env: &mut std::collections::HashMap<String, MVal>,
+        global_env: &std::collections::HashMap<String, MVal>,
+        param_u128: &mut std::collections::HashMap<(String, usize), MVal>,
+        defns: &std::collections::HashMap<String, usize>,
+    ) -> MVal {
+        let list = match val {
+            LispVal::List(items) if !items.is_empty() => items,
+            LispVal::Sym(n) => return env
+                .get(n)
+                .or_else(|| global_env.get(n))
+                .cloned()
+                .unwrap_or(MVal::Opaque),
+            LispVal::Str(s) => {
+                return if str_as_u128(s) {
+                    MVal::U128
+                } else {
+                    MVal::Opaque
+                };
+            }
+            _ => return MVal::Opaque,
+        };
+        let head = match &list[0] {
+            LispVal::Sym(s) => s.as_str(),
+            _ => return MVal::Opaque,
+        };
+        if matches!(head, "let*" | "let") {
+            let mut saved: Vec<(String, MVal)> = Vec::new();
+            if let Some(LispVal::List(bindings)) = list.get(1) {
+                for b in bindings {
+                    if let LispVal::List(bi) = b {
+                        if bi.len() >= 2 {
+                            let v = swalk(&bi[1], env, global_env, param_u128, defns);
+                            if let LispVal::Sym(n) = &bi[0] {
+                                let prev =
+                                    env.insert(n.clone(), v).unwrap_or(MVal::Opaque);
+                                saved.push((n.clone(), prev));
+                            }
+                        }
+                    }
+                }
+            }
+            let mut last = MVal::Opaque;
+            for it in &list[2..] {
+                last = swalk(it, env, global_env, param_u128, defns);
+            }
+            for (n, v) in saved {
+                env.insert(n, v);
+            }
+            return last;
+        }
+        if matches!(head, "+" | "-" | "*" | "/" | "%" | "mod") {
+            let mut ret = MVal::Opaque;
+            for a in &list[1..] {
+                let v = swalk(a, env, global_env, param_u128, defns);
+                ret = if ret == MVal::Opaque { v } else { mjoin(ret, v) };
+            }
+            return ret;
+        }
+        if is_u128_producer(head) {
+            for a in &list[1..] {
+                swalk(a, env, global_env, param_u128, defns);
+            }
+            return MVal::U128;
+        }
+        if is_u128_truncator(head) {
+            for a in &list[1..] {
+                swalk(a, env, global_env, param_u128, defns);
+            }
+            return MVal::TruncI64;
+        }
+        if head == "near/attached_deposit" || head == "near/current_account_id" {
+            return if head == "near/attached_deposit" {
+                MVal::U128
+            } else {
+                MVal::SelfAcct
+            };
+        }
+        if defns.contains_key(head) {
+            for (pos, a) in list[1..].iter().enumerate() {
+                let v = swalk(a, env, global_env, param_u128, defns);
+                if let Some(p) = defns.get(head) {
+                    if pos < *p {
+                        let key = (head.to_string(), pos);
+                        let joined = match param_u128.get(&key) {
+                            None => v,
+                            Some(prev) => mjoin(prev.clone(), v),
+                        };
+                        param_u128.insert(key, joined);
+                    }
+                }
+            }
+            return MVal::Opaque;
+        }
+        let mut ret = MVal::Opaque;
+        for a in &list[1..] {
+            let v = swalk(a, env, global_env, param_u128, defns);
+            if v != MVal::Opaque {
+                ret = mjoin(ret, v);
+            }
+        }
+        ret
+    }
+
+    let mut param_u128: std::collections::HashMap<(String, usize), MVal> =
+        std::collections::HashMap::new();
+    let mut global_env: std::collections::HashMap<String, MVal> =
+        std::collections::HashMap::new();
+    for e in exprs {
+        if let LispVal::List(items) = e {
+            if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") {
+                if let Some(LispVal::List(header)) = items.get(1) {
+                    if let Some(LispVal::Sym(name)) = header.first() {
+                        if header.len() == 1 {
+                            // (define name value)
+                            if items.len() >= 3 {
+                                let mut env = std::collections::HashMap::new();
+                                let v = swalk(
+                                    &items[2],
+                                    &mut env,
+                                    &global_env,
+                                    &mut param_u128,
+                                    defns,
+                                );
+                                global_env.insert(name.clone(), v);
+                            }
+                        } else {
+                            // function define: walk the whole body
+                            let mut env = std::collections::HashMap::new();
+                            for b in &items[2..] {
+                                swalk(b, &mut env, &global_env, &mut param_u128, defns);
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
+            // top-level non-define
+            let mut env = std::collections::HashMap::new();
+            swalk(e, &mut env, &global_env, &mut param_u128, defns);
+        }
+    }
+    param_u128
+}
+
+/// Pass 2 walker: enforces the provable checks, collects model-dependent
+/// warnings. `cur_defn` is "" at top level.
+fn cwalk(
+    val: &LispVal,
+    env: &mut std::collections::HashMap<String, MVal>,
+    global_env: &std::collections::HashMap<String, MVal>,
+    cx: &mut ResCx,
+    cur_defn: &str,
+) -> MVal {
+    let list = match val {
+        LispVal::List(items) if !items.is_empty() => items,
+        LispVal::Sym(n) => {
+            return env
+                .get(n)
+                .or_else(|| global_env.get(n))
+                .cloned()
+                .unwrap_or(MVal::Opaque)
+        }
+        LispVal::Str(s) => {
+            return if str_as_u128(s) {
+                MVal::U128
+            } else {
+                MVal::Opaque
+            };
+        }
+        _ => return MVal::Opaque,
+    };
+    let head = match &list[0] {
+        LispVal::Sym(s) => s.as_str(),
+        _ => {
+            for it in list.iter() {
+                cwalk(it, env, global_env, cx, cur_defn);
+            }
+            return MVal::Opaque;
+        }
+    };
+
+    // (let* / let BINDINGS BODY...)
+    if matches!(head, "let*" | "let") {
+        let mut saved: Vec<(String, MVal)> = Vec::new();
+        if let Some(LispVal::List(bindings)) = list.get(1) {
+            for b in bindings {
+                if let LispVal::List(bi) = b {
+                    if bi.len() >= 2 {
+                        let v = cwalk(&bi[1], env, global_env, cx, cur_defn);
+                        if let LispVal::Sym(n) = &bi[0] {
+                            let prev = env.insert(n.clone(), v).unwrap_or(MVal::Opaque);
+                            saved.push((n.clone(), prev));
+                        }
+                    }
+                }
+            }
+        }
+        let mut last = MVal::Opaque;
+        for it in &list[2..] {
+            last = cwalk(it, env, global_env, cx, cur_defn);
+        }
+        for (n, v) in saved {
+            env.insert(n, v);
+        }
+        return last;
+    }
+
+    // Raw arithmetic on a provable u128 — the TS money-taint rule, Lisp side.
+    if matches!(head, "+" | "-" | "*" | "/" | "%" | "mod") {
+        let mut any_u128 = false;
+        let mut ret = MVal::Opaque;
+        for a in &list[1..] {
+            let v = cwalk(a, env, global_env, cx, cur_defn);
+            if v == MVal::U128 {
+                any_u128 = true;
+            }
+            ret = if ret == MVal::Opaque { v } else { mjoin(ret, v) };
+        }
+        if any_u128 {
+            cx.errs.push(format!(
+                "error: raw arithmetic on a u128 money value corrupts its decimal string — use the u128 family, e.g. (u128/add a b) — {}",
+                res_line(cx.op_lines, "__arith__", 0) // degrades to line ?
+            ));
+            return MVal::U128; // result stays in the (corrupt) domain for sinks
+        }
+        return ret;
+    }
+
+    if is_u128_producer(head) {
+        for a in &list[1..] {
+            cwalk(a, env, global_env, cx, cur_defn);
+        }
+        return MVal::U128;
+    }
+    if is_u128_truncator(head) {
+        for a in &list[1..] {
+            cwalk(a, env, global_env, cx, cur_defn);
+        }
+        return MVal::TruncI64;
+    }
+    if head == "near/attached_deposit" || head == "near/attached_deposit_u128" {
+        // Each deposit-reader call site mints a distinct identity: two sites
+        // = two independent reads (legal). One identity flowing into 2+
+        // attach slots = provable double-spend of the attached deposit.
+        // (Checker typings: attached_deposit : () -> int,
+        // attached_deposit_u128 : () -> str — the u128-domain reader.)
+        let id = cx.next_deposit;
+        cx.next_deposit += 1;
+        return MVal::Deposit(id);
+    }
+    if head == "near/current_account_id" {
+        return MVal::SelfAcct;
+    }
+
+    // resource-constrained ops
+    let (want_arity, gas_slot, amt_slot) = resource_op_info(head);
+    if want_arity.is_some() || gas_slot.is_some() || amt_slot.is_some() {
+        let idx = cx.seen.entry(head.to_string()).or_insert(0);
+        let this_idx = *idx;
+        *idx += 1;
+        if let Some(w) = want_arity {
+            if list.len() - 1 != w {
+                cx.errs.push(format!(
+                    "error: {} takes {} argument{}, got {} — {}",
+                    head,
+                    w,
+                    if w == 1 { "" } else { "s" },
+                    list.len() - 1,
+                    res_line(cx.op_lines, head, this_idx)
+                ));
+                for a in &list[1..] {
+                    cwalk(a, env, global_env, cx, cur_defn);
+                }
+                return MVal::Opaque;
+            }
+        }
+        // gas slot: literal sanity
+        if let Some(g) = gas_slot {
+            if let Some(arg) = list.get(g + 1) {
+                if let LispVal::Num(n) = arg {
+                    let gv = *n as i128;
+                    if gv <= 0 {
+                        cx.warns.push(format!(
+                            "warning: {} attaches {} gas — a zero/negative gas receipt cannot execute (the parent tx still commits) — {}",
+                            head,
+                            gv,
+                            res_line(cx.op_lines, head, this_idx)
+                        ));
+                    } else if gv > GAS_TX_CAP {
+                        cx.errs.push(format!(
+                            "error: {} attaches {} — over the {} per-transaction limit — {}",
+                            head,
+                            fmt_tgas(gv),
+                            fmt_tgas(GAS_TX_CAP),
+                            res_line(cx.op_lines, head, this_idx)
+                        ));
+                    }
+                }
+            }
+        }
+        // amount slot: money domain
+        if let Some(m) = amt_slot {
+            if let Some(arg) = list.get(m + 1) {
+                let v = cwalk(arg, env, global_env, cx, cur_defn);
+                if v == MVal::TruncI64 {
+                    cx.errs.push(format!(
+                        "error: {} amount was truncated to i64 (u128/to-i64) — yocto-scale values overflow i64; keep the u128 domain — {}",
+                        head,
+                        res_line(cx.op_lines, head, this_idx)
+                    ));
+                }
+                if let MVal::Deposit(id) = v {
+                    let n = cx.deposit_sites.entry(id).or_insert(0);
+                    *n += 1;
+                    if *n == 2 {
+                        cx.errs.push(format!(
+                            "error: the value of one (near/attached_deposit) is attached to two promise operations — the second attach spends funds the tx does not have — {}",
+                            res_line(cx.op_lines, head, this_idx)
+                        ));
+                    }
+                }
+                match arg {
+                    LispVal::Str(s) if !s.is_empty() && !str_as_u128(s) => {
+                        cx.errs.push(format!(
+                            "error: {} amount '{}' is not a decimal string — the u128 parse traps at runtime — {}",
+                            head,
+                            s,
+                            res_line(cx.op_lines, head, this_idx)
+                        ));
+                    }
+                    LispVal::Sym(_) if v == MVal::Opaque => {
+                        // unknown ident at a money slot: no opinion (could be
+                        // a param seeded U128 via another path — pass1 handles
+                        // what is provable)
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // storage money stamps: (storage_write "key" <u128>) marks "key";
+    // reads of a stamped literal key seed U128. Sound direction: only
+    // literal keys are tracked (computed keys degrade to no opinion).
+    if (head == "near/storage_write" || head == "near/storage_set") && list.len() == 3 {
+        let v = cwalk(&list[2], env, global_env, cx, cur_defn);
+        if let (LispVal::Str(k), true) = (&list[1], matches!(v, MVal::U128)) {
+            cx.money_keys.insert(k.clone());
+        }
+        return MVal::Opaque;
+    }
+    if (head == "near/storage_get" || head == "near/storage_read") && list.len() == 2 {
+        if let LispVal::Str(k) = &list[1] {
+            if cx.money_keys.contains(k) {
+                return MVal::U128;
+            }
+        }
+        let v = cwalk(&list[1], env, global_env, cx, cur_defn);
+        return match v {
+            MVal::U128 => MVal::U128, // computed key proven to be money
+            _ => MVal::Opaque,
+        };
+    }
+
+    // same-program callback: existence (warning) + floor vs attached (warning)
+    if head == "near/promise_then" {
+        // checker coords: list[1]=promise list[2]=account list[3]=method
+        // list[4]=args list[5]=amount list[6]=gas
+        let acct_v = match list.get(2) {
+            Some(a) => cwalk(a, env, global_env, cx, cur_defn),
+            None => MVal::Opaque,
+        };
+        if let (Some(LispVal::Str(mname)), true) = (list.get(3), acct_v == MVal::SelfAcct) {
+            let this_idx = cx.seen.get(head).copied().unwrap_or(1).saturating_sub(1);
+            if !cx.defns.contains_key(mname) {
+                cx.warns.push(format!(
+                    "warning: promise_then callback '{}' is not defined in this program — on mainnet that receipt dies with MethodNotFound (the parent tx still commits) — {}",
+                    mname,
+                    res_line(cx.op_lines, head, this_idx)
+                ));
+            } else {
+                // floor model (warning only): receipt base + one minimum per
+                // host op in the callback's transitive same-program closure.
+                let mut memo = std::collections::HashMap::new();
+                let mut stack = Vec::new();
+                let hosts =
+                    hosts_closure_of(mname, cx.bodies, cx.defns, &mut memo, &mut stack);
+                let cb_floor = CB_FLOOR_BASE + hosts * CB_FLOOR_PER_HOST;
+                if let Some(LispVal::Num(n)) = list.get(6) {
+                    let attached = *n as i128;
+                    if attached > 0 && cb_floor > attached {
+                        cx.warns.push(format!(
+                            "warning: callback '{}' static floor is ~{} (receipt base + {} host-op minimums) but only {} is attached — the callback may exhaust its gas — {}",
+                            mname,
+                            fmt_tgas(cb_floor),
+                            hosts,
+                            fmt_tgas(attached),
+                            res_line(cx.op_lines, head, this_idx)
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // defn call: walk args; provenance comes from the pass-1 param seeds
+    if cx.defns.contains_key(head) {
+        for a in &list[1..] {
+            cwalk(a, env, global_env, cx, cur_defn);
+        }
+        return MVal::Opaque;
+    }
+
+    // generic form: walk children, join non-opaque results
+    let mut ret = MVal::Opaque;
+    for a in &list[1..] {
+        let v = cwalk(a, env, global_env, cx, cur_defn);
+        if v != MVal::Opaque {
+            ret = mjoin(ret, v);
+        }
+    }
+    ret
+}
+
+/// Resource flow gate. Runs on BOTH pipelines next to the promise
+/// single-use gate. Provable violations -> Err; model-dependent findings
+/// -> eprintln warnings.
+pub fn check_resource_flow(source: Option<&str>, exprs: &[LispVal]) -> Result<(), String> {
+    let op_lines = promise_op_lines(source);
+    let defns = collect_top_defns(exprs);
+    let bodies = collect_bodies(exprs);
+    let param_u128 = seed_pass(exprs, &defns);
+
+    let mut cx = ResCx {
+        defns: &defns,
+        bodies: &bodies,
+        param_u128: &param_u128,
+        op_lines: &op_lines,
+        seen: std::collections::HashMap::new(),
+        errs: Vec::new(),
+        warns: Vec::new(),
+        deposit_sites: std::collections::HashMap::new(),
+        next_deposit: 0,
+        money_keys: std::collections::HashSet::new(),
+    };
+
+    // walk each defn body with params seeded from pass-1 provenance
+    for e in exprs {
+        if let LispVal::List(items) = e {
+            if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") {
+                if let Some(LispVal::List(header)) = items.get(1) {
+                    if let Some(LispVal::Sym(name)) = header.first() {
+                        if header.len() > 1 {
+                            let mut env: std::collections::HashMap<String, MVal> =
+                                std::collections::HashMap::new();
+                            let np = header.len() - 1;
+                            for (pos, p) in header[1..].iter().enumerate() {
+                                if pos < np {
+                                    if let LispVal::Sym(n) = p {
+                                        let seeded = param_u128
+                                            .get(&(name.clone(), pos))
+                                            .cloned()
+                                            .unwrap_or(MVal::Opaque);
+                                        env.insert(n.clone(), seeded);
+                                    }
+                                }
+                            }
+                            for b in &items[2..] {
+                                cwalk(b, &mut env, &mut std::collections::HashMap::new(), &mut cx, name);
+                            }
+                        } else if items.len() >= 3 {
+                            // (define name value)
+                            let mut env = std::collections::HashMap::new();
+                            let mut g: std::collections::HashMap<String, MVal> =
+                                std::collections::HashMap::new();
+                            cwalk(&items[2], &mut env, &mut g, &mut cx, name);
+                        }
+                        continue;
+                    }
+                }
+            }
+            // top-level non-define
+            let mut env = std::collections::HashMap::new();
+            cwalk(e, &mut env, &mut std::collections::HashMap::new(), &mut cx, "");
+        }
+    }
+
+    // per-defn closure gas floor vs the tx cap (static lower bound)
+    {
+        let mut memo = std::collections::HashMap::new();
+        let mut stack = Vec::new();
+        for name in defns.keys() {
+            let total = gas_floor_of(name, &bodies, &defns, &mut memo, &mut stack);
+            if total > GAS_TX_CAP {
+                cx.errs.push(format!(
+                    "error: method '{}' attaches at least {} in static gas literals across its call closure — over the {} per-transaction limit",
+                    name,
+                    fmt_tgas(total),
+                    fmt_tgas(GAS_TX_CAP)
+                ));
+            }
+        }
+    }
+
+    for w in &cx.warns {
+        eprintln!("{}", w);
+    }
+    if cx.errs.is_empty() {
+        Ok(())
+    } else {
+        cx.errs.sort();
+        Err(cx.errs.join("\n"))
+    }
+}
+
+
 fn label_of_occ(
     op_lines: &std::collections::HashMap<&str, Vec<usize>>,
     op: &str,
