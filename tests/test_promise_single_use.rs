@@ -174,3 +174,64 @@ fn two_hop_chain_rejected_and_self_recursion_terminates() {
     compile_src(rec, "selfrec")
         .expect("self-recursive forwarder must terminate and compile");
 }
+
+// ---------------------------------------------------------------------------
+// Composite carrier flow (2026-10-08, v3 value model): promise handles inside
+// (list ...) tuples flow elementwise through call edges; car/first and
+// cdr/rest peel tuples positionally. Ambiguity degrades to Opaque (the
+// runtime trap backstops), never to a false positive.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tuple_carrier_double_consume_is_rejected() {
+    // The handle rides a (list p "meta") tuple into two callees; each
+    // consumes (car t) once. Static total = 2 → compile error.
+    let src = r#"(define (use1 t) (near/promise_then (car t) (near/current_account_id) "cb1" "{}" "0" 10000000000000))
+(define (use2 t) (near/promise_then (car t) (near/current_account_id) "cb2" "{}" "0" 10000000000000))
+(define (main)
+  (let* ((p (near/promise_batch_create "a.test.near"))
+         (t (list p "meta")))
+    (let* ((b1 (use1 t)) (b2 (use2 t)))
+      b1)))
+"#;
+    let err =
+        compile_src(src, "cartuple").expect_err("tuple-carried double consume must be rejected");
+    assert!(
+        err.contains("consumed 2 times across calls"),
+        "tuple-carrier rejection must use the across-calls message, got: {err}"
+    );
+}
+
+#[test]
+fn ground_tuple_carrier_double_consume_is_rejected() {
+    // v3 closes the ground-tuple gap: the handle sits in the CDR position and
+    // is peeled by (car (cdr t)); both call paths still consume it.
+    let src = r#"(define (use1 t) (near/promise_then (car (cdr t)) (near/current_account_id) "cb1" "{}" "0" 10000000000000))
+(define (use2 t) (use1 t))
+(define (main)
+  (let* ((p (near/promise_batch_create "a.test.near"))
+         (t (list "meta" p)))
+    (let* ((b1 (use1 t)) (b2 (use2 t)))
+      b1)))
+"#;
+    let err =
+        compile_src(src, "cdrtuple").expect_err("ground-tuple double consume must be rejected");
+    assert!(
+        err.contains("consumed 2 times"),
+        "ground-tuple rejection must state the count, got: {err}"
+    );
+}
+
+#[test]
+fn tuple_carrier_single_use_compiles() {
+    // One consumption path through a tuple carrier is legal — false-positive
+    // guard for the tuple edge logic.
+    let src = r#"(define (use1 t) (near/promise_then (car t) (near/current_account_id) "cb" "{}" "0" 10000000000000))
+(define (main)
+  (let* ((p (near/promise_batch_create "a.test.near"))
+         (t (list p "meta")))
+    (let* ((r (use1 t)))
+      r)))
+"#;
+    compile_src(src, "tuplesingle").expect("single-use tuple-carried promise must compile");
+}

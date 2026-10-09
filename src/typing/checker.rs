@@ -1686,52 +1686,100 @@ const PROMISE_CONSUMERS: &[&str] = &[
     "near/promise_and",
 ];
 
-#[derive(Clone)]
+/// Abstract promise-flow value. Handles carry a unique origin id assigned at
+/// their creating expression; tuples carry elementwise values; everything
+/// else is opaque (top). Joins are all-equal-or-Opaque: ambiguity degrades
+/// to Opaque, which records no flow — the near-mock trap stays the backstop.
+/// Soundness: we only ever ADD detections for statically provable flows, so
+/// no legal program can be falsely rejected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AVal {
+    Handle(u32),
+    Tuple(Vec<AVal>),
+    Opaque,
+}
+
+/// Join a set of possible values: all-equal keeps the value, any divergence
+/// collapses to Opaque.
+fn join_vals(vs: &[AVal]) -> AVal {
+    if vs.len() == 1 {
+        return vs[0].clone();
+    }
+    if vs.iter().all(|v| *v == vs[0]) {
+        return vs[0].clone();
+    }
+    AVal::Opaque
+}
+
+fn origin_ids(v: &AVal, out: &mut Vec<u32>) {
+    match v {
+        AVal::Handle(h) => out.push(*h),
+        AVal::Tuple(vs) => {
+            for v in vs {
+                origin_ids(v, out);
+            }
+        }
+        AVal::Opaque => {}
+    }
+}
+
+/// One consuming use of a handle origin.
+#[derive(Clone, Debug)]
 struct PromiseUse {
     defn: String,
-    binding: String,
+    /// source-level symbol text at the consuming position (display only)
+    name: String,
     op: String,
-    /// index of this op occurrence within the walked program (source order)
+    /// consuming-op occurrence within the program (single-pass source order)
     occurrence: usize,
+    origin: u32,
 }
 
-/// One flow edge: a promise value flows as an argument into a callee param.
-#[derive(Clone)]
-struct FlowEdge {
+/// A call to a known defn with computed argument values.
+#[derive(Clone, Debug)]
+struct CallEdge {
+    caller: String,
     callee: String,
-    /// callee param index (0-based)
-    pos: usize,
+    vals: Vec<AVal>,
 }
 
-struct DefnInfo {
-    params: Vec<String>,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum BindKind {
-    /// let*-bound promise producer in the current defn (or top level)
-    Local,
-    /// parameter of the current defn (one runtime value per call)
-    Param,
-}
-
-/// Per-program walk context. One walk produces everything both tiers need:
-/// direct consuming uses (local + param) and call-graph flow edges.
-struct FlowCx<'a> {
-    defns: &'a std::collections::HashMap<String, DefnInfo>,
-    op_lines: &'a std::collections::HashMap<&'a str, Vec<usize>>,
-    occurrence: std::collections::HashMap<&'static str, usize>,
-    tracked: std::collections::HashMap<String, BindKind>,
-    /// consuming uses of let-bound promise values, keyed by (defn, binding)
+/// Per-defn consumption summary from one full program pass.
+#[derive(Default)]
+struct Summary {
     uses: Vec<PromiseUse>,
-    /// consuming uses of defn params, keyed by (defn, param)
-    param_uses: std::collections::HashMap<(String, String), Vec<PromiseUse>>,
-    /// flow edges out of let-bound values, keyed by (defn, binding)
-    local_flows: std::collections::HashMap<(String, String), Vec<FlowEdge>>,
-    /// flow edges out of defn params, keyed by (defn, param)
-    param_flows: std::collections::HashMap<(String, String), Vec<FlowEdge>>,
+    calls: Vec<CallEdge>,
 }
 
+/// Origin registry: creating defn for each handle origin.
+#[derive(Default)]
+struct OriginInfo {
+    creator: String,
+}
+
+/// Static promise-single-use gate (2026-10-08, v3 origin flow).
+///
+/// Model: every producer/consuming call mints a fresh handle origin. Each
+/// pass evaluates expressions to AVals, records consuming uses per origin,
+/// and records call edges carrying argument values (tuples flow
+/// elementwise through car/cdr). A fixpoint joins caller-provided values
+/// into callee param envs by re-passing the whole program until param
+/// values stabilize; origin ids are round-stable (counter reset per round,
+/// deterministic traversal), so the fixpoint terminates.
+///
+/// Per-origin transitive consumption is counted from the origin's creator
+/// defn through onward edges, with memoization and an on-stack cycle guard
+/// (self-recursive forwarding terminates; per-iteration re-consume of a
+/// freshly minted handle stays the near-mock trap's job — statically
+/// unbounded).
+///
+/// Rejections:
+/// - local: 2+ consuming uses of one origin inside its creator defn
+///   (byte-stable message shape)
+/// - across calls: transitive total of one origin reaches 2+
+///
+/// Boundaries: params with divergent values from multiple call sites join
+/// to Opaque; unknown callees, computed non-tuple expressions and shadowed
+/// lambda params stay Opaque — no flow recorded, runtime trap backstops.
 fn promise_op_lines(source: Option<&str>) -> std::collections::HashMap<&str, Vec<usize>> {
     // Token-scan the source: byte offset of every occurrence of each op name.
     // With no source text (exprs-only path) the map stays empty and every
@@ -1778,182 +1826,14 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
     // Pre-pass: top-level function defines, for call-edge resolution.
     // Shape: (define (name p1 p2 ...) BODY...) — params are the header's
     // trailing siblings, not a nested list.
-    let mut defns: std::collections::HashMap<String, DefnInfo> = std::collections::HashMap::new();
+    let mut defns: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     for e in exprs {
         if let LispVal::List(items) = e {
             if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") {
                 if let Some(LispVal::List(header)) = items.get(1) {
                     if let Some(LispVal::Sym(name)) = header.first() {
-                        let ps: Vec<String> = header[1..]
-                            .iter()
-                            .filter_map(|p| match p {
-                                LispVal::Sym(s) => Some(s.clone()),
-                                _ => None,
-                            })
-                            .collect();
-                        defns.insert(name.clone(), DefnInfo { params: ps });
-                    }
-                }
-            }
-        }
-    }
-
-    let mut cx = FlowCx {
-        defns: &defns,
-        op_lines: &op_lines,
-        occurrence: std::collections::HashMap::new(),
-        tracked: std::collections::HashMap::new(),
-        uses: Vec::new(),
-        param_uses: std::collections::HashMap::new(),
-        local_flows: std::collections::HashMap::new(),
-        param_flows: std::collections::HashMap::new(),
-    };
-
-    fn walk(val: &LispVal, cur_defn: &str, cx: &mut FlowCx) {
-        if let LispVal::List(items) = val {
-            if items.is_empty() {
-                return;
-            }
-            let head = match &items[0] {
-                LispVal::Sym(s) => Some(s.as_str()),
-                _ => None,
-            };
-
-            // (let* / let BINDINGS BODY...) — bindings introduce promise
-            // values; later bindings see earlier ones (let* semantics).
-            if matches!(head, Some("let*") | Some("let")) {
-                if let Some(LispVal::List(bindings)) = items.get(1) {
-                    for b in bindings {
-                        if let LispVal::List(bi) = b {
-                            if bi.len() >= 2 {
-                                // value first, in the scope so far
-                                walk(&bi[1], cur_defn, cx);
-                                // producer? track the name
-                                if let (LispVal::Sym(name), LispVal::List(v)) = (&bi[0], &bi[1]) {
-                                    if v.first().map_or(false, |h| {
-                                        matches!(h, LispVal::Sym(s) if PROMISE_PRODUCERS.contains(&s.as_str()))
-                                    }) {
-                                        cx.tracked.insert(name.clone(), BindKind::Local);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                for it in &items[2..] {
-                    walk(it, cur_defn, cx);
-                }
-                return;
-            }
-
-            // (lambda PARAMS BODY...) / (fn ...) — params shadow tracked names
-            if matches!(head, Some("lambda") | Some("fn")) {
-                let saved: Vec<(String, BindKind)> = if let Some(LispVal::List(params)) = items.get(1) {
-                    let mut s = Vec::new();
-                    for p in params {
-                        if let LispVal::Sym(n) = p {
-                            if let Some(v) = cx.tracked.remove(n) {
-                                s.push((n.clone(), v));
-                            }
-                        }
-                    }
-                    s
-                } else {
-                    Vec::new()
-                };
-                for it in &items[2..] {
-                    walk(it, cur_defn, cx);
-                }
-                for (n, v) in saved {
-                    cx.tracked.insert(n, v);
-                }
-                return;
-            }
-
-            if let Some(s) = head {
-                if let Some(op) = PROMISE_CONSUMERS.iter().find(|c| **c == s) {
-                    // Consuming call: count the occurrence ALWAYS (index
-                    // alignment) and record uses of tracked promise args.
-                    let idx = *cx.occurrence.get(op).unwrap_or(&0);
-                    cx.occurrence.insert(op, idx + 1);
-                    // which args are consuming positions?
-                    let consume_args: &[usize] = match *op {
-                        "near/promise_then" => &[1],
-                        "near/promise_return" => &[1],
-                        "near/promise_and" => &[1, 2, 3, 4, 5, 6, 7, 8],
-                        _ => unreachable!(),
-                    };
-                    for ai in consume_args {
-                        if let Some(LispVal::Sym(name)) = items.get(*ai) {
-                            if let Some(kind) = cx.tracked.get(name).copied() {
-                                let u = PromiseUse {
-                                    defn: cur_defn.to_string(),
-                                    binding: name.clone(),
-                                    op: op.to_string(),
-                                    occurrence: idx,
-                                };
-                                match kind {
-                                    BindKind::Local => cx.uses.push(u),
-                                    BindKind::Param => {
-                                        cx.param_uses
-                                            .entry((cur_defn.to_string(), name.clone()))
-                                            .or_default()
-                                            .push(u);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else if let Some(info) = cx.defns.get(s) {
-                    // Call to a known defn: record promise flow edges for
-                    // arguments that are tracked promise values. Only bare
-                    // symbols flow (v1 boundary); the runtime trap still
-                    // backs anything this pass cannot see.
-                    for (ai, arg) in items[1..].iter().enumerate() {
-                        if let LispVal::Sym(name) = arg {
-                            if let Some(kind) = cx.tracked.get(name).copied() {
-                                if ai < info.params.len() {
-                                    let edge =
-                                        FlowEdge { callee: s.to_string(), pos: ai };
-                                    match kind {
-                                        BindKind::Local => {
-                                            cx.local_flows
-                                                .entry((cur_defn.to_string(), name.clone()))
-                                                .or_default()
-                                                .push(edge);
-                                        }
-                                        BindKind::Param => {
-                                            cx.param_flows
-                                                .entry((cur_defn.to_string(), name.clone()))
-                                                .or_default()
-                                                .push(edge);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            for it in &items[1..] {
-                walk(it, cur_defn, cx);
-            }
-        }
-    }
-
-    // Driver: define-aware so defn params are tracked for their body and
-    // uses attribute to the right (defn, binding) key.
-    for e in exprs {
-        let mut handled = false;
-        if let LispVal::List(items) = e {
-            if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") {
-                // (define (name p1 p2 ...) BODY...) — function define; params
-                // are the header's trailing siblings. Tracked as BindKind::Param
-                // for the body walk so consuming uses attribute to this defn.
-                if let Some(LispVal::List(header)) = items.get(1) {
-                    if let Some(LispVal::Sym(name)) = header.first() {
-                        if header.len() >= 1 && items.len() >= 3 {
+                        if items.len() >= 3 {
                             let ps: Vec<String> = header[1..]
                                 .iter()
                                 .filter_map(|p| match p {
@@ -1961,222 +1841,538 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
                                     _ => None,
                                 })
                                 .collect();
-                            let saved: Vec<(String, BindKind)> = ps
-                                .iter()
-                                .filter_map(|n| cx.tracked.remove(n).map(|k| (n.clone(), k)))
-                                .collect();
-                            for n in &ps {
-                                cx.tracked.insert(n.clone(), BindKind::Param);
-                            }
-                            for body in &items[2..] {
-                                walk(body, name.as_str(), &mut cx);
-                            }
-                            for (n, k) in saved {
-                                cx.tracked.insert(n, k);
-                            }
-                            handled = true;
-                        }
-                    }
-                }
-                // (define name value) — value define; a top-level promise
-                // producer const stays tracked for later defns.
-                if !handled {
-                    if let Some(LispVal::Sym(n)) = items.get(1) {
-                        if let Some(v) = items.get(2) {
-                            walk(v, "", &mut cx);
-                            if let LispVal::List(vl) = v {
-                                if vl.first().map_or(false, |h| {
-                                    matches!(h, LispVal::Sym(s) if PROMISE_PRODUCERS.contains(&s.as_str()))
-                                }) {
-                                    cx.tracked.insert(n.clone(), BindKind::Local);
-                                }
-                            }
-                            handled = true;
+                            defns.insert(name.clone(), ps);
                         }
                     }
                 }
             }
         }
-        if !handled {
-            walk(e, "", &mut cx);
+    }
+
+    // One full program pass. Records uses and call edges per defn.
+    // `param_vals` feeds joined caller values into param envs.
+    fn pass(
+        exprs: &[LispVal],
+        defns: &std::collections::HashMap<String, Vec<String>>,
+        param_vals: &std::collections::HashMap<(String, usize), Vec<AVal>>,
+        global_env: &mut std::collections::HashMap<String, AVal>,
+        occurrence: &mut std::collections::HashMap<String, usize>,
+    ) -> (std::collections::HashMap<String, Summary>, std::collections::HashMap<u32, String>) {
+        let mut summaries: std::collections::HashMap<String, Summary> =
+            std::collections::HashMap::new();
+        let mut creators: std::collections::HashMap<u32, String> =
+            std::collections::HashMap::new();
+        let mut next_origin: u32 = 0;
+        // Occurrence indices are single-pass source order; reset per pass so
+        // fixpoint rounds never inherit (and inflate) the previous round's
+        // counters — stale indices rendered as `line ?`.
+        occurrence.clear();
+
+        // Unified walker: records uses/call edges AND returns the abstract
+        // value of the expression. Every sub-expression is walked exactly
+        // once (special forms return early), so occurrence indices follow
+        // single-pass source order and no use can be skipped or duplicated.
+        #[allow(clippy::too_many_arguments)]
+        fn walkv(
+            val: &LispVal,
+            cur_defn: &str,
+            env: &mut std::collections::HashMap<String, AVal>,
+            global_env: &std::collections::HashMap<String, AVal>,
+            summary: &mut Summary,
+            occurrence: &mut std::collections::HashMap<String, usize>,
+            next_origin: &mut u32,
+            creators: &mut std::collections::HashMap<u32, String>,
+            defns: &std::collections::HashMap<String, Vec<String>>,
+        ) -> AVal {
+            let list = match val {
+                LispVal::List(items) if !items.is_empty() => items,
+                LispVal::Sym(name) => {
+                    return env
+                        .get(name)
+                        .or_else(|| global_env.get(name))
+                        .cloned()
+                        .unwrap_or(AVal::Opaque)
+                }
+                _ => return AVal::Opaque,
+            };
+            let head = match &list[0] {
+                LispVal::Sym(s) => s.as_str(),
+                _ => {
+                    for it in &list[1..] {
+                        walkv(it, cur_defn, env, global_env, summary, occurrence, next_origin, creators, defns);
+                    }
+                    return AVal::Opaque;
+                }
+            };
+
+            // (let* / let BINDINGS BODY...) — sequential binding scope.
+            if matches!(head, "let*" | "let") {
+                let mut saved: Vec<(String, AVal)> = Vec::new();
+                if let Some(LispVal::List(bindings)) = list.get(1) {
+                    for b in bindings {
+                        if let LispVal::List(bi) = b {
+                            if bi.len() >= 2 {
+                                // The binding VALUE is walked (recording any
+                                // uses/edges inside it) AND yields the value.
+                                let v = walkv(
+                                    &bi[1], cur_defn, env, global_env, summary, occurrence,
+                                    next_origin, creators, defns,
+                                );
+                                if let LispVal::Sym(name) = &bi[0] {
+                                    let prev =
+                                        env.insert(name.clone(), v).unwrap_or(AVal::Opaque);
+                                    saved.push((name.clone(), prev));
+                                }
+                            }
+                        }
+                    }
+                }
+                let mut last = AVal::Opaque;
+                for it in &list[2..] {
+                    last = walkv(
+                        it, cur_defn, env, global_env, summary, occurrence, next_origin,
+                        creators, defns,
+                    );
+                }
+                for (n, v) in saved {
+                    env.insert(n, v);
+                }
+                return last;
+            }
+
+            // (lambda PARAMS BODY...) / (fn ...) — params shadow env.
+            if matches!(head, "lambda" | "fn") {
+                let mut saved: Vec<(String, AVal)> = Vec::new();
+                if let Some(LispVal::List(params)) = list.get(1) {
+                    for p in params {
+                        if let LispVal::Sym(n) = p {
+                            let prev =
+                                env.insert(n.clone(), AVal::Opaque).unwrap_or(AVal::Opaque);
+                            saved.push((n.clone(), prev));
+                        }
+                    }
+                }
+                for it in &list[2..] {
+                    walkv(
+                        it, cur_defn, env, global_env, summary, occurrence, next_origin,
+                        creators, defns,
+                    );
+                }
+                for (n, v) in saved {
+                    env.insert(n, v);
+                }
+                return AVal::Opaque;
+            }
+
+            // Consuming call: record uses of handle-valued consuming args,
+            // walk every arg exactly once, result is a fresh handle.
+            if PROMISE_CONSUMERS.contains(&head) {
+                let idx = *occurrence.get(head).unwrap_or(&0);
+                occurrence.insert(head.to_string(), idx + 1);
+                // Indices are relative to list[1..] (arg 0 = the promise).
+                let consume_args: &[usize] = match head {
+                    "near/promise_then" => &[0],
+                    "near/promise_return" => &[0],
+                    "near/promise_and" => &[0, 1, 2, 3, 4, 5, 6, 7],
+                    _ => &[],
+                };
+                for (ai, arg) in list[1..].iter().enumerate() {
+                    let v = walkv(
+                        arg, cur_defn, env, global_env, summary, occurrence, next_origin,
+                        creators, defns,
+                    );
+                    if consume_args.contains(&ai) {
+                        if let AVal::Handle(id) = v {
+                            // Creator attribution happens ONLY at minting
+                            // sites below. A consumer whose defn textually
+                            // precedes its producer must not steal it, or
+                            // per-origin totals root at the wrong defn.
+                            let name = match arg {
+                                LispVal::Sym(n) => n.clone(),
+                                _ => String::new(),
+                            };
+                            summary.uses.push(PromiseUse {
+                                defn: cur_defn.to_string(),
+                                name,
+                                op: head.to_string(),
+                                occurrence: idx,
+                                origin: id,
+                            });
+                        }
+                    }
+                }
+                let id = *next_origin;
+                *next_origin += 1;
+                creators.entry(id).or_insert_with(|| cur_defn.to_string());
+                return AVal::Handle(id);
+            }
+
+            // Known-defn call: record the edge with walked argument values.
+            if defns.contains_key(head) {
+                let mut vals = Vec::new();
+                for arg in &list[1..] {
+                    vals.push(walkv(
+                        arg, cur_defn, env, global_env, summary, occurrence, next_origin,
+                        creators, defns,
+                    ));
+                }
+                summary.calls.push(CallEdge {
+                    caller: cur_defn.to_string(),
+                    callee: head.to_string(),
+                    vals,
+                });
+                return AVal::Opaque;
+            }
+
+            // Producer call: walk args (recording), result is a fresh handle.
+            if PROMISE_PRODUCERS.contains(&head) {
+                for arg in &list[1..] {
+                    walkv(
+                        arg, cur_defn, env, global_env, summary, occurrence, next_origin,
+                        creators, defns,
+                    );
+                }
+                let id = *next_origin;
+                *next_origin += 1;
+                creators.entry(id).or_insert_with(|| cur_defn.to_string());
+                return AVal::Handle(id);
+            }
+
+            // (list ...) — tuple of walked element values.
+            if head == "list" {
+                let mut vs = Vec::new();
+                for arg in &list[1..] {
+                    vs.push(walkv(
+                        arg, cur_defn, env, global_env, summary, occurrence, next_origin,
+                        creators, defns,
+                    ));
+                }
+                return AVal::Tuple(vs);
+            }
+
+            // (car X)/(first X), (cdr X)/(rest X) — peel walked tuple values.
+            if (head == "car" || head == "first" || head == "cdr" || head == "rest")
+                && list.len() == 2
+            {
+                let v = walkv(
+                    &list[1], cur_defn, env, global_env, summary, occurrence, next_origin,
+                    creators, defns,
+                );
+                return match v {
+                    AVal::Tuple(vs) => {
+                        if head == "car" || head == "first" {
+                            vs.first().cloned().unwrap_or(AVal::Opaque)
+                        } else if vs.len() <= 1 {
+                            AVal::Opaque
+                        } else {
+                            AVal::Tuple(vs[1..].to_vec())
+                        }
+                    }
+                    _ => AVal::Opaque,
+                };
+            }
+
+            // Any other call/form: walk children (recording nested uses),
+            // value is opaque.
+            for it in &list[1..] {
+                walkv(
+                    it, cur_defn, env, global_env, summary, occurrence, next_origin, creators,
+                    defns,
+                );
+            }
+            AVal::Opaque
+        }
+
+        for e in exprs {
+            if let LispVal::List(items) = e {
+                if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") {
+                    // (define (name p1 ...) BODY...) — function defn; params
+                    // start at their joined value (Opaque on early rounds).
+                    if let Some(LispVal::List(header)) = items.get(1) {
+                        if let Some(LispVal::Sym(name)) = header.first() {
+                            if items.len() >= 3 {
+                                let mut env: std::collections::HashMap<String, AVal> =
+                                    std::collections::HashMap::new();
+                                for (pos, p) in header[1..].iter().enumerate() {
+                                    if let LispVal::Sym(n) = p {
+                                        let joined = param_vals
+                                            .get(&(name.clone(), pos))
+                                            .map(|v| join_vals(v))
+                                            .unwrap_or(AVal::Opaque);
+                                        env.insert(n.clone(), joined);
+                                    }
+                                }
+                                let sum = summaries.entry(name.clone()).or_default();
+                                for body in &items[2..] {
+                                    walkv(
+                                        body,
+                                        name,
+                                        &mut env,
+                                        global_env,
+                                        sum,
+                                        occurrence,
+                                        &mut next_origin,
+                                        &mut creators,
+                                        defns,
+                                    );
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    // (define name value) — global value binding.
+                    if !matches!(items.get(1), Some(LispVal::List(_))) {
+                        if let (Some(LispVal::Sym(n)), Some(v)) = (items.get(1), items.get(2)) {
+                            let mut env0: std::collections::HashMap<String, AVal> =
+                                std::collections::HashMap::new();
+                            let mut sink = Summary::default();
+                            let av = walkv(
+                                v,
+                                "",
+                                &mut env0,
+                                global_env,
+                                &mut sink,
+                                occurrence,
+                                &mut next_origin,
+                                &mut creators,
+                                defns,
+                            );
+                            global_env.insert(n.clone(), av);
+                            continue;
+                        }
+                    }
+                }
+            }
+            // Top-level non-define expression.
+            let mut env: std::collections::HashMap<String, AVal> =
+                std::collections::HashMap::new();
+            let sum = summaries.entry(String::new()).or_default();
+            walkv(
+                e,
+                "",
+                &mut env,
+                global_env,
+                sum,
+                occurrence,
+                &mut next_origin,
+                &mut creators,
+                defns,
+            );
+        }
+        (summaries, creators)
+    }
+
+    // Fixpoint: re-pass the whole program until param values stabilize.
+    // Origin ids are round-stable (counter reset per pass, deterministic
+    // traversal), so identity is preserved across rounds.
+    let mut param_vals: std::collections::HashMap<(String, usize), Vec<AVal>> =
+        std::collections::HashMap::new();
+    let mut global_env: std::collections::HashMap<String, AVal> =
+        std::collections::HashMap::new();
+    let mut occurrence: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let (mut summaries, mut creators) =
+        pass(exprs, &defns, &param_vals, &mut global_env, &mut occurrence);
+    for _round in 0..100 {
+        let mut next: std::collections::HashMap<(String, usize), Vec<AVal>> =
+            std::collections::HashMap::new();
+        for sum in summaries.values() {
+            for c in &sum.calls {
+                for (pos, v) in c.vals.iter().enumerate() {
+                    if *v == AVal::Opaque {
+                        continue;
+                    }
+                    let slot = next.entry((c.callee.clone(), pos)).or_default();
+                    if !slot.contains(v) {
+                        slot.push(v.clone());
+                    }
+                }
+            }
+        }
+        if next == param_vals {
+            break;
+        }
+        param_vals = next;
+        let (s2, c2) = pass(exprs, &defns, &param_vals, &mut global_env, &mut occurrence);
+        summaries = s2;
+        creators = c2;
+    }
+
+    // ---- per-origin transitive consumption (final summaries) ----
+    let mut body_uses: std::collections::HashMap<(String, u32), Vec<PromiseUse>> =
+        std::collections::HashMap::new();
+    let mut uses_of: std::collections::HashMap<u32, Vec<PromiseUse>> =
+        std::collections::HashMap::new();
+    for sum in summaries.values() {
+        for u in &sum.uses {
+            body_uses
+                .entry((u.defn.clone(), u.origin))
+                .or_default()
+                .push(u.clone());
+            uses_of.entry(u.origin).or_default().push(u.clone());
+        }
+    }
+    // onward[(defn, origin)] = edges (callee, pos) leaving that defn with
+    // that origin flowing into the callee's param slot.
+    let mut onward: std::collections::HashMap<(String, u32), Vec<(String, usize)>> =
+        std::collections::HashMap::new();
+    for sum in summaries.values() {
+        for c in &sum.calls {
+            for (pos, v) in c.vals.iter().enumerate() {
+                let mut ids = Vec::new();
+                origin_ids(v, &mut ids);
+                for id in ids {
+                    onward
+                        .entry((c.caller.clone(), id))
+                        .or_default()
+                        .push((c.callee.clone(), pos));
+                }
+            }
         }
     }
 
-    /// Transitive consumption count + sites for one (defn, param) key.
-    /// Cycle guard: a (defn, param) on the DFS stack contributes once.
-    fn param_consumption(
-        key: &(String, String),
-        defns: &std::collections::HashMap<String, DefnInfo>,
-        param_uses: &std::collections::HashMap<(String, String), Vec<PromiseUse>>,
-        param_flows: &std::collections::HashMap<(String, String), Vec<FlowEdge>>,
-        stack: &mut Vec<(String, String)>,
-    ) -> (usize, Vec<PromiseUse>) {
-        if stack.contains(key) {
-            return (0, Vec::new());
+    // G(defn, pos, origin): consumption of `origin` entering through that
+    // param = body uses in that defn + onward edges. Memoized; on-stack
+    // keys contribute 0 (cycle guard).
+    fn g_count(
+        key: (String, usize, u32),
+        defns: &std::collections::HashMap<String, Vec<String>>,
+        body_uses: &std::collections::HashMap<(String, u32), Vec<PromiseUse>>,
+        onward: &std::collections::HashMap<(String, u32), Vec<(String, usize)>>,
+        memo: &mut std::collections::HashMap<(String, usize, u32), usize>,
+        stack: &mut Vec<(String, usize, u32)>,
+    ) -> usize {
+        if let Some(n) = memo.get(&key) {
+            return *n;
+        }
+        if stack.contains(&key) {
+            return 0;
         }
         stack.push(key.clone());
-        let mut sites = param_uses.get(key).cloned().unwrap_or_default();
-        let mut total = sites.len();
-        for e in param_flows.get(key).cloned().unwrap_or_default() {
-            if let Some(info) = defns.get(&e.callee) {
-                if let Some(pname) = info.params.get(e.pos) {
-                    let ck = (e.callee.clone(), pname.clone());
-                    let (n, mut s) =
-                        param_consumption(&ck, defns, param_uses, param_flows, stack);
-                    total += n;
-                    sites.append(&mut s);
+        let (defn, _pos, origin) = key.clone();
+        let mut total = body_uses
+            .get(&(defn.clone(), origin))
+            .map(|v| v.len())
+            .unwrap_or(0);
+        if let Some(edges) = onward.get(&(defn.clone(), origin)) {
+            for (callee, pos) in edges {
+                if let Some(ps) = defns.get(callee) {
+                    if *pos < ps.len() {
+                        total += g_count(
+                            (callee.clone(), *pos, origin),
+                            defns,
+                            body_uses,
+                            onward,
+                            memo,
+                            stack,
+                        );
+                    }
                 }
             }
         }
         stack.pop();
-        (total, sites)
+        memo.insert(key, total);
+        total
     }
 
-    fn label_of(
-        u: &PromiseUse,
-        op_lines: &std::collections::HashMap<&str, Vec<usize>>,
-    ) -> String {
-        match op_lines.get(u.op.as_str()).and_then(|l| l.get(u.occurrence)) {
-            Some(l) => format!("line {}", l),
-            None => "line ?".to_string(),
-        }
-    }
-
-    /// Dedupe + render sites as "op in defn (line N)"; defn omitted at top
-    /// level so single-defn messages stay in the established shape.
-    fn render_sites(
-        mut sites: Vec<PromiseUse>,
-        op_lines: &std::collections::HashMap<&str, Vec<usize>>,
-    ) -> Vec<String> {
-        sites.sort_by(|a, b| {
-            (&a.defn, &a.op, a.occurrence).cmp(&(&b.defn, &b.op, b.occurrence))
-        });
-        sites.dedup_by(|a, b| a.defn == b.defn && a.op == b.op && a.occurrence == b.occurrence);
-        sites
-            .iter()
-            .map(|u| {
-                let where_clause = if u.defn.is_empty() {
-                    String::new()
-                } else {
-                    format!(" in {}", u.defn)
-                };
-                format!(
-                    "{}{} ({})",
-                    u.op.trim_start_matches("near/"),
-                    where_clause,
-                    label_of(u, op_lines)
-                )
-            })
-            .collect()
-    }
-
-    let mut errs: Vec<String> = Vec::new();
-    let mut flagged: std::collections::HashSet<(String, String)> = Default::default();
-
-    // Bucket 1 (existing, byte-stable): within one defn, a let-bound promise
-    // consumed 2+ times directly.
-    let mut per_binding: std::collections::HashMap<(String, String), Vec<&PromiseUse>> =
+    // total(origin) = creator-body uses + creator onward edges' G.
+    let mut memo: std::collections::HashMap<(String, usize, u32), usize> =
         std::collections::HashMap::new();
-    for u in &cx.uses {
-        per_binding
-            .entry((u.defn.clone(), u.binding.clone()))
-            .or_default()
-            .push(u);
-    }
-    for ((defn, binding), group) in &per_binding {
-        if group.len() < 2 {
-            continue;
-        }
-        flagged.insert((defn.clone(), binding.clone()));
-        let mut sites: Vec<String> = Vec::new();
-        for u in group {
-            let label = label_of(u, &op_lines);
-            sites.push(format!("{} ({})", u.op.trim_start_matches("near/"), label));
-        }
-        errs.push(format!(
-            "error: promise '{}' consumed {} times ({}) — a promise handle is single-use; both callbacks would fire on chain",
-            binding,
-            group.len(),
-            sites.join(", ")
-        ));
-    }
-
-    // Bucket 2 (new): a let-bound promise whose TOTAL consumption across
-    // call edges reaches 2 — the cross-defn class (x10).
-    let flow_keys: std::collections::HashSet<(String, String)> =
-        cx.local_flows.keys().cloned().collect();
-    let use_keys: std::collections::HashSet<(String, String)> = per_binding
-        .keys()
-        .cloned()
-        .collect();
-    for key in flow_keys.union(&use_keys) {
-        if flagged.contains(key) {
-            continue;
-        }
-        let mut stack: Vec<(String, String)> = Vec::new();
-        let mut site_refs: Vec<PromiseUse> = per_binding
-            .get(key)
-            .map(|v| v.iter().map(|u| (*u).clone()).collect::<Vec<PromiseUse>>())
-            .unwrap_or_default();
-        let mut total = site_refs.len();
-        for e in cx
-            .local_flows
-            .get(key)
-            .cloned()
-            .unwrap_or_default()
-        {
-            if let Some(info) = cx.defns.get(&e.callee) {
-                if let Some(pname) = info.params.get(e.pos) {
-                    let ck = (e.callee.clone(), pname.clone());
-                    let (n, mut s) = param_consumption(
-                        &ck,
-                        cx.defns,
-                        &cx.param_uses,
-                        &cx.param_flows,
-                        &mut stack,
-                    );
-                    total += n;
-                    site_refs.append(&mut s);
+    let mut totals: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    let mut sorted_origins: Vec<u32> = creators.keys().copied().collect();
+    sorted_origins.sort();
+    for id in &sorted_origins {
+        let creator = creators.get(id).cloned().unwrap_or_default();
+        let mut total = body_uses
+            .get(&(creator.clone(), *id))
+            .map(|v| v.len())
+            .unwrap_or(0);
+        if let Some(edges) = onward.get(&(creator.clone(), *id)) {
+            for (callee, pos) in edges {
+                if let Some(ps) = defns.get(callee) {
+                    if *pos < ps.len() {
+                        let mut stack: Vec<(String, usize, u32)> = Vec::new();
+                        total += g_count(
+                            (callee.clone(), *pos, *id),
+                            &defns,
+                            &body_uses,
+                            &onward,
+                            &mut memo,
+                            &mut stack,
+                        );
+                    }
                 }
             }
         }
-        if total < 2 {
-            continue;
+        totals.insert(*id, total);
+    }
+
+    let mut errs: Vec<String> = Vec::new();
+    let mut flagged: std::collections::HashSet<u32> = Default::default();
+
+    // Bucket 1 (byte-stable): 2+ uses of one origin inside its creator
+    // defn, sites rendered without defn clauses in source order.
+    let mut b1_ids: Vec<u32> = Vec::new();
+    for id in &sorted_origins {
+        let creator = creators.get(id).cloned().unwrap_or_default();
+        if body_uses
+            .get(&(creator.clone(), *id))
+            .map(|v| v.len())
+            .unwrap_or(0)
+            >= 2
+        {
+            b1_ids.push(*id);
         }
-        let sites = render_sites(site_refs, &op_lines);
+    }
+    for id in b1_ids {
+        flagged.insert(id);
+        let creator = creators.get(&id).cloned().unwrap_or_default();
+        let uses = &body_uses[&(creator.clone(), id)];
+        let name = uses
+            .iter()
+            .map(|u| u.name.clone())
+            .find(|n| !n.is_empty())
+            .unwrap_or_else(|| format!("promise#{}", id));
+        let sites: Vec<String> = uses
+            .iter()
+            .map(|u| {
+                format!(
+                    "{} ({})",
+                    u.op.trim_start_matches("near/"),
+                    label_of_occ(&op_lines, u.op.as_str(), u.occurrence)
+                )
+            })
+            .collect();
         errs.push(format!(
-            "error: promise '{}' consumed {} times across calls ({}) — a promise handle is single-use; both callbacks would fire on chain",
-            key.1,
-            total,
+            "error: promise '{}' consumed {} times ({}) — a promise handle is single-use; both callbacks would fire on chain",
+            name,
+            uses.len(),
             sites.join(", ")
         ));
     }
 
-    // Bucket 3 (new): a defn param consumed 2+ times in total — every caller
-    // passing a promise loses both callbacks.
-    let param_keys: std::collections::HashSet<(String, String)> = cx
-        .param_uses
-        .keys()
-        .chain(cx.param_flows.keys())
-        .cloned()
-        .collect();
-    for key in param_keys {
-        let mut stack: Vec<(String, String)> = Vec::new();
-        let (total, site_refs) = param_consumption(
-            &key,
-            cx.defns,
-            &cx.param_uses,
-            &cx.param_flows,
-            &mut stack,
-        );
+    // Bucket 2: transitive total of one origin reaches 2+ (across calls).
+    for id in &sorted_origins {
+        if flagged.contains(id) {
+            continue;
+        }
+        let total = totals.get(id).copied().unwrap_or(0);
         if total < 2 {
             continue;
         }
-        let sites = render_sites(site_refs, &op_lines);
+        let all_uses = uses_of.get(id).cloned().unwrap_or_default();
+        if all_uses.is_empty() {
+            continue;
+        }
+        let name = all_uses
+            .iter()
+            .map(|u| u.name.clone())
+            .find(|n| !n.is_empty())
+            .unwrap_or_else(|| format!("promise#{}", id));
+        let sites = render_sites_occ(all_uses, &op_lines);
         errs.push(format!(
-            "error: promise param '{}' of '{}' consumed {} times ({}) — a promise handle is single-use; both callbacks would fire on chain",
-            key.1,
-            key.0,
+            "error: promise '{}' consumed {} times across calls ({}) — a promise handle is single-use; both callbacks would fire on chain",
+            name,
             total,
             sites.join(", ")
         ));
@@ -2189,6 +2385,45 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
         Err(errs.join("\n"))
     }
 }
+
+/// Line label for one consuming-op occurrence.
+fn label_of_occ(
+    op_lines: &std::collections::HashMap<&str, Vec<usize>>,
+    op: &str,
+    occurrence: usize,
+) -> String {
+    match op_lines.get(op).and_then(|l| l.get(occurrence)) {
+        Some(l) => format!("line {l}"),
+        None => "line ?".to_string(),
+    }
+}
+
+/// Render sites as "op in defn (line N)"; defn omitted at top level so
+/// single-defn messages stay in the established shape. Sorted + deduped.
+fn render_sites_occ(
+    mut sites: Vec<PromiseUse>,
+    op_lines: &std::collections::HashMap<&str, Vec<usize>>,
+) -> Vec<String> {
+    sites.sort_by(|a, b| (&a.defn, &a.op, a.occurrence).cmp(&(&b.defn, &b.op, b.occurrence)));
+    sites.dedup_by(|a, b| a.defn == b.defn && a.op == b.op && a.occurrence == b.occurrence);
+    sites
+        .iter()
+        .map(|u| {
+            let where_clause = if u.defn.is_empty() {
+                String::new()
+            } else {
+                format!(" in {}", u.defn)
+            };
+            format!(
+                "{}{} ({})",
+                u.op.trim_start_matches("near/"),
+                where_clause,
+                label_of_occ(op_lines, u.op.as_str(), u.occurrence)
+            )
+        })
+        .collect()
+}
+
 
 pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
     let mut env = if near {
