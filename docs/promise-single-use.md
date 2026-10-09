@@ -54,13 +54,26 @@ Defn-local syntactic pass:
 - Second consuming use → hard error naming both lines (actual format,
   shipped 2026-10-08):
   `error: promise 'p' consumed 2 times (promise_then (line 4), promise_then (line 5)) — a promise handle is single-use; both callbacks would fire on chain`.
-- Scope is defn-local: each defn is checked on its own body. A handle passed
-  to two different callee defns passes the lint — Tier 2 catches that at
-  runtime (verified: probe x10).
+- **Scope widened same day (SHIPPED, cross-defn flow)**: keys are per
+  `(defn, binding)` — the pre-flow name-keyed lint would have falsely
+  flagged two sibling defns each consuming their own `p`; fixed. Each defn
+  contributes a consumption summary (direct uses + params marked
+  consuming); call sites contribute flow edges for bare-symbol promise
+  arguments; a fixpoint over the call graph flags three buckets:
+  1. let-bound promise consumed twice in one defn (message above);
+  2. let-bound promise whose **total across call edges** reaches 2 — the
+     x10 class —
+     `error: promise 'p' consumed 2 times across calls (promise_then in use1 (line 5), promise_then in use2 (line 7)) — …`;
+  3. a defn param consumed twice in total (every caller passing a promise
+     loses both callbacks).
+  Two-hop chains are caught; self-recursive forwarders terminate via a
+  cycle guard (per-iteration re-consume stays the runtime trap's job).
+  v1 boundary: only **bare-symbol** arguments flow through call edges —
+  tuples/composite carriers fall back to the Tier 2 trap.
 
-No type system, no flow analysis beyond defn-local bindings — affine checking
-collapsed to one op family. Kills the class for hand-written `.lisp` and for
-TS-authored code at the emitted surface.
+No type system, no affine discipline — flow analysis collapsed to one op
+family (per-defn summaries + call-graph edges). Kills the class for
+hand-written `.lisp` and for TS-authored code at the emitted surface.
 
 ## Tier 2 — mock-enforced single-use at test time (SHIPPED 2026-10-08)
 
@@ -76,8 +89,11 @@ the vendored near-mock (`src/bin/near_mock/mod.rs`):
   lint cannot see through: dynamically chosen promises, handles round-tripped
   through storage, callback re-entries.
 - Verified in-tree 2026-10-08: single-use chains run green; a cross-defn
-  double-`promise_then` that passes the compile-time lint traps at the DAG
-  resolution boundary (probes `x11_single_use.lisp` / `x10_cross_defn.lisp`).
+  double-`promise_then` is now a **compile error** (cross-defn flow, same
+  day — see Tier 1). The trap remains the backstop for what static flow
+  cannot see: dynamically chosen promises, handles round-tripped through
+  storage, callback re-entries, non-symbol argument carriers (probes
+  `x11_single_use.lisp` / `x10_cross_defn.lisp`).
 
 Defense in depth: the lint guards the source you write; the mock guards the
 code that runs.
