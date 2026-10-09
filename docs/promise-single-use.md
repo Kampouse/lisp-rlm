@@ -68,8 +68,17 @@ Defn-local syntactic pass:
      loses both callbacks).
   Two-hop chains are caught; self-recursive forwarders terminate via a
   cycle guard (per-iteration re-consume stays the runtime trap's job).
-  v1 boundary: only **bare-symbol** arguments flow through call edges —
-  tuples/composite carriers fall back to the Tier 2 trap.
+  Composite carriers SHIPPED same day (v3 value model): producers mint
+  round-stable origin ids; call edges carry elementwise tuples
+  (Handle | Tuple | Opaque) that a fixpoint joins into callee params;
+  `car`/`first` and `cdr`/`rest` peel tuples positionally. The x16
+  class — a `(list p ...)` tuple passed to two callees that each
+  consume `(car t)` — and the ground-tuple x17 class (`(car (cdr t))`)
+  are now compile errors. Counts are call paths, not static sites (a
+  handle reaching one leaf site by two routes reports `consumed 2
+  times` with that single site named). Ambiguity still degrades to
+  Opaque: dynamically chosen promises, storage round-trips and
+  callback re-entries remain the Tier 2 trap's job.
 
 No type system, no affine discipline — flow analysis collapsed to one op
 family (per-defn summaries + call-graph edges). Kills the class for
