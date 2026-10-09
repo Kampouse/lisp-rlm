@@ -50,6 +50,43 @@ def weak_solves_since(ts):
     return solved, n
 
 
+def compile_gate(src):
+    """Pre-gate: a proposal that can't PARSE must never enter the flywheel
+    — every task file hard-loads custom-actions.lisp, and one unbalanced
+    form kills whole cycles at load.
+
+    Tier discipline (verified 2026-10-09): the standalone `compile`
+    binary type-checks against the CONTRACT surface only — RLM dispatch
+    builtins (rlm-set, rlm_set, …) are 'undefined variables' to it
+    while being perfectly legal inside lisp-run worlds. So:
+      parse errors  → HARD REJECT (unambiguous garbage)
+      type errors   → ADVISORY PASS (ledger records the detail)
+    """
+    import re as _re
+    import tempfile
+    COMPILE = os.path.join(REPO, "target", "release", "compile")
+    if not os.path.exists(COMPILE):
+        return True, "no compile binary — gate skipped"  # never block on tooling
+    with tempfile.NamedTemporaryFile("w", suffix=".lisp", delete=False) as f:
+        f.write(src)
+        src_path = f.name
+    try:
+        p = subprocess.run([COMPILE, src_path], capture_output=True,
+                           text=True, timeout=60, cwd=REPO)
+        err = (p.stderr or p.stdout or "").strip()
+        lines = err.splitlines()
+        detail = next((l for l in reversed(lines) if l.startswith("Error")), lines[-1] if lines else "ok")
+        if p.returncode == 0:
+            return True, "parse ok"
+        if _re.search(r"parse error|missing closing|unexpected `?.`?\)?|unbalanced", err, _re.I):
+            return False, detail[:120]           # hard reject: garbage syntax
+        return True, f"parse ok (advisory: {detail[:100]})"  # type err — RLM vocab, pass
+    except subprocess.TimeoutExpired:
+        return False, "compile gate timeout (60s)"
+    finally:
+        os.unlink(src_path)
+
+
 def main():
     st = load()
 
@@ -57,13 +94,21 @@ def main():
         if not os.path.exists(CAND):
             return  # nothing proposed
         src = open(CAND).read()
+        ok, detail = compile_gate(src)
+        if not ok:
+            # reject WITHOUT installing: keep the proposal for post-mortem,
+            # ledger it, stay idle. Fail in seconds, not in burned cycles.
+            os.rename(CAND, CAND + ".rejected")
+            log({"event": "ab_reject_pre", "reason": "compile", "detail": detail})
+            print(f"abgate: candidate REJECTED pre-install (compile): {detail}")
+            return
         open(INSTALLED, "w").write(src)
         os.remove(CAND)
         st = {"phase": "on", "cycles_on": 0, "cycles_off": 0,
               "solved_on": 0, "n_on": 0, "solved_off": 0, "n_off": 0,
               "started": time.time()}
         save(st)
-        log({"event": "ab_install", "action": src[:80]})
+        log({"event": "ab_install", "action": src[:80], "precheck": detail})
         print("abgate: candidate INSTALLED (arm ON)")
         return
 

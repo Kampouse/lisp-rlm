@@ -133,6 +133,8 @@ def main():
                                             / max(len(ws), 1), 2)}
                      for p, ws in by_policy.items()},
         "incumbent": {"max_iter": k, "stop_errs": r},
+        "error_classes": error_mix(worlds),          # failure taxonomy → dream task
+        "fitness_ladder": fitness_ladder(worlds[-10:]),  # partial-credit fitness
     }
     json.dump(digest, open(os.path.join(DREAM, "digest.json"), "w"), indent=1)
 
@@ -169,9 +171,79 @@ TACTICS = os.path.join(HERE, "rlm-tasks", "tactics.txt")
 TACTICS_BEST = os.path.join(HERE, "rlm-tasks", "tactics.best.txt")
 
 
+# ---- error classes + fitness ladder (Dream v5 telemetry) ----
+# The pool nodes carry the failure reason in `code`/`out`; classifying
+# them turns binary fitness into gradient for the dream/tactics lanes:
+#   ladder rank: parse/compile 1 < ts_frontend 2 < runtime 3
+#                < ran-clean-but-wrong 4 < solved 5
+LADDER_CREDIT = {1: 0.1, 2: 0.3, 3: 0.4, 4: 0.6, 5: 1.0}
+
+
+def classify_node(n):
+    """One error class per failed node, or None. Class set is closed and
+    stable so ledgers/stats stay comparable across generations."""
+    code = (n.get("code") or "").strip()
+    out = (n.get("out") or "").strip()
+    if code.startswith("TSERR"):
+        detail = code[len("TSERR:"):].strip()
+        if "TS parse error" in detail:
+            return "ts_parse"          # agent wrote lisp/other into the TS arm
+        if "not in M1" in detail or "must be an arrow" in detail:
+            return "ts_surface_gap"    # M1 surface limit, not a brain error
+        return "ts_frontend"
+    if out == "M1":
+        return "ts_surface_gap"
+    if out.startswith("ERROR: run_program: compilation failed"):
+        return "compile"
+    if out.startswith("ERROR: read-all: parse error"):
+        return "parse"
+    if out.startswith("ERROR:"):
+        return "runtime"               # type/contract errors (fold-right etc.)
+    return None
+
+
+def world_error_class(w):
+    """Worst class across nodes: 'what killed this world'."""
+    rank = {"parse": 1, "compile": 1, "ts_parse": 1, "ts_frontend": 2,
+            "ts_surface_gap": 2, "runtime": 3}
+    r = 0
+    for n in w.get("nodes", []):
+        c = classify_node(n)
+        if c:
+            r = max(r, rank.get(c, 3))
+    if w.get("completed"):
+        return 5
+    return r or 4  # no error seen but unsolved = ran clean, wrong answer
+
+
+def error_mix(worlds, last=80):
+    """Per-task error-class counts over recent worlds (for digest.json —
+    the dream task reads this: the LLM dreamer SEES the taxonomy)."""
+    mix = {}
+    for w in worlds[-last:]:
+        t = w.get("task_id", "?")
+        for n in w.get("nodes", []):
+            c = classify_node(n)
+            if c:
+                mix.setdefault(t, {})
+                mix[t][c] = mix[t].get(c, 0) + 1
+    return mix
+
+
+def fitness_ladder(worlds):
+    """Mean ladder credit (0..1) — partial credit where binary fitness
+    saw only 0/1. Solved still dominates; never-generated-garbage no
+    longer scores the same as ran-clean-but-wrong."""
+    if not worlds:
+        return 0.0
+    tot = sum(LADDER_CREDIT.get(world_error_class(w), 0.0) for w in worlds)
+    return round(tot / len(worlds), 3)
+
+
 def write_scoreboard_and_docs(worlds):
     """Plain-text scoreboard + TRUE builtin signatures for the tactics mutator."""
     import re
+    mix = error_mix(worlds)
     by_task = {}
     for w in worlds[-80:]:
         by_task.setdefault(w.get("task_id", "?"), []).append(w)
@@ -179,7 +251,9 @@ def write_scoreboard_and_docs(worlds):
     for t, ws in sorted(by_task.items()):
         sol = sum(1 for w in ws if w.get("completed"))
         it = sum(w.get("iterations", 0) for w in ws) / len(ws)
-        lines.append(f"{t}: {sol}/{len(ws)} solved, {it:.1f} avg iters")
+        errs = mix.get(t)
+        tag = f"  [errs: {', '.join(f'{k} {v}' for k, v in sorted(errs.items()))}]" if errs else ""
+        lines.append(f"{t}: {sol}/{len(ws)} solved, {it:.1f} avg iters{tag}")
     open(os.path.join(DREAM, "scoreboard.txt"), "w").write("\n".join(lines))
     docs = []
     try:
@@ -225,13 +299,16 @@ def evolve_stamp(worlds):
         return
 
     fired = [ch for ch, v in cur.items() if st["channels"].get(ch) != v]
+    ladder = fitness_ladder(last)
     for ch in fired:
         st["gen"] += 1
         row = {"gen": st["gen"], "ts": time.time(), "channel": ch,
-               "fitness": fit, "detail": cur[ch][:60]}
+               "fitness": fit, "fitness_ladder": ladder,
+               "detail": cur[ch][:60]}
         with open(ARCHIVE, "a") as f:
             f.write(json.dumps(row) + "\n")
-        log({"event": "evolve", "gen": st["gen"], "channel": ch, "fitness": fit})
+        log({"event": "evolve", "gen": st["gen"], "channel": ch,
+             "fitness": fit, "fitness_ladder": ladder})
 
     # tactics selection: keep champions, revert drift
     if "tactics" in fired:
