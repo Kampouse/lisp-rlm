@@ -1686,14 +1686,53 @@ const PROMISE_CONSUMERS: &[&str] = &[
     "near/promise_and",
 ];
 
+#[derive(Clone)]
 struct PromiseUse {
+    defn: String,
     binding: String,
     op: String,
     /// index of this op occurrence within the walked program (source order)
     occurrence: usize,
 }
 
-pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Result<(), String> {
+/// One flow edge: a promise value flows as an argument into a callee param.
+#[derive(Clone)]
+struct FlowEdge {
+    callee: String,
+    /// callee param index (0-based)
+    pos: usize,
+}
+
+struct DefnInfo {
+    params: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum BindKind {
+    /// let*-bound promise producer in the current defn (or top level)
+    Local,
+    /// parameter of the current defn (one runtime value per call)
+    Param,
+}
+
+/// Per-program walk context. One walk produces everything both tiers need:
+/// direct consuming uses (local + param) and call-graph flow edges.
+struct FlowCx<'a> {
+    defns: &'a std::collections::HashMap<String, DefnInfo>,
+    op_lines: &'a std::collections::HashMap<&'a str, Vec<usize>>,
+    occurrence: std::collections::HashMap<&'static str, usize>,
+    tracked: std::collections::HashMap<String, BindKind>,
+    /// consuming uses of let-bound promise values, keyed by (defn, binding)
+    uses: Vec<PromiseUse>,
+    /// consuming uses of defn params, keyed by (defn, param)
+    param_uses: std::collections::HashMap<(String, String), Vec<PromiseUse>>,
+    /// flow edges out of let-bound values, keyed by (defn, binding)
+    local_flows: std::collections::HashMap<(String, String), Vec<FlowEdge>>,
+    /// flow edges out of defn params, keyed by (defn, param)
+    param_flows: std::collections::HashMap<(String, String), Vec<FlowEdge>>,
+}
+
+fn promise_op_lines(source: Option<&str>) -> std::collections::HashMap<&str, Vec<usize>> {
     // Token-scan the source: byte offset of every occurrence of each op name.
     // With no source text (exprs-only path) the map stays empty and every
     // label degrades to "line ?" - the rejection itself still fires.
@@ -1730,21 +1769,47 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
             op_lines.insert(op, lines);
         }
     }
+    op_lines
+}
 
-    // Walk, counting op occurrences in pre-order and recording consuming
-    // uses of tracked promise bindings.
-    let mut occurrence: std::collections::HashMap<&'static str, usize> =
-        std::collections::HashMap::new();
-    let mut uses: Vec<PromiseUse> = Vec::new();
-    let mut tracked: std::collections::HashMap<String, ()> = std::collections::HashMap::new();
+pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Result<(), String> {
+    let op_lines = promise_op_lines(source);
 
-    fn walk<'a>(
-        val: &'a LispVal,
-        op_lines: &std::collections::HashMap<&str, Vec<usize>>,
-        occurrence: &mut std::collections::HashMap<&'static str, usize>,
-        tracked: &mut std::collections::HashMap<String, ()>,
-        uses: &mut Vec<PromiseUse>,
-    ) {
+    // Pre-pass: top-level function defines, for call-edge resolution.
+    // Shape: (define (name p1 p2 ...) BODY...) — params are the header's
+    // trailing siblings, not a nested list.
+    let mut defns: std::collections::HashMap<String, DefnInfo> = std::collections::HashMap::new();
+    for e in exprs {
+        if let LispVal::List(items) = e {
+            if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") {
+                if let Some(LispVal::List(header)) = items.get(1) {
+                    if let Some(LispVal::Sym(name)) = header.first() {
+                        let ps: Vec<String> = header[1..]
+                            .iter()
+                            .filter_map(|p| match p {
+                                LispVal::Sym(s) => Some(s.clone()),
+                                _ => None,
+                            })
+                            .collect();
+                        defns.insert(name.clone(), DefnInfo { params: ps });
+                    }
+                }
+            }
+        }
+    }
+
+    let mut cx = FlowCx {
+        defns: &defns,
+        op_lines: &op_lines,
+        occurrence: std::collections::HashMap::new(),
+        tracked: std::collections::HashMap::new(),
+        uses: Vec::new(),
+        param_uses: std::collections::HashMap::new(),
+        local_flows: std::collections::HashMap::new(),
+        param_flows: std::collections::HashMap::new(),
+    };
+
+    fn walk(val: &LispVal, cur_defn: &str, cx: &mut FlowCx) {
         if let LispVal::List(items) = val {
             if items.is_empty() {
                 return;
@@ -1762,13 +1827,13 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
                         if let LispVal::List(bi) = b {
                             if bi.len() >= 2 {
                                 // value first, in the scope so far
-                                walk(&bi[1], op_lines, occurrence, tracked, uses);
+                                walk(&bi[1], cur_defn, cx);
                                 // producer? track the name
                                 if let (LispVal::Sym(name), LispVal::List(v)) = (&bi[0], &bi[1]) {
                                     if v.first().map_or(false, |h| {
                                         matches!(h, LispVal::Sym(s) if PROMISE_PRODUCERS.contains(&s.as_str()))
                                     }) {
-                                        tracked.insert(name.clone(), ());
+                                        cx.tracked.insert(name.clone(), BindKind::Local);
                                     }
                                 }
                             }
@@ -1776,18 +1841,18 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
                     }
                 }
                 for it in &items[2..] {
-                    walk(it, op_lines, occurrence, tracked, uses);
+                    walk(it, cur_defn, cx);
                 }
                 return;
             }
 
             // (lambda PARAMS BODY...) / (fn ...) — params shadow tracked names
             if matches!(head, Some("lambda") | Some("fn")) {
-                let saved: Vec<(String, ())> = if let Some(LispVal::List(params)) = items.get(1) {
+                let saved: Vec<(String, BindKind)> = if let Some(LispVal::List(params)) = items.get(1) {
                     let mut s = Vec::new();
                     for p in params {
                         if let LispVal::Sym(n) = p {
-                            if let Some(v) = tracked.remove(n) {
+                            if let Some(v) = cx.tracked.remove(n) {
                                 s.push((n.clone(), v));
                             }
                         }
@@ -1797,19 +1862,20 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
                     Vec::new()
                 };
                 for it in &items[2..] {
-                    walk(it, op_lines, occurrence, tracked, uses);
+                    walk(it, cur_defn, cx);
                 }
                 for (n, v) in saved {
-                    tracked.insert(n, v);
+                    cx.tracked.insert(n, v);
                 }
                 return;
             }
 
-            // Consuming call? Count the occurrence ALWAYS (index alignment).
             if let Some(s) = head {
                 if let Some(op) = PROMISE_CONSUMERS.iter().find(|c| **c == s) {
-                    let idx = *occurrence.get(op).unwrap_or(&0);
-                    occurrence.insert(op, idx + 1);
+                    // Consuming call: count the occurrence ALWAYS (index
+                    // alignment) and record uses of tracked promise args.
+                    let idx = *cx.occurrence.get(op).unwrap_or(&0);
+                    cx.occurrence.insert(op, idx + 1);
                     // which args are consuming positions?
                     let consume_args: &[usize] = match *op {
                         "near/promise_then" => &[1],
@@ -1819,12 +1885,51 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
                     };
                     for ai in consume_args {
                         if let Some(LispVal::Sym(name)) = items.get(*ai) {
-                            if tracked.contains_key(name) {
-                                uses.push(PromiseUse {
+                            if let Some(kind) = cx.tracked.get(name).copied() {
+                                let u = PromiseUse {
+                                    defn: cur_defn.to_string(),
                                     binding: name.clone(),
                                     op: op.to_string(),
                                     occurrence: idx,
-                                });
+                                };
+                                match kind {
+                                    BindKind::Local => cx.uses.push(u),
+                                    BindKind::Param => {
+                                        cx.param_uses
+                                            .entry((cur_defn.to_string(), name.clone()))
+                                            .or_default()
+                                            .push(u);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(info) = cx.defns.get(s) {
+                    // Call to a known defn: record promise flow edges for
+                    // arguments that are tracked promise values. Only bare
+                    // symbols flow (v1 boundary); the runtime trap still
+                    // backs anything this pass cannot see.
+                    for (ai, arg) in items[1..].iter().enumerate() {
+                        if let LispVal::Sym(name) = arg {
+                            if let Some(kind) = cx.tracked.get(name).copied() {
+                                if ai < info.params.len() {
+                                    let edge =
+                                        FlowEdge { callee: s.to_string(), pos: ai };
+                                    match kind {
+                                        BindKind::Local => {
+                                            cx.local_flows
+                                                .entry((cur_defn.to_string(), name.clone()))
+                                                .or_default()
+                                                .push(edge);
+                                        }
+                                        BindKind::Param => {
+                                            cx.param_flows
+                                                .entry((cur_defn.to_string(), name.clone()))
+                                                .or_default()
+                                                .push(edge);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1832,37 +1937,160 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
             }
 
             for it in &items[1..] {
-                walk(it, op_lines, occurrence, tracked, uses);
+                walk(it, cur_defn, cx);
             }
         }
     }
 
+    // Driver: define-aware so defn params are tracked for their body and
+    // uses attribute to the right (defn, binding) key.
     for e in exprs {
-        walk(e, &op_lines, &mut occurrence, &mut tracked, &mut uses);
+        let mut handled = false;
+        if let LispVal::List(items) = e {
+            if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") {
+                // (define (name p1 p2 ...) BODY...) — function define; params
+                // are the header's trailing siblings. Tracked as BindKind::Param
+                // for the body walk so consuming uses attribute to this defn.
+                if let Some(LispVal::List(header)) = items.get(1) {
+                    if let Some(LispVal::Sym(name)) = header.first() {
+                        if header.len() >= 1 && items.len() >= 3 {
+                            let ps: Vec<String> = header[1..]
+                                .iter()
+                                .filter_map(|p| match p {
+                                    LispVal::Sym(s) => Some(s.clone()),
+                                    _ => None,
+                                })
+                                .collect();
+                            let saved: Vec<(String, BindKind)> = ps
+                                .iter()
+                                .filter_map(|n| cx.tracked.remove(n).map(|k| (n.clone(), k)))
+                                .collect();
+                            for n in &ps {
+                                cx.tracked.insert(n.clone(), BindKind::Param);
+                            }
+                            for body in &items[2..] {
+                                walk(body, name.as_str(), &mut cx);
+                            }
+                            for (n, k) in saved {
+                                cx.tracked.insert(n, k);
+                            }
+                            handled = true;
+                        }
+                    }
+                }
+                // (define name value) — value define; a top-level promise
+                // producer const stays tracked for later defns.
+                if !handled {
+                    if let Some(LispVal::Sym(n)) = items.get(1) {
+                        if let Some(v) = items.get(2) {
+                            walk(v, "", &mut cx);
+                            if let LispVal::List(vl) = v {
+                                if vl.first().map_or(false, |h| {
+                                    matches!(h, LispVal::Sym(s) if PROMISE_PRODUCERS.contains(&s.as_str()))
+                                }) {
+                                    cx.tracked.insert(n.clone(), BindKind::Local);
+                                }
+                            }
+                            handled = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !handled {
+            walk(e, "", &mut cx);
+        }
     }
 
-    if uses.is_empty() {
-        return Ok(());
+    /// Transitive consumption count + sites for one (defn, param) key.
+    /// Cycle guard: a (defn, param) on the DFS stack contributes once.
+    fn param_consumption(
+        key: &(String, String),
+        defns: &std::collections::HashMap<String, DefnInfo>,
+        param_uses: &std::collections::HashMap<(String, String), Vec<PromiseUse>>,
+        param_flows: &std::collections::HashMap<(String, String), Vec<FlowEdge>>,
+        stack: &mut Vec<(String, String)>,
+    ) -> (usize, Vec<PromiseUse>) {
+        if stack.contains(key) {
+            return (0, Vec::new());
+        }
+        stack.push(key.clone());
+        let mut sites = param_uses.get(key).cloned().unwrap_or_default();
+        let mut total = sites.len();
+        for e in param_flows.get(key).cloned().unwrap_or_default() {
+            if let Some(info) = defns.get(&e.callee) {
+                if let Some(pname) = info.params.get(e.pos) {
+                    let ck = (e.callee.clone(), pname.clone());
+                    let (n, mut s) =
+                        param_consumption(&ck, defns, param_uses, param_flows, stack);
+                    total += n;
+                    sites.append(&mut s);
+                }
+            }
+        }
+        stack.pop();
+        (total, sites)
     }
 
-    // Group by binding; a second consuming use is the error.
-    let mut per_binding: std::collections::HashMap<String, Vec<&PromiseUse>> =
-        std::collections::HashMap::new();
-    for u in &uses {
-        per_binding.entry(u.binding.clone()).or_default().push(u);
+    fn label_of(
+        u: &PromiseUse,
+        op_lines: &std::collections::HashMap<&str, Vec<usize>>,
+    ) -> String {
+        match op_lines.get(u.op.as_str()).and_then(|l| l.get(u.occurrence)) {
+            Some(l) => format!("line {}", l),
+            None => "line ?".to_string(),
+        }
     }
+
+    /// Dedupe + render sites as "op in defn (line N)"; defn omitted at top
+    /// level so single-defn messages stay in the established shape.
+    fn render_sites(
+        mut sites: Vec<PromiseUse>,
+        op_lines: &std::collections::HashMap<&str, Vec<usize>>,
+    ) -> Vec<String> {
+        sites.sort_by(|a, b| {
+            (&a.defn, &a.op, a.occurrence).cmp(&(&b.defn, &b.op, b.occurrence))
+        });
+        sites.dedup_by(|a, b| a.defn == b.defn && a.op == b.op && a.occurrence == b.occurrence);
+        sites
+            .iter()
+            .map(|u| {
+                let where_clause = if u.defn.is_empty() {
+                    String::new()
+                } else {
+                    format!(" in {}", u.defn)
+                };
+                format!(
+                    "{}{} ({})",
+                    u.op.trim_start_matches("near/"),
+                    where_clause,
+                    label_of(u, op_lines)
+                )
+            })
+            .collect()
+    }
+
     let mut errs: Vec<String> = Vec::new();
-    for (binding, group) in &per_binding {
+    let mut flagged: std::collections::HashSet<(String, String)> = Default::default();
+
+    // Bucket 1 (existing, byte-stable): within one defn, a let-bound promise
+    // consumed 2+ times directly.
+    let mut per_binding: std::collections::HashMap<(String, String), Vec<&PromiseUse>> =
+        std::collections::HashMap::new();
+    for u in &cx.uses {
+        per_binding
+            .entry((u.defn.clone(), u.binding.clone()))
+            .or_default()
+            .push(u);
+    }
+    for ((defn, binding), group) in &per_binding {
         if group.len() < 2 {
             continue;
         }
+        flagged.insert((defn.clone(), binding.clone()));
         let mut sites: Vec<String> = Vec::new();
         for u in group {
-            let label = match op_lines.get(u.op.as_str()).and_then(|l| l.get(u.occurrence))
-            {
-                Some(l) => format!("line {}", l),
-                None => "line ?".to_string(),
-            };
+            let label = label_of(u, &op_lines);
             sites.push(format!("{} ({})", u.op.trim_start_matches("near/"), label));
         }
         errs.push(format!(
@@ -1872,6 +2100,88 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
             sites.join(", ")
         ));
     }
+
+    // Bucket 2 (new): a let-bound promise whose TOTAL consumption across
+    // call edges reaches 2 — the cross-defn class (x10).
+    let flow_keys: std::collections::HashSet<(String, String)> =
+        cx.local_flows.keys().cloned().collect();
+    let use_keys: std::collections::HashSet<(String, String)> = per_binding
+        .keys()
+        .cloned()
+        .collect();
+    for key in flow_keys.union(&use_keys) {
+        if flagged.contains(key) {
+            continue;
+        }
+        let mut stack: Vec<(String, String)> = Vec::new();
+        let mut site_refs: Vec<PromiseUse> = per_binding
+            .get(key)
+            .map(|v| v.iter().map(|u| (*u).clone()).collect::<Vec<PromiseUse>>())
+            .unwrap_or_default();
+        let mut total = site_refs.len();
+        for e in cx
+            .local_flows
+            .get(key)
+            .cloned()
+            .unwrap_or_default()
+        {
+            if let Some(info) = cx.defns.get(&e.callee) {
+                if let Some(pname) = info.params.get(e.pos) {
+                    let ck = (e.callee.clone(), pname.clone());
+                    let (n, mut s) = param_consumption(
+                        &ck,
+                        cx.defns,
+                        &cx.param_uses,
+                        &cx.param_flows,
+                        &mut stack,
+                    );
+                    total += n;
+                    site_refs.append(&mut s);
+                }
+            }
+        }
+        if total < 2 {
+            continue;
+        }
+        let sites = render_sites(site_refs, &op_lines);
+        errs.push(format!(
+            "error: promise '{}' consumed {} times across calls ({}) — a promise handle is single-use; both callbacks would fire on chain",
+            key.1,
+            total,
+            sites.join(", ")
+        ));
+    }
+
+    // Bucket 3 (new): a defn param consumed 2+ times in total — every caller
+    // passing a promise loses both callbacks.
+    let param_keys: std::collections::HashSet<(String, String)> = cx
+        .param_uses
+        .keys()
+        .chain(cx.param_flows.keys())
+        .cloned()
+        .collect();
+    for key in param_keys {
+        let mut stack: Vec<(String, String)> = Vec::new();
+        let (total, site_refs) = param_consumption(
+            &key,
+            cx.defns,
+            &cx.param_uses,
+            &cx.param_flows,
+            &mut stack,
+        );
+        if total < 2 {
+            continue;
+        }
+        let sites = render_sites(site_refs, &op_lines);
+        errs.push(format!(
+            "error: promise param '{}' of '{}' consumed {} times ({}) — a promise handle is single-use; both callbacks would fire on chain",
+            key.1,
+            key.0,
+            total,
+            sites.join(", ")
+        ));
+    }
+
     errs.sort();
     if errs.is_empty() {
         Ok(())
