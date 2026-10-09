@@ -40,3 +40,5 @@ scripts/gaskey/node_modules/
 
 # compiler-emitted sourcemap artifacts
 *.wasm.map
+# stray test artifact (literal-brace filename)
+/{}
