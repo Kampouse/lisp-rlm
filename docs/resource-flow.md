@@ -12,7 +12,7 @@ provably broken; everything probabilistic degrades to a warning.**
 | Class | Trigger | Rationale |
 |---|---|---|
 | Arity | promise/transfer op called with wrong argument count (slot maps transcribed from the emitter: `promise_then`=6 (gas@5, amt@4), `promise_create`=5 (gas@4, amt@3), `batch_action_function_call`=5 (gas@4, amt@3), `batch_action_transfer`=2 (amt@1), `transfer`/`transfer_u128`=2 (amt@1), `call` sugar=5 (gas@3, amt@4), `batch_create`/`batch_then`=per emitter) | runtime trap, provable from the source |
-| Gas cap | single attached gas literal > 300 Tgas, or the sum of gas literals in one defn closure > 300 Tgas | mainnet per-tx limit; literals are compile-time constants, the sum is arithmetic |
+| Gas cap | single attached gas > 300 Tgas, or the sum of gas in one defn closure > 300 Tgas. A symbol at a gas slot **resolves** when it names a top-level immutable numeric define (`(define TGAS 300000000000000)`) that no binder (param/lambda/let) shadows anywhere in the program — sound because the const cannot change and cannot be rebound; every other shape stays opaque and the sum remains a sound lower bound. Regression (2026-10-09): `collect_bodies` skipped zero-parameter defines — the `(define (main) …)` contract entrypoint shape — so every closure check on them silently summed 0, and a contract attaching 6×300 Tgas via one hoisted const shipped to testnet ("Exceeded the prepaid gas" on all six receipts). | mainnet per-tx limit; consts are immutable so resolution is exact, unresolved terms only shrink the lower-bound sum |
 | Raw money arithmetic | `+ - * / %` on a u128-domain value | i64 wrapping silently corrupts amounts > 2^63 (the exact class the TS surface rejects) |
 | Truncation | `u128/to-i64` result used at a money slot | drops the high 64 bits of a 128-bit amount |
 | Bad literal | non-decimal string literal at a money slot (`promise` amount, `batch_action_transfer`, `transfer_u128`) | runtime parse trap |
@@ -23,6 +23,27 @@ provably broken; everything probabilistic degrades to a warning.**
 - **Same-program callback existence**: `promise_then p (near/current_account_id) "cb"` where `cb` is not a define in the file. Cannot be a hard error — the account argument may be any cross-contract string, so the string is only *suggestively* local. The warning names the dead-receipt class (receipt fails, parent commits — downstream silently dead).
 - **Callback gas floor**: for callbacks that ARE defined in-file, a static lower bound (straight-line instruction cost + conservative minimum per host op + attached receipt gas) is compared against the attached gas. Lower bounds are sound (loops only weaken upper bounds, never floors); upper bounds are NOT claimed. Fires only when floor > attached.
 - **Gas ≤ 0**: a zero/negative literal attachment produces a receipt that can never run (dead-receipt class, parent still commits).
+
+## Compile-time gas fill (`(gas default)`)
+
+At any promise-op gas slot, the sentinel `(gas default)` expands to a
+static floor literal BEFORE the gate, the type checker, and emission
+(`pipeline_from_exprs` → `src/typing/gas_fill.rs`):
+
+    fill = (CB_FLOOR_BASE + CB_FLOOR_PER_HOST × hosts_closure(callback)) × 2
+
+The model is the same one validated against real-VM replay (Tier B
+below); ×2 headroom covers the measured <1.5× replay margin. Because the
+expansion is a plain literal before every later stage, the fill
+participates in the 300 Tgas closure sum like any other attachment.
+
+- **Same-program callbacks only**: locality is proven when the target
+  argument is `(near/current_account_id)` AND the method names a define
+  in this file. Any other callee is code we do not own — its floor is
+  unknowable, so `default` there is a HARD ERROR, never a silent guess.
+- **Undefined local callback**: also a hard error (no closure → no floor).
+- **Explicit numeric gas unchanged**: a literal at the slot is the
+  override and behaves exactly as before the sentinel existed.
 
 ## Storage money stamps
 

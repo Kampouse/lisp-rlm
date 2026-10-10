@@ -2482,7 +2482,7 @@ fn mjoin(a: MVal, b: MVal) -> MVal {
 }
 
 /// Top-level function defines: name -> param count.
-fn collect_top_defns(exprs: &[LispVal]) -> std::collections::HashMap<String, usize> {
+pub(crate) fn collect_top_defns(exprs: &[LispVal]) -> std::collections::HashMap<String, usize> {
     let mut defns = std::collections::HashMap::new();
     for e in exprs {
         if let LispVal::List(items) = e {
@@ -2498,15 +2498,100 @@ fn collect_top_defns(exprs: &[LispVal]) -> std::collections::HashMap<String, usi
     defns
 }
 
+/// Top-level immutable numeric constants eligible for static gas resolution:
+/// `(define NAME <num literal>)` where NAME is not a function. Returns also
+/// the set of names bound by ANY binder (function params, lambda params,
+/// let/let*) anywhere in the program — a bound name is NEVER resolved as a
+/// const, because resolving a rebound name to the const's value would
+/// mischeck the shadowed site (soundness: resolve only what is provably the
+/// immutable constant; everything else stays opaque and unchecked).
+fn collect_gas_consts(
+    exprs: &[LispVal],
+    defns: &std::collections::HashMap<String, usize>,
+) -> (
+    std::collections::HashMap<String, i64>,
+    std::collections::HashSet<String>,
+) {
+    let mut consts = std::collections::HashMap::new();
+    let mut bound = std::collections::HashSet::new();
+    for e in exprs {
+        if let LispVal::List(items) = e {
+            if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") && items.len() >= 3
+            {
+                match items.get(1) {
+                    Some(LispVal::Sym(name)) => {
+                        if !defns.contains_key(name) {
+                            if let Some(LispVal::Num(n)) = items.get(2) {
+                                consts.insert(name.clone(), *n);
+                            }
+                        }
+                    }
+                    Some(LispVal::List(header)) => {
+                        for p in header.iter().skip(1) {
+                            if let LispVal::Sym(n) = p {
+                                bound.insert(n.clone());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    fn walk_binders(val: &LispVal, bound: &mut std::collections::HashSet<String>) {
+        if let LispVal::List(items) = val {
+            if let Some(LispVal::Sym(h)) = items.first() {
+                if matches!(h.as_str(), "let" | "let*") {
+                    if let Some(LispVal::List(bindings)) = items.get(1) {
+                        for b in bindings {
+                            if let LispVal::List(bi) = b {
+                                if let (Some(LispVal::Sym(n)), Some(v)) = (bi.first(), bi.get(1)) {
+                                    bound.insert(n.clone());
+                                    walk_binders(v, bound);
+                                }
+                            }
+                        }
+                    }
+                } else if h == "lambda" {
+                    if let Some(LispVal::List(params)) = items.get(1) {
+                        for p in params {
+                            if let LispVal::Sym(n) = p {
+                                bound.insert(n.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            let start = if matches!(items.first(), Some(LispVal::Sym(_))) {
+                1
+            } else {
+                0
+            };
+            for it in &items[start..] {
+                walk_binders(it, bound);
+            }
+        }
+    }
+    for e in exprs {
+        walk_binders(e, &mut bound);
+    }
+    (consts, bound)
+}
+
 /// Defn bodies (top-level function defines only).
-fn collect_bodies(exprs: &[LispVal]) -> std::collections::HashMap<String, Vec<LispVal>> {
+pub(crate) fn collect_bodies(exprs: &[LispVal]) -> std::collections::HashMap<String, Vec<LispVal>> {
     let mut bodies = std::collections::HashMap::new();
     for e in exprs {
         if let LispVal::List(items) = e {
             if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") {
                 if let Some(LispVal::List(header)) = items.get(1) {
                     if let Some(LispVal::Sym(name)) = header.first() {
-                        if header.len() >= 2 && items.len() >= 3 {
+                        // header.len() >= 1: ANY function define (zero-arg
+                        // entrypoints included — `(define (main) …)` is the
+                        // common contract shape; the old `>= 2` guard left
+                        // parameterless defns with no bodies entry, silently
+                        // zeroing every closure check on them).
+                        if items.len() >= 3 {
                             bodies.insert(name.clone(), items[2..].to_vec());
                         }
                     }
@@ -2553,6 +2638,8 @@ fn gas_floor_of(
     defn: &str,
     bodies: &std::collections::HashMap<String, Vec<LispVal>>,
     defns: &std::collections::HashMap<String, usize>,
+    consts: &std::collections::HashMap<String, i64>,
+    bound: &std::collections::HashSet<String>,
     memo: &mut std::collections::HashMap<String, i128>,
     stack: &mut Vec<String>,
 ) -> i128 {
@@ -2566,14 +2653,14 @@ fn gas_floor_of(
     let mut total = 0i128;
     if let Some(bs) = bodies.get(defn) {
         for b in bs {
-            count_gas_literals(b, &mut total);
+            count_gas_literals(b, &mut total, consts, bound);
         }
         let mut callees = std::collections::HashSet::new();
         for b in bs {
             collect_callees(b, defns, &mut callees);
         }
         for c in callees {
-            total += gas_floor_of(&c, bodies, defns, memo, stack);
+            total += gas_floor_of(&c, bodies, defns, consts, bound, memo, stack);
         }
     }
     stack.pop();
@@ -2581,28 +2668,50 @@ fn gas_floor_of(
     total
 }
 
-/// Sum attached-gas literals inside an expression tree.
-fn count_gas_literals(val: &LispVal, acc: &mut i128) {
+/// Sum attached-gas literals inside an expression tree. A symbol at a gas
+/// slot resolves through `consts` when it is a top-level immutable numeric
+/// define that is never bound by any binder (`bound`); unresolved names
+/// contribute 0, so the sum stays a sound LOWER bound.
+fn count_gas_literals(
+    val: &LispVal,
+    acc: &mut i128,
+    consts: &std::collections::HashMap<String, i64>,
+    bound: &std::collections::HashSet<String>,
+) {
     if let LispVal::List(items) = val {
         if let Some(LispVal::Sym(h)) = items.first() {
             let (_, gas_slot, _) = resource_op_info(h);
             if let Some(g) = gas_slot {
-                if let Some(LispVal::Num(n)) = items.get(g + 1) {
-                    if *n > 0 {
-                        *acc += *n as i128;
+                if let Some(arg) = items.get(g + 1) {
+                    match arg {
+                        LispVal::Num(n) => {
+                            if *n > 0 {
+                                *acc += *n as i128;
+                            }
+                        }
+                        LispVal::Sym(name) => {
+                            if !bound.contains(name) {
+                                if let Some(v) = consts.get(name) {
+                                    if *v > 0 {
+                                        *acc += *v as i128;
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
         }
         let start = if matches!(items.first(), Some(LispVal::Sym(_))) { 1 } else { 0 };
         for it in &items[start..] {
-            count_gas_literals(it, acc);
+            count_gas_literals(it, acc, consts, bound);
         }
     }
 }
 
 /// Static host-op floor of a defn closure (each defn counted once).
-fn hosts_closure_of(
+pub(crate) fn hosts_closure_of(
     defn: &str,
     bodies: &std::collections::HashMap<String, Vec<LispVal>>,
     defns: &std::collections::HashMap<String, usize>,
@@ -2670,6 +2779,10 @@ struct ResCx<'a> {
     /// storage money stamps: key literal -> () — a key written with a
     /// provable u128 value is a money key; reads of it seed U128.
     money_keys: std::collections::HashSet<String>,
+    /// top-level immutable numeric consts (gas resolution) + every
+    /// binder-bound name in the program (a bound name is NEVER resolved).
+    gas_consts: &'a std::collections::HashMap<String, i64>,
+    gas_bound: &'a std::collections::HashSet<String>,
 }
 
 /// Pass 1: compute per-(defn, pos) param provenance (U128 or not) by walking
@@ -2959,11 +3072,24 @@ fn cwalk(
                 return MVal::Opaque;
             }
         }
-        // gas slot: literal sanity
+        // gas slot: literal sanity (a top-level immutable numeric const at
+        // the slot resolves to its value — sound because the define cannot
+        // change and the name is never binder-bound anywhere; anything else
+        // stays opaque and unchecked)
         if let Some(g) = gas_slot {
             if let Some(arg) = list.get(g + 1) {
-                if let LispVal::Num(n) = arg {
-                    let gv = *n as i128;
+                let gv = match arg {
+                    LispVal::Num(n) => Some(*n as i128),
+                    LispVal::Sym(name) => {
+                        if !cx.gas_bound.contains(name) {
+                            cx.gas_consts.get(name).map(|v| *v as i128)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(gv) = gv {
                     if gv <= 0 {
                         cx.warns.push(format!(
                             "warning: {} attaches {} gas — a zero/negative gas receipt cannot execute (the parent tx still commits) — {}",
@@ -3115,6 +3241,7 @@ pub fn check_resource_flow(source: Option<&str>, exprs: &[LispVal]) -> Result<()
     let defns = collect_top_defns(exprs);
     let bodies = collect_bodies(exprs);
     let param_u128 = seed_pass(exprs, &defns);
+    let (gas_consts, gas_bound) = collect_gas_consts(exprs, &defns);
 
     let mut cx = ResCx {
         defns: &defns,
@@ -3127,6 +3254,8 @@ pub fn check_resource_flow(source: Option<&str>, exprs: &[LispVal]) -> Result<()
         deposit_sites: std::collections::HashMap::new(),
         next_deposit: 0,
         money_keys: std::collections::HashSet::new(),
+        gas_consts: &gas_consts,
+        gas_bound: &gas_bound,
     };
 
     // walk each defn body with params seeded from pass-1 provenance
@@ -3175,7 +3304,15 @@ pub fn check_resource_flow(source: Option<&str>, exprs: &[LispVal]) -> Result<()
         let mut memo = std::collections::HashMap::new();
         let mut stack = Vec::new();
         for name in defns.keys() {
-            let total = gas_floor_of(name, &bodies, &defns, &mut memo, &mut stack);
+            let total = gas_floor_of(
+                name,
+                &bodies,
+                &defns,
+                &gas_consts,
+                &gas_bound,
+                &mut memo,
+                &mut stack,
+            );
             if total > GAS_TX_CAP {
                 cx.errs.push(format!(
                     "error: method '{}' attaches at least {} in static gas literals across its call closure — over the {} per-transaction limit",

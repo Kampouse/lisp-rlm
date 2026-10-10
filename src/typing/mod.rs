@@ -1,4 +1,5 @@
 pub mod checker;
+pub mod gas_fill;
 pub mod probe;
 pub mod types;
 

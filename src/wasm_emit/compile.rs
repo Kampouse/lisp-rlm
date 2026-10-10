@@ -777,6 +777,15 @@ fn pipeline_from_exprs(
     typecheck: bool,
     label: &str,
 ) -> Result<WasmEmitter, String> {
+    // Compile-time gas fill: expand `(gas default)` on same-program
+    // callbacks to their static floor literal (typing/gas_fill.rs) BEFORE
+    // any check or emission, so gate/typecheck/emitter all see plain
+    // literals. Runs unconditionally (not gated on `typecheck`): the
+    // expansion changes emitted code.
+    if near {
+        crate::typing::gas_fill::expand_gas_defaults(&mut exprs)?;
+    }
+
     // Promise single-use lint (docs/promise-single-use.md Tier 1) — runs on
     // pre-desugar shapes? No: AFTER desugar, so sugar-expanded bodies are
     // covered too; consuming calls are host ops desugar leaves intact.
