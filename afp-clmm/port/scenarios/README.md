@@ -31,6 +31,23 @@ through `pool-a`/`pool-b` directly, then run the same budget through
 every alternative (concavity ⇒ equalize ending price is optimal). The three
 variants land exact-boundary / multi-cell / interior respectively.
 
+## base_swap — the reverse direction (`bswap-*`)
+
+`base_swap P pi x = quote_net pi - quote_net (base_reach (x + base_gross pi))`
+— deposit base, receive quote, price **descends**. Fee on the in side via the
+gross base book B_i = ceil(Q_i/(G_i*G_{i+1})) (the cell's quote book priced
+at its edges); quote out = L*dp, exact integer, no division. On `pool-a`
+from the top: `bswap-exact` (lands on 2e9), `bswap-offgrid` (mid-cell 1.5e9),
+`bswap-cross` (full drain to 1e9, zero leftover). Every pool ships `swap-b`;
+splitters do not (they are routers).
+
+## Slippage invariance (`slip`)
+
+Same y through `pool-b` and `pool-b-ref` (its curve-preserving refinement):
+ending price identical **exactly**, outputs equal to the yocto on these
+constants — pins `finer_quote_slippage`: equality under refinement, NOT a
+reduction. The AFP lemma is invariance.
+
 ## Leg 4 — N=3 composition (static `s.json` from `generators/gen3.py` era)
 
 All drive `split-3` over pools `pa`+`n1`+`n2`; they differ by budget regime,

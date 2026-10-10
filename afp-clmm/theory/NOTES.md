@@ -36,8 +36,7 @@ infinite fine grid (not per-tick storage):
   `quote_swap_opt_below` in locale `combined_pools_cst_fee`).
 - **Optimality**: that split maximizes base out for given quote in
   (sub-additivity inequality proven by case analysis on sqrt-price positions).
-- Finer-pool slippage monotonicity: refining a pool strictly reduces
-  slippage for the same trade (justifies routing through combinations).
+- Finer-pool slippage INVARIANCE (corrected 2026-10-10 — previously misstated as "strictly reduces"): finer_quote_slippage / finer_base_slippage prove slippage P1 = P2 — refinement changes NOTHING about the curve. Pinned by the `slip` scenario (pb vs curve-preserving pb-ref @2e9: identical price path, outputs equal to the yocto).
 
 ## lisp-rlm porting relevance
 

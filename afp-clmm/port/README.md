@@ -21,12 +21,13 @@ make prove    # pool-join + fee-join: 9/9 · n-pool: 5/5 · TS twins: 14/14 — 
 | `paths.py` | the one file that knows where everything is |
 | `Makefile` | `prove` / `build-ts` / `regenerate` / `clean` |
 
-## The 9 contracts
+## The 10 contracts
 
 | dir | pool | leg | what it pins |
 |-----|------|-----|--------------|
 | `contracts/pool-join/pool-a/` | pa | 2 | baseline: grid [1,2,4]e9, fee 0.3% |
 | `contracts/pool-join/pool-b/` | pb | 2 | partner on a DIFFERENT grid [1,3,4]e9 — makes refinement real work |
+| `contracts/pool-join/pool-b-ref/` | pbref | 2 | curve-preserving refine @2e9 — the slippage-invariance twin (pins finer_quote_slippage) |
 | `contracts/pool-join/join-ab/` | pd | 2 | `pool_join(refine a, refine b)` — swapping the joined pool ≡ swapping a+b (the theorem) |
 | `contracts/pool-join/split-ab/` | splt | 2 | no (a,b) split beats the equalized one (optimality) |
 | `contracts/fee-join/pool-c/` | pc | 3 | same grid as a, fee 0.5% — the fee contrast |
@@ -105,6 +106,7 @@ against oracle pins (`make prove`).
 | **3+ pools**, same grid & fee | `split-3` | equal-ending-price optimum scales to N — and all-in on one pool is provably worse *(npool-\*, opt-n)* |
 | Pool **already swapped into** (mid-interval) | interior entry (`start` param) | refine never changes a pool — resuming from any point is exact *(inside/inside-join)* |
 | Need **inverse**: y that reaches price p | binary search on the grid (see `split-3`'s p\* loop) | the `quote_reach` pattern — bounded loop over the grid |
+| **Selling** base back for quote | `swap-b` on any pool (base in, quote out, price descends) | the `base_swap` direction — fee via the base book B, quote out exact *(bswap-exact/offgrid/cross)* |
 
 Rule of thumb: **compose** (fewer walks) when fees match — theorem-guaranteed
 free. **Route** (split across pools) when grids or fees differ — equalize the
