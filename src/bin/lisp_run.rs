@@ -361,6 +361,12 @@ fn eval_and_print(code: &str, verbose: bool) {
 fn eval_and_print_inner(code: &str, verbose: bool) {
     let mut env = Env::new();
     let mut state = EvalState::new();
+    // bench/bulk override: LISPRUN_BUDGET=0 → unlimited, else explicit cap
+    if let Ok(b) = std::env::var("LISPRUN_BUDGET") {
+        if let Ok(n) = b.trim().parse::<u64>() {
+            state.eval_budget = n; // 0 = unlimited (see bytecode budget logic)
+        }
+    }
     let exprs = match parse_all(code) {
         Ok(e) => e,
         Err(e) => {

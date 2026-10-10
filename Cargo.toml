@@ -162,3 +162,7 @@ path = "src/bin/dump_verify.rs"
 [[bin]]
 name = "lisp-diff"
 path = "src/bin/lisp_diff.rs"
+
+[[bin]]
+name = "rwasm"
+path = "src/bin/rwasm.rs"
