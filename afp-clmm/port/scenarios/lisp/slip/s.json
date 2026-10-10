@@ -1,46 +1,26 @@
 {
- "name": "clmm-opt-cross",
+ "name": "clmm-slip",
  "manifest": "pa.clmm.test.near=../../../contracts/pool-join/pool-a/target/pool-a.wasm,pb.clmm.test.near=../../../contracts/pool-join/pool-b/target/pool-b.wasm,pd.clmm.test.near=../../../contracts/pool-join/join-ab/target/join-ab.wasm,splt.clmm.test.near=../../../contracts/pool-join/split-ab/target/split-ab.wasm,pc.clmm.test.near=../../../contracts/fee-join/pool-c/target/pool-c.wasm,pj.clmm.test.near=../../../contracts/fee-join/fee-join-ac/target/fee-join-ac.wasm,pbref.clmm.test.near=../../../contracts/pool-join/pool-b-ref/target/pool-b-ref.wasm",
  "steps": [
   {
    "method": "swap",
    "as": "trader.test.near",
-   "contract": "pa.clmm.test.near",
-   "attach": "1",
-   "args": {
-    "min_out": "0"
-   },
-   "contains": "paid:trader.test.near=0"
-  },
-  {
-   "method": "swap",
-   "as": "trader.test.near",
    "contract": "pb.clmm.test.near",
-   "attach": "299999999999999999999999999999999",
+   "attach": "75225677031093279839520000000000",
    "args": {
     "min_out": "0"
    },
-   "contains": "paid:trader.test.near=27500000000000"
+   "contains": "paid:trader.test.near=21578947362437"
   },
   {
    "method": "swap",
    "as": "trader.test.near",
-   "contract": "pa.clmm.test.near",
-   "attach": "96108324974924774322968947266666",
+   "contract": "pbref.clmm.test.near",
+   "attach": "75225677031093279839520000000000",
    "args": {
     "min_out": "0"
    },
-   "contains": "paid:trader.test.near=48932693263677"
-  },
-  {
-   "method": "swap",
-   "as": "trader.test.near",
-   "contract": "pb.clmm.test.near",
-   "attach": "203891675025075225677031052733334",
-   "args": {
-    "min_out": "0"
-   },
-   "contains": "paid:trader.test.near=55000000000000"
+   "contains": "paid:trader.test.near=21578947362437"
   }
  ]
 }

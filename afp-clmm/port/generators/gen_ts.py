@@ -72,8 +72,30 @@ function step(cell_l: string, cell_q: string, cell_top: string): void {
 }
 """
 
+STEP_B_TS = """
+// one step DESCENDING the cell with left edge cell_bot: net liq cell_l,
+// gross base book cell_b (per unit price; fee lives in the book — lisp mirror).
+// out += l*dp EXACT (quote released = L*dp, integer).
+function stepb(cell_l: string, cell_b: string, cell_bot: string): void {
+  const sqp = sget("s:sqp");
+  const x_left = sget("s:y");
+  const out_total = sget("s:out");
+  const width = u128.sub(sqp, cell_bot);
+  const cell_cap = u128MulDiv(cell_b, width, "1");
+  const consumed = u128.lt(cell_cap, x_left) ? cell_cap : x_left;
+  const price_move = u128.div(consumed, cell_b);
+  const units_used = u128MulDiv(price_move, cell_b, "1");
+  const price_next = u128.sub(sqp, price_move);
+  const amount_out = u128.eq(price_move, "0") ? "0" : u128MulDiv(cell_l, price_move, "1");
+  sput("s:out", u128.add(out_total, amount_out));
+  sput("s:y", u128.sub(x_left, units_used));
+  sput("s:sqp", price_next);
+}
+"""
+
 POOL_BODY = """
 {step}
+{step_b}
 // walk: cell dispatch by sqp, dust guard `y_left < CELL_Q_i` per cell (lisp mirror)
 function walk(): void {{
   let guard = 0;
@@ -112,6 +134,47 @@ export function swap(): string {{
 export function get_paid(): string {{
   return sget("paid:" + near.predecessorAccountId());
 }}
+
+// ── base_swap (AFP CLMM_Description: quote_net(pi) - quote_net(base_reach
+// (x + base_gross(pi)))) — base in, quote out, price DESCENDS (lisp mirror).
+function walkb(): void {{
+  let guard = 0;
+  while (u128.gt(sget("s:y"), "0")) {{
+    if (!u128.gt(sget("s:sqp"), GRID_LO)) {{
+      break;
+    }}
+{arms_b}
+    guard = guard + 1;
+    if (guard > 1000) {{ break; }}
+  }}
+}}
+
+export function swap_b(): string {{
+  const deposit: Yocto = near.attachedDepositU128();
+  const caller = near.predecessorAccountId();
+  const min_out = near.jsonGetStr("min_out") ?? "0";
+  const start_raw = near.jsonGetStr("start") ?? "0";
+  const start = u128.eq(start_raw, "0") ? GRID_HI : start_raw;
+  if (u128.eq(deposit, "0")) {{ fail("ERR_ZERO"); }}
+  if (u128.lt(start, GRID_LO)) {{ fail("ERR_START"); }}
+  if (u128.lt(GRID_HI, start)) {{ fail("ERR_START"); }}
+  sput("s:sqp", start);
+  sput("s:y", deposit);
+  sput("s:out", "0");
+  walkb();
+  const out = sget("s:out");
+  const x_left = sget("s:y");
+  const paid_key = "paidb:" + caller;
+  if (u128.lt(out, min_out)) {{ fail("ERR_SLIP"); }}
+  sput(paid_key, u128.add(sget(paid_key), out));
+  sput("leftb:" + caller, x_left);
+  near.log("swapb out=" + out);
+  return out;
+}}
+
+export function get_paid_b(): string {{
+  return sget("paidb:" + near.predecessorAccountId());
+}}
 {extra}
 """
 
@@ -129,14 +192,21 @@ export function get_fee(): string {{
 def pool_ts(name, grid, Ls, Qs, extra=""):
     n = len(Ls)
     assert len(grid) == n + 1 and len(Qs) == n, f"{name}: grid/L/Q shape"
-    cl = ['const GRID_LO = "%s";' % grid[0]]
+    import gen as _g
+    Bs = [_g.Bceil(Qs[i], grid[i], grid[i + 1]) for i in range(n)]
+    cl = ['const GRID_LO = "%s";' % grid[0],
+          'const GRID_HI = "%s";' % grid[-1]]
+    cl += [f'const CELL_BOT_{i} = "{grid[i]}";' for i in range(n)]
     cl += [f'const CELL_TOP_{i} = "{grid[i]}";' for i in range(1, n + 1)]
     cl += [f'const CELL_L_{i} = "{Ls[i - 1]}";' for i in range(1, n + 1)]
     cl += [f'const CELL_Q_{i} = "{Qs[i - 1]}";' for i in range(1, n + 1)]
+    cl += [f'const CELL_B_{i} = "{Bs[i]}";' for i in range(n)]
     consts = "\n".join(cl) + "\n"
     body = (POOL_BODY.replace("{{", "{").replace("}}", "}")
-            .replace("{step}", STEP_TS).replace("{extra}", extra))
+            .replace("{step}", STEP_TS).replace("{extra}", extra)
+            .replace("{step_b}", STEP_B_TS))
     body = body.replace("{nc}", str(n)).replace("{arms}", _walk_arms(n))
+    body = body.replace("{arms_b}", _walk_arms_b(n))
     return write(name, PRELUDE + consts + body)
 
 
@@ -151,6 +221,22 @@ def _walk_arms(n):
     out.append("    }")
     return "\n".join(out)
 
+
+def _walk_arms_b(n):
+    """Descending arms: cell i active iff BOT_i < sqp <= top of cell i
+    (= CELL_TOP_{i+1} in the 1-based naming; last cell unbounded upward is
+    impossible since start <= GRID_HI). sqp = boundary descends INTO the
+    cell below it (lisp mirror)."""
+    out = []
+    for i in range(n - 1, -1, -1):
+        top_guard = "" if i == n - 1 else (
+            f' && !u128.gt(sget("s:sqp"), CELL_TOP_{i + 1})')
+        head = "if" if i == n - 1 else "} else if"
+        out.append(f'    {head} (u128.gt(sget("s:sqp"), CELL_BOT_{i}){top_guard}) {{')
+        out.append(f'      if (u128.lt(sget("s:y"), CELL_B_{i})) {{ break; }}')
+        out.append(f'      stepb(CELL_L_{i + 1}, CELL_B_{i}, CELL_BOT_{i});')
+    out.append("    }")
+    return "\n".join(out)
 
 def write(name, src):
     import paths
@@ -402,6 +488,7 @@ def main():
     pool_ts("pb-ts", gen.GB, gen.LB, gen.QB)
     pool_ts("pd-ts", gen.GJ, LJ, gen.QJ)
     pool_ts("pc-ts", gen.GA, gen.LC, gen.QC)
+    pool_ts("pbref-ts", gen.GBR, gen.LBR, [gen.Qceil(l) for l in gen.LBR])
     pool_ts("n1-ts", gen3.G3, gen3.LIQS[1], gen3.QQ[1])
     pool_ts("n2-ts", gen3.G3, gen3.LIQS[2], gen3.QQ[2])
     # pj: fee-union join — gross book additivity QBK = QA+QC, fee Fh0/Fd0

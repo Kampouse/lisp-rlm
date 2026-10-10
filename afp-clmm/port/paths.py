@@ -10,6 +10,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 MAP = {  # acct -> (group, dirname)
     "pa":   ("pool-join", "pool-a"),
+    "pbref": ("pool-join", "pool-b-ref"),
     "pb":   ("pool-join", "pool-b"),
     "pd":   ("pool-join", "join-ab"),
     "splt": ("pool-join", "split-ab"),

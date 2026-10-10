@@ -34,6 +34,12 @@ LA = [10**23, 6 * 10**22]
 LB = [3 * 10**22, 9 * 10**22]
 GJ = sorted(set(GA) | set(GB))
 
+def Bceil(q, gi, gj):
+    """GROSS base book (per unit price) = the cell's quote book priced at its
+    edges: ceil(Q/(g_i*g_j)). Same rule on-chain and in the oracle — the
+    base-side fee lives in this book (mirror of the quote side)."""
+    return -(-q // (gi * gj))
+
 def liq_slice(grid, liq, lo, hi):
     """Liquidity of [lo,hi) for a constant-per-cell pool (refine's split)."""
     for i in range(len(grid) - 1):
@@ -53,6 +59,13 @@ LC = [4 * 10**22, 9 * 10**22]
 QC = [Qceil(l, CNUM, CDEN) for l in LC]
 QB = [Qceil(l) for l in LB]
 QJ = [Qceil(l) for l in LJ]
+# refine(pb, 2e9): B's [1,3] cell cut proportionally at 2e9 (exact: divides)
+GBR = [10**9, 2 * 10**9, 3 * 10**9, 4 * 10**9]
+# CURVE-PRESERVING refine (the lemma's hypothesis: same curve, finer grid):
+# L is carried across the cut — the telescoping identity L*(1/p1-1/p3) =
+# L*(1/p1-1/p2)+L*(1/p2-1/p3) is what finer_quote_slippage rides on.
+# (NOT the join's width-proportional L-split — different object.)
+LBR = [LB[0], LB[0], LB[1]]
 assert LA[0] * (GJ[1] - GJ[0]) % (GA[1] - GA[0]) == 0, "refine split must be exact"
 
 HELPERS = '''(define (sput k v) (near/storage_set k v))
@@ -79,6 +92,25 @@ STEP = ''';; one step across the cell starting at sqp: net liq l, gross book q, 
       (sput "s:y" (sub y used))
       (sput "s:sqp" p2))))'''
 
+STEP_B = '''
+;; one step DESCENDING the cell with left edge gl, right edge sqp:
+;; net liq l, gross base book b (per unit price). dp = min(x, b*wd)/b floor;
+;; out += l*dp EXACT (quote released = L*dp — integer, no division);
+;; base fee lives in the book b (mirror of the quote side's Q).
+(define (stepb sqp x l b gl out)
+  (let* ((width (sub sqp gl))
+         (cap (mdiv b width "1"))
+         (take (if (ult cap x) cap x))
+         (dp (u128/div take b))
+         (used (mdiv dp b "1"))
+         (p2 (sub sqp dp))
+         (gained (if (ult "0" dp) (mdiv l dp "1") "0")))
+    (begin
+      (sput "s:out" (add out gained))
+      (sput "s:y" (sub x used))
+      (sput "s:sqp" p2))))
+'''
+
 CSTEP = ''';; combined-curve step from sqp consuming y on gross book q (no out track)
 (define (cstep sqp y q gb)
   (let* ((width (sub gb sqp))
@@ -98,10 +130,21 @@ def emit_walk(n, body):
         expr = branch if expr is None else f"(if (ult sqp G{i + 1}) {branch} {expr})"
     return expr
 
-def walk_swap(n, qpat, lpat=None):
+def walk_swap(n, qpat, lpat=None, bpat=None):
     """Walk + swap body shared by every pool (single source of floors).
-    qpat: i -> book-constant name; lpat: i -> liq-constant name (default L{i})."""
+    qpat: i -> book-constant name; lpat: i -> liq-constant name (default L{i}).
+    bpat: i -> base-book name; given => also emit walkb/swap-b/get-paid-b
+    (AFP base_swap: base in -> quote out, price descends)."""
     lpat = lpat or (lambda i: f"L{i}")
+    bpat = bpat or (lambda i: f"B{i}")
+    # descending arms: arm i active iff G_i < sqp <= G_{i+1}; nested so
+    # sqp = G_{i+1} exactly descends INTO cell i (full-cell width, no
+    # zero-width step); outermost (ult G1 sqp) sorts cells above cell 0.
+    expr_b = None
+    for i in range(n - 1, -1, -1):
+        br = f'(if (ult x {bpat(i)}) "done" (begin (stepb sqp x {lpat(i)} {bpat(i)} G{i} out) (walkb)))'
+        expr_b = br if expr_b is None else f"(if (ult G{i + 1} sqp) {expr_b} {br})"
+    arms_b = expr_b
     walk_body = emit_walk(n, lambda i:
         f'(if (ult y {qpat(i)}) "done" (begin (step sqp y {lpat(i)} {qpat(i)} G{i + 1} out) (walk)))')
     return f'''(define (walk)
@@ -142,7 +185,52 @@ def walk_swap(n, qpat, lpat=None):
   (near/return (sget (str-cat "paid:" (near/predecessor_account_id)) "0")))
 
 (export "swap" swap)
-(export "get-paid" get-paid)'''
+(export "get-paid" get-paid)
+
+;; ── base_swap (AFP CLMM_Description: quote_net(pi) - quote_net(base_reach
+;; (x + base_gross(pi)))) — base in, quote out, price DESCENDS. Books B are
+;; the same cells' quote books priced at the edges (fee on the in side).
+(define (walkb)
+  (let* ((sqp (sget "s:sqp" "0"))
+         (x (sget "s:y" "0"))
+         (out (sget "s:out" "0")))
+    (if (u128/eq x "0")
+        "done"
+        (if (ult G0 sqp)
+            {arms_b}
+            "done"))))
+
+(define (swapb)
+  (let* ((x (near/attached_deposit_u128))
+         (caller (near/predecessor_account_id))
+         (minout (default (near/json_get_str "min_out") "0"))
+         (st0 (default (near/json_get_str "start") "0"))
+         (start (if (u128/eq st0 "0") G{n} st0)))
+    (begin
+      (if (u128/eq x "0") (fail "ERR_ZERO") "ok")
+      (if (ult start G0) (fail "ERR_START") "ok")
+      (if (ult G{n} start) (fail "ERR_START") "ok")
+      (sput "s:sqp" start)
+      (sput "s:y" x)
+      (sput "s:out" "0")
+      (walkb)
+      (let* ((out (sget "s:out" "0"))
+             (xleft (sget "s:y" "0"))
+             (pk (str-cat "paidb:" caller))
+             (newpaid (add (sget pk "0") out)))
+        (begin
+          (if (ult out minout) (fail "ERR_SLIP") "ok")
+          (sput pk newpaid)
+          (sput (str-cat "leftb:" caller) xleft)
+          (near/log (str-cat "swapb out=" out))
+          (near/return out))))))
+
+(define (get-paid-b)
+  (near/return (sget (str-cat "paidb:" (near/predecessor_account_id)) "0")))
+
+(export "swap-b" swapb)
+(export "get-paid-b" get-paid-b)
+'''
 
 
 def pool_src(grid, Ls, note, num=None, den=None):
@@ -151,8 +239,10 @@ def pool_src(grid, Ls, note, num=None, den=None):
     n = len(grid) - 1
     gdefs = "\n".join(f'(define G{i} "{grid[i]}")' for i in range(n + 1))
     ldefs = "\n".join(f'(define L{i} "{Ls[i]}")' for i in range(n))
-    qdefs = "\n".join(f'(define Q{i} "{Qceil(Ls[i], num, den)}")' for i in range(n))
-    body = walk_swap(n, lambda i: f"Q{i}")
+    Qs = [Qceil(Ls[i], num, den) for i in range(n)]
+    qdefs = "\n".join(f'(define Q{i} "{Qs[i]}")' for i in range(n))
+    bdefs = "\n".join(f'(define B{i} "{Bceil(Qs[i], grid[i], grid[i + 1])}")' for i in range(n))
+    body = walk_swap(n, lambda i: f"Q{i}", None, lambda i: f"B{i}")
     return f''';; CLMM grid pool (AFP CLMM_Operations port) —{note}
 ;; grid {" / ".join(str(g) for g in grid)}   net liq [{", ".join(str(l) for l in Ls)}]
 ;; fee phi = {num}/{den}: gross book Q=ceil(L*den/(den-num)) per cell
@@ -163,10 +253,13 @@ def pool_src(grid, Ls, note, num=None, den=None):
 {gdefs}
 {ldefs}
 {qdefs}
+{bdefs}
 
 {HELPERS}
 
 {STEP}
+
+{STEP_B}
 
 {body}'''
 
@@ -314,7 +407,10 @@ def join_src(note):
     fd = "\n".join(f'(define Fd{i} "{c[2]}")' for i, c in enumerate(cells))
     fee_defs = "\n".join(
         f'(define (fee{i}) (mdiv Fh{i} FS Fd{i}))' for i, c in enumerate(cells))
-    body = walk_swap(len(LA), lambda i: f"QBK{i}", lambda i: f"LK{i}")
+    bdefs = "\n".join(
+        f'(define BK{i} "{Bceil(QA[i] + QC[i], GA[i], GA[i + 1])}")' for i, c in enumerate(cells))
+    fee_defs = fee_defs + "\n" + bdefs
+    body = walk_swap(len(LA), lambda i: f"QBK{i}", lambda i: f"LK{i}", lambda i: f"BK{i}")
     return f''';; pool_fee_join P1 P2 (AFP CLMM_Transformation) —{note}
 ;; P1 = pa (phi 3e15/1e18) + P2 = pc (5e15/1e18), joint on grid GA.
 ;; gross_fct additivity holds EXACTLY for heterogeneous fees (join_gross_fct):
@@ -333,6 +429,8 @@ def join_src(note):
 {HELPERS}
 
 {STEP}
+
+{STEP_B}
 
 (define (get-fee)
   (near/return (fee0)))
@@ -355,6 +453,7 @@ def main():
         ("pc", pool_src(GA, LC, " pool C: fee-union leg P2, grid = A's, fee 0.5%",
                         CNUM, CDEN)),
         ("pj", join_src(" joint pool = pool_fee_join(pa, pc)")),
+        ("pbref", pool_src(GBR, LBR, " refine(pb) @2e9 — slippage-invariance twin")),
     ]
     assert "str-cat who" in dict(projects)["splt"], "cb construction missing from template"
     # gate BEFORE writing: every rendered contract must balance in memory
@@ -424,6 +523,23 @@ def swap(grid, Ls, Qs, sqp, y):
             dp = y // q; p2 = sqp + dp
             out += (l * dp) // (sqp * p2); y -= dp * q; sqp = p2
     return out, sqp, y
+
+def bswap(grid, Ls, Qs, sqp, x):
+    """base_swap mirror: base in -> quote out, price descends; books
+    B=ceil(Q/(g_i*g_j)) identical to the contracts; out = L*dp exact."""
+    out = 0
+    while x > 0 and sqp > grid[0]:
+        i = max(k for k in range(len(grid) - 1) if grid[k] < sqp)
+        l, b, gl = Ls[i], Bceil(Qs[i], grid[i], grid[i + 1]), grid[i]
+        cap = (sqp - gl) * b
+        if x >= cap:
+            out += l * (sqp - gl); x -= cap; sqp = gl
+        elif x < b:
+            break
+        else:
+            dp = x // b
+            out += l * dp; x -= dp * b; sqp -= dp
+    return out, sqp, x
 
 def qgross(grid, Qs, p):
     tot = 0
@@ -579,6 +695,48 @@ def oracle():
             alts.append({"y2": y2, "outA": oA, "outB": oB})
         opts[tag] = {"y1": y1, "opt_total": opt_total, "alts": alts}
     pins["opt"] = opts
+
+    # ── base_swap pins (AFP base_swap: base in -> quote out, descending) ──
+    print("\n# base_swap (base in -> quote out; pa grid [1,2,4]e9, start=top)")
+    B1 = Bceil(QA[1], GA[1], GA[2])   # cell [2,4]e9
+    B0 = Bceil(QA[0], GA[0], GA[1])   # cell [1,2]e9
+    bs = {}
+    bxs = {
+        "exact":  B1 * (GA[2] - GA[1]),                    # land exactly on 2e9
+        "offgrid": B1 * (GA[2] - GA[1]) + B0 * 5 * 10**8,  # land mid cell0 (1.5e9)
+        "cross":  B1 * (GA[2] - GA[1]) + B0 * (GA[1] - GA[0]),  # drain to 1e9
+    }
+    for tag, x in bxs.items():
+        o, sqpe, xl = bswap(GA, LA, QA, GA[2], x)
+        bs[tag] = {"x": x, "out": o, "sqp_end": sqpe, "left": xl}
+        print(f"bswap {tag}: x={x} out={o} sqp_end={sqpe} left={xl}")
+    assert bs["exact"]["sqp_end"] == GA[1] and bs["exact"]["left"] == 0
+    assert bs["offgrid"]["sqp_end"] == 15 * 10**8 and bs["offgrid"]["left"] == 0
+    assert bs["cross"]["sqp_end"] == GA[0] and bs["cross"]["left"] == 0
+    # roundtrip sanity (not an AFP claim — a fee/rounding budget check):
+    oq, _, _ = swap(GA, LA, QA, bs["offgrid"]["sqp_end"], bs["offgrid"]["out"])
+    oq_top, _, _ = swap(GA, LA, QA, bs["offgrid"]["sqp_end"], bs["offgrid"]["out"] + 1)
+    print(f"roundtrip sanity (NOT an AFP pin): x={bxs['offgrid']} base in -> "
+          f"{bs['offgrid']['out']} quote out -> quote_swap back gives {oq} base "
+          f"(<= x by two fees + floors: {oq <= bxs['offgrid']})")
+    pins["bswap"] = bs
+
+    # ── slippage invariance under refine (finer_quote_slippage: equality
+    # over reals; on-chain: identical price path EXACT, outs within
+    # floor-dust of the cell split) ──────────────────────────────────────
+    print("\n# finer_quote_slippage pin: pb vs refine(pb)@2e9, same y")
+    QBR = [Qceil(LB[0]), Qceil(LB[0]), Qceil(LB[1])]  # rates: Q0 Q0 Q1 (as pb)
+    y_slip = QB[0] * 2 * 10**9 + QB[0] * 5 * 10**8   # cross [1,3] + partial [3,4]
+    opb, spb, _ = swap(GB, LB, QB, GB[0], y_slip)
+    opr, spr, _ = swap(GBR, LBR, QBR, GBR[0], y_slip)
+    end_exp = GB[1] + (QB[0] * 5 * 10**8) // QB[1]   # same partial dp, both pools
+    diff = opr - opb
+    print(f"slip: y={y_slip} pb out={opb} end={spb} | pbref out={opr} end={spr} "
+          f"| diff={diff} (floor dust at the 2e9 cut, bound 2)")
+    assert spb == spr == end_exp, f"ending price must match: {spb} {spr} {end_exp}"
+    assert abs(diff) <= 2, f"floor-dust bound violated: {diff}"
+    pins["slip"] = {"y": y_slip, "outpb": opb, "outpbref": opr,
+                    "end": spb, "diff": diff}
 
     import paths
     with open(os.path.join(paths.PROOF, "pins.json"), "w") as f:

@@ -17,12 +17,17 @@ function fail(m: string): void {
   near.abort(m);
 }
 const GRID_LO = "1000000000";
+const GRID_HI = "4000000000";
+const CELL_BOT_0 = "1000000000";
+const CELL_BOT_1 = "2000000000";
 const CELL_TOP_1 = "2000000000";
 const CELL_TOP_2 = "4000000000";
 const CELL_L_1 = "30000000000000000000000";
 const CELL_L_2 = "80000000000000000000000";
 const CELL_Q_1 = "30090270812437311935808";
 const CELL_Q_2 = "80240722166499498495487";
+const CELL_B_0 = "15046";
+const CELL_B_1 = "10031";
 
 // one cell step: price_move = min(y_left, cell_cap)/cell_q (floor);
 // only price_move*cell_q units consumed; price_move=0 cannot advance
@@ -41,6 +46,26 @@ function step(cell_l: string, cell_q: string, cell_top: string): void {
     : u128MulDiv(cell_l, price_move, u128MulDiv(sqp, price_next, "1"));
   sput("s:out", u128.add(out_total, amount_out));
   sput("s:y", u128.sub(y_left, units_used));
+  sput("s:sqp", price_next);
+}
+
+
+// one step DESCENDING the cell with left edge cell_bot: net liq cell_l,
+// gross base book cell_b (per unit price; fee lives in the book — lisp mirror).
+// out += l*dp EXACT (quote released = L*dp, integer).
+function stepb(cell_l: string, cell_b: string, cell_bot: string): void {
+  const sqp = sget("s:sqp");
+  const x_left = sget("s:y");
+  const out_total = sget("s:out");
+  const width = u128.sub(sqp, cell_bot);
+  const cell_cap = u128MulDiv(cell_b, width, "1");
+  const consumed = u128.lt(cell_cap, x_left) ? cell_cap : x_left;
+  const price_move = u128.div(consumed, cell_b);
+  const units_used = u128MulDiv(price_move, cell_b, "1");
+  const price_next = u128.sub(sqp, price_move);
+  const amount_out = u128.eq(price_move, "0") ? "0" : u128MulDiv(cell_l, price_move, "1");
+  sput("s:out", u128.add(out_total, amount_out));
+  sput("s:y", u128.sub(x_left, units_used));
   sput("s:sqp", price_next);
 }
 
@@ -87,5 +112,52 @@ export function swap(): string {
 
 export function get_paid(): string {
   return sget("paid:" + near.predecessorAccountId());
+}
+
+// ── base_swap (AFP CLMM_Description: quote_net(pi) - quote_net(base_reach
+// (x + base_gross(pi)))) — base in, quote out, price DESCENDS (lisp mirror).
+function walkb(): void {
+  let guard = 0;
+  while (u128.gt(sget("s:y"), "0")) {
+    if (!u128.gt(sget("s:sqp"), GRID_LO)) {
+      break;
+    }
+    if (u128.gt(sget("s:sqp"), CELL_BOT_1)) {
+      if (u128.lt(sget("s:y"), CELL_B_1)) { break; }
+      stepb(CELL_L_2, CELL_B_1, CELL_BOT_1);
+    } else if (u128.gt(sget("s:sqp"), CELL_BOT_0) && !u128.gt(sget("s:sqp"), CELL_TOP_1)) {
+      if (u128.lt(sget("s:y"), CELL_B_0)) { break; }
+      stepb(CELL_L_1, CELL_B_0, CELL_BOT_0);
+    }
+    guard = guard + 1;
+    if (guard > 1000) { break; }
+  }
+}
+
+export function swap_b(): string {
+  const deposit: Yocto = near.attachedDepositU128();
+  const caller = near.predecessorAccountId();
+  const min_out = near.jsonGetStr("min_out") ?? "0";
+  const start_raw = near.jsonGetStr("start") ?? "0";
+  const start = u128.eq(start_raw, "0") ? GRID_HI : start_raw;
+  if (u128.eq(deposit, "0")) { fail("ERR_ZERO"); }
+  if (u128.lt(start, GRID_LO)) { fail("ERR_START"); }
+  if (u128.lt(GRID_HI, start)) { fail("ERR_START"); }
+  sput("s:sqp", start);
+  sput("s:y", deposit);
+  sput("s:out", "0");
+  walkb();
+  const out = sget("s:out");
+  const x_left = sget("s:y");
+  const paid_key = "paidb:" + caller;
+  if (u128.lt(out, min_out)) { fail("ERR_SLIP"); }
+  sput(paid_key, u128.add(sget(paid_key), out));
+  sput("leftb:" + caller, x_left);
+  near.log("swapb out=" + out);
+  return out;
+}
+
+export function get_paid_b(): string {
+  return sget("paidb:" + near.predecessorAccountId());
 }
 

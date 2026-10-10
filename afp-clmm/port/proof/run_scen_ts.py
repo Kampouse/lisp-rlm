@@ -20,7 +20,8 @@ import paths
 OUT = paths.SCRATCH if False else paths.SCEN_TS
 NM = os.path.expanduser("~/dev/lisp-rlm/target/release/near-mock")
 
-RENAME = {"get-paid": "get_paid", "get-fee": "get_fee", "get-split": "get_split"}
+RENAME = {"get-paid": "get_paid", "get-fee": "get_fee", "get-split": "get_split",
+           "swap-b": "swap_b", "get-paid-b": "get_paid_b"}
 
 
 def transform(sc):

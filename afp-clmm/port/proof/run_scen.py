@@ -20,7 +20,7 @@ import gen
 
 NM = "/Users/asil/dev/lisp-rlm/target/release/near-mock"
 BASE = HERE
-ACCTS = ("pa", "pb", "pd", "splt", "pc", "pj")
+ACCTS = ("pa", "pb", "pd", "splt", "pc", "pj", "pbref")
 import paths
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(HERE)), "generators"))
 _SCEN_BASE = paths.scen_lisp("_")  # any name: only the dir prefix matters for relpath
@@ -81,6 +81,19 @@ def run(name, steps_list):
     print(f"== {name}: exit={r.returncode} ok={ok}")
     return ok, out
 
+def steps_bswap(tag):
+    b = PINS["bswap"][tag]
+    return [{"method": "swap-b", "as": TR, "contract": "pa.clmm.test.near",
+             "attach": str(b["x"]), "args": {},
+             "contains": f"paidb:{TR}={b['out']}"}]
+
+def steps_slip():
+    p = PINS["slip"]
+    return [
+        step_swap("pb", p["y"], f"paid:{TR}={p['outpb']}"),
+        step_swap("pbref", p["y"], f"paid:{TR}={p['outpbref']}"),
+    ]
+
 def steps_join():
     """pool_fee_join decomposition: joined vs legs direct, union-fee export,
     then an alt split (oracle asserts legs <= joined)."""
@@ -114,6 +127,9 @@ results = {}
 for tag in ("exact", "offgrid", "cross"):
     results[tag] = run(tag, steps_base(tag))
 results["inside"] = run("inside", steps_inside())
+for tag in ("exact", "offgrid", "cross"):
+    results[f"bswap-{tag}"] = run(f"bswap-{tag}", steps_bswap(tag))
+results["slip"] = run("slip", steps_slip())
 results["join"] = run("join", steps_join())
 results["inside-join"] = run("inside-join", steps_inside_join())
 for tag in ("exact", "offgrid", "cross"):

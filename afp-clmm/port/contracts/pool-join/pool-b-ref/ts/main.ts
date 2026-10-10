@@ -20,14 +20,19 @@ const GRID_LO = "1000000000";
 const GRID_HI = "4000000000";
 const CELL_BOT_0 = "1000000000";
 const CELL_BOT_1 = "2000000000";
+const CELL_BOT_2 = "3000000000";
 const CELL_TOP_1 = "2000000000";
-const CELL_TOP_2 = "4000000000";
-const CELL_L_1 = "50000000000000000000000";
+const CELL_TOP_2 = "3000000000";
+const CELL_TOP_3 = "4000000000";
+const CELL_L_1 = "30000000000000000000000";
 const CELL_L_2 = "30000000000000000000000";
-const CELL_Q_1 = "50150451354062186559680";
+const CELL_L_3 = "90000000000000000000000";
+const CELL_Q_1 = "30090270812437311935808";
 const CELL_Q_2 = "30090270812437311935808";
-const CELL_B_0 = "25076";
-const CELL_B_1 = "3762";
+const CELL_Q_3 = "90270812437311935807423";
+const CELL_B_0 = "15046";
+const CELL_B_1 = "5016";
+const CELL_B_2 = "7523";
 
 // one cell step: price_move = min(y_left, cell_cap)/cell_q (floor);
 // only price_move*cell_q units consumed; price_move=0 cannot advance
@@ -73,7 +78,7 @@ function stepb(cell_l: string, cell_b: string, cell_bot: string): void {
 function walk(): void {
   let guard = 0;
   while (u128.gt(sget("s:y"), "0")) {
-    if (!u128.lt(sget("s:sqp"), CELL_TOP_2)) {
+    if (!u128.lt(sget("s:sqp"), CELL_TOP_3)) {
       break;
     }
     if (u128.lt(sget("s:sqp"), CELL_TOP_1)) {
@@ -82,6 +87,9 @@ function walk(): void {
     } else if (u128.lt(sget("s:sqp"), CELL_TOP_2)) {
       if (u128.lt(sget("s:y"), CELL_Q_2)) { break; }
       step(CELL_L_2, CELL_Q_2, CELL_TOP_2);
+    } else if (u128.lt(sget("s:sqp"), CELL_TOP_3)) {
+      if (u128.lt(sget("s:y"), CELL_Q_3)) { break; }
+      step(CELL_L_3, CELL_Q_3, CELL_TOP_3);
     }
     guard = guard + 1;
     if (guard > 1000) { break; }
@@ -122,7 +130,10 @@ function walkb(): void {
     if (!u128.gt(sget("s:sqp"), GRID_LO)) {
       break;
     }
-    if (u128.gt(sget("s:sqp"), CELL_BOT_1)) {
+    if (u128.gt(sget("s:sqp"), CELL_BOT_2)) {
+      if (u128.lt(sget("s:y"), CELL_B_2)) { break; }
+      stepb(CELL_L_3, CELL_B_2, CELL_BOT_2);
+    } else if (u128.gt(sget("s:sqp"), CELL_BOT_1) && !u128.gt(sget("s:sqp"), CELL_TOP_2)) {
       if (u128.lt(sget("s:y"), CELL_B_1)) { break; }
       stepb(CELL_L_2, CELL_B_1, CELL_BOT_1);
     } else if (u128.gt(sget("s:sqp"), CELL_BOT_0) && !u128.gt(sget("s:sqp"), CELL_TOP_1)) {
