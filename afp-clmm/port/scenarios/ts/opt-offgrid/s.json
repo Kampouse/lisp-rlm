@@ -1,6 +1,6 @@
 {
  "name": "clmm-opt-offgrid-ts",
- "manifest": "pa.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/leg2/pool-a/ts/target/pool-a-ts.wasm,pb.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/leg2/pool-b/ts/target/pool-b-ts.wasm,pd.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/leg2/join-ab/ts/target/join-ab-ts.wasm,splt.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/leg2/split-ab/ts/target/split-ab-ts.wasm,pc.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/leg3/pool-c/ts/target/pool-c-ts.wasm,pj.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/leg3/fee-join-ac/ts/target/fee-join-ac-ts.wasm",
+ "manifest": "pa.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/pool-join/pool-a/ts/target/pool-a-ts.wasm,pb.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/pool-join/pool-b/ts/target/pool-b-ts.wasm,pd.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/pool-join/join-ab/ts/target/join-ab-ts.wasm,splt.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/pool-join/split-ab/ts/target/split-ab-ts.wasm,pc.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/fee-join/pool-c/ts/target/pool-c-ts.wasm,pj.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/fee-join/fee-join-ac/ts/target/fee-join-ac-ts.wasm",
  "steps": [
   {
    "method": "swap",

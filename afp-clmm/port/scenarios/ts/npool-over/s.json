@@ -1,6 +1,6 @@
 {
  "name": "clmm-npool-over-ts",
- "manifest": "pa.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/leg2/pool-a/ts/target/pool-a-ts.wasm,n1.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/leg4/pool-n1/ts/target/pool-n1-ts.wasm,n2.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/leg4/pool-n2/ts/target/pool-n2-ts.wasm,splt3.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/leg4/split-3/ts/target/split-3-ts.wasm",
+ "manifest": "pa.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/pool-join/pool-a/ts/target/pool-a-ts.wasm,n1.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/n-pool/pool-n1/ts/target/pool-n1-ts.wasm,n2.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/n-pool/pool-n2/ts/target/pool-n2-ts.wasm,splt3.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/n-pool/split-3/ts/target/split-3-ts.wasm",
  "steps": [
   {
    "method": "split",

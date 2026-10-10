@@ -8,16 +8,16 @@ import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-MAP = {  # acct -> (leg, dirname)
-    "pa":   ("leg2", "pool-a"),
-    "pb":   ("leg2", "pool-b"),
-    "pd":   ("leg2", "join-ab"),
-    "splt": ("leg2", "split-ab"),
-    "pc":   ("leg3", "pool-c"),
-    "pj":   ("leg3", "fee-join-ac"),
-    "n1":   ("leg4", "pool-n1"),
-    "n2":   ("leg4", "pool-n2"),
-    "splt3":("leg4", "split-3"),
+MAP = {  # acct -> (group, dirname)
+    "pa":   ("pool-join", "pool-a"),
+    "pb":   ("pool-join", "pool-b"),
+    "pd":   ("pool-join", "join-ab"),
+    "splt": ("pool-join", "split-ab"),
+    "pc":   ("fee-join", "pool-c"),
+    "pj":   ("fee-join", "fee-join-ac"),
+    "n1":   ("n-pool", "pool-n1"),
+    "n2":   ("n-pool", "pool-n2"),
+    "splt3":("n-pool", "split-3"),
 }
 ACCTS = list(MAP)
 

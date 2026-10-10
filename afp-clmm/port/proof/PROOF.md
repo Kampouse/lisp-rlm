@@ -5,9 +5,9 @@ must exist — see preflight notes there). Status date: 2026-10-10.
 
 | stage | runner | scope | status |
 |-------|--------|-------|--------|
-| leg 2 — differential (lisp) | `python3 proof/run_scen.py` | 9 scenarios: `exact`, `inside`, `cross`, `offgrid`, `opt-exact`, `opt-cross`, `opt-offgrid`, `join`, `inside-join` — byte-exact vs `pins.json` | GREEN 9/9 |
-| leg 4 — N-pool (lisp) | `near-mock scenario scenarios/lisp/<name>/s.json` ×5 | `npool-over`, `npool-two`, `npool-star`, `npool-under`, `opt-n` — byte-exact vs `pins3.json` | GREEN 5/5 |
-| leg 4 — split sweeps | runs inside `python3 gen3.py` | FULL fraction grid 33³ = 39,304 splits + 20k random splits; zero optimality violations beyond `VIOLWIN = 2*N` dust | GREEN (per gen3.py run) |
+| pool-join — differential (lisp) | `python3 proof/run_scen.py` | 9 scenarios: `exact`, `inside`, `cross`, `offgrid`, `opt-exact`, `opt-cross`, `opt-offgrid`, `join`, `inside-join` — byte-exact vs `pins.json` | GREEN 9/9 |
+| n-pool — N-pool (lisp) | `near-mock scenario scenarios/lisp/<name>/s.json` ×5 | `npool-over`, `npool-two`, `npool-star`, `npool-under`, `opt-n` — byte-exact vs `pins3.json` | GREEN 5/5 |
+| n-pool — split sweeps | runs inside `python3 gen3.py` | FULL fraction grid 33³ = 39,304 splits + 20k random splits; zero optimality violations beyond `VIOLWIN = 2*N` dust | GREEN (per gen3.py run) |
 | TS twins — differential | `python3 proof/run_scen_ts.py` | 14 scenarios, same Isabelle pins, zero tolerance (byte-exact oracle equality) | GREEN 14/14 |
 | repo differential twin | `cargo test --release -p lisp-rlm-wasm --test test_clmm_ts` | in-repo hand-written `examples/clmm.ts` vs `examples/clmm.lisp` through the same backend, near-mock | GREEN 2/2 |
 

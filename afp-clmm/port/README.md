@@ -7,7 +7,7 @@ numbers.
 
 ```
 cd port
-make prove    # leg 2+3: 9/9 · leg 4: 5/5 · TS twins: 14/14 — exit 0 only if ALL GREEN
+make prove    # pool-join + fee-join: 9/9 · n-pool: 5/5 · TS twins: 14/14 — exit 0 only if ALL GREEN
 ```
 
 ## Layout (6 entries, that's all)
@@ -25,14 +25,14 @@ make prove    # leg 2+3: 9/9 · leg 4: 5/5 · TS twins: 14/14 — exit 0 only if
 
 | dir | pool | leg | what it pins |
 |-----|------|-----|--------------|
-| `contracts/leg2/pool-a/` | pa | 2 | baseline: grid [1,2,4]e9, fee 0.3% |
-| `contracts/leg2/pool-b/` | pb | 2 | partner on a DIFFERENT grid [1,3,4]e9 — makes refinement real work |
-| `contracts/leg2/join-ab/` | pd | 2 | `pool_join(refine a, refine b)` — swapping the joined pool ≡ swapping a+b (the theorem) |
-| `contracts/leg2/split-ab/` | splt | 2 | no (a,b) split beats the equalized one (optimality) |
-| `contracts/leg3/pool-c/` | pc | 3 | same grid as a, fee 0.5% — the fee contrast |
-| `contracts/leg3/fee-join-ac/` | pj | 3 | `pool_fee_join(a, c)` — heterogeneous fees |
-| `contracts/leg4/pool-n1/`, `pool-n2/` | n1, n2 | 4 | members of the N=3 composition (our generalization, not in the AFP entry) |
-| `contracts/leg4/split-3/` | splt3 | 4 | equal-ending-price optimum across a+n1+n2 |
+| `contracts/pool-join/pool-a/` | pa | 2 | baseline: grid [1,2,4]e9, fee 0.3% |
+| `contracts/pool-join/pool-b/` | pb | 2 | partner on a DIFFERENT grid [1,3,4]e9 — makes refinement real work |
+| `contracts/pool-join/join-ab/` | pd | 2 | `pool_join(refine a, refine b)` — swapping the joined pool ≡ swapping a+b (the theorem) |
+| `contracts/pool-join/split-ab/` | splt | 2 | no (a,b) split beats the equalized one (optimality) |
+| `contracts/fee-join/pool-c/` | pc | 3 | same grid as a, fee 0.5% — the fee contrast |
+| `contracts/fee-join/fee-join-ac/` | pj | 3 | `pool_fee_join(a, c)` — heterogeneous fees |
+| `contracts/n-pool/pool-n1/`, `pool-n2/` | n1, n2 | 4 | members of the N=3 composition (our generalization, not in the AFP entry) |
+| `contracts/n-pool/split-3/` | splt3 | 4 | equal-ending-price optimum across a+n1+n2 |
 
 Legs: **2** = pairwise combination (AFP theorem) · **3** = heterogeneous
 fees · **4** = N-pool composition (generalization).

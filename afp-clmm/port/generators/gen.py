@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AFP pool_combination port, leg 2: refine/slice on DIFFERENT grids + fees.
+"""AFP pool_combination port, pool-join: refine/slice on DIFFERENT grids + fees.
 
 Pools (deliberately different grids — refine is no longer identity):
   pa: grid [1,2,4]e9  liq [1e23, 6e22]

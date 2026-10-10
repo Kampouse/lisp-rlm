@@ -97,14 +97,14 @@ def stage_ts():
 
 
 STAGES = {
-    "lisp": ("leg 2+3 differential (lisp)", stage_lisp),
-    "leg4": ("leg 4 N-pool (lisp)", stage_leg4),
+    "pools": ("pool-join + fee-join differential", stage_lisp),
+    "npool": ("n-pool composition", stage_leg4),
     "ts": ("TS twins differential", stage_ts),
 }
 
 
 def main():
-    wants = sys.argv[1:] or list(STAGES)
+    wants = [w if w not in ("lisp","leg4") else {"lisp":"pools","leg4":"npool"}[w] for w in (sys.argv[1:] or list(STAGES))]
     unknown = [w for w in wants if w not in STAGES]
     if unknown:
         print(f"unknown stages: {unknown}; choose from {list(STAGES)}")

@@ -1,6 +1,6 @@
 {
  "name": "clmm-opt-n",
- "manifest": "pa.clmm.test.near=../../../contracts/leg2/pool-a/target/pool-a.wasm,n1.clmm.test.near=../../../contracts/leg4/pool-n1/target/pool-n1.wasm,n2.clmm.test.near=../../../contracts/leg4/pool-n2/target/pool-n2.wasm,splt3.clmm.test.near=../../../contracts/leg4/split-3/target/split-3.wasm",
+ "manifest": "pa.clmm.test.near=../../../contracts/pool-join/pool-a/target/pool-a.wasm,n1.clmm.test.near=../../../contracts/n-pool/pool-n1/target/pool-n1.wasm,n2.clmm.test.near=../../../contracts/n-pool/pool-n2/target/pool-n2.wasm,splt3.clmm.test.near=../../../contracts/n-pool/split-3/target/split-3.wasm",
  "steps": [
   {
    "method": "swap",

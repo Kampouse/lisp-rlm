@@ -4,7 +4,7 @@
 Model & optimality (the AFP entry only defines PAIRWISE joins; the N-ary
 composition is our generalization, verified pin+sweep like everything else):
   * Three pools on grid [1e9, 2e9, 4e9], SAME fee phi = 3e15/1e18
-    (heterogeneous fees were leg 3; composition is this leg):
+    (heterogeneous fees were fee-join; composition is this leg):
       P0 = pa  liq gen.LA  [1e23, 6e22] -- imported from gen.py, untouched
       P1 = n1  liq [3e22, 8e22]   -- new
       P2 = n2  liq [5e22, 3e22]   -- new
