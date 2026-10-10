@@ -1720,6 +1720,37 @@ fn exec_ctx_view(state: &std::sync::Arc<Mutex<MockState>>) -> bool {
         .unwrap_or_else(|| state.lock().unwrap().view)
 }
 
+/// Stale-wasm guard (2026-10-10): near-compile writes `<wasm>.stamp`
+/// {src, sha256} recording the source it compiled. If that source's CURRENT
+/// hash differs, the wasm predates a source edit — warn loudly but run
+/// anyway (wasm gets copied to machines without the source; a missing stamp
+/// is normal for hand-written wasm; never block the run).
+fn check_stale_wasm(wasm_path: &str) {
+    let stamp_path = format!("{}.stamp", wasm_path);
+    let Ok(raw) = std::fs::read_to_string(&stamp_path) else {
+        return; // no stamp → nothing to compare
+    };
+    let Ok(stamp) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return; // corrupt stamp → ignore
+    };
+    let (Some(src), Some(want)) = (stamp["src"].as_str(), stamp["sha256"].as_str()) else {
+        return;
+    };
+    let Ok(cur) = std::fs::read_to_string(src) else {
+        return; // source not on this machine → can't judge
+    };
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(cur.as_bytes());
+    let got: String = h.finalize().iter().map(|b| format!("{:02x}", b)).collect();
+    if got != want {
+        eprintln!(
+            "⚠️  STALE WASM: {} was built from {}, but that source has changed since (sha mismatch) — results reflect the OLD build. Rebuild: near-compile build",
+            wasm_path, src
+        );
+    }
+}
+
 /// Shared bootstrap for `cross` and `scenario`: load a multi-contract
 /// manifest (acct=path.wasm,...), load persistent state, install TLS.
 pub(crate) fn init_sandbox(
@@ -1738,6 +1769,7 @@ pub(crate) fn init_sandbox(
                 "cannot read contract `{path}`: {e} (scenario default expects contract.wasm beside the scenario file; override with \"manifest\")"
             )
         })?;
+        check_stale_wasm(path);
         eprintln!("📦 {} → {}", acct, path);
         modules.insert(acct.to_string(), compile_module(&engine, &bytes)?);
     }
@@ -4481,6 +4513,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let wasm_bytes = std::fs::read(wasm_path)?;
+    check_stale_wasm(wasm_path);
     println!("📦 {} ({} bytes)", wasm_path, wasm_bytes.len());
 
     // (stack headroom rationale: 2026-08-29 — default ~8MB exhausts around 900
