@@ -145,3 +145,15 @@ infinite fine grid (not per-tick storage):
 - 14/14 scenarios GREEN across 4 legs (base 9 + npool-under/two/star/over
   + opt-n). Remaining gap vs the entry: the Isabelle proofs themselves
   (pin + sweep, never prove) — PORT SURFACE COMPLETE. 
+
+- REFINE CORRECTION (2026-10-10, from reading CLMM_Transformation.refine_lq +
+  wedge in CLMM_Misc): AFP refine CARRIES L across the cut (wedge inserts the
+  same lq on both sides) — the port's width-proportional L-split was a
+  different object. Marginal out/y = (1-phi)/p^2 is L-independent, so
+  small-trade pins passed, but spanning-cell capacity was halved: the "cross"
+  differential showed comb behind the split legs by 1.25e10 (14%) — previously
+  misattributed to "refined walk saturates last cell". With LJ corrected to
+  [1.3e23, 9e22, 1.5e23] (refine_carry + per-cell add): exact slack 0 (was
+  1.68e9), offgrid -1 (one floor unit), cross 0 (was -1.25e10). The
+  combination theorem now holds to the yocto +/- floor dust. Lesson: a pin
+  passing "with slack" is a hypothesis, not a proof — chase every slack.

@@ -1,5 +1,5 @@
 ;; CLMM grid pool (AFP CLMM_Operations port) — pool_comb = join on common refinement of A,B
-;; grid 1000000000 / 2000000000 / 3000000000 / 4000000000   net liq [115000000000000000000000, 45000000000000000000000, 120000000000000000000000]
+;; grid 1000000000 / 2000000000 / 3000000000 / 4000000000   net liq [130000000000000000000000, 90000000000000000000000, 150000000000000000000000]
 ;; fee phi = 3000000000000000/1000000000000000000: gross book Q=ceil(L*den/(den-num)) per cell
 ;; (AFP gross_fct L/(1-phi), fixed-point ceil, precomputed by generator).
 ;; swap: deposit=y, optional "start" (default G0; interior entry = the
@@ -9,15 +9,15 @@
 (define G1 "2000000000")
 (define G2 "3000000000")
 (define G3 "4000000000")
-(define L0 "115000000000000000000000")
-(define L1 "45000000000000000000000")
-(define L2 "120000000000000000000000")
-(define Q0 "115346038114343029087262")
-(define Q1 "45135406218655967903712")
-(define Q2 "120361083249749247743230")
-(define B0 "57674")
-(define B1 "7523")
-(define B2 "10031")
+(define L0 "130000000000000000000000")
+(define L1 "90000000000000000000000")
+(define L2 "150000000000000000000000")
+(define Q0 "130391173520561685055166")
+(define Q1 "90270812437311935807423")
+(define Q2 "150451354062186559679038")
+(define B0 "65196")
+(define B1 "15046")
+(define B2 "12538")
 
 (define (sput k v) (near/storage_set k v))
 (define (sget k d) (default (near/storage_get k) d))

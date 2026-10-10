@@ -10,7 +10,7 @@
    "args": {
     "min_out": "0"
    },
-   "contains": "paid:trader.test.near=75000000000000"
+   "contains": "paid:trader.test.near=87474957470938"
   },
   {
    "method": "swap",

@@ -40,16 +40,28 @@ def Bceil(q, gi, gj):
     base-side fee lives in this book (mirror of the quote side)."""
     return -(-q // (gi * gj))
 
-def liq_slice(grid, liq, lo, hi):
-    """Liquidity of [lo,hi) for a constant-per-cell pool (refine's split)."""
+def refine_carry(grid, liq, cuts):
+    """AFP refine (CLMM_Transformation.refine_lq): the cut cell's L is
+    CARRIED across the cut — wedge(lq P) i (lq P i) inserts the SAME value
+    on both sides. Curve-preserving: L*(1/p1-1/p3) telescopes."""
+    g, l = [], []
     for i in range(len(grid) - 1):
-        a, b = grid[i], grid[i + 1]
-        if a <= lo and hi <= b:
-            return liq[i] * (hi - lo) // (b - a)
-    raise ValueError(f"cell [{lo},{hi}) not inside one grid cell")
+        g.append(grid[i]); l.append(liq[i])
+        for c in sorted(cuts):
+            if grid[i] < c < grid[i + 1]:
+                g.append(c); l.append(liq[i])
+    g.append(grid[-1])
+    return g, l
 
-LJ = [liq_slice(GA, LA, GJ[i], GJ[i + 1]) + liq_slice(GB, LB, GJ[i], GJ[i + 1])
-      for i in range(len(GJ) - 1)]
+# pool_join on the common refinement: refine EACH pool at the other's ticks
+# (AFP refine: L carried across cuts — corrected 2026-10-10; the previous
+# width-proportional split was NOT the AFP construction: marginal rates are
+# L-independent so small-trade pins passed, but spanning-cell CAPACITY was
+# halved — surfacing as the structural 14% cross gap misread as floor slack).
+_gA, _lA = refine_carry(GA, LA, set(GB) - set(GA))
+_gB, _lB = refine_carry(GB, LB, set(GA) - set(GB))
+assert _gA == _gB == GJ, "common refinement mismatch"
+LJ = [_lA[i] + _lB[i] for i in range(len(GJ) - 1)]
 QA = [Qceil(l) for l in LA]
 
 # heterogeneous-fee leg (pool_fee_join): pc = P2, same grid as pa, fee 0.5%
@@ -59,14 +71,13 @@ LC = [4 * 10**22, 9 * 10**22]
 QC = [Qceil(l, CNUM, CDEN) for l in LC]
 QB = [Qceil(l) for l in LB]
 QJ = [Qceil(l) for l in LJ]
-# refine(pb, 2e9): B's [1,3] cell cut proportionally at 2e9 (exact: divides)
+# refine(pb, 2e9): B's [1,3] cell cut at 2e9 (AFP refine: L carried)
 GBR = [10**9, 2 * 10**9, 3 * 10**9, 4 * 10**9]
 # CURVE-PRESERVING refine (the lemma's hypothesis: same curve, finer grid):
 # L is carried across the cut — the telescoping identity L*(1/p1-1/p3) =
 # L*(1/p1-1/p2)+L*(1/p2-1/p3) is what finer_quote_slippage rides on.
-# (NOT the join's width-proportional L-split — different object.)
+# (Identical rule to the join now — both use refine_carry.)
 LBR = [LB[0], LB[0], LB[1]]
-assert LA[0] * (GJ[1] - GJ[0]) % (GA[1] - GA[0]) == 0, "refine split must be exact"
 
 HELPERS = '''(define (sput k v) (near/storage_set k v))
 (define (sget k d) (default (near/storage_get k) d))

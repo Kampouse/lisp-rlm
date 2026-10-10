@@ -11,7 +11,7 @@
     "min_out": "0",
     "start": "2500000000"
    },
-   "contains": "paid:trader.test.near=6757173048552"
+   "contains": "paid:trader.test.near=7594165467792"
   },
   {
    "method": "swap",

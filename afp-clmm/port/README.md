@@ -51,7 +51,7 @@ Each contract dir has its own README with grid/liquidity/fee specifics.
        │                            │
        │ refine @2e9                │ slice @2e9
        │ (keep A strictly >2e9)     │ (B's [1,3] cell CUT at 2e9,
-       │                            │  proportional liq split)
+       │                            │  L carried across — AFP wedge)
        └───────────► join-ab ◄──────┘
                  [1,2,3,4]e9 — per-cell liq = a-density + b-density
                      ▲
