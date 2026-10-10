@@ -8,4 +8,4 @@ books — this is the AFP model's answer to "what fee does a join of
 different-fee pools charge".
 
 Exercises: `join` (swap through pj, byte-exact vs pins), `inside-join`
-(interior entry). Regenerate with `python3 gen.py`.
+(interior entry). Regenerate with `make regenerate` (generator: `generators/gen.py`).

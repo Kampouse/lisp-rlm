@@ -10,4 +10,4 @@ README).
 `y_k = min(cap_k, qgross_k(p*))` — per-pool per-cell muldiv floor dust is
 bounded by `VIOLWIN = 2*N` out-units; the sweep suite (33³ fraction grid +
 20k random splits) found zero violations. Exercises: `npool-over/two/
-star/under`, `opt-n`. Regenerate with `python3 gen3.py`.
+star/under`, `opt-n`. Regenerate with `make regenerate` (generator: `generators/gen3.py`).

@@ -8,4 +8,4 @@ curve, the third member of the composition. Fee 0.3% (equal-fee leg).
 Exists so `splt3` has a three-way allocation problem worth optimizing: the
 optimum split depends on all three pools' curves, and no pairwise chain can
 beat it (verified beyond `VIOLWIN = 2*N` dust). Same scenario set as n1.
-Regenerate with `python3 gen3.py`.
+Regenerate with `make regenerate` (generator: `generators/gen3.py`).

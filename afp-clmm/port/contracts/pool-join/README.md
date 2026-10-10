@@ -13,4 +13,4 @@ routing is optimal.
 | `join-ab` | `pool_join(a, b)` on the common refinement — swapping it ≡ swapping a+b |
 | `split-ab` | walks join-ab, routes legs to a/b at the optimal split point |
 
-Scenarios: `exact` `offgrid` `cross` `inside` + optimality `opt-*` (see `../scenarios/README.md`).
+Scenarios: `exact` `offgrid` `cross` `inside` + optimality `opt-*` (see `../../scenarios/README.md`).

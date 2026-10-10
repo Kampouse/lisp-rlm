@@ -8,4 +8,4 @@ allocation beyond per-cell muldiv floor dust (`VIOLWIN`).
 Credits `paid:<trader>` additively — see the state.bin pitfall in the port
 README before ad-hoc reruns. Exercises: `opt-exact`, `opt-cross`,
 `opt-offgrid` (optimum), plus every leg-2 scenario routes through it.
-Regenerate with `python3 gen.py`.
+Regenerate with `make regenerate` (generator: `generators/gen.py`).

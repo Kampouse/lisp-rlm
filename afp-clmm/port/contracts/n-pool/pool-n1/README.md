@@ -9,4 +9,4 @@ exhaustive split sweeps rather than a theorem.
 
 Member of the `splt3` optimum: the 3-way splitter equalizes ending price
 across pa + n1 + n2. Exercises: `npool-over`, `npool-two`, `npool-star`,
-`npool-under`, `opt-n`. Regenerate with `python3 gen3.py`.
+`npool-under`, `opt-n`. Regenerate with `make regenerate` (generator: `generators/gen3.py`).
