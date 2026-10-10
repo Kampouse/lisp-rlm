@@ -110,6 +110,26 @@ Rule of thumb: **compose** (fewer walks) when fees match — theorem-guaranteed
 free. **Route** (split across pools) when grids or fees differ — equalize the
 ending price and you're optimal. Never all-in one pool of a set.
 
+## The deployer's case — why a venue would ship each one
+
+The table above is the trader/router lens. A platform deployer makes
+architecture decisions — and each construction is the verified answer to one:
+
+| Construction | The deployer decision it answers | Why the theorem pays |
+|---|---|---|
+| `refine` (the @2e9 cut in `join-ab`) | tick-spacing migration / re-gridding a live pool | re-grid WITHOUT pausing or migrating LP positions — swaps provably identical after *(pinned: inside)* |
+| `pool-join` (`join-ab`) | aggregating liquidity across pools behind one quote | same-fee aggregation is EXACT — present one unified curve, zero hidden cost *(exact/offgrid/cross)* |
+| `split-ab` | shipping an on-chain router with best execution | optimal split computable on-chain: bounded-gas binary search, no oracle *(opt-\*)* |
+| `fee-join` (`fee-join-ac`) | unifying different fee tiers (0.3% vs 0.5%) | gross quotes exact across tiers; only the blended fee is rounded — and it's exported, so accounting stays auditable *(join/inside-join + get-fee)* |
+| `split-3` | venue-wide aggregation: N pools, one swap | equal-ending-price optimum scales to N — your aggregate venue provably beats single-pool execution *(npool-\*, opt-n)* |
+| interior entry (`start`) | quoting pools mid-life | a pool IS its state — quote any pool from its current point, no history replay, no checkpoints *(inside/inside-join)* |
+| `quote_reach` pattern | peg defense / limit fills / TWAP bands | exact y to move price to a target — bounded loop, integer-exact *(inside split-3's p\* search)* |
+
+And the meta-answer for shipping the whole kit: every construct here runs in
+**integer u128 math with direction-correct rounding** — the AFP entry is exact
+over reals; this port is the same guarantees expressed deployably, with each
+`= in the paper` pinned as a `≤/≥ pair` in wasm and checked byte-exact in CI.
+
 ## Reading order (first visit)
 
 1. `../README.md` — 6-line orientation for `afp-clmm/`
