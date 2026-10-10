@@ -1,6 +1,6 @@
 {
  "name": "clmm-join",
- "manifest": "pa.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/pa/pa.wasm,pb.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/pb/pb.wasm,pd.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/pd/pd.wasm,splt.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/splt/splt.wasm,pc.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/pc/pc.wasm,pj.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/pj/pj.wasm",
+ "manifest": "pa.clmm.test.near=../../pa/pa.wasm,pb.clmm.test.near=../../pb/pb.wasm,pd.clmm.test.near=../../pd/pd.wasm,splt.clmm.test.near=../../splt/splt.wasm,pc.clmm.test.near=../../pc/pc.wasm,pj.clmm.test.near=../../pj/pj.wasm",
  "steps": [
   {
    "method": "swap",

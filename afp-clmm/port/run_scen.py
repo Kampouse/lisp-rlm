@@ -19,7 +19,7 @@ import gen
 NM = "/Users/asil/dev/lisp-rlm/target/release/near-mock"
 BASE = HERE
 ACCTS = ("pa", "pb", "pd", "splt", "pc", "pj")
-MANIFEST = ",".join(f"{a}.clmm.test.near={BASE}/{a}/{a}.wasm" for a in ACCTS)
+MANIFEST = ",".join(f"{a}.clmm.test.near=../../{a}/{a}.wasm" for a in ACCTS)  # relative: run_scen invokes near-mock with cwd=scen/<name>
 TR = "trader.test.near"
 SPLT = "splt.clmm.test.near"
 

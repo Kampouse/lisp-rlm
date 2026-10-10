@@ -1,6 +1,6 @@
 {
  "name": "clmm-npool-two",
- "manifest": "pa.clmm.test.near=/Users/asil/.hermes/skills/software-development/defi-porting/references/afp-clmm/port/pa/pa.wasm,n1.clmm.test.near=/Users/asil/.hermes/skills/software-development/defi-porting/references/afp-clmm/port/n1/target/n1.wasm,n2.clmm.test.near=/Users/asil/.hermes/skills/software-development/defi-porting/references/afp-clmm/port/n2/target/n2.wasm,splt3.clmm.test.near=/Users/asil/.hermes/skills/software-development/defi-porting/references/afp-clmm/port/splt3/target/splt3.wasm",
+ "manifest": "pa.clmm.test.near=pa/pa.wasm,n1.clmm.test.near=n1/target/n1.wasm,n2.clmm.test.near=n2/target/n2.wasm,splt3.clmm.test.near=splt3/target/splt3.wasm",
  "steps": [
   {
    "method": "split",

@@ -1,6 +1,6 @@
 ;; CLMM grid pool (AFP CLMM_Operations port) — pool A, grid has tick 2e9
 ;; grid 1000000000 / 2000000000 / 4000000000   net liq [100000000000000000000000, 60000000000000000000000]
-;; fee phi = 3000000000000000/1000000000000000000: gross book Q=ceil(L*den/(den-num)) per cell
+;; fee phi = 3000000000000000/1000000000000000000: gross book Q=ceil(L*DEN/(DEN-NUM)) per cell
 ;; (AFP gross_fct L/(1-phi), fixed-point ceil, precomputed by generator).
 ;; swap: deposit=y, optional "start" (default G0; interior entry = the
 ;; refine/slice identity pin); out += l*dp/(sqp*p2) via u128/muldiv.
