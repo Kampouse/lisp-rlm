@@ -18,9 +18,17 @@
 //!     %= JS truncated-mod with bind-once impure rhs; `**`/`**=` HARD ERROR
 //!     (no expt builtin in the NEAR set)
 //!   ✓ && || with JS VALUE semantics (431e1f3): a||b yields a-when-truthy
-//!     else b (and inverse for &&); truthy = not(false|nil|0); string
-//!     truthiness is M2. Left operand bound once (span-mangled temp),
-//!     short-circuit proven by tests/test_ts_logical_values.rs
+//!     else b (and inverse for &&); truthy = not(false|nil|0). Left operand
+//!     bound once (span-mangled temp), short-circuit proven by
+//!     tests/test_ts_logical_values.rs
+//!   ✓ STRING truthiness (2026-10-10): `if (s)` / `while (s)` / ternary on
+//!     a stringy cond lower to (str-length s) so "" is falsy, non-empty
+//!     truthy (JS semantics); numeric truthiness untouched.
+//!     tests/test_str_truthiness.rs. Fix EXPOSED two latent backend bugs,
+//!     both fixed same day: while-arm bare-raw cond fast path had inverted
+//!     polarity (I64Eqz + shared I32Eqz double negation — loop exited while
+//!     truthy), and discard_normalize begin-wrapped the VALUE-position
+//!     while-exit gate into a constant 0 (loop never ran).
 //!   ✓ ?? coalesce: handle-prop paths dispatch on the fallback's literal
 //!     type (number fb → INT getter, string fb → STR getter)
 //!   ✓ ! - unary (! is tag-aware — 920e79f6)
@@ -320,7 +328,25 @@ fn discard_normalize(v: &LispVal) -> LispVal {
                     return v.clone();
                 }
             }
-            // rewrite matching guard-wraps
+            // rewrite matching guard-wraps — EXCEPT in value position.
+            // The while-exit gate `(if (= __wl_brk 0) COND 0)` IS the loop
+            // cond: the `while` consumes the if's VALUE, so the statement
+            // discard `(begin COND 0)` turned every non-bool cond into a
+            // constant 0 (loop never ran). Bool-test conds escaped by shape
+            // (their false_e is a list, not Num 0); bare tests (`while (n)`,
+            // stringy `(str-length s)`) were destroyed. Value-position rule:
+            // a `while` form's cond (items[1]) is never normalized — its
+            // body still is. Found 2026-10-10 via the t5 truthiness probes
+            // (while(s) + break ran 0 iterations).
+            if items.len() >= 2 {
+                if let Some(LispVal::Sym(s)) = items.first() {
+                    if s == "while" {
+                        let mut out = vec![items[0].clone(), items[1].clone()];
+                        out.extend(items[2..].iter().cloned().map(|x| discard_normalize(&x)));
+                        return LispVal::List(out);
+                    }
+                }
+            }
             if items.len() == 4 {
                 let is_flag_test = matches!(
                     &items[0],
@@ -7522,31 +7548,46 @@ fn statically_bool(e: &Expression<'_>) -> bool {
 }
 
 fn to_bool(e: &Expression<'_>) -> Result<LispVal, String> {
-    let is_not = matches!(
-        e,
-        Expression::UnaryExpression(u) if matches!(u.operator, UnaryOperator::LogicalNot)
-    );
-    let _ = is_not;
     let already_bool = statically_bool(e);
     if already_bool {
-        lower_expr(e)
-    } else {
-        // Pass the value RAW to the (if …) — the lisp `if`/`while` emitters
-        // use tag-aware truthiness (emit_cond_branch: falsy = {Bool false,
-        // Nil, Num 0}), so any tagged value branches correctly.
-        //
-        // The old `(!= x 0)` wrapper did a NUMERIC compare: an identifier
-        // holding a BOOL was compared as bool≠num → always true, so
-        // `const take = r < 2; if (take)` in a loop took the then-arm every
-        // iteration (probeB: 60 instead of 24 — Poseidon's partial rounds
-        // hashed wrong from exactly this, 2026-09-11).
-        lower_expr(e)
+        return lower_expr(e);
     }
+    // STRING truthiness (2026-10-10): the lisp `if`/`while` emitters use
+    // tag-aware truthiness (falsy = {Bool false, Nil, Num 0}) — correct for
+    // numbers (0 → falsy, probed) but a tagged STRING is a non-zero i64
+    // (ptr+len packed), so `if (s)` took the then-arm for ANY s, including
+    // "" (probed both layers: literal, json-sourced, and "x"). JS says a
+    // non-empty string is truthy and "" is falsy — wrap stringy conds in
+    // (str-length …) so the existing NUMERIC truthiness (len ≠ 0) does the
+    // work. `!s` already computed real emptiness; `s && x` was already
+    // rejected by the checker (bool ≠ str). Stringiness oracle = the same
+    // one `+` dispatch and STRING_LOCALS seeding use (string-typed params
+    // and lets are registered by the forward scan; method calls consult
+    // member_fn_returns_non_string so depositGte() etc. are NOT wrapped).
+    let stringy = match e {
+        Expression::Identifier(id) => is_string_local(&id.name),
+        _ => expr_is_stringy(e) || expr_is_str_method_call(e),
+    };
+    if stringy {
+        let inner = lower_expr(e)?;
+        return Ok(list(vec![Sym("str-length"), inner]));
+    }
+    // Pass the value RAW to the (if …) — the lisp `if`/`while` emitters
+    // use tag-aware truthiness (emit_cond_branch: falsy = {Bool false,
+    // Nil, Num 0}), so any tagged value branches correctly.
+    //
+    // The old `(!= x 0)` wrapper did a NUMERIC compare: an identifier
+    // holding a BOOL was compared as bool≠num → always true, so
+    // `const take = r < 2; if (take)` in a loop took the then-arm every
+    // iteration (probeB: 60 instead of 24 — Poseidon's partial rounds
+    // hashed wrong from exactly this, 2026-09-11).
+    lower_expr(e)
 }
 
-/// Numeric truthiness by decree: `if (x)` → `(if (!= x 0) ...)`.
-/// Statically-boolean exprs (comparisons, && || !) pass through unwrapped —
-/// the checker types them bool and rejects (!= bool 0).
+/// Truthiness for `if`/`while`/ternary conds. Statically-boolean exprs
+/// (comparisons, && || !) pass through unwrapped — the checker types them
+/// bool and rejects (!= bool 0). Stringy exprs wrap in (str-length …) —
+/// see to_bool. Everything else passes raw (numeric/bool tag truthiness).
 fn truthy(e: &Expression<'_>) -> Result<LispVal, String> {
     to_bool(e)
 }

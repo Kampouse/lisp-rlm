@@ -1022,6 +1022,15 @@ impl WasmEmitter {
                         // path (2026-09-14, gas): a strict-numeric cond's falsy
                         // set is exactly {tagged 0} — i64.eqz replaces the
                         // triple-tag dispatch (~11 instrs saved per iteration).
+                        // POLARITY FIX (2026-10-10): the fast path must NOT
+                        // take the shared I32Eqz below — I64Eqz already yields
+                        // if-ready 0/1, and stacking I32Eqz inverted the
+                        // branch (loop EXITED when the cond was truthy, ran
+                        // forever on 0). Dormant since 2026-09-14: every TS
+                        // loop cond was a comparison (cmp path); while(s) —
+                        // lowered to (str-length s) for string truthiness —
+                        // is the first real bare-raw cond. Caught by the
+                        // t5 string-truthiness probes.
                         let cond_raw_safe = self.expr_is_raw_safe(&a[0]);
                         v.extend(self.expr(&a[0])?);
                         if cond_raw_safe {
@@ -1029,8 +1038,8 @@ impl WasmEmitter {
                         } else {
                             v.extend(self.emit_is_truthy());
                             v.push(Instruction::I32WrapI64);
+                            v.push(Instruction::I32Eqz);
                         }
-                        v.push(Instruction::I32Eqz);
                         // if !cond → exit with tagged nil
                         v.push(Instruction::If(BlockType::Empty));
                         v.push(Instruction::I64Const(TAG_NIL));
