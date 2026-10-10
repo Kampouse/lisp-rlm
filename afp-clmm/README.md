@@ -8,5 +8,5 @@ ops (Echenim, AFP 2025) ported to lisp-rlm contracts, differentially verified.
 
 ```
 cd port
-make prove      # leg2+3 9/9 · leg4 5/5 · TS twins 14/14 — ALL GREEN or exit 1
+make prove      — pool-join+fee-join 9/9 · n-pool 5/5 · TS 14/14 — ALL GREEN or exit 1
 ```
