@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="240" font-family="ui-monospace,Menlo,monospace">
+<rect width="640" height="240" fill="#ffffff"/>
+<text x="70" y="20" font-size="15" font-weight="bold" fill="#111">pool-c</text>
+<text x="132" y="20" font-size="12" fill="#555">fee φ = 0.5%</text>
+<rect x="71.0" y="137.8" width="181.3" height="62.2" fill="#4c8dff" stroke="#2b6fe3"/>
+<text x="161.7" y="131.8" font-size="11" fill="#124" text-anchor="middle">L=4e22</text>
+<rect x="254.3" y="60.0" width="364.7" height="140.0" fill="#7aa7ff" stroke="#2b6fe3"/>
+<text x="436.7" y="54.0" font-size="11" fill="#124" text-anchor="middle">L=9e22</text>
+<line x1="66" y1="200" x2="620" y2="200" stroke="#333"/>
+<line x1="66" y1="200" x2="66" y2="34" stroke="#333"/>
+<text x="6" y="117" font-size="11" fill="#333" transform="rotate(-90 12 117)">liquidity / interval</text>
+<line x1="70.0" y1="200" x2="70.0" y2="204" stroke="#333"/>
+<text x="70.0" y="216" font-size="11" fill="#333" text-anchor="middle">1e9</text>
+<line x1="253.3" y1="200" x2="253.3" y2="204" stroke="#333"/>
+<text x="253.3" y="216" font-size="11" fill="#333" text-anchor="middle">2e9</text>
+<line x1="620.0" y1="200" x2="620.0" y2="204" stroke="#333"/>
+<text x="620.0" y="216" font-size="11" fill="#333" text-anchor="middle">4e9</text>
+<text x="345" y="234" font-size="11" fill="#333" text-anchor="middle">sqrt-price grid (grd P i)</text>
+</svg>

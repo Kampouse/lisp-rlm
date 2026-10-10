@@ -1,5 +1,7 @@
 # pd — pool D = pool_join(refine(pa), refine(pb)) (leg 2)
 
+![pool shape](pool.svg) — liquidity per grid interval (generated: `make charts`)
+
 Combined pool on the common refinement grid `[1, 2, 3, 4]e9`: pb's `[1,3]`
 cell is CUT at `2e9` (proportional split, exact — constants divide), per-cell
 liquidity = sum of both pools' density on the cell, and each cell gets its

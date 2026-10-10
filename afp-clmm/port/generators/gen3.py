@@ -307,8 +307,9 @@ def main():
     with open(os.path.join(d, "main.lisp"), "w") as f:
         f.write(src)
     with open(os.path.join(paths.cdir("splt3"), "near.json"), "w") as f:
+        out_name = paths.MAP["splt3"][1]
         json.dump({"name": "splt3", "src": "src/main.lisp",
-                   "output": f"target/{paths.MAP["splt3"][1]}.wasm"}, f)
+                   "output": f"target/{out_name}.wasm"}, f)
     # new pool contracts (same fee as pa -- pool_src defaults)
     for k, name in ((1, "n1"), (2, "n2")):
         pd_ = os.path.join(paths.cdir(name), "src")

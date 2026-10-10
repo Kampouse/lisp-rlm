@@ -1,5 +1,7 @@
 # pb — pool B (leg 2 partner)
 
+![pool shape](pool.svg) — liquidity per grid interval (generated: `make charts`)
+
 Grid `[1, 3, 4]e9` — **deliberately different from pa's** so the refinement
 step is real work: `pd` cuts pb's `[1,3]` cell at `2e9`. Liquidity
 `[3e22, 9e22]`, fee 0.3%.

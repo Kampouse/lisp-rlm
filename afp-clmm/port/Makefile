@@ -1,5 +1,5 @@
 # afp-clmm/port — dev entrypoints (layout: contracts/ scenarios/ proof/ generators/)
-.PHONY: prove build-ts clean regenerate
+.PHONY: prove build-ts clean regenerate charts
 
 prove:            ## run every proof stage, exit 0 only if ALL GREEN
 	python3 proof/prove.py
@@ -13,3 +13,6 @@ regenerate:       ## regenerate lisp contracts + TS twins from constants
 clean:            ## build artifacts + scenario state (state.bin additive-ledger trap)
 	rm -f contracts/*/*/target/*.wasm* contracts/*/*/ts/target/*.wasm*
 	rm -f scenarios/lisp/*/state.bin scenarios/ts/*/state.bin
+
+charts:           ## regenerate pool-shape SVGs in each contract README
+	python3 generators/gen_charts.py

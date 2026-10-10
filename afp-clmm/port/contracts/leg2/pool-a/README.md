@@ -1,5 +1,7 @@
 # pa — pool A (leg 2 baseline)
 
+![pool shape](pool.svg) — liquidity per grid interval (generated: `make charts`)
+
 Grid `[1, 2, 4]e9`, liquidity `[1e23, 6e22]`, fee 0.3% (`3e15/1e18`).
 
 The baseline pool of the pool-combination leg: every theorem compares a

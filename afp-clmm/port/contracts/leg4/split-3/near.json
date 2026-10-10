@@ -1,5 +1,1 @@
-{
- "name": "splt3",
- "src": "src/main.lisp",
- "output": "target/split-3.wasm"
-}
+{"name": "splt3", "src": "src/main.lisp", "output": "target/split-3.wasm"}

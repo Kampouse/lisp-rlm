@@ -23,7 +23,8 @@ BASE = HERE
 ACCTS = ("pa", "pb", "pd", "splt", "pc", "pj")
 import paths
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(HERE)), "generators"))
-MANIFEST = ",".join(f"{a}.clmm.test.near={os.path.relpath(paths.lisp_wasm(a), paths.scen_lisp("_"))}" for a in ACCTS)  # relative to cwd=scenarios/lisp/<name>
+_SCEN_BASE = paths.scen_lisp("_")  # any name: only the dir prefix matters for relpath
+MANIFEST = ",".join(f"{a}.clmm.test.near={os.path.relpath(paths.lisp_wasm(a), _SCEN_BASE)}" for a in ACCTS)  # relative to cwd=scenarios/lisp/<name>
 TR = "trader.test.near"
 SPLT = "splt.clmm.test.near"
 

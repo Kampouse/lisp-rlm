@@ -1,5 +1,1 @@
-{
- "name": "pa-ts",
- "src": "main.ts",
- "output": "target/pool-a-ts.wasm"
-}
+{"name": "pa-ts", "src": "main.ts", "output": "target/pool-a-ts.wasm"}
