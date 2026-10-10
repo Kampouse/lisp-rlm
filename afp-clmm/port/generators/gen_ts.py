@@ -489,6 +489,9 @@ def main():
     pool_ts("pd-ts", gen.GJ, LJ, gen.QJ)
     pool_ts("pc-ts", gen.GA, gen.LC, gen.QC)
     pool_ts("pbref-ts", gen.GBR, gen.LBR, [gen.Qceil(l) for l in gen.LBR])
+    pool_ts("pe-ts", gen.GE, gen.LE, gen.QE)
+    pool_ts("j3l-ts", gen.GJ, gen.LJ3L, gen.QJ3)
+    pool_ts("j3r-ts", gen.GJ, gen.LJ3R, gen.QJ3)
     pool_ts("n1-ts", gen3.G3, gen3.LIQS[1], gen3.QQ[1])
     pool_ts("n2-ts", gen3.G3, gen3.LIQS[2], gen3.QQ[2])
     # pj: fee-union join — gross book additivity QBK = QA+QC, fee Fh0/Fd0

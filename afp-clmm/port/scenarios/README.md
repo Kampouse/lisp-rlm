@@ -48,6 +48,17 @@ ending price identical **exactly**, outputs equal to the yocto on these
 constants — pins `finer_quote_slippage`: equality under refinement, NOT a
 reduction. The AFP lemma is invariance.
 
+## N-way join — defragmentation (`assoc` / `join3` / `frag`)
+
+`pool-e` = one coarse cell [1,4]e9. `join-3l` = join(join(a,b), e),
+`join-3r` = join(a, join(b,e)) — per-cell add is associative, and the port
+pins it **byte-exact** through wasm. `join3`: same y through the composed
+curve vs the 3-way equalized split (legs a/b/e at p\*) — equal within floor
+dust (±2); no sampled split beats it beyond sub-price-unit granularity (the
+joined walker floors dp at the zone rate; per-leg floors can spend that dust
+— real-zero, documented). `frag`: the same y through each pool ALONE loses
+34–72% vs the joined curve — the fragmentation cost, pinned.
+
 ## Leg 4 — N=3 composition (static `s.json` from `generators/gen3.py` era)
 
 All drive `split-3` over pools `pa`+`n1`+`n2`; they differ by budget regime,

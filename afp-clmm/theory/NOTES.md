@@ -157,3 +157,15 @@ infinite fine grid (not per-tick storage):
   1.68e9), offgrid -1 (one floor unit), cross 0 (was -1.25e10). The
   combination theorem now holds to the yocto +/- floor dust. Lesson: a pin
   passing "with slack" is a hypothesis, not a proof — chase every slack.
+
+- LANE 1c (2026-10-10, N-way join / defragmentation): pe (one coarse cell
+  [1,4]e9), j3l=join(join(a,b),e), j3r=join(a,join(b,e)) — associativity
+  byte-exact through wasm. TWO catches en route: (1) joined books must be
+  SUM-of-leg-books (gross additivity, the fee-join QBK=QA+QC precedent) —
+  the old ceil(Qceil(L_sum)) convention differed by 1 rate-unit in cell0 and
+  the pairwise pins were living inside their dust; join3's opt-sweep exposed
+  it. (2) Integer granularity: the joined walker floors dp at the ZONE rate,
+  leaving rem < R1 unspendable; per-leg floors can spend it (out-value of
+  <1 price unit, ~1.9e4 here) — over reals zero. Pins: assoc exact; join3 ==
+  equalized legs +-2; no split beats join beyond one-price-step slack;
+  frag: each pool alone loses 34-72%. prove 16/16 + 5/5 + 21/21 ALL GREEN.

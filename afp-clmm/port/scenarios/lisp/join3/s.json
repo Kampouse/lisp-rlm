@@ -1,0 +1,46 @@
+{
+ "name": "clmm-join3",
+ "manifest": "pa.clmm.test.near=../../../contracts/pool-join/pool-a/target/pool-a.wasm,pb.clmm.test.near=../../../contracts/pool-join/pool-b/target/pool-b.wasm,pd.clmm.test.near=../../../contracts/pool-join/join-ab/target/join-ab.wasm,splt.clmm.test.near=../../../contracts/pool-join/split-ab/target/split-ab.wasm,pc.clmm.test.near=../../../contracts/fee-join/pool-c/target/pool-c.wasm,pj.clmm.test.near=../../../contracts/fee-join/fee-join-ac/target/fee-join-ac.wasm,pbref.clmm.test.near=../../../contracts/pool-join/pool-b-ref/target/pool-b-ref.wasm,pe.clmm.test.near=../../../contracts/pool-join/pool-e/target/pool-e.wasm,j3l.clmm.test.near=../../../contracts/pool-join/join-3l/target/join-3l.wasm,j3r.clmm.test.near=../../../contracts/pool-join/join-3r/target/join-3r.wasm",
+ "steps": [
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "j3l.clmm.test.near",
+   "attach": "220000000000000000000000000000000",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=98623410757835"
+  },
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pa.clmm.test.near",
+   "attach": "117211634844533600802408191128385",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=53695747467643"
+  },
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pb.clmm.test.near",
+   "attach": "38545636880641925777332736064192",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=16847873733821"
+  },
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pe.clmm.test.near",
+   "attach": "64242728134403209628887893440320",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=28079789556369"
+  }
+ ]
+}

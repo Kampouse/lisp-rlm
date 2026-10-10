@@ -1,0 +1,46 @@
+{
+ "name": "clmm-join3-ts",
+ "manifest": "pa.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/pool-join/pool-a/ts/target/pool-a-ts.wasm,pb.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/pool-join/pool-b/ts/target/pool-b-ts.wasm,pd.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/pool-join/join-ab/ts/target/join-ab-ts.wasm,splt.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/pool-join/split-ab/ts/target/split-ab-ts.wasm,pc.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/fee-join/pool-c/ts/target/pool-c-ts.wasm,pj.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/fee-join/fee-join-ac/ts/target/fee-join-ac-ts.wasm,pbref.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/pool-join/pool-b-ref/ts/target/pool-b-ref-ts.wasm,pe.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/pool-join/pool-e/ts/target/pool-e-ts.wasm,j3l.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/pool-join/join-3l/ts/target/join-3l-ts.wasm,j3r.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/contracts/pool-join/join-3r/ts/target/join-3r-ts.wasm",
+ "steps": [
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "j3l.clmm.test.near",
+   "attach": "220000000000000000000000000000000",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=98623410757835"
+  },
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pa.clmm.test.near",
+   "attach": "117211634844533600802408191128385",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=53695747467643"
+  },
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pb.clmm.test.near",
+   "attach": "38545636880641925777332736064192",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=16847873733821"
+  },
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pe.clmm.test.near",
+   "attach": "64242728134403209628887893440320",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=28079789556369"
+  }
+ ]
+}

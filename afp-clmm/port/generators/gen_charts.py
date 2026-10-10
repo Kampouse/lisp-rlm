@@ -56,6 +56,8 @@ CHARTS = [
     ("pc",   gen.GA, gen.LC, "0.5%"),
     ("pj",   gen.GA, [gen.LA[i]+gen.LC[i] for i in range(2)], "mixed", "LK=a+c; Fhat per cell"),
     ("pbref", gen.GBR, gen.LBR, "0.3%", "curve-preserving refine twin"),
+    ("pe", gen.GE, gen.LE, "0.3%", "one coarse cell — the fragmentation case"),
+    ("j3l", gen.GJ, gen.LJ3L, "0.3%", "(a+b)+e: N-way join"),
     ("n1",   gen3.G3, gen3.LIQS[1], "0.3%"),
     ("n2",   gen3.G3, gen3.LIQS[2], "0.3%"),
 ]

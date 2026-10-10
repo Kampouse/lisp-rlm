@@ -1,4 +1,4 @@
-;; CLMM grid pool (AFP CLMM_Operations port) — pool_comb = join on common refinement of A,B
+;; CLMM grid pool (AFP CLMM_Operations port) — pool_join(refine a, refine b)
 ;; grid 1000000000 / 2000000000 / 3000000000 / 4000000000   net liq [130000000000000000000000, 90000000000000000000000, 150000000000000000000000]
 ;; fee phi = 3000000000000000/1000000000000000000: gross book Q=ceil(L*den/(den-num)) per cell
 ;; (AFP gross_fct L/(1-phi), fixed-point ceil, precomputed by generator).
@@ -12,7 +12,7 @@
 (define L0 "130000000000000000000000")
 (define L1 "90000000000000000000000")
 (define L2 "150000000000000000000000")
-(define Q0 "130391173520561685055166")
+(define Q0 "130391173520561685055167")
 (define Q1 "90270812437311935807423")
 (define Q2 "150451354062186559679038")
 (define B0 "65196")

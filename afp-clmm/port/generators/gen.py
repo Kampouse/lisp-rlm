@@ -64,13 +64,37 @@ assert _gA == _gB == GJ, "common refinement mismatch"
 LJ = [_lA[i] + _lB[i] for i in range(len(GJ) - 1)]
 QA = [Qceil(l) for l in LA]
 
+# ── N-way join (defragmentation): e = coarse single-cell pool, then
+# j3l = join(join(a,b), e) and j3r = join(a, join(b,e)) — same curve via
+# associativity of per-cell add (over reals trivial; on-chain a byte-exact
+# claim). L3 = carried refinements summed per cell.
+GE = [10**9, 4 * 10**9]
+LE = [5 * 10**22]
+QE = [Qceil(l) for l in LE]
+_ge, _le = refine_carry(GE, LE, set(GJ) - set(GE))          # e cut at 2e9, 3e9
+LJ3L = [LJ[i] + _le[i] for i in range(len(GJ) - 1)]          # (a+b)+e
+_gjbe = sorted(set(GB) | set(GE)); _g1, _l1 = refine_carry(GB, LB, set(GE) - set(GB))
+_g2, _l2 = refine_carry(GE, LE, set(GB) - set(GE))
+assert _g1 == _g2 == _gjbe, "b+e refinement mismatch"
+LBE = [_l1[i] + _l2[i] for i in range(len(_gjbe) - 1)]       # b+e on [1,3,4]
+_ga, _la = refine_carry(GA, LA, set(_gjbe) - set(GA))        # a cut at 3e9
+_gbe2, _lbe2 = refine_carry(_gjbe, LBE, set(GA) - set(_gjbe))  # b+e cut at 2e9
+assert _ga == _gbe2 == GJ
+LJ3R = [_la[i] + _lbe2[i] for i in range(len(GJ) - 1)]       # a+(b+e)
+assert LJ3L == LJ3R, "associativity broken in generator"
+
 # heterogeneous-fee leg (pool_fee_join): pc = P2, same grid as pa, fee 0.5%
 CNUM, CDEN = 5 * 10**15, 10**18
 CDPR = CDEN - CNUM
 LC = [4 * 10**22, 9 * 10**22]
 QC = [Qceil(l, CNUM, CDEN) for l in LC]
 QB = [Qceil(l) for l in LB]
-QJ = [Qceil(l) for l in LJ]
+# gross books ADD (join_gross_fct / fee-join precedent QBK=QA+QC):
+# QJ = sum of the legs' books per cell, NOT ceil(Qceil(L_sum)) — the
+# ceil-of-sum convention differed by 1 unit in cell0 and the pairwise
+# pins were living inside their dust (caught by the join3 opt-sweep).
+QJ = [QA[0] + QB[0], QA[1] + QB[0], QA[1] + QB[1]]
+QJ3 = [QA[0] + QB[0] + QE[0], QA[1] + QB[0] + QE[0], QA[1] + QB[1] + QE[0]]
 # refine(pb, 2e9): B's [1,3] cell cut at 2e9 (AFP refine: L carried)
 GBR = [10**9, 2 * 10**9, 3 * 10**9, 4 * 10**9]
 # CURVE-PRESERVING refine (the lemma's hypothesis: same curve, finer grid):
@@ -244,13 +268,14 @@ def walk_swap(n, qpat, lpat=None, bpat=None):
 '''
 
 
-def pool_src(grid, Ls, note, num=None, den=None):
+def pool_src(grid, Ls, note, num=None, den=None, qs=None):
     num = NUM if num is None else num
     den = DEN if den is None else den
     n = len(grid) - 1
     gdefs = "\n".join(f'(define G{i} "{grid[i]}")' for i in range(n + 1))
     ldefs = "\n".join(f'(define L{i} "{Ls[i]}")' for i in range(n))
-    Qs = [Qceil(Ls[i], num, den) for i in range(n)]
+    Qs = qs if qs is not None else [Qceil(Ls[i], num, den) for i in range(n)]
+    assert len(Qs) == n
     qdefs = "\n".join(f'(define Q{i} "{Qs[i]}")' for i in range(n))
     bdefs = "\n".join(f'(define B{i} "{Bceil(Qs[i], grid[i], grid[i + 1])}")' for i in range(n))
     body = walk_swap(n, lambda i: f"Q{i}", None, lambda i: f"B{i}")
@@ -459,12 +484,15 @@ def main():
     projects = [
         ("pa", pool_src(GA, LA, " pool A, grid has tick 2e9")),
         ("pb", pool_src(GB, LB, " pool B, grid has tick 3e9 (DIFFERENT from A)")),
-        ("pd", pool_src(GJ, LJ, " pool_comb = join on common refinement of A,B")),
+        ("pd", pool_src(GJ, LJ, " pool_join(refine a, refine b)", qs=QJ)),
         ("splt", splitter_src()),
         ("pc", pool_src(GA, LC, " pool C: fee-union leg P2, grid = A's, fee 0.5%",
                         CNUM, CDEN)),
         ("pj", join_src(" joint pool = pool_fee_join(pa, pc)")),
         ("pbref", pool_src(GBR, LBR, " refine(pb) @2e9 — slippage-invariance twin")),
+        ("pe", pool_src(GE, LE, " pool E: one coarse cell [1,4]e9 — the fragmentation case")),
+        ("j3l", pool_src(GJ, LJ3L, " join(join(a,b),e) — N-way join, left assoc", qs=QJ3)),
+        ("j3r", pool_src(GJ, LJ3R, " join(a,join(b,e)) — N-way join, right assoc", qs=QJ3)),
     ]
     assert "str-cat who" in dict(projects)["splt"], "cb construction missing from template"
     # gate BEFORE writing: every rendered contract must balance in memory
@@ -748,6 +776,74 @@ def oracle():
     assert abs(diff) <= 2, f"floor-dust bound violated: {diff}"
     pins["slip"] = {"y": y_slip, "outpb": opb, "outpbref": opr,
                     "end": spb, "diff": diff}
+
+    # ── N-way join: associativity + equalized legs + fragmentation pins ──
+    print("\n# N-way join (defragmentation): (a+b)+e vs a+(b+e) vs legs vs alone")
+    y3 = 22 * 10**31
+    oL, sqL, _ = swap(GJ, LJ3L, QJ3, GJ[0], y3)
+    oR, sqR, _ = swap(GJ, LJ3R, QJ3, GJ[0], y3)
+    assert oL == oR and sqL == sqR, "associativity violated on-chain-shape"
+    print(f"assoc: y={y3} j3l out={oL} end={sqL} | j3r out={oR} end={sqR} EQUAL")
+    # 3-way equalized split: zone rates on [1,2],[2,3],[3,4]
+    R0, R1, R2 = QA[0]+QB[0]+QE[0], QA[1]+QB[0]+QE[0], QA[1]+QB[1]+QE[0]
+    C1 = R0 * 10**9                      # gross to 2e9
+    C2 = C1 + R1 * 10**9                 # gross to 3e9
+    assert C1 < y3 < C2, "y3 must land in zone 1 ([2e9,3e9))"
+    dp = (y3 - C1) // R1
+    pstar = GA[1] + dp
+    yA = QA[0] * 10**9 + QA[1] * dp
+    yB = QB[0] * (pstar - GB[0])
+    yE = QE[0] * (pstar - GE[0])
+    oA, _, _ = swap(GA, LA, QA, GA[0], yA)
+    oB, _, _ = swap(GB, LB, QB, GB[0], yB)
+    oE, _, _ = swap(GE, LE, QE, GE[0], yE)
+    tot = oA + oB + oE
+    print(f"equalized: p*={pstar} yA={yA} yB={yB} yE={yE}")
+    print(f"legs: A={oA} B={oB} E={oE} sum={tot} | j3 out={oL} diff={tot - oL}")
+    assert abs(tot - oL) <= 6, "equalized legs vs join3 dust bound blown"
+    # optimality: no sampled split beats the EQUALIZED split (the theorem);
+    # note the joined walker floors dp at the coarsest zone rate, so its
+    # unspendable dust (rem < R1) CAN be spent by per-leg granularity —
+    # over reals zero, on-chain ~1.9e4 here. Both facts pinned:
+    rem = y3 - (C1 + R1 * dp)
+    bad = mx = None
+    import random
+    random.seed(3)
+    cands = [(y3 // 3, y3 // 3), (yA, yB), (0, 0)]
+    cands += [(random.randrange(1, y3), random.randrange(1, y3)) for _ in range(300)]
+    for y1, y2 in cands:
+        y3r = y3 - y1 - y2
+        if y3r <= 0:
+            continue
+        t = (swap(GA, LA, QA, GA[0], y1)[0] + swap(GB, LB, QB, GB[0], y2)[0]
+             + swap(GE, LE, QE, GE[0], y3r)[0])
+        if mx is None or t > mx:
+            mx, mxs = t, (y1, y2)
+        if t > tot + 2 and bad is None:
+            bad = (y1, y2, t)   # recorded: integer granularity, bounded below
+    # over reals: equalized split == joined curve == optimal. On-chain, the
+    # joined walker floors dp at the ZONE rate, leaving rem < R1 unspendable;
+    # per-leg floors can spend it — worth at most ONE price-step of output
+    # at the ending zone (L*1/(p*(p*+1))) plus per-zone out-floors:
+    SLB = LJ3L[1] // (pstar * (pstar + 1)) + 3   # sub-price-unit granularity
+    assert bad is None or bad[2] > tot + 2, "internal"
+    assert mx is None or mx <= oL + SLB, f"split beats join beyond granularity: {mx - oL} > {SLB}"
+    assert oL >= tot - 2, "join must match the equalized split within dust"
+    print(f"sweep: 303 splits, max={mx} <= join+SLB({SLB}) ✓ (max at {mxs})")
+    print(f"granularity: join leaves rem={rem} < R1 unspendable; dust-spending "
+          f"legs out-execute by {mx - oL} — the out-value of <1 price unit "
+          f"(real-zero, pinned as such)")
+    # fragmentation: each pool alone strictly loses
+    fA, _, _ = swap(GA, LA, QA, GA[0], y3)
+    fB, _, _ = swap(GB, LB, QB, GB[0], y3)
+    fE, _, _ = swap(GE, LE, QE, GE[0], y3)
+    print(f"frag: alone A={fA} B={fB} E={fE} vs joined {oL} "
+          f"(loss {oL-fA}/{oL-fB}/{oL-fE})")
+    assert max(fA, fB, fE) < oL, "fragmentation should strictly lose"
+    pins["assoc"] = {"y": y3, "out": oL, "sqp_end": sqL}
+    pins["join3"] = {"y": y3, "out": oL, "yA": yA, "yB": yB, "yE": yE,
+                     "outA": oA, "outB": oB, "outE": oE, "sum": tot}
+    pins["frag"] = {"y": y3, "j3out": oL, "aloneA": fA, "aloneB": fB, "aloneE": fE}
 
     import paths
     with open(os.path.join(paths.PROOF, "pins.json"), "w") as f:

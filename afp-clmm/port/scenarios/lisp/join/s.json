@@ -1,6 +1,6 @@
 {
  "name": "clmm-join",
- "manifest": "pa.clmm.test.near=../../../contracts/pool-join/pool-a/target/pool-a.wasm,pb.clmm.test.near=../../../contracts/pool-join/pool-b/target/pool-b.wasm,pd.clmm.test.near=../../../contracts/pool-join/join-ab/target/join-ab.wasm,splt.clmm.test.near=../../../contracts/pool-join/split-ab/target/split-ab.wasm,pc.clmm.test.near=../../../contracts/fee-join/pool-c/target/pool-c.wasm,pj.clmm.test.near=../../../contracts/fee-join/fee-join-ac/target/fee-join-ac.wasm,pbref.clmm.test.near=../../../contracts/pool-join/pool-b-ref/target/pool-b-ref.wasm",
+ "manifest": "pa.clmm.test.near=../../../contracts/pool-join/pool-a/target/pool-a.wasm,pb.clmm.test.near=../../../contracts/pool-join/pool-b/target/pool-b.wasm,pd.clmm.test.near=../../../contracts/pool-join/join-ab/target/join-ab.wasm,splt.clmm.test.near=../../../contracts/pool-join/split-ab/target/split-ab.wasm,pc.clmm.test.near=../../../contracts/fee-join/pool-c/target/pool-c.wasm,pj.clmm.test.near=../../../contracts/fee-join/fee-join-ac/target/fee-join-ac.wasm,pbref.clmm.test.near=../../../contracts/pool-join/pool-b-ref/target/pool-b-ref.wasm,pe.clmm.test.near=../../../contracts/pool-join/pool-e/target/pool-e.wasm,j3l.clmm.test.near=../../../contracts/pool-join/join-3l/target/join-3l.wasm,j3r.clmm.test.near=../../../contracts/pool-join/join-3r/target/join-3r.wasm",
  "steps": [
   {
    "method": "swap",

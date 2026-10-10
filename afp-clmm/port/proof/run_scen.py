@@ -20,7 +20,7 @@ import gen
 
 NM = "/Users/asil/dev/lisp-rlm/target/release/near-mock"
 BASE = HERE
-ACCTS = ("pa", "pb", "pd", "splt", "pc", "pj", "pbref")
+ACCTS = ("pa", "pb", "pd", "splt", "pc", "pj", "pbref", "pe", "j3l", "j3r")
 import paths
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(HERE)), "generators"))
 _SCEN_BASE = paths.scen_lisp("_")  # any name: only the dir prefix matters for relpath
@@ -94,6 +94,32 @@ def steps_slip():
         step_swap("pbref", p["y"], f"paid:{TR}={p['outpbref']}"),
     ]
 
+def steps_assoc():
+    a = PINS["assoc"]
+    return [
+        {"method": "swap", "as": TR, "contract": "j3l.clmm.test.near",
+         "attach": str(a["y"]), "args": {}, "contains": f"paid:{TR}={a['out']}"},
+        {"method": "swap", "as": TR, "contract": "j3r.clmm.test.near",
+         "attach": str(a["y"]), "args": {}, "contains": f"paid:{TR}={a['out']}"},
+    ]
+
+def steps_join3():
+    j = PINS["join3"]
+    return [
+        step_swap("j3l", j["y"], f"paid:{TR}={j['out']}"),
+        step_swap("pa", j["yA"], f"paid:{TR}={j['outA']}"),
+        step_swap("pb", j["yB"], f"paid:{TR}={j['outB']}"),
+        step_swap("pe", j["yE"], f"paid:{TR}={j['outE']}"),
+    ]
+
+def steps_frag():
+    f = PINS["frag"]
+    return [
+        step_swap("pa", f["y"], f"paid:{TR}={f['aloneA']}"),
+        step_swap("pb", f["y"], f"paid:{TR}={f['aloneB']}"),
+        step_swap("pe", f["y"], f"paid:{TR}={f['aloneE']}"),
+    ]
+
 def steps_join():
     """pool_fee_join decomposition: joined vs legs direct, union-fee export,
     then an alt split (oracle asserts legs <= joined)."""
@@ -130,6 +156,9 @@ results["inside"] = run("inside", steps_inside())
 for tag in ("exact", "offgrid", "cross"):
     results[f"bswap-{tag}"] = run(f"bswap-{tag}", steps_bswap(tag))
 results["slip"] = run("slip", steps_slip())
+results["assoc"] = run("assoc", steps_assoc())
+results["join3"] = run("join3", steps_join3())
+results["frag"] = run("frag", steps_frag())
 results["join"] = run("join", steps_join())
 results["inside-join"] = run("inside-join", steps_inside_join())
 for tag in ("exact", "offgrid", "cross"):
