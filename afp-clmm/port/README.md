@@ -95,6 +95,21 @@ Each contract dir has its own README with grid/liquidity/fee specifics.
 Trader = any scenario step; every arrow above is exercised byte-exactly
 against oracle pins (`make prove`).
 
+## When to use what
+
+| Your situation | Reach for | Why (and what proves it) |
+|---|---|---|
+| Two pools, **same fee, different grids**, want one swap | `join-ab` construction (`pool_comb`) | joined curve ≡ walking both legs — one walk, no leg overhead *(exact/offgrid/cross)* |
+| Same, but want the **best split** between two pools | `split-ab` | equalize the ending price p* — provably optimal split *(opt-exact/cross/offgrid)* |
+| Two pools, **same grid, different fees** | `fee-join-ac` construction | gross books add EXACTLY; only the blended Fhat costs you — join when blending < two-leg routing overhead *(join/inside-join)* |
+| **3+ pools**, same grid & fee | `split-3` | equal-ending-price optimum scales to N — and all-in on one pool is provably worse *(npool-\*, opt-n)* |
+| Pool **already swapped into** (mid-interval) | interior entry (`start` param) | refine never changes a pool — resuming from any point is exact *(inside/inside-join)* |
+| Need **inverse**: y that reaches price p | binary search on the grid (see `split-3`'s p\* loop) | the `quote_reach` pattern — bounded loop over the grid |
+
+Rule of thumb: **compose** (fewer walks) when fees match — theorem-guaranteed
+free. **Route** (split across pools) when grids or fees differ — equalize the
+ending price and you're optimal. Never all-in one pool of a set.
+
 ## Reading order (first visit)
 
 1. `../README.md` — 6-line orientation for `afp-clmm/`
