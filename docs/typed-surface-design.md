@@ -1,6 +1,6 @@
 # Typed Surface Design — lisp-rlm
 
-*Design agreed JP ↔ Gork, 2026-10-08. Task spec: `TASK-TYPED.md` (T1–T4, queued behind M3).*
+*Design agreed JP ↔ Gork, 2026-10-08. Task spec: `docs/tasks/TASK-TYPED.md` (T1–T4, queued behind M3).*
 
 ---
 
@@ -149,4 +149,4 @@ LSP (checker-as-library: same rules in editor and build — they cannot disagree
 - Golden regen+compare for every generated artifact (`types.gen.ts`, SDK).
 
 ---
-*Status: TASK-TYPED.md T1–T4 specced & committed (`bb1435f1`), queued behind M3. Effects/phantoms (T5/T6) agreed in principle, not yet in the task file.*
+*Status: docs/tasks/TASK-TYPED.md T1–T4 specced & committed (`bb1435f1`), queued behind M3. Effects/phantoms (T5/T6) agreed in principle, not yet in the task file.*

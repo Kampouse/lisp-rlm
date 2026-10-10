@@ -1,6 +1,6 @@
 //! F3 (2026-10-04): scoped closures — local `const f = arrow` support.
 //!
-//! PROBED REALITY (see TASK-ts-usability-PROGRESS.md):
+//! PROBED REALITY (see docs/tasks/TASK-ts-usability-PROGRESS.md):
 //! - local arrow + DIRECT call-by-name: works on BOTH backends (wasm +
 //!   interpreter), INCLUDING capture of immutable locals — supported.
 //! - arrow capturing a set!-assigned local: T4 landmine (wasm closure
