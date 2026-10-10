@@ -7570,6 +7570,52 @@ fn callee_name(e: &Expression<'_>) -> Result<String, String> {
                 _ => return Err("ts_frontend: nested member chains not in M1".into()),
             };
             note_ident(s.property.name.as_str(), s.property.span.start);
+            // The u128 namespace is CLOSED (d.ts: add/sub/mul/div/mod/lt/gt/
+            // eq/fromI64/toI64/isZero — these lower to real u128/* ops).
+            // Any OTHER member would silently lower to u128/<snake>, an op
+            // that doesn't exist, surfacing only as a missing-builtin error
+            // (or a silent 0) at runtime. Hard-error at lowering with the
+            // free-function suggestion (free spellings cover MORE ops:
+            // MulDiv, Le/Ge/Ne, FromNum/ToNum). Found 2026-10-10:
+            // u128.mulDiv in the AFP CLMM port lowered to u128/mul_div and
+            // failed cryptically.
+            if obj == "u128" {
+                let prop = s.property.name.as_str();
+                let is_real_ns_member = matches!(
+                    prop,
+                    "add"
+                        | "sub"
+                        | "mul"
+                        | "div"
+                        | "mod"
+                        | "lt"
+                        | "gt"
+                        | "eq"
+                        | "fromI64"
+                        | "toI64"
+                        | "isZero"
+                );
+                if !is_real_ns_member {
+                    let fix = match prop {
+                        "mulDiv" => "u128MulDiv(a, b, d)",
+                        "le" => "u128Le(a, b)",
+                        "ge" => "u128Ge(a, b)",
+                        "ne" => "u128Ne(a, b)",
+                        "fromNum" => "u128FromNum(n)",
+                        "toNum" => "u128ToNum(s)",
+                        _ => "",
+                    };
+                    return Err(if fix.is_empty() {
+                        format!(
+                            "ts_frontend: u128.{prop} does not exist — the u128 namespace is closed (add/sub/mul/div/mod/lt/gt/eq/fromI64/toI64/isZero); u128 arithmetic uses free functions like u128Add/u128MulDiv"
+                        )
+                    } else {
+                        format!(
+                            "ts_frontend: u128.{prop} does not exist — no such namespace member. Use the free function {fix}"
+                        )
+                    });
+                }
+            }
             let mapped = map_member_fn(&obj, s.property.name.as_str());
             // Typo hole: near.<member> lowers generically to near/<snake>,
             // so an unknown member compiles fine and traps at RUNTIME
