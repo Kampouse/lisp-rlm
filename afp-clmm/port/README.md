@@ -170,13 +170,12 @@ Testnet wasms of the same contracts: `twap-c.lisp-demo2-1788293746.testnet`,
    `prove.py` disinfects before each leg-4 run; the Rust harness
    zeroes state itself; only bare CLI reruns need the manual `rm`.
 2. **TS: `u128.mulDiv` does not exist** — the 3-arg muldiv is the free
-   fn `u128MulDiv(a, b, d)`. Used to fail silently (zeroed outputs);
-   the frontend now hard-errors at compile with the fix spelled out.
+   fn `u128MulDiv(a, b, d)`; the frontend hard-errors at compile with
+   the fix spelled out.
    Namespace is closed: add/sub/mul/div/mod/lt/gt/eq/fromI64/toI64/isZero.
-3. **TS: unroll interlocking loop state.** Loop-carried u128-string
-   mutation across 2+ `let`s once stalled silently after iteration 1
-   (fixed in the compiler, probed 2026-10-10) — the generator still
-   unrolls binary search into unique-named `const` stages
+3. **TS: unroll interlocking loop state.** Loop-carried mutation across
+   2+ `let`s is where reassignment bugs live — the generator unrolls
+   binary search into unique-named `const` stages
    (`_bsearch_stages()`): same shape as the lisp `let*` chain, and
    immune by construction.
 4. **TS dialect quickies:** u128 predicates are real bools; storage

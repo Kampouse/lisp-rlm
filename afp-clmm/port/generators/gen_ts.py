@@ -376,10 +376,10 @@ export function get_split(): string {{
 def _bsearch_stages(n=48):
     """Unrolled bsearch: unique-named const stages, zero mutation.
 
-    Historic bug (FIXED in compiler, live-probed 2026-10-10): loop-carried
-    reassignments across 2+ interlocking u128-string lets used to stall
-    after iteration 1. Unrolling stays as belt-and-braces: same shape as
-    the lisp let* chain, immune by construction.
+    Loop-carried reassignment across 2+ interlocking u128-string lets is
+    where mutation bugs live — unrolling (belt-and-braces) makes that
+    class impossible: same shape as the lisp let* chain, immune by
+    construction.
     """
     out = [
         "  // unrolled binary search stages (no loop-carried string mutation)",
