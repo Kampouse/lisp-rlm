@@ -1043,6 +1043,21 @@ impl WasmEmitter {
                     v.extend(self.expr(x)?);
                     v.push(Instruction::Drop);
                 }
+                // Parse-cache staleness on loop-back (2026-10-10): a body
+                // `set!` whose cache entry is first allocated AFTER the set!
+                // site emitted no flag-clear (lazy invalidation), so the
+                // first read inside iteration 1 memoizes limbs that every
+                // later iteration re-serves — loop never converges (full
+                // gas burn, silent wrong answer). Force-allocate + clear
+                // memos for every set!-target at the loop-back, same
+                // medicine as the TC loop-back (mod.rs, 2026-10-06).
+                let mut set_targets = std::collections::HashSet::new();
+                collect_set_targets(&a[1..], &mut set_targets);
+                // Sorted: HashSet order is nondeterministic run-to-run and
+                // the emit-determinism fuzz demands byte-identical output.
+                let mut names: Vec<String> = set_targets.into_iter().collect();
+                names.sort();
+                self.emit_parse_cache_invalidate_names(&mut v, &names);
                 // loop back
                 v.push(Instruction::Br(0)); // br $loop
                 v.push(Instruction::End); // loop
@@ -1148,6 +1163,16 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(1));
                 v.push(Instruction::I64Add);
                 v.push(Instruction::LocalSet(idx));
+                // Parse-cache staleness on loop-back — same hole as the
+                // while arm (2026-10-10): force-allocate + clear memos for
+                // every body set!-target so iteration N never re-serves
+                // iteration-1 limbs.
+                let mut set_targets = std::collections::HashSet::new();
+                collect_set_targets(&a[3..], &mut set_targets);
+                // Sorted (emit-determinism: HashSet order varies run-to-run)
+                let mut names: Vec<String> = set_targets.into_iter().collect();
+                names.sort();
+                self.emit_parse_cache_invalidate_names(&mut v, &names);
                 v.push(Instruction::Br(0)); // loop
                 v.push(Instruction::End); // loop
                 v.push(Instruction::I64Const(TAG_NIL)); // fallback

@@ -307,17 +307,19 @@ impl WasmEmitter {
         t
     }
 
-    /// Emit `flag = 0` for the name's memo (if one exists — lazily
-    /// allocated at first use). Stack-neutral; safe to splice anywhere.
+    /// Emit `flag = 0` for the name's memo, FORCE-ALLOCATING the entry if it
+    /// doesn't exist yet (2026-10-10: was a lazy no-op on first use — a set!
+    /// site that precedes the first u128 read of the name emitted nothing,
+    /// and the first read then memoized limbs that outlived the binding).
+    /// Stack-neutral; safe to splice anywhere.
     pub(crate) fn emit_parse_cache_invalidate(
         &mut self,
         v: &mut Vec<Instruction<'static>>,
         n: &str,
     ) {
-        if let Some(&(flag, _, _)) = self.parse_cache.get(n) {
-            v.push(Instruction::I64Const(0));
-            v.push(Instruction::LocalSet(flag));
-        }
+        let (flag, _, _) = self.parse_cache_alloc(n);
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(flag));
     }
 
     /// Invalidate parse-cache memos for the given NAMES at a same-activation

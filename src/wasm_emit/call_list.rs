@@ -859,8 +859,12 @@ impl WasmEmitter {
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
-                // Bind to param
+                // Bind to param — parse-cache memo for the param name is
+                // loop-variant (rebound every iteration): clear it, or the
+                // first u128 read memoizes element 0's limbs for the whole
+                // loop (2026-10-10, filter/map/reduce param staleness).
                 v.push(Instruction::LocalSet(p_idx));
+                self.emit_parse_cache_invalidate(&mut v, &param_name);
                 // Evaluate body
                 v.extend(self.expr(&body)?);
                 v.push(Instruction::LocalSet(res_tmp));
@@ -958,9 +962,11 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(elem_tmp));
-                // Bind param, eval predicate
+                // Bind param — clear the loop-variant parse-cache memo
+                // (same staleness class as map, 2026-10-10).
                 v.push(Instruction::LocalGet(elem_tmp));
                 v.push(Instruction::LocalSet(p_idx));
+                self.emit_parse_cache_invalidate(&mut v, &param_name);
                 v.extend(self.expr(&body)?);
                 // Check truthy: untag, then compare raw value != 0
                 v.extend(self.emit_untag());
@@ -1567,6 +1573,11 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(elem_local));
+                // Bind elem — clear loop-variant parse-cache memos for BOTH
+                // lambda params (acc is rebound after the body; elem here),
+                // same staleness class as map/filter (2026-10-10).
+                self.emit_parse_cache_invalidate(&mut v, &elem_name);
+                self.emit_parse_cache_invalidate(&mut v, &acc_name);
                 // Eval body with acc and elem bound
                 v.extend(self.expr(&body)?);
                 v.push(Instruction::LocalSet(acc_local));
