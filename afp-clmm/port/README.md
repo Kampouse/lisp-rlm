@@ -41,6 +41,60 @@ NEAR account ids are historical wire format (`pa.clmm.test.near`,
 `splt.clmm.test.near`, …) — baked into scenario asserts, don't rename.
 Each contract dir has its own README with grid/liquidity/fee specifics.
 
+## The map — how the contracts interact
+
+```
+── pool-join ── the core AFP theorem: two grids, one swap ──────────────
+
+    pool-a [1,2,4]e9 φ=0.3%        pool-b [1,3,4]e9 φ=0.3%
+       │                            │
+       │ refine @2e9                │ slice @2e9
+       │ (keep A strictly >2e9)     │ (B's [1,3] cell CUT at 2e9,
+       │                            │  proportional liq split)
+       └───────────► join-ab ◄──────┘
+                 [1,2,3,4]e9 — per-cell liq = a-density + b-density
+                     ▲
+   trader swaps y ───┤        split-ab walks the same join-ab:
+                     │        routes y1 → pool-a and y−y1 → pool-b
+                 split-ab
+                     │
+   PINNED: swap(join-ab) ≡ swap(a,y1) + swap(b,y−y1)   [scen: exact,
+   offgrid, cross, inside]   and the OPTIMAL y1 is the split where both
+   legs end at the same price p*               [scen: opt-exact/cross/offgrid]
+
+── fee-join ── same grid, different fees ───────────────────────────────
+
+    pool-a [1,2,4]e9 φ=0.3%        pool-c [1,2,4]e9 φ=0.5%
+       │                            │
+       └───────────► fee-join-ac ◄──┘
+                 gross books add EXACTLY: QBK = QA + QC (integer, no
+                 rounding); only the blended per-cell fee Fhat is rounded
+                 (fee-scale nested floors, exported via get-fee)
+                     ▲
+   trader swaps y ───┤
+                     │
+   PINNED: swap(fee-join-ac) vs swap(a) + swap(c) legs, interior entry
+   included                                     [scen: join, inside-join]
+
+── n-pool ── OUR generalization: three pools, one optimum ──────────────
+
+    pool-a [1,2,4]e9 φ=0.3%   pool-n1 (same grid)   pool-n2 (same grid)
+       │                        │                     │
+       └────────────┬───────────┴─────────────────────┘
+                    ▼
+                split-3 — binary-searches the ending price p* that
+                equalizes ALL THREE pools: Σ qgross_k(p*) = y
+                    │
+                legs y_k = min(cap_k, qgross_k(p*)) → each pool
+
+   PINNED: every budget regime (all-3 / two-pool collapse / boundary)
+   [scen: npool-star/two/over/under] + the counterexample: all-in on
+   n2 (least liquidity) nets LESS than the composed optimum [scen: opt-n]
+```
+
+Trader = any scenario step; every arrow above is exercised byte-exactly
+against oracle pins (`make prove`).
+
 ## Reading order (first visit)
 
 1. `../README.md` — 6-line orientation for `afp-clmm/`
@@ -98,56 +152,3 @@ Testnet wasms of the same contracts: `twap-c.lisp-demo2-1788293746.testnet`,
    edit there, run `make regenerate`; the committed tree stays
    byte-identical to generator output.
 
-## The map — how the contracts interact
-
-```
-── pool-join ── the core AFP theorem: two grids, one swap ──────────────
-
-    pool-a [1,2,4]e9 φ=0.3%        pool-b [1,3,4]e9 φ=0.3%
-       │                            │
-       │ refine @2e9                │ slice @2e9
-       │ (keep A strictly >2e9)     │ (B's [1,3] cell CUT at 2e9,
-       │                            │  proportional liq split)
-       └───────────► join-ab ◄──────┘
-                 [1,2,3,4]e9 — per-cell liq = a-density + b-density
-                     ▲
-   trader swaps y ───┤        split-ab walks the same join-ab:
-                     │        routes y1 → pool-a and y−y1 → pool-b
-                 split-ab
-                     │
-   PINNED: swap(join-ab) ≡ swap(a,y1) + swap(b,y−y1)   [scen: exact,
-   offgrid, cross, inside]   and the OPTIMAL y1 is the split where both
-   legs end at the same price p*               [scen: opt-exact/cross/offgrid]
-
-── fee-join ── same grid, different fees ───────────────────────────────
-
-    pool-a [1,2,4]e9 φ=0.3%        pool-c [1,2,4]e9 φ=0.5%
-       │                            │
-       └───────────► fee-join-ac ◄──┘
-                 gross books add EXACTLY: QBK = QA + QC (integer, no
-                 rounding); only the blended per-cell fee Fhat is rounded
-                 (fee-scale nested floors, exported via get-fee)
-                     ▲
-   trader swaps y ───┤
-                     │
-   PINNED: swap(fee-join-ac) vs swap(a) + swap(c) legs, interior entry
-   included                                     [scen: join, inside-join]
-
-── n-pool ── OUR generalization: three pools, one optimum ──────────────
-
-    pool-a [1,2,4]e9 φ=0.3%   pool-n1 (same grid)   pool-n2 (same grid)
-       │                        │                     │
-       └────────────┬───────────┴─────────────────────┘
-                    ▼
-                split-3 — binary-searches the ending price p* that
-                equalizes ALL THREE pools: Σ qgross_k(p*) = y
-                    │
-                legs y_k = min(cap_k, qgross_k(p*)) → each pool
-
-   PINNED: every budget regime (all-3 / two-pool collapse / boundary)
-   [scen: npool-star/two/over/under] + the counterexample: all-in on
-   n2 (least liquidity) nets LESS than the composed optimum [scen: opt-n]
-```
-
-Trader = any scenario step; every arrow above is exercised byte-exactly
-against oracle pins (`make prove`).
