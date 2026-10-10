@@ -1,0 +1,21 @@
+{
+ "name": "clmm-npool-under",
+ "manifest": "pa.clmm.test.near=../../../contracts/leg2/pool-a/target/pool-a.wasm,n1.clmm.test.near=../../../contracts/leg4/pool-n1/target/pool-n1.wasm,n2.clmm.test.near=../../../contracts/leg4/pool-n2/target/pool-n2.wasm,splt3.clmm.test.near=../../../contracts/leg4/split-3/target/split-3.wasm",
+ "steps": [
+  {
+   "method": "split",
+   "as": "trader.test.near",
+   "contract": "splt3.clmm.test.near",
+   "attach": "110330992978936810431294500000000",
+   "args": {}
+  },
+  {
+   "method": "get-paid",
+   "as": "trader.test.near",
+   "contract": "splt3.clmm.test.near",
+   "view": true,
+   "args": {},
+   "contains": "paid:trader.test.near=68275862053554"
+  }
+ ]
+}

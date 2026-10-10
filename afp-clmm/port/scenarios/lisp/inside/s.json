@@ -1,0 +1,39 @@
+{
+ "name": "clmm-inside",
+ "manifest": "pa.clmm.test.near=../../../contracts/leg2/pool-a/target/pool-a.wasm,pb.clmm.test.near=../../../contracts/leg2/pool-b/target/pool-b.wasm,pd.clmm.test.near=../../../contracts/leg2/join-ab/target/join-ab.wasm,splt.clmm.test.near=../../../contracts/leg2/split-ab/target/split-ab.wasm,pc.clmm.test.near=../../../contracts/leg3/pool-c/target/pool-c.wasm,pj.clmm.test.near=../../../contracts/leg3/fee-join-ac/target/fee-join-ac.wasm",
+ "steps": [
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pd.clmm.test.near",
+   "attach": "60000000000000000000000000000000",
+   "args": {
+    "min_out": "0",
+    "start": "2500000000"
+   },
+   "contains": "paid:trader.test.near=6757173048552"
+  },
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pa.clmm.test.near",
+   "attach": "60000000000000000000000000000000",
+   "args": {
+    "min_out": "0",
+    "start": "2500000000"
+   },
+   "contains": "paid:trader.test.near=6842436369128"
+  },
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pb.clmm.test.near",
+   "attach": "60000000000000000000000000000000",
+   "args": {
+    "min_out": "0",
+    "start": "2500000000"
+   },
+   "contains": "paid:trader.test.near=6271011999505"
+  }
+ ]
+}
