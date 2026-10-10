@@ -152,12 +152,15 @@ def _walk_arms(n):
 
 
 def write(name, src):
-    d = os.path.join(TS, name)
-    os.makedirs(os.path.join(d, "src"), exist_ok=True)
-    with open(os.path.join(d, "src", "main.ts"), "w") as f:
+    import paths
+    acct = name[:-3] if name.endswith("-ts") else name  # pa-ts -> pa
+    d = paths.ts_dir(acct)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "main.ts"), "w") as f:
         f.write(src)
     with open(os.path.join(d, "near.json"), "w") as f:
-        json.dump({"name": name, "src": "src/main.ts"}, f)
+        json.dump({"name": name, "src": "main.ts",
+                   "output": f"target/{paths.MAP[acct][1]}-ts.wasm"}, f)
     print("wrote", d)
     return d
 
@@ -390,7 +393,7 @@ def _bsearch_stages(n=48):
 
 
 def main():
-    os.makedirs(TS, exist_ok=True)
+    pass
     # pools: [grid, net liq, gross book Q]
     LJ = gen.LJ
     pool_ts("pa-ts", gen.GA, gen.LA, gen.QA)

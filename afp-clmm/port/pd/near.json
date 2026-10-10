@@ -1,7 +1,0 @@
-{
- "name": "pd",
- "src": "src/main.lisp",
- "account": "pd.clmm.test.near",
- "network": "local",
- "output": "pd.wasm"
-}

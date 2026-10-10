@@ -4,12 +4,14 @@ import os
 import subprocess as sp
 import sys
 
-TS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ts")
+import glob
+import paths
+
 NC = os.path.expanduser("~/dev/lisp-rlm/target/release/near-compile")
 
 fail = []
-for name in sorted(os.listdir(TS)):
-    d = os.path.join(TS, name)
+for d in sorted(glob.glob(os.path.join(paths.HERE, "contracts", "*", "*", "ts"))):
+    name = os.path.basename(os.path.dirname(d))  # contract dir name
     if not os.path.isdir(d):
         continue
     r = sp.run([NC, "build", "."], cwd=d, capture_output=True, text=True)

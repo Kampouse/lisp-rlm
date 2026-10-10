@@ -1,6 +1,6 @@
 {
  "name": "clmm-cross",
- "manifest": "pa.clmm.test.near=../../pa/pa.wasm,pb.clmm.test.near=../../pb/pb.wasm,pd.clmm.test.near=../../pd/pd.wasm,splt.clmm.test.near=../../splt/splt.wasm,pc.clmm.test.near=../../pc/pc.wasm,pj.clmm.test.near=../../pj/pj.wasm",
+ "manifest": "pa.clmm.test.near=../../contracts/leg2/pool-a/target/pool-a.wasm,pb.clmm.test.near=../../contracts/leg2/pool-b/target/pool-b.wasm,pd.clmm.test.near=../../contracts/leg2/join-ab/target/join-ab.wasm,splt.clmm.test.near=../../contracts/leg2/split-ab/target/split-ab.wasm,pc.clmm.test.near=../../contracts/leg3/pool-c/target/pool-c.wasm,pj.clmm.test.near=../../contracts/leg3/fee-join-ac/target/fee-join-ac.wasm",
  "steps": [
   {
    "method": "swap",

@@ -27,7 +27,7 @@ def transform(sc):
     for ent in man.split(","):
         acct, path = ent.split("=", 1)
         name = acct.split(".")[0]            # pa.clmm.test.near → pa
-        wasm = f"{TS}/{name}-ts/target/{name}-ts.wasm"
+        import paths; wasm = paths.ts_wasm(name)
         if not os.path.exists(wasm):
             raise SystemExit(f"missing TS wasm for {acct}: {wasm}")
         parts.append(f"{acct}={wasm}")

@@ -1,7 +1,0 @@
-{
- "name": "pa",
- "src": "src/main.lisp",
- "account": "pa.clmm.test.near",
- "network": "local",
- "output": "pa.wasm"
-}

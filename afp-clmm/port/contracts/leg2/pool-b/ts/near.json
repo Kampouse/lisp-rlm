@@ -1,0 +1,5 @@
+{
+ "name": "pb-ts",
+ "src": "main.ts",
+ "output": "target/pool-b-ts.wasm"
+}

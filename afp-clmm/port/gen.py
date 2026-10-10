@@ -340,9 +340,10 @@ def join_src(note):
 
 
 def near_json(name):
+    import paths
     return json.dumps({"name": name, "src": "src/main.lisp",
                        "account": f"{name}.clmm.test.near", "network": "local",
-                       "output": f"{name}.wasm"}, indent=1)
+                       "output": f"target/{paths.MAP[name][1]}.wasm"}, indent=1)
 
 def main():
     projects = [
@@ -363,7 +364,7 @@ def main():
     if not allok:
         raise SystemExit("IMBALANCE — fix generator, nothing written")
     for d, src in projects:
-        p = os.path.join(ROOT, d)
+        import paths; p = paths.cdir(d)
         os.makedirs(os.path.join(p, "src"), exist_ok=True)
         with open(os.path.join(p, "src", "main.lisp"), "w") as f:
             f.write(src)

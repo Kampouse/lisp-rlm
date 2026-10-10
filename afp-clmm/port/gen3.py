@@ -301,21 +301,23 @@ def main():
     assert '{\\"who\\":\\"' in src, "cb json key wrong (brace/escape desync)"
     assert src.count('(define (split)') == 1 and 'let*lohi' not in src
 
-    d = os.path.join(BASE, "splt3", "src")
+    import paths; d = os.path.join(paths.cdir("splt3"), "src")
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "main.lisp"), "w") as f:
         f.write(src)
-    with open(os.path.join(BASE, "splt3", "near.json"), "w") as f:
-        json.dump({"name": "splt3", "src": "src/main.lisp"}, f)
+    with open(os.path.join(paths.cdir("splt3"), "near.json"), "w") as f:
+        json.dump({"name": "splt3", "src": "src/main.lisp",
+                   "output": f"target/{paths.MAP["splt3"][1]}.wasm"}, f)
     # new pool contracts (same fee as pa -- pool_src defaults)
     for k, name in ((1, "n1"), (2, "n2")):
-        pd_ = os.path.join(BASE, name, "src")
+        pd_ = os.path.join(paths.cdir(name), "src")
         os.makedirs(pd_, exist_ok=True)
         with open(os.path.join(pd_, "main.lisp"), "w") as f:
             f.write(gen.pool_src(G3, LIQS[k], f" composition pool {name}: "
                                  f"liq {LIQS[k]}, grid = pa's, fee = 0.3%"))
-        with open(os.path.join(BASE, name, "near.json"), "w") as f:
-            json.dump({"name": name, "src": "src/main.lisp"}, f)
+        with open(os.path.join(paths.cdir(name), "near.json"), "w") as f:
+            json.dump({"name": name, "src": "src/main.lisp",
+                       "output": f"target/{paths.MAP[name][1]}.wasm"}, f)
     with open(os.path.join(BASE, "pins3.json"), "w") as f:
         json.dump(pins, f, indent=1)
     print("# n1/n2/splt3 + pins3.json written, sources balanced")

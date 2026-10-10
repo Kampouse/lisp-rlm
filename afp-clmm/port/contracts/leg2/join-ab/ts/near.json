@@ -1,0 +1,5 @@
+{
+ "name": "pd-ts",
+ "src": "main.ts",
+ "output": "target/join-ab-ts.wasm"
+}

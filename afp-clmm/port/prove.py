@@ -28,12 +28,11 @@ LEG4 = ["npool-over", "npool-two", "npool-star", "npool-under", "opt-n"]
 ENSURE = ["pa", "n1", "n2", "splt3"]
 
 
+import paths
+
 def wasm_path(c):
-    for p in (os.path.join(HERE, c, f"{c}.wasm"),
-              os.path.join(HERE, c, "target", f"{c}.wasm")):
-        if os.path.exists(p):
-            return p
-    return None
+    p = paths.lisp_wasm(c)
+    return p if os.path.exists(p) else None
 
 
 def ensure_built(contracts):
@@ -42,7 +41,7 @@ def ensure_built(contracts):
     built = []
     for c in contracts:
         if wasm_path(c) is None:
-            r = sh(f"{nc} build .", cwd=os.path.join(HERE, c))
+            r = sh(f"{nc} build .", cwd=paths.cdir(c))
             if r.returncode != 0:
                 return [f"{c}: BUILD FAILED"] + r.stderr.strip().splitlines()[-2:]
             built.append(f"built {c}")
@@ -54,6 +53,10 @@ def sh(cmd, cwd=None):
 
 
 def stage_lisp():
+    # fresh-clone friendly: build every lisp contract the manifest needs
+    results = ensure_built(paths.ACCTS)
+    if any("FAILED" in r for r in results):
+        return False, results
     r = sh("python3 run_scen.py")
     ok = r.returncode == 0 and "RED" not in r.stdout and "GREEN" in r.stdout
     return ok, r.stdout.strip().splitlines()[-3:] + r.stderr.strip().splitlines()[-2:]
@@ -71,7 +74,7 @@ def stage_leg4():
         sb = os.path.join(HERE, "scen", name, "state.bin")
         if os.path.exists(sb):
             os.unlink(sb)
-        r = sh(f"{NM} scenario scen/{name}/s.json")
+        r = sh(f"{NM} scenario s.json", cwd=os.path.join(HERE, "scen", name))
         # summary format: "3 pass / 0 fail" — don't substring-match "FAIL"
         # (it appears in "0 fail" on every PASSING run)
         ok = r.returncode == 0 and "/ 0 fail" in r.stdout
@@ -82,11 +85,7 @@ def stage_leg4():
 
 def stage_ts():
     # build TS wasms if any missing
-    missing = any(
-        not os.path.exists(os.path.join(HERE, "ts", d, "target", f"{d.replace('-ts','')}-ts.wasm"))
-        for d in os.listdir(os.path.join(HERE, "ts"))
-        if os.path.isdir(os.path.join(HERE, "ts", d))
-    )
+    missing = any(not os.path.exists(paths.ts_wasm(a)) for a in paths.ACCTS)
     if missing:
         b = sh("python3 build_ts.py")
         if b.returncode != 0:

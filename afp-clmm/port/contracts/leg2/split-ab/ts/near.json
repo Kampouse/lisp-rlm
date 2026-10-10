@@ -1,0 +1,5 @@
+{
+ "name": "splt-ts",
+ "src": "main.ts",
+ "output": "target/split-ab-ts.wasm"
+}

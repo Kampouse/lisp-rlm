@@ -1,7 +1,0 @@
-{
- "name": "pj",
- "src": "src/main.lisp",
- "account": "pj.clmm.test.near",
- "network": "local",
- "output": "pj.wasm"
-}

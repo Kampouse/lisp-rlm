@@ -1,0 +1,5 @@
+{
+ "name": "n1",
+ "src": "src/main.lisp",
+ "output": "target/pool-n1.wasm"
+}

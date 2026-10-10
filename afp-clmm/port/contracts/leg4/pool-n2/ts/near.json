@@ -1,0 +1,5 @@
+{
+ "name": "n2-ts",
+ "src": "main.ts",
+ "output": "target/pool-n2-ts.wasm"
+}
