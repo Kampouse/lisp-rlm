@@ -689,17 +689,28 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
             }
-            "near/store_num" => {
+                        "near/store_num" => {
+                // Numeric storage key: the checker types the key as int and
+                // the interpreter namespaces it as the decimal string
+                // (key_of → to_string). The wasm side serializes the same
+                // decimal bytes into the 4184-downward scratch (log_num's
+                // layout) and passes (len, ptr) to storage_write.
+                // (2026-10-09: clmm differential caught the old emission
+                // treating the tagged num as a packed string → key_len 0.)
                 let key = self.expr(&a[0])?;
                 let val = self.expr(&a[1])?;
                 let __s = self.local_idx("__s");
                 let __n = self.local_idx("__n");
+                let nk_ptr = self.local_idx("__nk_ptr");
+                let nk_len = self.local_idx("__nk_len");
                 let mut v = Vec::new();
                 v.extend(key);
+                v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(__s));
                 v.extend(val);
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(__n));
+                v.extend(self.emit_num_key_decimal(__s));
                 let ma = MemArg {
                     offset: 0,
                     align: 3,
@@ -708,14 +719,9 @@ impl WasmEmitter {
                 v.push(Instruction::I32Const(STORAGE_BUF as i32));
                 v.push(Instruction::LocalGet(__n));
                 v.push(Instruction::I64Store(ma));
-                v.push(Instruction::LocalGet(__s));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
-                v.push(Instruction::LocalGet(__s));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
+                // storage_write(key_len, key_ptr, value_len=8, value_ptr, 0)
+                v.push(Instruction::LocalGet(nk_len));
+                v.push(Instruction::LocalGet(nk_ptr));
                 v.push(Instruction::I64Const(8));
                 v.push(Instruction::I64Const(STORAGE_BUF));
                 v.push(Instruction::I64Const(0));
@@ -728,17 +734,16 @@ impl WasmEmitter {
             "near/load_num" => {
                 let key_expr = self.expr(&a[0])?;
                 let key_local = self.local_idx("__ln_key");
+                let nk_ptr = self.local_idx("__nk_ptr");
+                let nk_len = self.local_idx("__nk_len");
                 let mut v = Vec::new();
                 v.extend(key_expr);
+                v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(key_local));
-                v.push(Instruction::LocalGet(key_local));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
-                v.push(Instruction::LocalGet(key_local));
-                v.extend(self.emit_untag());
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
+                v.extend(self.emit_num_key_decimal(key_local));
+                // storage_read(key_len, key_ptr, 0)
+                v.push(Instruction::LocalGet(nk_len));
+                v.push(Instruction::LocalGet(nk_ptr));
                 v.push(Instruction::I64Const(0));
                 self.need_host(18);
                 v.push(Self::host_call(18));
@@ -758,10 +763,14 @@ impl WasmEmitter {
                     align: 3,
                     memory_index: 0,
                 }));
+                // tag the hit path — parity with the miss branch (tagged 0)
+                // and the language's tagged-num convention (2026-10-09:
+                // clmm differential caught the asymmetry).
+                v.extend(self.emit_tag_num());
                 v.push(Instruction::End);
                 Ok(v)
             }
-            "near/has_key" => {
+"near/has_key" => {
                 let key = self.expr(&a[0])?;
                 let __s = self.local_idx("__s");
                 let mut v = Vec::new();
@@ -1357,5 +1366,106 @@ impl WasmEmitter {
             }
             _ => Err("__not_handled__".into()),
         }
+    }
+
+    /// Convert an UNTAGGED i64 key (already in local `src`) into decimal
+    /// bytes in the 4184-downward scratch (log_num's digit layout, with
+    /// '-' sign for negatives and the '0' special case). Leaves results
+    /// in locals `__nk_ptr` / `__nk_len` (no stack effect).
+    fn emit_num_key_decimal(&mut self, src: u32) -> Vec<Instruction<'static>> {
+        let v_i = self.local_idx("__nk_v");
+        let neg = self.local_idx("__nk_neg");
+        let d = self.local_idx("__nk_d");
+        let ptr_l = self.local_idx("__nk_ptr");
+        let len_l = self.local_idx("__nk_len");
+        let mut v = Vec::new();
+        v.push(Instruction::LocalGet(src));
+        v.push(Instruction::LocalSet(v_i));
+        // neg = (v < 0) as u64
+        v.push(Instruction::LocalGet(v_i));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64LtS);
+        v.push(Instruction::I64ExtendI32U);
+        v.push(Instruction::LocalSet(neg));
+        // v = neg ? (0 - v) : v
+        v.push(Instruction::LocalGet(neg));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Result(ValType::I64)));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalGet(v_i));
+        v.push(Instruction::I64Sub);
+        v.push(Instruction::Else);
+        v.push(Instruction::LocalGet(v_i));
+        v.push(Instruction::End);
+        v.push(Instruction::LocalSet(v_i));
+        // ptr = 4184, len = 0
+        v.push(Instruction::I64Const(4184));
+        v.push(Instruction::LocalSet(ptr_l));
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::LocalSet(len_l));
+        // loop: while v != 0
+        v.push(Instruction::Block(BlockType::Empty));
+        v.push(Instruction::Loop(BlockType::Empty));
+        v.push(Instruction::LocalGet(v_i));
+        v.push(Instruction::I64Eqz);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::Br(2));
+        v.push(Instruction::End);
+        v.push(Instruction::LocalGet(v_i));
+        v.push(Instruction::I64Const(10));
+        v.push(Instruction::I64RemS);
+        v.push(Instruction::LocalSet(d));
+        v.push(Instruction::LocalGet(v_i));
+        v.push(Instruction::I64Const(10));
+        v.push(Instruction::I64DivS);
+        v.push(Instruction::LocalSet(v_i));
+        v.push(Instruction::LocalGet(ptr_l));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Sub);
+        v.push(Instruction::LocalSet(ptr_l));
+        v.push(Instruction::LocalGet(ptr_l));
+        v.push(Instruction::LocalGet(d));
+        v.push(Instruction::I64Const(48));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.extend(self.emit_safe_store8());
+        v.push(Instruction::LocalGet(len_l));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(len_l));
+        v.push(Instruction::Br(0));
+        v.push(Instruction::End);
+        v.push(Instruction::End);
+        // zero special case
+        v.push(Instruction::LocalGet(len_l));
+        v.push(Instruction::I64Eqz);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::I64Const(4183));
+        v.push(Instruction::LocalSet(ptr_l));
+        v.push(Instruction::LocalGet(ptr_l));
+        v.push(Instruction::I64Const(48));
+        v.push(Instruction::I32WrapI64);
+        v.extend(self.emit_safe_store8());
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::LocalSet(len_l));
+        v.push(Instruction::End);
+        // negative sign
+        v.push(Instruction::LocalGet(neg));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::If(BlockType::Empty));
+        v.push(Instruction::LocalGet(ptr_l));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Sub);
+        v.push(Instruction::LocalSet(ptr_l));
+        v.push(Instruction::LocalGet(ptr_l));
+        v.push(Instruction::I64Const(45));
+        v.push(Instruction::I32WrapI64);
+        v.extend(self.emit_safe_store8());
+        v.push(Instruction::LocalGet(len_l));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(len_l));
+        v.push(Instruction::End);
+        v
     }
 }

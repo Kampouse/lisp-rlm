@@ -81,10 +81,14 @@
 
 
 ;; === Tick ↔ Price conversion ===
-;; sqrtPrice(tick) = isqrt(price(tick))
-;; where price(tick) = Q32^2 * 1.0001^tick = muldiv(pow32(base, tick), Q32, 1)
+;; sqrtPrice(tick) ≈ isqrt(pow32(base,tick)) << 16
+;; EXACT at tick 0 (= Q32). For tick≠0 this is the representable-domain
+;; form: the exact isqrt(price) with price = Q32^2·1.0001^tick needs a
+;; ~2^64 intermediate the tagged range [-2^60, 2^60) cannot hold (muldiv
+;; hard-errors by design). Error vs exact: ≤ 2^-16 relative (v1 view
+;; precision; v5 does exact tick math in u128 strings).
 (define (sp_at_tick tick)
-  (isqrt (muldiv (pow32 (base_q32) tick) (q32) 1)))
+  (shl (isqrt (pow32 (base_q32) tick)) 16))
 
 
 ;; === Pool initialization ===
@@ -186,17 +190,49 @@
 (define (view_sp_at_tick tick) (sp_at_tick tick))
 
 
+;; === Export wrappers (NEAR arg convention) =============================
+;; Exported fns take NO wasm params: NEAR passes args via input() JSON
+;; (the export wrapper type is () -> (); compiler param binding is a
+;; documented TODO). Thin wrappers read named args and call the
+;; param'd internals — same convention as twap/pool/ft contracts.
+
+(define (view_tick_net tick)   (tick_net tick))
+(define (view_tick_gross tick) (tick_gross tick))
+(define (view_sp_at_tick tick) (sp_at_tick tick))
+
+(define (w-initialize)
+  (initialize (str->num (json-get-str "sp" (near/input)))
+              (str->num (json-get-str "tick" (near/input)))))
+(define (w-add-liquidity)
+  (add_liquidity (str->num (json-get-str "lower" (near/input)))
+                 (str->num (json-get-str "upper" (near/input)))
+                 (str->num (json-get-str "liq" (near/input)))))
+(define (w-remove-liquidity)
+  (remove_liquidity (str->num (json-get-str "lower" (near/input)))
+                    (str->num (json-get-str "upper" (near/input)))
+                    (str->num (json-get-str "liq" (near/input)))))
+(define (w-swap0)
+  (swap0 (str->num (json-get-str "dx" (near/input)))))
+(define (w-swap1)
+  (swap1 (str->num (json-get-str "dy_in" (near/input)))))
+(define (w-tick-net)
+  (tick_net (str->num (json-get-str "tick" (near/input)))))
+(define (w-tick-gross)
+  (tick_gross (str->num (json-get-str "tick" (near/input)))))
+(define (w-sp-at-tick)
+  (sp_at_tick (str->num (json-get-str "tick" (near/input)))))
+
 ;; === Exports ===
 ;; #t = view (read-only), #f = call (mutable)
 
-(export "initialize"       initialize       #f)
-(export "add_liquidity"    add_liquidity    #f)
-(export "remove_liquidity" remove_liquidity #f)
-(export "swap0"            swap0            #f)
-(export "swap1"            swap1            #f)
+(export "initialize"       w-initialize       #f)
+(export "add_liquidity"    w-add-liquidity    #f)
+(export "remove_liquidity" w-remove-liquidity #f)
+(export "swap0"            w-swap0            #f)
+(export "swap1"            w-swap1            #f)
 (export "get_price"        view_price       #t)
 (export "get_tick"         view_tick        #t)
 (export "get_liq"          view_liq         #t)
-(export "tick_net"         view_tick_net    #t)
-(export "tick_gross"       view_tick_gross  #t)
-(export "sp_at_tick"       view_sp_at_tick  #t)
+(export "tick_net"         w-tick-net       #t)
+(export "tick_gross"       w-tick-gross     #t)
+(export "sp_at_tick"       w-sp-at-tick     #t)

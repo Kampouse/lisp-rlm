@@ -132,6 +132,11 @@ declare function u128Eq(a: any, b: any): boolean;
 declare function u128IsZero(s: string): boolean;
 // conversions: NUM (blockHeight-style) → decimal str, and back to i64
 declare function u128FromNum(n: number): string;
+/** Numeric muldiv: floor(a*b/c) with 128-bit intermediate — Q32
+ *  fixed-point core op (untagged i64 args; auto-tagged literals). */
+declare function mulDiv(a: number, b: number, c: number): number;
+/** Integer square root (lisp isqrt) — Q32 tick→price conversion. */
+declare function intSqrt(n: number): number;
 declare function u128ToNum(s: string): number;
 
 // ── the `near` namespace (member passthrough, camelCase auto-snakifies) ─
@@ -145,6 +150,11 @@ declare const near: {
    *  field access (p = pool(); p.ra) — `string` would fight the
    *  runtime model in the editor. */
   storageGet(key: string): any;
+  /** Numeric storage (lisp near/store_num): tagged-i64 key, i64 value —
+   *  Q32 fixed-point CLMM math surface (2026-10-09). */
+  storeNum(key: number, value: number): void;
+  /** Numeric storage read (lisp near/load_num) → i64 (0 default). */
+  loadNum(key: number): number;
   storageHas(key: string): boolean;
   storageHasKey(key: string): boolean;
   storageRemove(key: string): void;

@@ -6277,7 +6277,13 @@ pub fn eval_builtin(
             if (prod >> 64) >= c as u128 {
                 return Err("muldiv: overflow — result does not fit in 64 bits".into());
             }
-            Ok(LispVal::Num((prod / c as u128) as u64 as i64))
+            let q = (prod / c as u128) as u64;
+            // tagged-value range parity with wasm ([-2^60, 2^60)) — the
+            // wasm tag shift would silently wrap past 2^60 (2026-10-09)
+            if q >= (1u64 << 60) {
+                return Err("muldiv: result exceeds tagged range [-2^60, 2^60)".into());
+            }
+            Ok(LispVal::Num(q as i64))
         }
         "isqrt" => {
             // (isqrt n) → floor(sqrt(n)) over the u64 bit pattern

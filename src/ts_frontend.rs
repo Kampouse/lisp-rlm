@@ -7636,6 +7636,9 @@ pub const KNOWN_NEAR_MEMBERS: &[&str] = &[
     "input",
     // storage
     "storageGet",
+    // numeric storage (tagged-i64 keys — Q32 CLMM math; 2026-10-09)
+    "storeNum",
+    "loadNum",
     "storageSet",
     "storageRemove",
     "storageHas",
@@ -7913,6 +7916,11 @@ fn map_builtin_call(name: &str) -> String {
         "u128IsZero" => "u128/is-zero",
         "u128FromNum" => "u128/from-i64",
         "u128ToNum" => "u128/to-i64",
+        // numeric intrinsics (Q32 CLMM surface, 2026-10-09): camelCase TS
+        // spellings mapping to the lisp builtins — raw==head would trip
+        // the lisp-passthrough gate, and that's the point.
+        "mulDiv" => "muldiv",
+        "intSqrt" => "isqrt",
         _ => return name.to_string(),
     }
     .to_string()
