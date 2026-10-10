@@ -1,0 +1,46 @@
+{
+ "name": "clmm-opt-cross",
+ "manifest": "pa.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/pa/pa.wasm,pb.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/pb/pb.wasm,pd.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/pd/pd.wasm,splt.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/splt/splt.wasm,pc.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/pc/pc.wasm,pj.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/pj/pj.wasm",
+ "steps": [
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pa.clmm.test.near",
+   "attach": "1",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=0"
+  },
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pb.clmm.test.near",
+   "attach": "299999999999999999999999999999999",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=27500000000000"
+  },
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pa.clmm.test.near",
+   "attach": "96108324974924774322968947266666",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=48932693263677"
+  },
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pb.clmm.test.near",
+   "attach": "203891675025075225677031052733334",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=55000000000000"
+  }
+ ]
+}

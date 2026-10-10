@@ -1,0 +1,91 @@
+;; Splitter: AFP pool_combination optimality on DIFFERENT grids.
+;; pd = pool_join(refine pa, refine pb) on [1000000000, 2000000000, 3000000000, 4000000000] (equality: see pd).
+;; OPTIMAL split = equalize the legs' ending price: p* solves
+;; qA(p*) + qB(p*) = y piecewise over merged breakpoints 2000000000(A) / 3000000000(B);
+;; y1 = qA(p*), leg B gets y-y1 = qB(p*). (Shared-grid shortcut
+;; y1 = qA(sqpC) is SUBOPTIMAL here — the opt-sweep caught it.)
+;; Fee phi = 3000000000000000/1000000000000000000 via gross books; all floors mirrored in the oracle.
+(define G0 "1000000000")
+(define G1 "2000000000")
+(define G2 "4000000000")
+(define Q0 "100300902708124373119359")
+(define Q1 "60180541624874623871615")
+(define CUM1 "130391173520561685055167000000000")
+(define CUM2 "220661985957873620862590000000000")
+(define RS0 "130391173520561685055167")
+(define RS1 "90270812437311935807423")
+(define RS2 "150451354062186559679038")
+(define YA1 "100300902708124373119359000000000")
+(define YA2 "160481444332998996990974000000000")
+(define TGAS 50000000000)
+(define POOLA "pa.clmm.test.near")
+(define POOLB "pb.clmm.test.near")
+(define SELF "splt.clmm.test.near")
+(define SWAP_ARGS "{\"min_out\":\"0\"}")
+
+(define (sput k v) (near/storage_set k v))
+(define (sget k d) (default (near/storage_get k) d))
+(define (fail m) (near/log m) (near/abort m))
+(define (add a b) (u128/add a b))
+(define (sub a b) (u128/sub a b))
+(define (mdiv a b d) (u128/muldiv a b d))
+(define (ult a b) (u128/lt a b))
+
+;; equalized split: zone-solve p*, y1 = qA(p*) (muldiv floors, mirrored)
+(define (y1-for y)
+  (if (ult y CUM1)
+      (mdiv Q0 y RS0)
+      (if (ult y CUM2)
+          (add YA1 (mdiv Q1 (sub y CUM1) RS1))
+          (add YA2 (mdiv Q1 (sub y CUM2) RS2)))))
+
+(define (split)
+  (let* ((y (near/attached_deposit_u128))
+         (who (near/predecessor_account_id)))
+    (begin
+      (if (u128/eq y "0") (fail "ERR_ZERO") "ok")
+      (if (u128/eq (y1-for y) "0") (fail "ERR_DUST") "ok")
+      (let* ((y1raw (y1-for y))
+             (y1 (if (ult y y1raw) y y1raw))
+             (yb (sub y y1))
+             (cb (str-cat (str-cat "{\"who\":\"") (str-cat who "\"}")))
+             (pa (near/promise_create POOLA "swap" SWAP_ARGS y1 TGAS)))
+        (begin
+          (near/log (str-cat "split y1=" y1))
+          (sput "sp:who" who)
+          (near/promise_then pa SELF "on-a" cb "0" TGAS)
+          (let ((pb (near/promise_create POOLB "swap" SWAP_ARGS yb TGAS)))
+            (near/promise_then pb SELF "on-b" cb "0" TGAS)
+            (near/return "queued")))))))
+
+(define (on-a)
+  (let* ((who (sget "sp:who" ""))
+         (out (near/promise_result 0))
+         (pk (str-cat "paid:" who)))
+    (if (= out "")
+        (fail "ERR_LEG_A")
+        (begin
+          (sput pk (add (sget pk "0") out))
+          (near/log (str-cat "leg-a out=" out))
+          (near/return out)))))
+
+(define (on-b)
+  (let* ((who (sget "sp:who" ""))
+         (out (near/promise_result 0))
+         (pk (str-cat "paid:" who))
+         (total (add (sget pk "0") out)))
+    (if (= out "")
+        (fail "ERR_LEG_B")
+        (begin
+          (sput pk total)
+          (near/log (str-cat "leg-b out=" out))
+          (near/log (str-cat "split total=" total))
+          (near/return out)))))
+
+(define (get-paid)
+  (near/return (sget (str-cat "paid:" (near/predecessor_account_id)) "0")))
+
+(export "split" split)
+(export "on-a" on-a)
+(export "on-b" on-b)
+(export "get-paid" get-paid)

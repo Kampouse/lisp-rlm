@@ -1,0 +1,64 @@
+{
+ "name": "clmm-join",
+ "manifest": "pa.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/pa/pa.wasm,pb.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/pb/pb.wasm,pd.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/pd/pd.wasm,splt.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/splt/splt.wasm,pc.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/pc/pc.wasm,pj.clmm.test.near=/Users/asil/dev/lisp-rlm/afp-clmm/port/pj/pj.wasm",
+ "steps": [
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pj.clmm.test.near",
+   "attach": "5000000000000000000000000000",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=4981862715"
+  },
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pa.clmm.test.near",
+   "attach": "5000000000000000000000000000",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=4984651520"
+  },
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pc.clmm.test.near",
+   "attach": "5000000000000000000000000000",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=4974341321"
+  },
+  {
+   "method": "get-fee",
+   "as": "trader.test.near",
+   "contract": "pj.clmm.test.near",
+   "view": true,
+   "args": {},
+   "contains": "3572248529200"
+  },
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pa.clmm.test.near",
+   "attach": "2500000000000000000000000000",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=7476989400"
+  },
+  {
+   "method": "swap",
+   "as": "trader.test.near",
+   "contract": "pc.clmm.test.near",
+   "attach": "2500000000000000000000000000",
+   "args": {
+    "min_out": "0"
+   },
+   "contains": "paid:trader.test.near=7461666641"
+  }
+ ]
+}

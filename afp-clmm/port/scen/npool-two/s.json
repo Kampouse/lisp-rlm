@@ -1,0 +1,21 @@
+{
+ "name": "clmm-npool-two",
+ "manifest": "pa.clmm.test.near=/Users/asil/.hermes/skills/software-development/defi-porting/references/afp-clmm/port/pa/pa.wasm,n1.clmm.test.near=/Users/asil/.hermes/skills/software-development/defi-porting/references/afp-clmm/port/n1/target/n1.wasm,n2.clmm.test.near=/Users/asil/.hermes/skills/software-development/defi-porting/references/afp-clmm/port/n2/target/n2.wasm,splt3.clmm.test.near=/Users/asil/.hermes/skills/software-development/defi-porting/references/afp-clmm/port/splt3/target/splt3.wasm",
+ "steps": [
+  {
+   "method": "split",
+   "as": "trader.test.near",
+   "contract": "splt3.clmm.test.near",
+   "attach": "315947843530591775325980000000000",
+   "args": {}
+  },
+  {
+   "method": "get-paid",
+   "as": "trader.test.near",
+   "contract": "splt3.clmm.test.near",
+   "view": true,
+   "args": {},
+   "contains": "paid:trader.test.near=114157894734278"
+  }
+ ]
+}

@@ -42,3 +42,10 @@ scripts/gaskey/node_modules/
 *.wasm.map
 # stray test artifact (literal-brace filename)
 /{}
+
+# vendored AFP-CLMM port build residue
+afp-clmm/port/**/target/
+afp-clmm/port/**/*.wasm
+afp-clmm/port/**/*.stamp
+afp-clmm/port/**/state.bin
+afp-clmm/port/ts-scen/
