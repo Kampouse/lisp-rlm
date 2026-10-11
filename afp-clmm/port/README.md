@@ -8,18 +8,19 @@ numbers.
 ```
 cd port
 make prove    # pool-join + fee-join: 9/9 · n-pool: 5/5 · TS twins: 14/14 — exit 0 only if ALL GREEN
+make escrow   # escrow leg: regenerate → compile → 4 scenarios (19 asserts) → mutation gate 3/3
 ```
 
 ## Layout (6 entries, that's all)
 
 | path | what it is |
 |------|------------|
-| `contracts/` | the 9 contracts, grouped by leg — each dir: `src/main.lisp` + `ts/main.ts` + `README.md` + `near.json` |
-| `scenarios/` | `lisp/` + `ts/` — 14 scenario manifests each, named after what they exercise (`inside` = interior entry, `opt-*` = optimality pins, `npool-*` = leg-4 shapes) |
-| `proof/` | the oracle harness: `prove.py`, `run_scen.py`, `run_scen_ts.py`, `pins.json`/`pins3.json` (expected values), `PROOF.md` (status table) |
-| `generators/` | `gen.py`/`gen3.py`/`gen_ts.py` — all constants live here, contracts are GENERATED; `build_ts.py` compiles the TS twins |
+| `contracts/` | the contracts, grouped by leg — each dir: `src/main.lisp` + `ts/main.ts` + `near.json` (+ `README.md` where hand-written) |
+| `scenarios/` | `lisp/` + `ts/` — scenario manifests named after what they exercise (`inside` = interior entry, `opt-*` = optimality pins, `npool-*` = leg-4 shapes, `escrow-*`/`ft-*` = the escrow leg) |
+| `proof/` | the oracle harness: `prove.py`, `run_scen.py`, `run_scen_ts.py`, `pins.json`/`pins3.json` (expected values), `PROOF.md` (status table), `mutate_escrow.py` (mutation gate) |
+| `generators/` | `gen.py`/`gen3.py`/`gen_ts.py` — pool constants, contracts are GENERATED; `gen_escrow.py` — escrow twins from the `.thy` op table; `build_ts.py` compiles the TS twins |
 | `paths.py` | the one file that knows where everything is |
-| `Makefile` | `prove` / `build-ts` / `regenerate` / `clean` |
+| `Makefile` | `prove` / `escrow` / `build-ts` / `regenerate` / `clean` |
 
 ## The 13 contracts
 
@@ -39,6 +40,32 @@ make prove    # pool-join + fee-join: 9/9 · n-pool: 5/5 · TS twins: 14/14 — 
 
 Legs: **2** = pairwise combination (AFP theorem) · **3** = heterogeneous
 fees · **4** = N-pool composition (generalization).
+
+## The escrow leg (`make escrow`)
+
+The platform layer under the pools, ported from
+`afp-clmm/escrow/CLMM_Escrow.thy` (strict Isabelle: `reachable_conservation`
+— after every reachable step `Σ e:bal:* + e:reserve = e:in − e:out`, no
+hypotheses). One generator (`generators/gen_escrow.py`) emits BOTH twins
+from a single op table transcribed 1:1 from the theory's `apply_op` —
+every export mirrors exactly one `.thy` constructor (twin-lockstep law).
+
+| dir | what it pins |
+|-----|--------------|
+| `contracts/escrow/escrow/` | Deposit / Withdraw / SwapIn / SwapOut ledger — conservation executed on wasm (`escrow-ledger`), NEP-141 two-hop credit (`ft-probe`), TS twin byte-lockstep (`ts/escrow-probe`) |
+| `contracts/escrow/ft/` | static NEP-141 probe fixture (not a product) — mint / `ft_transfer_call` / resolve; its own failed-receipt run (`ft-refund`) proves the bounce refunds exactly |
+
+Laws worth knowing before editing:
+
+- `withdraw`/`swap_in`/`swap_out` take `a` as a **ledger argument**
+  (mirrors the theory). Only `deposit` consumes an attached balance —
+  attaching on the others would add untracked value and break
+  `reachable_conservation`. This is pinned by the mutation gate
+  (`proof/mutate_escrow.py`: three known-BAD mutants, each must FAIL
+  the scenarios, then the original must re-verify green).
+- `"e:..."` storage keys are wire format — never rename.
+- Guards (`0 < a`, `a <= bal[u]`, `a <= reserve`) ARE the semantics of
+  "operation succeeded"; a failed guard aborts with state unchanged.
 
 NEAR account ids are historical wire format (`pa.clmm.test.near`,
 `splt.clmm.test.near`, …) — baked into scenario asserts, don't rename.
@@ -149,9 +176,10 @@ over reals; this port is the same guarantees expressed deployably, with each
 
 | command | does |
 |---------|------|
-| `make prove` | every stage, ALL GREEN or exit 1 |
+| `make prove` | every pool stage, ALL GREEN or exit 1 |
+| `make escrow` | escrow leg: regenerate → compile both twins → 4 scenarios → mutation gate (exit 0 only all green) |
 | `make regenerate` | rewrite contracts from `generators/` — result is byte-identical to what's committed |
-| `make build-ts` | compile all 9 TS twins |
+| `make build-ts` | compile all TS twins (13 pool twins + escrow-ts) |
 | `make clean` | remove build artifacts + scenario `state.bin` (see pitfall below) |
 
 Needs `near-compile` + `near-mock` on PATH or at
@@ -190,4 +218,15 @@ Testnet wasms of the same contracts: `twap-c.lisp-demo2-1788293746.testnet`,
 5. **Don't edit generated files.** Contracts come from `generators/` —
    edit there, run `make regenerate`; the committed tree stays
    byte-identical to generator output.
+6. **Stale toolchain binaries lie.** A `near-compile` built before a
+   host-fn addition (e.g. `u128MulDiv`, `promise_create` typing) rejects
+   valid contracts with confusing type errors — and may compile others
+   with dead code. `make escrow` and `build_ts.py` resolve the binary
+   as `target/release` (repo-source) FIRST, PATH second; rebuild with
+   `cargo build --release -p near-compile` and
+   `cargo build --release --bin compile --bin near-mock` after pulling
+   (near-compile is its own package; compile/near-mock are bins of
+   `lisp-rlm-wasm`). Symptom of the stale case:
+   13 legacy twins failing `u128MulDiv` at once, or `int ≠ str` on a
+   promise call that the fresh binary accepts.
 

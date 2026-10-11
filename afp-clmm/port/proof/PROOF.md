@@ -10,6 +10,10 @@ must exist — see preflight notes there). Status date: 2026-10-10.
 | n-pool — split sweeps | runs inside `python3 gen3.py` | FULL fraction grid 33³ = 39,304 splits + 20k random splits; zero optimality violations beyond `VIOLWIN = 2*N` dust | GREEN (per gen3.py run) |
 | TS twins — differential | `python3 proof/run_scen_ts.py` | 14 scenarios, same Isabelle pins, zero tolerance (byte-exact oracle equality) | GREEN 14/14 |
 | repo differential twin | `cargo test --release -p lisp-rlm-wasm --test test_clmm_ts` | in-repo hand-written `examples/clmm.ts` vs `examples/clmm.lisp` through the same backend, near-mock | GREEN 2/2 |
+| escrow — ledger conservation | `make escrow` | lisp + TS twins of `CLMM_Escrow.thy` ops; deposit→swap_in→swap_out→withdraw asserts per step, ends `e:in−e:out = bal+reserve` | GREEN 6/6 + TS 5/5 |
+| escrow — NEP-141 two-hop | `make escrow` | mock FT `ft_transfer_call` → escrow `ft_on_transfer` credit; failed-receipt run proves the bounce refunds exactly | GREEN 5/5 + 3/3 |
+| escrow — mutation gate | `python3 proof/mutate_escrow.py` | 3 known-BAD mutants (drop debit / drop guard / drop inflow) must FAIL the scenarios; original re-verifies green | GREEN 3/3 CAUGHT |
+| escrow — Isabelle theory | `isabelle build -d theory -D escrow` (from `afp-clmm/`) | `CLMM_Escrow.thy`: STRICT session, 0 sorries, `reachable_conservation` with no hypotheses; gate mutation-tested | GREEN |
 
 ## What "byte-exact vs pins" means
 

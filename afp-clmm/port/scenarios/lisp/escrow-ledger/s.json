@@ -1,0 +1,54 @@
+{
+ "name": "clmm-escrow-ledger",
+ "manifest": "escrow.clmm.test.near=../../../contracts/escrow/escrow/target/escrow.wasm",
+ "steps": [
+  {
+   "method": "deposit",
+   "as": "trader.test.near",
+   "contract": "escrow.clmm.test.near",
+   "attach": "1000",
+   "args": {},
+   "contains": "e:bal:trader.test.near=1000"
+  },
+  {
+   "method": "swap_in",
+   "as": "trader.test.near",
+   "contract": "escrow.clmm.test.near",
+   "attach": "0",
+   "args": {"amount": "400"},
+   "contains": "e:reserve=400"
+  },
+  {
+   "method": "swap_out",
+   "as": "trader.test.near",
+   "contract": "escrow.clmm.test.near",
+   "attach": "0",
+   "args": {"amount": "150"},
+   "contains": "e:reserve=250"
+  },
+  {
+   "method": "withdraw",
+   "as": "trader.test.near",
+   "contract": "escrow.clmm.test.near",
+   "attach": "0",
+   "args": {"amount": "300"},
+   "contains": "e:bal:trader.test.near=450"
+  },
+  {
+   "method": "get_inflow",
+   "as": "trader.test.near",
+   "contract": "escrow.clmm.test.near",
+   "view": true,
+   "args": {},
+   "contains": "e:in=1000"
+  },
+  {
+   "method": "get_outflow",
+   "as": "trader.test.near",
+   "contract": "escrow.clmm.test.near",
+   "view": true,
+   "args": {},
+   "contains": "e:out=300"
+  }
+ ]
+}
