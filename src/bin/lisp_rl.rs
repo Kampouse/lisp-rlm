@@ -484,14 +484,14 @@ fn cmd_simulate(
     }
     a.extend(["--prepaid".into(), prepaid.to_string()]);
     if json {
-        let out = capture("near-vm-run", &a)?;
+        let out = capture("near-mock", &a)?;
         println!(
             "{}",
             serde_json::to_string(&serde_json::json!({"ok": true, "output": out})).unwrap()
         );
         Ok(())
     } else {
-        delegate("near-vm-run", &a)
+        delegate("near-mock", &a)
     }
 }
 
@@ -516,7 +516,8 @@ fn resolve_wasm(path: &str, json: bool) -> Result<String, String> {
 /// Scenario format (tests/scenarios/*.json):
 ///   { "name": "...", "steps": [
 ///       { "method": "new", "args": {} },
-///       { "method": "get_x", "view": true, "expect": "42" } ] }
+///       { "method": "get_x", "view": true, "expect": "42" },
+///       { "as": "token.test.near", "method": "ft_on_transfer", "args": {} } ] }
 /// `expect` compares against the runner's 📄 result line (string contains).
 fn cmd_test(dir: Option<&str>, json: bool) -> Result<(), String> {
     let project_dir = dir.unwrap_or(".");
@@ -544,7 +545,7 @@ fn cmd_test(dir: Option<&str>, json: bool) -> Result<(), String> {
             serde_json::from_str(&body).map_err(|e| format!("{}: {}", path.display(), e))?;
         let scen_name = scen["name"].as_str().unwrap_or("scenario").to_string();
         // state reset per scenario file
-        let _ = capture("near-vm-run", &[wasm.clone(), "reset".into()])?;
+        let _ = capture("near-mock", &[wasm.clone(), "reset".into()])?;
         for (i, step) in scen["steps"]
             .as_array()
             .ok_or_else(|| format!("{}: missing steps", path.display()))?
@@ -558,11 +559,20 @@ fn cmd_test(dir: Option<&str>, json: bool) -> Result<(), String> {
             let args = step["args"].to_string();
             let view = step["view"].as_bool().unwrap_or(false);
             let mut a: Vec<String> = vec![wasm.clone(), method.clone(), args];
+            // per-step identity: `as` sets signer via NEAR_MOCK_SIGNER
+            // (the wasm runner mirrors predecessor = signer — a direct tx
+            // from that account, which is what ft_on_transfer-style flows
+            // need when the step account IS the token contract)
+            if let Some(as_acct) = step["as"].as_str() {
+                std::env::set_var("NEAR_MOCK_SIGNER", as_acct.trim());
+            } else {
+                std::env::remove_var("NEAR_MOCK_SIGNER");
+            }
             if view {
                 a.push("--view".into());
             }
             a.extend(["--prepaid".into(), "200".into()]);
-            let out = capture("near-vm-run", &a)?;
+            let out = capture("near-mock", &a)?;
             // expect_error: the call MUST fail (abort/panic) — trap expected
             if let Some(want_err) = step["expect_error"].as_str() {
                 let errored = out.contains("❌") || out.contains("trap");
