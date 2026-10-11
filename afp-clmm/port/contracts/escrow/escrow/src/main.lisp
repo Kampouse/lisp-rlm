@@ -12,6 +12,7 @@
 (define (sub a b) (u128/sub a b))
 (define (ult a b) (u128/lt a b))
 (define (bal u) (sget (str-cat "e:bal:" u) "0"))
+(define (shares u) (sget (str-cat "e:shares:" u) "0"))
 (define (credit u a) (sput (str-cat "e:bal:" u) (add (bal u) a)))
 (define (debit u a)
   (if (ult (bal u) a) (fail "ERR_FUNDS") "ok")
@@ -67,17 +68,59 @@
       (sput "e:reserve" (add (sget "e:reserve" "0") a))
       (near/return (sget "e:reserve" "0")))))
 
-;; theory SwapOut u a (guard 0 < a & a <= reserve): reserve becomes user
-;; credits (swap output stays IN custody — outflow only moves on withdraw).
+;; theory SwapOut u a (guard 0 < a & a <= reserve - lp_pool): the LP slice
+;; of the reserve is protected — swap flow can only touch the free float.
 (define (swap_out)
   (let* ((a (default (near/json_get_str "amount") "0"))
          (u (near/predecessor_account_id)))
     (begin
       (if (u128/eq a "0") (fail "ERR_ZERO") "ok")
-      (if (ult (sget "e:reserve" "0") a) (fail "ERR_RESERVE") "ok")
+      (if (ult (sub (sget "e:reserve" "0") (sget "e:lp_pool" "0")) a) (fail "ERR_RESERVE") "ok")
       (sput "e:reserve" (sub (sget "e:reserve" "0") a))
       (credit u a)
       (near/return (bal u)))))
+
+;; theory LpOpen u a (guard 0 < a & a <= bal[u] & 0 < m): credits become
+;; pool shares at the current ratio; fresh pool (lp_pool = 0) mints 1:1.
+(define (lp_open)
+  (let* ((a (default (near/json_get_str "amount") "0"))
+         (u (near/predecessor_account_id))
+         (pool (sget "e:lp_pool" "0"))
+         (T (sget "e:supply" "0"))
+         (m (if (= pool "0") a (u128/muldiv a T pool))))
+    (begin
+      (if (u128/eq a "0") (fail "ERR_ZERO") "ok")
+      (if (ult (bal u) a) (fail "ERR_FUNDS") "ok")
+      (if (u128/eq m "0") (fail "ERR_ZERO_MINT") "ok")
+      (debit u a)
+      (sput "e:reserve" (add (sget "e:reserve" "0") a))
+      (sput "e:lp_pool" (add pool a))
+      (sput "e:supply" (add T m))
+      (sput (str-cat "e:shares:" u) (add (shares u) m))
+      (near/log (str-cat "lp_open u=" (str-cat u (str-cat " a=" (str-cat a (str-cat " m=" m))))))
+      (near/return m))))
+
+;; theory LpRemove u s (guard 0 < s & s <= shares[u] & 0 < v & v <= reserve):
+;; burn shares, redeem the floor payout s*pool/T. a is a LEDGER argument.
+;; Dust stays pooled: payout floors, never overpays (theory redeem bound).
+(define (lp_remove)
+  (let* ((s (default (near/json_get_str "amount") "0"))
+         (u (near/predecessor_account_id))
+         (pool (sget "e:lp_pool" "0"))
+         (T (sget "e:supply" "0"))
+         (v (u128/muldiv s pool T)))
+    (begin
+      (if (u128/eq s "0") (fail "ERR_ZERO") "ok")
+      (if (ult (shares u) s) (fail "ERR_SHARES") "ok")
+      (if (u128/eq v "0") (fail "ERR_ZERO_PAYOUT") "ok")
+      (if (ult (sget "e:reserve" "0") v) (fail "ERR_RESERVE") "ok")
+      (sput "e:reserve" (sub (sget "e:reserve" "0") v))
+      (sput "e:lp_pool" (sub pool v))
+      (sput "e:supply" (sub T s))
+      (sput (str-cat "e:shares:" u) (sub (shares u) s))
+      (sput "e:out" (add (sget "e:out" "0") v))
+      (near/log (str-cat "lp_remove u=" (str-cat u (str-cat " s=" (str-cat s (str-cat " v=" v))))))
+      (near/return v))))
 
 ;; views: storage ground truth for scenario asserts (paid:/left: convention).
 (define (get_balance) (near/return (bal (near/predecessor_account_id))))
@@ -86,14 +129,23 @@
 (define (get_reserve) (near/return (sget "e:reserve" "0")))
 (define (get_inflow) (near/return (sget "e:in" "0")))
 (define (get_outflow) (near/return (sget "e:out" "0")))
+(define (get_lp_pool) (near/return (sget "e:lp_pool" "0")))
+(define (get_supply) (near/return (sget "e:supply" "0")))
+(define (get_shares_of)
+  (near/return (shares (default (near/json_get_str "account") ""))))
 
 (export "deposit" deposit)
 (export "ft_on_transfer" ft_on_transfer)
 (export "withdraw" withdraw)
 (export "swap_in" swap_in)
 (export "swap_out" swap_out)
+(export "lp_open" lp_open)
+(export "lp_remove" lp_remove)
 (export "get_balance" get_balance)
 (export "get_balance_of" get_balance_of)
 (export "get_reserve" get_reserve)
 (export "get_inflow" get_inflow)
 (export "get_outflow" get_outflow)
+(export "get_lp_pool" get_lp_pool)
+(export "get_supply" get_supply)
+(export "get_shares_of" get_shares_of)

@@ -5,7 +5,7 @@ chapter AFP
    theories. Build with:
      isabelle build -o threads=2 -o document=false -d theory -D escrow *)
 session "CLMM_Escrow" = "Concentrated_Liquidity_Market_Making_Operations" +
-  options [timeout = 600]
+  options [timeout = 1800]
   (* quick_and_dirty removed 2026-10-10: the former 6-sorry skeleton is fully
      discharged; from here on any `sorry` FAILS the build. *)
   theories

@@ -14,7 +14,9 @@ escrow:           ## escrow leg: regenerate twins, compile, scenarios + mutation
 	cd scenarios/lisp/escrow-ledger && rm -f state.bin && $(NM) scenario s.json
 	cd scenarios/lisp/ft-probe && rm -f state.bin && $(NM) scenario s.json
 	cd scenarios/lisp/ft-refund && rm -f state.bin && $(NM) scenario s.json
+	cd scenarios/lisp/lp-ledger && rm -f state.bin && $(NM) scenario s.json
 	cd scenarios/ts/escrow-probe && rm -f state.bin && $(NM) scenario s.json
+	cd scenarios/ts/lp-ts && rm -f state.bin && $(NM) scenario s.json
 	python3 proof/mutate_escrow.py
 
 build-ts:         ## compile all TS twins (13 pool twins + escrow-ts)

@@ -15,6 +15,9 @@ function fail(m: string): void {
 function bal(u: string): string {
   return sget("e:bal:" + u);
 }
+function shares(u: string): string {
+  return sget("e:shares:" + u);
+}
 function credit(u: string, a: string): void {
   sput("e:bal:" + u, u128.add(bal(u), a));
 }
@@ -70,15 +73,55 @@ export function swap_in(): string {
   return sget("e:reserve");
 }
 
-// theory SwapOut u a (guard 0 < a & a <= reserve)
+// theory SwapOut u a (guard 0 < a & a <= reserve - lp_pool): LP slice protected
 export function swap_out(): string {
   const a = near.jsonGetStr("amount") ?? "0";
   const u = near.predecessorAccountId();
   if (a === "0") fail("ERR_ZERO");
-  if (u128.lt(sget("e:reserve"), a)) fail("ERR_RESERVE");
+  if (u128.lt(u128.sub(sget("e:reserve"), sget("e:lp_pool")), a)) fail("ERR_RESERVE");
   sput("e:reserve", u128.sub(sget("e:reserve"), a));
   credit(u, a);
   return bal(u);
+}
+
+// theory LpOpen u a (guard 0 < a & a <= bal[u] & 0 < m); fresh pool mints 1:1
+export function lp_open(): string {
+  const a = near.jsonGetStr("amount") ?? "0";
+  const u = near.predecessorAccountId();
+  const pool = sget("e:lp_pool");
+  const T = sget("e:supply");
+  const m = pool === "0" ? a : u128MulDiv(a, T, pool);
+  if (a === "0") fail("ERR_ZERO");
+  if (u128.lt(bal(u), a)) fail("ERR_FUNDS");
+  if (m === "0") fail("ERR_ZERO_MINT");
+  debit(u, a);
+  sput("e:reserve", u128.add(sget("e:reserve"), a));
+  sput("e:lp_pool", u128.add(pool, a));
+  sput("e:supply", u128.add(T, m));
+  sput("e:shares:" + u, u128.add(shares(u), m));
+  near.log("lp_open u=" + u + " a=" + a + " m=" + m);
+  return m;
+}
+
+// theory LpRemove u s (guard 0 < s & s <= shares[u] & 0 < v & v <= reserve);
+// payout floors (dust stays pooled) — ledger arg, outflow bumps
+export function lp_remove(): string {
+  const s = near.jsonGetStr("amount") ?? "0";
+  const u = near.predecessorAccountId();
+  const pool = sget("e:lp_pool");
+  const T = sget("e:supply");
+  const v = u128MulDiv(s, pool, T);
+  if (s === "0") fail("ERR_ZERO");
+  if (u128.lt(shares(u), s)) fail("ERR_SHARES");
+  if (v === "0") fail("ERR_ZERO_PAYOUT");
+  if (u128.lt(sget("e:reserve"), v)) fail("ERR_RESERVE");
+  sput("e:reserve", u128.sub(sget("e:reserve"), v));
+  sput("e:lp_pool", u128.sub(pool, v));
+  sput("e:supply", u128.sub(T, s));
+  sput("e:shares:" + u, u128.sub(shares(u), s));
+  sput("e:out", u128.add(sget("e:out"), v));
+  near.log("lp_remove u=" + u + " s=" + s + " v=" + v);
+  return v;
 }
 
 export function get_balance(): string { return bal(near.predecessorAccountId()); }
@@ -89,3 +132,9 @@ export function get_balance_of(): string {
 export function get_reserve(): string { return sget("e:reserve"); }
 export function get_inflow(): string { return sget("e:in"); }
 export function get_outflow(): string { return sget("e:out"); }
+export function get_lp_pool(): string { return sget("e:lp_pool"); }
+export function get_supply(): string { return sget("e:supply"); }
+export function get_shares_of(): string {
+  const acct = near.jsonGetStr("account") ?? "";
+  return shares(acct);
+}
