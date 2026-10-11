@@ -1,0 +1,44 @@
+name: test-cli
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --bin lisp-rlm --bin near-mock
+
+      - name: E2E — compile + scenario test (clmm)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ci-proj/src /tmp/ci-proj/tests/scenarios /tmp/ci-proj/target
+          cp examples/clmm.lisp /tmp/ci-proj/src/main.lisp
+          cat > /tmp/ci-proj/near.json <<'JSON'
+          {"name":"clmm","src":"src/main.lisp","output":"target/clmm.wasm","tests":"tests/scenarios"}
+          JSON
+          cat > /tmp/ci-proj/tests/scenarios/smoke.json <<'JSON'
+          {"name":"ci smoke","steps":[
+            {"method":"initialize","args":{"owner":"alice.test.near"}},
+            {"method":"get_liq","view":true,"expect":"0"},
+            {"method":"get_tick","view":true,"expect":"0"}
+          ]}
+          JSON
+          target/release/lisp-rlm test /tmp/ci-proj
