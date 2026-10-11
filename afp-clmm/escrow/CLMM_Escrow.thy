@@ -61,9 +61,13 @@ record escrow =
   reserve :: nat                (* contract-owned buffer (pool-side inventory) *)
   inflow  :: nat                (* cumulative tokens deposited into escrow *)
   outflow :: nat                (* cumulative tokens paid out of escrow *)
-  lp_pool :: nat                (* slice of reserve backing LP shares *)
-  total_shares  :: nat                (* total LP shares outstanding *)
-  shares  :: "user \<Rightarrow> nat"   (* LP shares per user *)
+  keys    :: "nat set"          (* live keyed pools *)
+  pools   :: "nat \<Rightarrow> nat"     (* per-pool LP slice of the reserve *)
+  totals  :: "nat \<Rightarrow> nat"      (* per-pool total shares outstanding *)
+  books   :: "nat \<Rightarrow> user \<Rightarrow> nat" (* per-pool shares per user *)
+  lp_pool :: nat                (* default-pool slice of reserve (legacy) *)
+  total_shares  :: nat                (* default-pool total shares *)
+  shares  :: "user \<Rightarrow> nat"   (* default-pool shares per user *)
 
 definition holders :: "escrow \<Rightarrow> user set" where
   "holders e = {u. credits e u > 0}"
@@ -81,11 +85,25 @@ definition escrow_ok :: "escrow \<Rightarrow> bool" where
 definition lp_holders :: "escrow \<Rightarrow> user set" where
   "lp_holders e = {u. shares e u > 0}"
 
+(* Keyed-pool support sets: per-pool mirrors of holders/lp_holders. *)
+definition book_support :: "escrow \<Rightarrow> nat \<Rightarrow> user set" where
+  "book_support e k = {u. books e k u > 0}"
+
+definition total_support :: "escrow \<Rightarrow> nat set" where
+  "total_support e = {k. totals e k > 0}"
+
 definition lp_ok :: "escrow \<Rightarrow> bool" where
   "lp_ok e \<longleftrightarrow> lp_pool e \<le> reserve e
      \<and> (total_shares e = 0 \<longleftrightarrow> lp_pool e = 0)
      \<and> finite (lp_holders e)
-     \<and> sum (shares e) (lp_holders e) = total_shares e"
+     \<and> sum (shares e) (lp_holders e) = total_shares e
+     \<and> sum (pools e) (total_support e) \<le> reserve e
+     \<and> lp_pool e + sum (pools e) (total_support e) \<le> reserve e
+     \<and> finite (total_support e)
+     \<and> (\<forall>k. totals e k = 0 \<longleftrightarrow> pools e k = 0)
+     \<and> (\<forall>k. pools e k \<le> totals e k)
+     \<and> (\<forall>k. sum (books e k) (book_support e k) = totals e k)
+     \<and> (\<forall>k. finite (book_support e k))"
 (* LP solvency: the pool is a real slice of the reserve; shares exist only
    when the pool does; the share ledger is finite and its total EQUALS the
    total_shares (no unbacked shares, no lost shares). Equality is the honest
@@ -112,6 +130,10 @@ datatype escrow_op =
 | SwapOut user nat       (* swap output credited to user, drawn from reserve *)
 | LpOpen  user nat       (* user converts credits to LP shares (mint) *)
 | LpRemove user nat      (* user burns LP shares for reserve units (redeem) *)
+| PoolOpen  nat          (* register a fresh pool key *)
+| PoolClose nat          (* deregister an EMPTY pool key *)
+| LpKeyOpen   nat user nat   (* keyed mint: pool, user, amount *)
+| LpKeyRemove nat user nat   (* keyed redeem: pool, user, shares *)
 
 fun apply_op :: "escrow_op \<Rightarrow> escrow \<Rightarrow> escrow option" where
   "apply_op (Deposit u a) e =
@@ -128,7 +150,7 @@ fun apply_op :: "escrow_op \<Rightarrow> escrow \<Rightarrow> escrow option" whe
                , reserve := reserve e + a \<rparr>)
       else None)"
 | "apply_op (SwapOut u a) e =
-     (if 0 < a \<and> a \<le> reserve e - lp_pool e then
+     (if 0 < a \<and> a \<le> reserve e - (lp_pool e + sum (pools e) (total_support e)) then
         Some (e \<lparr> reserve := reserve e - a
                , credits := (credits e)(u := credits e u + a) \<rparr>)
       else None)"
@@ -168,6 +190,41 @@ fun apply_op :: "escrow_op \<Rightarrow> escrow \<Rightarrow> escrow option" whe
                     , shares := (shares e)(u := shares e u - s)
                     , outflow := outflow e + v \<rparr>)
       else None)"
+(* Multi-LP (keyed pools): each pool key k carries its own slice (pools k),
+   share supply (totals k) and per-user book (books k). LpKeyOpen/LpKeyRemove
+   are the per-pool mirrors of LpOpen/LpRemove with the SAME floor semantics;
+   the legacy fields are untouched (independent pools over one reserve).
+   PoolOpen registers a fresh key (idempotence refused: re-opening a live
+   key would alias two ledgers onto one slice); PoolClose requires the
+   pool EMPTY (0 shares AND 0 pool), so a close can never orphan shares.
+   The SwapOut guard spends `sum (pools e) (total_support e)` -- the pooled
+   total over the SUPPORT -- protecting every live pool without a
+   finiteness premise: keys not in the support hold pools = 0 (invariant
+   lp_ok: totals k = 0 <-> pools k = 0 and totals > 0 defines the support). *)
+| "apply_op (PoolOpen k) e =
+     (if k \<in> keys e then None
+      else Some (e \<lparr> keys := keys e \<union> {k} \<rparr>))"
+| "apply_op (PoolClose k) e =
+     (if k \<notin> keys e \<or> pools e k \<noteq> 0 \<or> totals e k \<noteq> 0 then None
+      else Some (e \<lparr> keys := keys e - {k} \<rparr>))"
+| "apply_op (LpKeyOpen k u a) e =
+     (let m = (if pools e k = 0 then a else a * totals e k div pools e k) in
+      if 0 < a \<and> a \<le> credits e u \<and> 0 < m then
+        Some (e \<lparr> credits := (credits e)(u := credits e u - a)
+                    , reserve := reserve e + a
+                    , pools := (pools e)(k := pools e k + a)
+                    , totals := (totals e)(k := totals e k + m)
+                    , books := (books e)(k := (books e k)(u := books e k u + m)) \<rparr>)
+      else None)"
+| "apply_op (LpKeyRemove k u s) e =
+     (let v = s * pools e k div totals e k in
+      if 0 < s \<and> s \<le> books e k u \<and> 0 < v \<and> v \<le> reserve e then
+        Some (e \<lparr> reserve := reserve e - v
+                    , pools := (pools e)(k := pools e k - v)
+                    , totals := (totals e)(k := totals e k - s)
+                    , books := (books e)(k := (books e k)(u := books e k u - s))
+                    , outflow := outflow e + v \<rparr>)
+      else None)"
 
 fun apply_seq :: "escrow_op list \<Rightarrow> escrow \<Rightarrow> escrow option" where
   "apply_seq [] e = Some e"
@@ -180,10 +237,25 @@ text \<open>Genesis: a fresh deployment starts here, all-zero. Every other
 
 definition init :: escrow where
   "init = \<lparr> credits = (\<lambda>_. 0), reserve = 0, inflow = 0, outflow = 0
+         , keys = {}, pools = (\<lambda>_. 0), totals = (\<lambda>_. 0), books = (\<lambda>_ _. 0)
          , lp_pool = 0, total_shares = 0, shares = (\<lambda>_. 0) \<rparr>"
 
 lemma init_ok[simp]: "escrow_ok init"
   unfolding escrow_ok_def holders_def balance_def init_def by auto
+
+(* conservation ledger is intact under every op that leaves it untouched
+   (crucially LpKeyRemove: reserve drops v AND outflow rises v) *)
+lemma ok_bump:
+  assumes "escrow_ok e" and "credits e' = credits e"
+      and "outflow e' = outflow e" and "inflow e' = inflow e"
+      and "reserve e' = reserve e"
+  shows "escrow_ok e'"
+proof -
+  have h: "holders e' = holders e"
+    unfolding holders_def using assms(2) by simp
+  show ?thesis using assms(1) h assms(2) assms(3) assms(4) assms(5)
+    unfolding escrow_ok_def balance_def by simp
+qed
 
 section \<open>Bookkeeping: point updates of the credit function\<close>
 
@@ -217,6 +289,27 @@ proof (rule finite_subset)
   show "holders (e\<lparr>credits := (credits e)(u := c), reserve := w
                         , lp_pool := x, total_shares := y, shares := sh\<rparr>)
       \<subseteq> insert u (holders e)"
+    by (auto simp: holders_def)
+qed (insert assms, simp)
+
+lemma holders_keyopen_finite:
+  assumes "finite (holders e)"
+  shows "finite (holders (e\<lparr>credits := (credits e)(u := c), reserve := w
+                              , pools := p, totals := t, books := b\<rparr>))"
+proof (rule finite_subset)
+  show "holders (e\<lparr>credits := (credits e)(u := c), reserve := w
+                        , pools := p, totals := t, books := b\<rparr>)
+      \<subseteq> insert u (holders e)"
+    by (auto simp: holders_def)
+qed (insert assms, simp)
+
+lemma holders_keyremove_finite:
+  assumes "finite (holders e)"
+  shows "finite (holders (e\<lparr>reserve := w, pools := p, totals := t
+                              , books := b, outflow := z\<rparr>))"
+proof (rule finite_subset)
+  show "holders (e\<lparr>reserve := w, pools := p, totals := t
+                        , books := b, outflow := z\<rparr>) \<subseteq> holders e"
     by (auto simp: holders_def)
 qed (insert assms, simp)
 
@@ -679,7 +772,7 @@ theorem swapout_ok:
   assumes ok: "escrow_ok e" and ap: "apply_op (SwapOut u a) e = Some e'"
   shows "escrow_ok e'"
 proof -
-  from ap have g': "0 < a" "a \<le> reserve e - lp_pool e"
+  from ap have g': "0 < a" "a \<le> reserve e - (lp_pool e + sum (pools e) (total_support e))"
     and eq: "e' = e\<lparr>reserve := reserve e - a
                           , credits := (credits e)(u := credits e u + a)\<rparr>"
     by (auto simp: apply_op.simps split: if_splits)
@@ -769,6 +862,177 @@ proof -
   show ?thesis unfolding eq escrow_ok_def using f2 le b2 by simp
 qed
 
+section \<open>Multi-LP: keyed pools over one reserve\<close>
+
+text \<open>Each pool key carries its own slice of the SAME reserve, its own share
+  supply and its own per-user book. The legacy single-pool fields are the
+  untouched layer beneath: every legacy theorem survives verbatim, and the
+  keyed ops never read or write them (independence). The shared quantities
+  -- credits, reserve, in/out -- are exactly the ones the conservation
+  ledger tracks, so escrow_ok carries through unchanged; lp_ok carries the
+  keyed solvency conjuncts (pooled slice real, per-pool backing, per-pool
+  book totals). Support-set design: the SwapOut guard spends
+  sum (pools e) (total_support e), which needs NO finiteness premise --
+  total_support is provably finite in every lp_ok state, and keys outside
+  it hold pools = 0 by the zero-coupling conjunct.\<close>
+
+lemma init_keys[simp]: "keys init = {}" by (simp add: init_def)
+lemma init_pools[simp]: "pools init = (\<lambda>_. 0)" by (simp add: init_def)
+lemma init_totals[simp]: "totals init = (\<lambda>_. 0)" by (simp add: init_def)
+lemma init_books[simp]: "books init = (\<lambda>_ _. 0)" by (simp add: init_def)
+
+lemma ok_poolopen:
+  assumes ok: "escrow_ok e" and ap: "apply_op (PoolOpen k) e = Some e'"
+  shows "escrow_ok e'"
+proof -
+  from ap have eq: "e' = e\<lparr>keys := keys e \<union> {k}\<rparr>"
+    by (auto simp: apply_op.simps split: if_splits)
+  show ?thesis using ok_bump[OF ok, of e'] eq by simp
+qed
+
+lemma ok_poolclose:
+  assumes ok: "escrow_ok e" and ap: "apply_op (PoolClose k) e = Some e'"
+  shows "escrow_ok e'"
+proof -
+  from ap have eq: "e' = e\<lparr>keys := keys e - {k}\<rparr>"
+    by (auto simp: apply_op.simps split: if_splits)
+  show ?thesis using ok_bump[OF ok, of e'] eq by simp
+qed
+
+lemma ok_lpkeyopen:
+  assumes ok: "escrow_ok e" and ap: "apply_op (LpKeyOpen k u a) e = Some e'"
+  shows "escrow_ok e'"
+proof -
+  from ap have g: "0 < a" "a \<le> credits e u"
+    and eq: "e' = e\<lparr>credits := (credits e)(u := credits e u - a)
+                          , reserve := reserve e + a
+                          , pools := (pools e)(k := pools e k + a)
+                          , totals := (totals e)(k := totals e k + (if pools e k = 0 then a else a * totals e k div pools e k))
+                          , books := (books e)(k := (books e k)(u := books e k u + (if pools e k = 0 then a else a * totals e k div pools e k)))\<rparr>"
+    by (auto simp: apply_op.simps Let_def split: if_splits)
+  have fin: "finite (holders e)" using ok by (simp add: escrow_ok_def)
+  have ok_le: "outflow e \<le> inflow e" using ok by (simp add: escrow_ok_def)
+  have ok_bal: "reserve e + sum (credits e) (holders e) = inflow e - outflow e"
+    using ok by (simp add: escrow_ok_def balance_def)
+  have f2: "finite (holders (e\<lparr>credits := (credits e)(u := credits e u - a)
+                                  , reserve := reserve e + a
+                                  , pools := (pools e)(k := pools e k + a)
+                                  , totals := (totals e)(k := totals e k + (if pools e k = 0 then a else a * totals e k div pools e k))
+                                  , books := (books e)(k := (books e k)(u := books e k u + (if pools e k = 0 then a else a * totals e k div pools e k)))\<rparr>))"
+    using holders_keyopen_finite[OF fin] by simp
+  have h0: "holders (e\<lparr>credits := (credits e)(u := credits e u - a)
+                              , reserve := reserve e + a
+                              , pools := (pools e)(k := pools e k + a)
+                              , totals := (totals e)(k := totals e k + (if pools e k = 0 then a else a * totals e k div pools e k))
+                              , books := (books e)(k := (books e k)(u := books e k u + (if pools e k = 0 then a else a * totals e k div pools e k)))\<rparr>)
+          = holders (e\<lparr>credits := (credits e)(u := credits e u - a)
+                              , reserve := reserve e + a\<rparr>)"
+    by (simp add: holders_def)
+  have b1: "reserve e + a
+          + sum ((credits e)(u := credits e u - a))
+                (holders (e\<lparr>credits := (credits e)(u := credits e u - a)
+                                      , reserve := reserve e + a\<rparr>))
+          = reserve e + sum (credits e) (holders e)"
+    using swapin_sum_raw[OF fin g(2)] .
+  have b2: "balance (e\<lparr>credits := (credits e)(u := credits e u - a)
+                              , reserve := reserve e + a
+                              , pools := (pools e)(k := pools e k + a)
+                              , totals := (totals e)(k := totals e k + (if pools e k = 0 then a else a * totals e k div pools e k))
+                              , books := (books e)(k := (books e k)(u := books e k u + (if pools e k = 0 then a else a * totals e k div pools e k)))\<rparr>)
+          = inflow e - outflow e"
+    using b1 ok_bal h0 by (simp add: balance_def)
+  show ?thesis unfolding eq escrow_ok_def using f2 ok_le b2 by simp
+qed
+
+lemma ok_lpkeyremove:
+  assumes ok: "escrow_ok e" and ap: "apply_op (LpKeyRemove k u s) e = Some e'"
+  shows "escrow_ok e'"
+proof -
+  obtain v where v: "v = s * pools e k div totals e k"
+    and g: "0 < s" "s \<le> books e k u" "0 < v" "v \<le> reserve e"
+    and eq: "e' = e\<lparr>reserve := reserve e - v
+                          , pools := (pools e)(k := pools e k - v)
+                          , totals := (totals e)(k := totals e k - s)
+                          , books := (books e)(k := (books e k)(u := books e k u - s))
+                          , outflow := outflow e + v\<rparr>"
+    using ap by (auto simp: apply_op.simps Let_def split: if_splits)
+  have fin_h: "finite (holders e)" using ok by (simp add: escrow_ok_def)
+  have ok_le: "outflow e \<le> inflow e" using ok by (simp add: escrow_ok_def)
+  have ok_bal: "reserve e + sum (credits e) (holders e) = inflow e - outflow e"
+    using ok by (simp add: escrow_ok_def balance_def)
+  have f2: "finite (holders (e\<lparr>reserve := reserve e - v
+                                  , pools := (pools e)(k := pools e k - v)
+                                  , totals := (totals e)(k := totals e k - s)
+                                  , books := (books e)(k := (books e k)(u := books e k u - s))
+                                  , outflow := outflow e + v\<rparr>))"
+    using holders_keyremove_finite[OF fin_h] by simp
+  have h0: "holders (e\<lparr>reserve := reserve e - v
+                              , pools := (pools e)(k := pools e k - v)
+                              , totals := (totals e)(k := totals e k - s)
+                              , books := (books e)(k := (books e k)(u := books e k u - s))
+                              , outflow := outflow e + v\<rparr>) = holders e"
+    by (simp add: holders_def)
+  have b3: "reserve e - v + sum (credits e) (holders e) = inflow e - outflow e - v"
+    using ok_bal g(4) by arith
+  have le: "outflow e + v \<le> inflow e"
+    using ok_le ok_bal g(4) by arith
+  have b2: "balance (e\<lparr>reserve := reserve e - v
+                              , pools := (pools e)(k := pools e k - v)
+                              , totals := (totals e)(k := totals e k - s)
+                              , books := (books e)(k := (books e k)(u := books e k u - s))
+                              , outflow := outflow e + v\<rparr>)
+          = inflow e - outflow e - v"
+    using b3 h0 by (simp add: balance_def)
+  show ?thesis unfolding eq escrow_ok_def using f2 le b2 by simp
+qed
+
+text \<open>Set-level update toolkit: a point update against an EXPLICIT finite
+  set (the supports), stated so the op proofs can chain them by name.\<close>
+
+lemma sum_upd_set_member:
+  fixes f :: "'a \<Rightarrow> nat" and S :: "'a set" and k :: "'a" and c :: nat
+  assumes fin: "finite S" and mem: "k \<in> S"
+  shows "sum f S - f k + c = sum (f(k := c)) S"
+proof -
+  have sp: "sum f S = f k + sum f (S - {k})"
+    using fin mem by (rule sum.remove)
+  have spl: "sum (f(k := c)) S = (f(k := c)) k + sum (f(k := c)) (S - {k})"
+    using fin mem by (rule sum.remove)
+  have gk: "(f(k := c)) k = c" by simp
+  have cn: "sum (f(k := c)) (S - {k}) = sum f (S - {k})"
+    by (rule sum.cong) auto
+  show ?thesis using sp spl gk cn by arith
+qed
+
+lemma sum_upd_set_fresh:
+  fixes f :: "'a \<Rightarrow> nat" and S :: "'a set" and k :: "'a" and c :: nat
+  assumes fin: "finite S" and fresh: "k \<notin> S"
+  shows "sum f S + c = sum (f(k := c)) (insert k S)"
+proof -
+  have ins: "sum (f(k := c)) (insert k S) = (f(k := c)) k + sum (f(k := c)) S"
+    using assms by (rule sum.insert)
+  have a1: "(f(k := c)) k = c" by simp
+  have cn: "sum (f(k := c)) S = sum f S"
+    by (rule sum.cong) (insert fresh, auto)
+  show ?thesis using ins a1 cn by simp
+qed
+
+lemma support_upd_finite:
+  fixes f :: "'a \<Rightarrow> nat" and c :: nat
+  assumes "finite {x. f x > 0}"
+  shows "finite {x. (f(u := c)) x > 0}"
+proof (rule finite_subset)
+  show "{x. (f(u := c)) x > 0} \<subseteq> insert u {x. f x > 0}" by auto
+qed (insert assms, simp)
+
+text \<open>Support bridges: the zero-coupling conjunct turns set membership
+  into arithmetic and back.\<close>
+
+lemma support_pools_zero:
+  assumes "lp_ok e"
+  shows "pools e k = 0 \<longleftrightarrow> k \<notin> total_support e"
+  using assms by (auto simp: lp_ok_def total_support_def)
+
 section \<open>LP share-ledger invariant\<close>
 
 text \<open>Mirror of the credit ledger: the share ledger is finite, its total
@@ -777,7 +1041,8 @@ text \<open>Mirror of the credit ledger: the share ledger is finite, its total
   init discharges it trivially.\<close>
 
 lemma lp_init_ok[simp]: "lp_ok init"
-  by (auto simp: lp_ok_def lp_holders_def init_def)
+  by (auto simp: lp_ok_def lp_holders_def init_def total_support_def
+                 book_support_def)
 
 text \<open>Shares are a mirror of credits: the same two point-update shapes,
   proved once for the share ledger. Note a zero mint can never occur
@@ -845,25 +1110,35 @@ lemma lp_ok_deposit:
   assumes ok: "lp_ok e" and ap: "apply_op (Deposit u a) e = Some e'"
   shows "lp_ok e'" using ok
   using ap by (cases "0 < a")
-    (auto simp: lp_ok_def lp_holders_def apply_op.simps split: if_splits)
+    (auto simp: lp_ok_def lp_holders_def total_support_def book_support_def apply_op.simps split: if_splits)
 
 lemma lp_ok_withdraw:
   assumes ok: "lp_ok e" and ap: "apply_op (Withdraw u a) e = Some e'"
   shows "lp_ok e'" using ok
   using ap by (cases "a \<le> credits e u")
-    (auto simp: lp_ok_def lp_holders_def apply_op.simps split: if_splits)
+    (auto simp: lp_ok_def lp_holders_def total_support_def book_support_def apply_op.simps split: if_splits)
 
 lemma lp_ok_swapin:
   assumes ok: "lp_ok e" and ap: "apply_op (SwapIn u a) e = Some e'"
   shows "lp_ok e'" using ok
   using ap by (cases "a \<le> credits e u")
-    (auto simp: lp_ok_def lp_holders_def apply_op.simps split: if_splits)
+    (auto simp: lp_ok_def lp_holders_def total_support_def book_support_def apply_op.simps split: if_splits)
 
 lemma lp_ok_swapout:
   assumes ok: "lp_ok e" and ap: "apply_op (SwapOut u a) e = Some e'"
-  shows "lp_ok e'" using ok
-  using ap by (cases "0 < a \<and> a \<le> reserve e - lp_pool e")
-    (auto simp: lp_ok_def lp_holders_def apply_op.simps split: if_splits)
+  shows "lp_ok e'"
+proof -
+  have g: "0 < a" "a \<le> reserve e - (lp_pool e + sum (pools e) (total_support e))"
+    and eq: "e' = e\<lparr>reserve := reserve e - a
+                          , credits := (credits e)(u := credits e u + a)\<rparr>"
+    using ap by (auto simp: apply_op.simps split: if_splits)
+  have rle: "reserve e - a \<le> reserve e" by simp
+  have kle: "lp_pool e \<le> reserve e" using ok by (simp add: lp_ok_def)
+  have sup_le: "sum (pools e) (total_support e) \<le> reserve e"
+    using ok by (simp add: lp_ok_def)
+  show ?thesis using g rle kle sup_le ok eq
+    by (auto simp: lp_ok_def lp_holders_def total_support_def book_support_def)
+qed
 
 lemma lp_ok_lpopen:
   assumes ok: "lp_ok e" and ap: "apply_op (LpOpen u a) e = Some e'"
@@ -905,7 +1180,7 @@ proof -
       using sum_sh_upd_fresh[OF fin ufresh gM] eq2 su0
       by (simp add: lp_holders_def)
     show ?thesis using eq2 ok True sumeq gM mM
-      by (auto simp: lp_ok_def lp_holders_def M_def)
+      by (auto simp: lp_ok_def lp_holders_def total_support_def book_support_def M_def)
   next
     case False
     then have p_pos: "0 < lp_pool e" by simp
@@ -932,7 +1207,7 @@ proof -
       show ?thesis using fin lp_holders_def by simp
     qed
     show ?thesis using eq2 ok bound p_pos gM finS
-      by (auto simp: lp_ok_def lp_holders_def M_def)
+      by (auto simp: lp_ok_def lp_holders_def total_support_def book_support_def M_def)
   qed
 qed
 
@@ -1062,7 +1337,7 @@ proof -
         using eq by (auto simp: lp_holders_def)
     qed (simp add: fin)
     show ?thesis using eq ok vp use bound True oz finE'
-      by (auto simp: lp_ok_def lp_holders_def)
+      by (auto simp: lp_ok_def lp_holders_def total_support_def book_support_def)
   next
     case False
     have sT: "s \<le> total_shares e"
@@ -1086,8 +1361,686 @@ proof -
         using eq by (auto simp: lp_holders_def)
     qed (simp add: fin)
     show ?thesis using eq ok sumeq' v_le_pool T0 tp nb finE'
-      by (auto simp: lp_ok_def lp_holders_def)
+      by (auto simp: lp_ok_def lp_holders_def total_support_def book_support_def)
   qed
+qed
+
+section \<open>Keyed-pool lp_ok: joint solvency under the keyed ops\<close>
+
+text \<open>Every conjunct of the keyed extension of lp_ok is discharged by
+  name: the pooled-slice bound, the per-pool backing inequality, the
+  per-pool book-sum equality, and the support finiteness. The two LP
+  carries are THE delicate ones -- LpKeyOpen preserves the cross
+  inequality a*t/p <= a*p only because the mint formula swaps operands
+  with the fresh-pool case; LpKeyRemove preserves pools k <= totals k
+  only because the payout FLOORS (div_le_mono direction). Legacy ops
+  never touch the keyed fields, so their carries are identity carries.\<close>
+
+lemma key_support_bridge:
+  assumes ok: "lp_ok e" and fresh: "pools e k = 0"
+  shows "sum (pools e) (total_support e) + a
+       = sum ((pools e)(k := a)) (insert k (total_support e))"
+proof -
+  have fin: "finite (total_support e)" using ok by (simp add: lp_ok_def)
+  have kn: "k \<notin> total_support e" using support_pools_zero[OF ok] fresh by simp
+  have i1: "sum ((pools e)(k := a)) (insert k (total_support e))
+          = ((pools e)(k := a)) k + sum ((pools e)(k := a)) (total_support e)"
+    using fin kn by (rule sum.insert)
+  have a1: "((pools e)(k := a)) k = a" by simp
+  have i2: "sum ((pools e)(k := a)) (total_support e)
+          = sum (pools e) (total_support e)"
+    by (rule sum.cong) (insert kn, auto)
+  show ?thesis using i1 a1 i2 by simp
+qed
+
+lemma key_support_bridge_sub:
+  assumes ok: "lp_ok e" and mem: "k \<in> total_support e" and vle: "v \<le> pools e k"
+  shows "sum (pools e) (total_support e) - v
+       = sum ((pools e)(k := pools e k - v)) (total_support e)"
+proof -
+  have fin: "finite (total_support e)" using ok by (simp add: lp_ok_def)
+  have sp: "sum (pools e) (total_support e)
+          = pools e k + sum (pools e) (total_support e - {k})"
+    using fin mem by (rule sum.remove)
+  have p1: "pools e k - v \<le> pools e k" by simp
+  have c1: "sum ((pools e)(k := pools e k - v)) (total_support e)
+          = ((pools e)(k := pools e k - v)) k
+          + sum ((pools e)(k := pools e k - v)) (total_support e - {k})"
+    using fin mem by (rule sum.remove)
+  have c2: "((pools e)(k := pools e k - v)) k = pools e k - v" by simp
+  have c3: "sum ((pools e)(k := pools e k - v)) (total_support e - {k})
+          = sum (pools e) (total_support e - {k})"
+    by (rule sum.cong) auto
+  show ?thesis using sp c1 c2 c3 vle by arith
+qed
+
+lemma book_support_bridge_add:
+  fixes f :: "'a \<Rightarrow> nat" and S :: "'a set" and u :: "'a" and c :: nat
+  assumes fin: "finite S" and mem: "u \<in> S"
+  shows "sum f S - f u + (f u + c) = sum (f(u := f u + c)) S"
+  using sum_upd_set_member assms by simp
+
+lemma book_support_bridge_sub:
+  fixes f :: "'a \<Rightarrow> nat" and S :: "'a set" and u :: "'a" and c :: nat
+  assumes fin: "finite S" and mem: "u \<in> S" and cle: "c \<le> f u"
+  shows "sum f S - c = sum (f(u := f u - c)) S"
+proof -
+  have sp: "sum f S = f u + sum f (S - {u})"
+    using fin mem by (rule sum.remove)
+  have fle: "f u \<le> sum f S" using sp by arith
+  have step: "sum f S - f u + (f u - c) = sum (f(u := f u - c)) S"
+    using sum_upd_set_member[OF fin mem, where c="f u - c"] by simp
+  show ?thesis using step cle fle by arith
+qed
+
+lemma lp_holders_keys[simp]: "lp_holders (e\<lparr>keys := K\<rparr>) = lp_holders e"
+  by (simp add: lp_holders_def)
+
+lemma lp_ok_poolopen:
+  assumes ok: "lp_ok e" and ap: "apply_op (PoolOpen k) e = Some e'"
+  shows "lp_ok e'"
+  using ok ap by (cases "k \<in> keys e")
+    (auto simp: lp_ok_def total_support_def book_support_def apply_op.simps split: if_splits)
+
+lemma lp_ok_poolclose:
+  assumes ok: "lp_ok e" and ap: "apply_op (PoolClose k) e = Some e'"
+  shows "lp_ok e'"
+  using ok ap by (cases "k \<notin> keys e \<or> pools e k \<noteq> 0 \<or> totals e k \<noteq> 0")
+    (auto simp: lp_ok_def total_support_def book_support_def apply_op.simps split: if_splits)
+
+lemma lp_ok_keyopen:
+  assumes ok: "lp_ok e" and ap: "apply_op (LpKeyOpen k u a) e = Some e'"
+  shows "lp_ok e'"
+proof (cases "pools e k = 0")
+  (* fresh pool: mint = a, support of pools grows by {k} *)
+  case True
+  have tk0: "pools e k = 0" using True .
+  obtain m where m: "m = (if pools e k = 0 then a else a * totals e k div pools e k)"
+    by simp
+  from ap have g: "0 < a" "a \<le> credits e u"
+    and eq: "e' = e\<lparr>credits := (credits e)(u := credits e u - a)
+                          , reserve := reserve e + a
+                          , pools := (pools e)(k := pools e k + a)
+                          , totals := (totals e)(k := totals e k + m)
+                          , books := (books e)(k := (books e k)(u := books e k u + m))\<rparr>"
+    using True m by (auto simp: apply_op.simps Let_def split: if_splits)
+  have tzk: "totals e k = 0" using ok True by (simp add: lp_ok_def)
+  (* S: the pools support gains exactly k *)
+  have S: "total_support e' = insert k (total_support e)"
+    unfolding eq total_support_def using g(1) tzk m tk0
+    by (auto simp: total_support_def lp_ok_def)
+  (* P1: pooled slice stays real *)
+  have brid: "sum (pools e) (total_support e) + a
+            = sum ((pools e)(k := pools e k + a)) (insert k (total_support e))"
+    using ok tk0 by (simp add: key_support_bridge)
+  have sup_le: "sum (pools e) (total_support e) \<le> reserve e"
+    using ok by (simp add: lp_ok_def)
+  (* e-level sum identity, then record-reduce into e' shape *)
+  have P1a: "sum ((pools e)(k := pools e k + a)) (insert k (total_support e))
+           \<le> reserve e + a"
+    using brid[symmetric] sup_le g(1) by arith
+  have Ssum: "sum (pools e') (total_support e')
+            = sum ((pools e)(k := pools e k + a)) (insert k (total_support e))"
+    unfolding S by (use eq in simp)
+  have r': "reserve e' = reserve e + a" unfolding eq by simp
+  have P1: "sum (pools e') (total_support e') \<le> reserve e'"
+    using Ssum P1a r' by arith
+  (* P2: per-pool backing *)
+  have P2: "\<And>j. pools e' j \<le> totals e' j"
+  proof -
+    fix j
+    show "pools e' j \<le> totals e' j"
+    proof (cases "j = k")
+      case True
+      thus ?thesis unfolding eq using m tzk tk0 by simp
+    next
+      case False
+      thus ?thesis unfolding eq using ok by (simp add: lp_ok_def)
+    qed
+  qed
+  (* P3: per-pool book sum *)
+  have P3: "sum (books e' k) (book_support e' k) = totals e' k"
+  proof (cases "u \<in> book_support e k")
+    case True
+    have fin: "finite (book_support e k)" using ok by (simp add: lp_ok_def)
+    have e1: "sum (books e k) (book_support e k) - books e k u
+            + (books e k u + m)
+            = sum ((books e k)(u := books e k u + m)) (book_support e k)"
+      using book_support_bridge_add[OF fin True] .
+    have e2: "book_support e' k = book_support e k"
+      unfolding eq book_support_def using ok True
+      by (auto simp: lp_ok_def book_support_def)
+    have ex: "sum (books e k) (book_support e k) = totals e k"
+      using ok by (simp add: lp_ok_def)
+    have mz: "m = a" using m tk0 by simp
+    have f1: "sum (books e k) (book_support e k)
+            = books e k u + sum (books e k) (book_support e k - {u})"
+      using fin True by (rule sum.remove)
+    have fle: "books e k u \<le> sum (books e k) (book_support e k)"
+      using f1 by arith
+    have r1: "sum ((books e k)(u := books e k u + m)) (book_support e k)
+            = totals e k + m"
+      using e1 ex fle mz by arith
+    show ?thesis using e2 r1 mz eq by simp
+  next
+    case False
+    have fin: "finite (book_support e k)" using ok by (simp add: lp_ok_def)
+    have e1: "sum (books e k) (book_support e k) + m
+            = sum ((books e k)(u := m)) (insert u (book_support e k))"
+      using sum_upd_set_fresh[OF fin False, of "books e k" m] by simp
+    have e2: "book_support e' k = insert u (book_support e k)"
+      unfolding eq book_support_def using ok False m True g(1)
+      by (auto simp: lp_ok_def book_support_def)
+    have ex: "sum (books e k) (book_support e k) = totals e k"
+      using ok by (simp add: lp_ok_def)
+    have mz: "m = a" using m tk0 by simp
+    have u0: "books e k u = 0" using False by (simp add: book_support_def)
+    have r2: "sum ((books e k)(u := m)) (insert u (book_support e k))
+            = totals e k + m"
+      using e1 ex by arith
+    show ?thesis using e2 r2 mz u0 eq by simp
+  qed
+  (* P4/P5: supports stay finite *)
+  have P4: "finite (total_support e')"
+    using S ok by (simp add: lp_ok_def)
+  have P5: "\<And>j. finite (book_support e' j)"
+  proof -
+    fix j
+    show "finite (book_support e' j)"
+    proof (cases "j = k")
+      case True
+      have fin: "finite (book_support e k)" using ok by (simp add: lp_ok_def)
+      have sub: "book_support e' j \<subseteq> insert u (book_support e j)"
+        unfolding eq book_support_def True by auto
+      have fin2: "finite (insert u (book_support e j))" using fin True by simp
+      show ?thesis by (rule finite_subset[OF sub fin2])
+    next
+      case False
+      have bs: "book_support e' j = book_support e j"
+        using eq False by (simp add: book_support_def)
+      show ?thesis unfolding bs using ok by (simp add: lp_ok_def)
+    qed
+  qed
+  have lple: "lp_pool e \<le> reserve e" using ok by (simp add: lp_ok_def)
+  have lp': "lp_pool e' = lp_pool e" unfolding eq by simp
+  have jointe: "lp_pool e + sum (pools e) (total_support e) \<le> reserve e"
+    using ok by (simp add: lp_ok_def)
+  have P1j: "lp_pool e' + sum (pools e') (total_support e') \<le> reserve e'"
+    using Ssum lp' brid jointe r' by arith
+  show ?thesis using P1 P1j P2 P3 P4 P5 ok True m tk0 eq
+    by (auto simp: lp_ok_def book_support_def total_support_def lp_holders_def)
+next
+  (* live pool: mint = a * totals k div pools k; support UNCHANGED *)
+  case False
+  from ap have g: "0 < a" "a \<le> credits e u"
+    and eq: "e' = e\<lparr>credits := (credits e)(u := credits e u - a)
+                          , reserve := reserve e + a
+                          , pools := (pools e)(k := pools e k + a)
+                          , totals := (totals e)(k := totals e k + (a * totals e k div pools e k))
+                          , books := (books e)(k := (books e k)(u := books e k u + (a * totals e k div pools e k)))\<rparr>"
+    using False by (auto simp: apply_op.simps Let_def split: if_splits)
+  define m where "m = a * totals e k div pools e k"
+  have nz: "0 < pools e k" using False by simp
+  have pp: "pools e k \<le> totals e k" using ok by (simp add: lp_ok_def)
+  have ziff: "(totals e k = 0) = (pools e k = 0)" using ok by (simp add: lp_ok_def)
+  have nt: "0 < totals e k"
+  proof (rule ccontr)
+    assume "\<not> 0 < totals e k"
+    hence t0: "totals e k = 0" by simp
+    hence "pools e k = 0" using ziff by simp
+    thus False using nz by simp
+  qed
+  (* backing arithmetic: the invariant pool <= totals makes the mint cover a *)
+  have dm: "a * totals e k div totals e k = a" using nt by simp
+  have mono: "a * totals e k div totals e k \<le> a * totals e k div pools e k"
+    by (rule div_le_mono2[OF nz pp])
+  have mge: "a \<le> m" unfolding m_def using mono dm by arith
+  have mpos: "0 < m" using g(1) mge by arith
+  have P2k: "pools e k + a \<le> totals e k + m" using pp mono dm by (simp add: m_def)
+  (* S: support unchanged *)
+  have S: "total_support e' = total_support e"
+    unfolding eq total_support_def using nt mpos
+    by (auto simp: total_support_def m_def)
+  (* P1: pooled slice grows by a, reserve grows by a *)
+  have ppos: "0 < pools e k" using False by simp
+  have mem: "k \<in> total_support e"
+  proof (rule ccontr)
+    assume nc: "k \<notin> total_support e"
+    hence "pools e k = 0" using support_pools_zero[OF ok] by simp
+    thus False using ppos by simp
+  qed
+  have fin: "finite (total_support e)" using ok by (simp add: lp_ok_def)
+  have sp: "sum (pools e) (total_support e)
+          = pools e k + sum (pools e) (total_support e - {k})"
+    using fin mem by (rule sum.remove)
+  have c1: "sum ((pools e)(k := pools e k + a)) (total_support e)
+          = ((pools e)(k := pools e k + a)) k
+          + sum ((pools e)(k := pools e k + a)) (total_support e - {k})"
+    using fin mem by (rule sum.remove)
+  have c2: "((pools e)(k := pools e k + a)) k = pools e k + a" by simp
+  have c3: "sum ((pools e)(k := pools e k + a)) (total_support e - {k})
+          = sum (pools e) (total_support e - {k})"
+    by (rule sum.cong) auto
+  have ksum: "sum ((pools e)(k := pools e k + a)) (total_support e)
+            = sum (pools e) (total_support e) + a"
+    using sp c1 c2 c3 by simp
+  have sup_le: "sum (pools e) (total_support e) \<le> reserve e"
+    using ok by (simp add: lp_ok_def)
+  have P1a: "sum ((pools e)(k := pools e k + a)) (total_support e)
+           \<le> reserve e + a"
+    using ksum[symmetric] sup_le g(1) by arith
+  have Ssum: "sum (pools e') (total_support e')
+            = sum ((pools e)(k := pools e k + a)) (total_support e)"
+    unfolding S by (use eq in simp)
+  have r': "reserve e' = reserve e + a" unfolding eq by simp
+  have P1: "sum (pools e') (total_support e') \<le> reserve e'"
+    using Ssum P1a r' by arith
+  (* P2: full conjunct *)
+  have P2: "\<And>j. pools e' j \<le> totals e' j"
+  proof -
+    fix j
+    show "pools e' j \<le> totals e' j"
+    proof (cases "j = k")
+      case True
+      thus ?thesis unfolding eq using P2k by (simp add: m_def)
+    next
+      case False
+      thus ?thesis unfolding eq using ok by (simp add: lp_ok_def)
+    qed
+  qed
+  (* P3: per-pool book sum, mint m *)
+  have P3: "sum (books e' k) (book_support e' k) = totals e' k"
+  proof (cases "u \<in> book_support e k")
+    case True
+    have finb: "finite (book_support e k)" using ok by (simp add: lp_ok_def)
+    have e1: "sum (books e k) (book_support e k) - books e k u
+            + (books e k u + m)
+            = sum ((books e k)(u := books e k u + m)) (book_support e k)"
+      using book_support_bridge_add[OF finb True] .
+    have e2: "book_support e' k = book_support e k"
+      unfolding eq book_support_def using ok True
+      by (auto simp: lp_ok_def book_support_def)
+    have ex: "sum (books e k) (book_support e k) = totals e k"
+      using ok by (simp add: lp_ok_def)
+    have f1: "sum (books e k) (book_support e k)
+            = books e k u + sum (books e k) (book_support e k - {u})"
+      using finb True by (rule sum.remove)
+    have fle: "books e k u \<le> sum (books e k) (book_support e k)"
+      using f1 by arith
+    have r3: "sum ((books e k)(u := books e k u + m)) (book_support e k)
+            = totals e k + m"
+      using e1 ex fle by arith
+    show ?thesis using e2 r3 m_def eq by simp
+  next
+    case False
+    have finb: "finite (book_support e k)" using ok by (simp add: lp_ok_def)
+    have e1: "sum (books e k) (book_support e k) + m
+            = sum ((books e k)(u := m)) (insert u (book_support e k))"
+      using sum_upd_set_fresh[OF finb False, of "books e k" m] by simp
+    have e2: "book_support e' k = insert u (book_support e k)"
+      unfolding eq book_support_def using ok False mpos
+      by (auto simp: lp_ok_def book_support_def m_def)
+    have ex: "sum (books e k) (book_support e k) = totals e k"
+      using ok by (simp add: lp_ok_def)
+    have r4: "sum ((books e k)(u := m))
+                  (insert u (book_support e k)) = totals e k + m"
+      using e1 ex by arith
+    have u0: "books e k u = 0" using False by (simp add: book_support_def)
+    show ?thesis using e2 r4 m_def u0 eq by simp
+  qed
+  have P4: "finite (total_support e')"
+    using S ok by (simp add: lp_ok_def)
+  have P5: "\<And>j. finite (book_support e' j)"
+  proof -
+    fix j
+    show "finite (book_support e' j)"
+    proof (cases "j = k")
+      case True
+      have fin: "finite (book_support e k)" using ok by (simp add: lp_ok_def)
+      have sub: "book_support e' j \<subseteq> insert u (book_support e j)"
+        unfolding eq book_support_def True by auto
+      have fin2: "finite (insert u (book_support e j))" using fin True by simp
+      show ?thesis by (rule finite_subset[OF sub fin2])
+    next
+      case False
+      have bs: "book_support e' j = book_support e j"
+        using eq False by (simp add: book_support_def)
+      show ?thesis unfolding bs using ok by (simp add: lp_ok_def)
+    qed
+  qed
+  have lple: "lp_pool e \<le> reserve e" using ok by (simp add: lp_ok_def)
+  have lp': "lp_pool e' = lp_pool e" unfolding eq by simp
+  have jointe: "lp_pool e + sum (pools e) (total_support e) \<le> reserve e"
+    using ok by (simp add: lp_ok_def)
+  have P1j: "lp_pool e' + sum (pools e') (total_support e') \<le> reserve e'"
+    using lp' Ssum jointe ksum r' by arith
+  show ?thesis using P1 P1j P2 P3 P4 P5 ok False eq
+    by (auto simp: lp_ok_def book_support_def total_support_def lp_holders_def)
+qed
+
+lemma div_payout_floor:
+  fixes p t s :: nat
+  assumes pt: "p \<le> t" and st: "s \<le> t" and tpos: "0 < t"
+  shows "p - s * p div t \<le> t - s"
+proof (cases "t \<le> p + s")
+  case True
+  have hk: "(t - s) + s = t" using st by simp
+  have hd0: "(p + s - t) + (t - s) = p" using True st pt by presburger
+  have dle: "p + s - t \<le> s" using True st pt by presburger
+  have h2a: "(p + s - t) * ((t - s) + s)
+           = (p + s - t) * (t - s) + (p + s - t) * s" by (rule distrib_left)
+  have h2b: "(p + s - t) * t = (p + s - t) * ((t - s) + s)" by (simp only: hk)
+  have h2: "(p + s - t) * t = (p + s - t) * (t - s) + (p + s - t) * s"
+    by (rule trans[OF h2b h2a])
+  have h4a: "s * ((p + s - t) + (t - s)) = s * (p + s - t) + s * (t - s)"
+    by (rule distrib_left)
+  have h4b: "s * p = s * ((p + s - t) + (t - s))" by (simp only: hd0)
+  have h4: "s * p = s * (p + s - t) + s * (t - s)" by (rule trans[OF h4b h4a])
+  have h6: "(p + s - t) * (t - s) \<le> s * (t - s)" by (rule mult_le_mono1[OF dle])
+  have hc: "(p + s - t) * s = s * (p + s - t)" by (rule mult.commute)
+  have hf: "(p + s - t) * t \<le> s * p" using h2 hc h6 h4 by presburger
+  have hdiv: "(p + s - t) * t div t \<le> s * p div t" by (rule div_le_mono[OF hf])
+  have hd1: "(p + s - t) * t div t = p + s - t" using tpos by (simp add: div_mult_self1)
+  have hge: "p + s - t \<le> s * p div t" using hdiv hd1 by simp
+  have sub: "p - s * p div t \<le> p - (p + s - t)" using hge by arith
+  have eq: "p - (p + s - t) = t - s" using hd0 by arith
+  show ?thesis using sub eq by arith
+next
+  case False
+  have regb: "p \<le> t - s" using False by presburger
+  have dp2: "p * s \<le> p * t" by (rule mult_le_mono2[OF st])
+  have dm2: "s * p \<le> p * t" using dp2 by simp
+  have dle2: "s * p div t \<le> p * t div t" by (rule div_le_mono[OF dm2])
+  have hd2: "p * t div t = p" using tpos by (simp add: div_mult_self1)
+  have dle: "s * p div t \<le> p" using dle2 hd2 by presburger
+  show ?thesis using dle regb by arith
+qed
+
+lemma lp_ok_keyremove:
+  assumes ok: "lp_ok e" and ap: "apply_op (LpKeyRemove k u s) e = Some e'"
+  shows "lp_ok e'"
+proof -
+  obtain v where v: "v = s * pools e k div totals e k"
+    and g: "0 < s" "s \<le> books e k u" "0 < v" "v \<le> reserve e"
+    and eq: "e' = e\<lparr>reserve := reserve e - v
+                          , pools := (pools e)(k := pools e k - v)
+                          , totals := (totals e)(k := totals e k - s)
+                          , books := (books e)(k := (books e k)(u := books e k u - s))
+                          , outflow := outflow e + v\<rparr>"
+    using ap by (auto simp: apply_op.simps Let_def split: if_splits)
+  (* guard consequences *)
+  have T0: "totals e k \<noteq> 0"
+  proof
+    assume Tz: "totals e k = 0"
+    hence "s * pools e k div totals e k = 0" by simp
+    thus False using g(3) v by simp
+  qed
+  hence tpos: "0 < totals e k" by simp
+  have ppos: "0 < pools e k"
+  proof (cases "pools e k = 0")
+    case True
+    hence "totals e k = 0" using ok by (simp add: lp_ok_def)
+    thus ?thesis using T0 by simp
+  next
+    case False
+    thus ?thesis by simp
+  qed
+  have mem: "k \<in> total_support e"
+  proof (rule ccontr)
+    assume nc: "k \<notin> total_support e"
+    hence "pools e k = 0" using support_pools_zero[OF ok] by simp
+    thus False using ppos by simp
+  qed
+  (* sb: s <= totals e k, mirroring the legacy sum.remove argument *)
+  have finb: "finite (book_support e k)" using ok by (simp add: lp_ok_def)
+  have bex: "sum (books e k) (book_support e k) = totals e k"
+    using ok by (simp add: lp_ok_def)
+  have memu: "u \<in> book_support e k" using g(1) g(2) by (auto simp: book_support_def)
+  have f1: "sum (books e k) (book_support e k)
+          = books e k u + sum (books e k) (book_support e k - {u})"
+    using finb memu by (rule sum.remove)
+  have s_le_T: "s \<le> totals e k"
+  proof (cases "books e k u = totals e k")
+    case True
+    thus ?thesis using g(2) by simp
+  next
+    case False
+    have mem': "books e k u < sum (books e k) (book_support e k)"
+      using f1 bex False by simp
+    hence ltT: "books e k u < totals e k" using bex by simp
+    thus ?thesis using g(2) by simp
+  qed
+  (* P2: per-pool backing -- redemption floors (pool <= totals, s <= totals) *)
+  have pp: "pools e k \<le> totals e k" using ok by (simp add: lp_ok_def)
+  have dm: "s * pools e k \<le> totals e k * pools e k"
+    by (rule mult_le_mono1[OF s_le_T])
+  have d1: "s * pools e k div totals e k \<le> totals e k * pools e k div totals e k"
+    by (rule div_le_mono[OF dm])
+  have d2: "totals e k * pools e k div totals e k = pools e k"
+    using tpos by (simp add: div_mult_self1)
+  have vle: "v \<le> pools e k" using d1 d2 v by simp
+  have corner: "pools e k \<le> v \<Longrightarrow> totals e k \<le> s"
+  proof -
+    assume pv: "pools e k \<le> v"
+    have pe: "s * pools e k div totals e k = v" using v by simp
+    have ge: "pools e k \<le> s * pools e k div totals e k" using pv pe by simp
+    have step1: "pools e k * totals e k
+               \<le> (s * pools e k div totals e k) * totals e k"
+      by (rule mult_le_mono1[OF ge])
+    have dm: "s * pools e k = (s * pools e k div totals e k) * totals e k
+                            + s * pools e k mod totals e k"
+      by (simp add: div_mult_mod_eq)
+    have step2: "pools e k * totals e k \<le> s * pools e k"
+      using step1 dm by arith
+    show "totals e k \<le> s"
+    proof (rule ccontr)
+      assume nc: "\<not> totals e k \<le> s"
+      hence lt: "s < totals e k" by simp
+      have "pools e k * s < pools e k * totals e k"
+        using ppos lt by (simp add: mult_less_cancel2)
+      thus False using step2 by simp
+    qed
+  qed
+  have P2: "pools e k - v \<le> totals e k - s"
+  proof (cases "pools e k \<le> v")
+    case True
+    hence "totals e k \<le> s" using corner by simp
+    thus ?thesis using True by arith
+  next
+    case False
+    have pfb: "pools e k - s * pools e k div totals e k \<le> totals e k - s"
+      by (rule div_payout_floor[OF pp s_le_T tpos])
+    thus ?thesis using v by simp
+  qed
+  (* P1: pooled slice shrinks exactly with the reserve *)
+  have bsub: "sum (pools e) (total_support e) - v
+            = sum ((pools e)(k := pools e k - v)) (total_support e)"
+    using key_support_bridge_sub[OF ok mem vle] .
+  have sup_le: "sum (pools e) (total_support e) \<le> reserve e"
+    using ok by (simp add: lp_ok_def)
+  have joint: "lp_pool e + sum (pools e) (total_support e) \<le> reserve e"
+    using ok by (simp add: lp_ok_def)
+  have P1a: "sum ((pools e)(k := pools e k - v)) (total_support e)
+           \<le> reserve e - v"
+    using bsub[symmetric] sup_le g(4) by arith
+  have Ssum: "sum (pools e') (total_support e')
+            = sum ((pools e)(k := pools e k - v)) (total_support e)"
+  proof (cases "totals e k = s")
+    case True
+    have tzs: "totals e k = s" using True .
+    have veq: "v = pools e k" using tzs tpos g(1) v by (simp add: div_mult_self1)
+    have pzk: "pools e' k = 0" using eq veq by simp
+    have finS: "finite (total_support e)"
+      using ok by (simp add: lp_ok_def total_support_def)
+    have supp: "total_support e' = total_support e - {k}"
+    proof (rule set_eqI)
+      fix j
+      show "j \<in> total_support e' \<longleftrightarrow> j \<in> total_support e - {k}"
+      proof (cases "j = k")
+        case True
+        thus ?thesis using eq tzs ok by (simp add: total_support_def lp_ok_def)
+      next
+        case False
+        thus ?thesis using eq ok by (simp add: total_support_def lp_ok_def)
+      qed
+    qed
+    have e3: "sum (pools e') (total_support e - {k})
+            = sum (pools e') (total_support e)"
+      by (rule sum.mono_neutral_left[OF finS]) (auto simp: pzk)
+    have e4t: "sum (pools e') (total_support e)
+             = sum ((pools e)(k := pools e k - v)) (total_support e)"
+      by (simp add: eq)
+    show ?thesis using supp e3 e4t by simp
+  next
+    case False
+    have tp2: "0 < totals e k - s" using False s_le_T by simp
+    have supp: "total_support e' = total_support e"
+    proof (rule set_eqI)
+      fix j
+      show "j \<in> total_support e' \<longleftrightarrow> j \<in> total_support e"
+      proof (cases "j = k")
+        case True
+        thus ?thesis using eq tp2 ok tpos by (simp add: total_support_def lp_ok_def)
+      next
+        case False
+        thus ?thesis using eq ok by (simp add: total_support_def lp_ok_def)
+      qed
+    qed
+    have e4: "sum (pools e') (total_support e)
+            = sum ((pools e)(k := pools e k - v)) (total_support e)"
+      by (simp add: eq)
+    show ?thesis using supp e4 by simp
+  qed
+  have r': "reserve e' = reserve e - v" unfolding eq by simp
+  have P1: "sum (pools e') (total_support e') \<le> reserve e'"
+    using Ssum P1a r' by arith
+  have finS2: "finite (total_support e)"
+    using ok by (simp add: lp_ok_def total_support_def)
+  have vk: "pools e k \<le> sum (pools e) (total_support e)"
+    using finS2 mem by (simp add: sum.remove)
+  have vle2: "v \<le> sum (pools e) (total_support e)"
+    using v d1 d2 vk by arith
+  have J2: "lp_pool e + sum ((pools e)(k := pools e k - v)) (total_support e)
+          \<le> reserve e - v"
+  proof -
+    have r1: "lp_pool e + sum ((pools e)(k := pools e k - v)) (total_support e)
+            = lp_pool e + (sum (pools e) (total_support e) - v)"
+      using bsub[symmetric] by simp
+    have r2: "lp_pool e + (sum (pools e) (total_support e) - v)
+            = lp_pool e + sum (pools e) (total_support e) - v" using vle2 by simp
+    show ?thesis using r1 r2 joint by arith
+  qed
+  have lp': "lp_pool e' = lp_pool e" unfolding eq by simp
+  have r'v: "reserve e' = reserve e - v" unfolding eq by simp
+  have Jf: "lp_pool e' + sum (pools e') (total_support e') \<le> reserve e'"
+    using J2 Ssum lp' r'v by arith
+  (* P3: book sum drops exactly by s *)
+  have e2: "sum (books e k) (book_support e k) - s
+          = sum ((books e k)(u := books e k u - s)) (book_support e k)"
+    using g(2) by (rule book_support_bridge_sub[OF finb memu])
+  (* zero-iff survives the burn: totals k - s vanishes exactly when
+     pools k - v does (payout floor tracks the burn) *)
+  have zsync: "(totals e k - s = 0) = (pools e k - v = 0)"
+  proof (cases "totals e k \<le> s")
+    case True
+    have tp: "totals e k * pools e k \<le> s * pools e k"
+      by (rule mult_le_mono1[OF True])
+    have dv: "totals e k * pools e k div totals e k
+            \<le> s * pools e k div totals e k"
+      by (rule div_le_mono[OF tp])
+    have pv: "pools e k \<le> v" using tp dv d2 v by simp
+    show ?thesis using True pv corner by simp
+  next
+    case False
+    have dm: "totals e k * v \<le> s * pools e k"
+      using v by simp
+    have lt: "s * pools e k < pools e k * totals e k"
+      using False g ppos by (simp add: mult_less_cancel2)
+    have vlt: "v < pools e k"
+    proof -
+      have ch: "totals e k * v < pools e k * totals e k"
+        by (rule le_less_trans[OF dm lt])
+      show ?thesis using ch ppos by (simp add: mult_less_cancel1)
+    qed
+    show ?thesis using False vlt vle by simp
+  qed
+  (* support of the book may shed u only when its holding drops to zero;
+     in either case the sum over the NEW support equals the same value *)
+  have P3: "sum (books e' k) (book_support e' k) = totals e' k"
+  proof (cases "books e k u - s = 0")
+    case True
+    have e3: "book_support e' k = book_support e k - {u}"
+      unfolding eq book_support_def True using memu
+      by (auto simp: book_support_def)
+    have ex: "sum (books e k) (book_support e k) = totals e k"
+      using ok by (simp add: lp_ok_def)
+    have rm: "sum (books e k) (book_support e k)
+            = books e k u + sum (books e k) (book_support e k - {u})"
+      using finb memu by (rule sum.remove)
+    have bus: "books e k u = s" using True g(2) by arith
+    have cg: "sum ((books e k)(u := books e k u - s)) (book_support e k - {u})
+            = sum (books e k) (book_support e k - {u})"
+      by (rule sum.cong) auto
+    have stepA: "sum ((books e k)(u := books e k u - s)) (book_support e k - {u})
+               = totals e k - s"
+      using ex rm bus cg by arith
+    have stepB: "sum ((books e k)(u := books e k u - s)) (book_support e' k)
+               = sum ((books e k)(u := books e k u - s)) (book_support e k - {u})"
+      using e3 by simp
+    show ?thesis using stepA stepB unfolding eq by simp
+  next
+    case False
+    have e3: "book_support e' k = book_support e k"
+      unfolding eq book_support_def using memu False
+      by (auto simp: book_support_def)
+    have ex: "sum (books e k) (book_support e k) = totals e k"
+      using ok by (simp add: lp_ok_def)
+    have final: "sum ((books e k)(u := books e k u - s)) (book_support e k)
+               = totals e k - s"
+      using ex e2 by arith
+    show ?thesis using e3 final unfolding eq by simp
+  qed
+  have P4: "finite (total_support e')"
+  proof -
+    have fin4: "finite {x. totals e x > 0}"
+      using ok by (simp add: lp_ok_def total_support_def)
+    have base: "finite {x. ((totals e)(k := totals e k - s)) x > 0}"
+      by (rule support_upd_finite[OF fin4])
+    have fnz: "total_support (e\<lparr>reserve := reserve e - v
+                          , pools := (pools e)(k := pools e k - v)
+                          , totals := (totals e)(k := totals e k - s)
+                          , books := (books e)(k := (books e k)(u := books e k u - s))
+                          , outflow := outflow e + v\<rparr>)
+             = {x. ((totals e)(k := totals e k - s)) x > 0}"
+      by (simp add: total_support_def)
+    have t1: "finite (total_support (e\<lparr>reserve := reserve e - v
+                          , pools := (pools e)(k := pools e k - v)
+                          , totals := (totals e)(k := totals e k - s)
+                          , books := (books e)(k := (books e k)(u := books e k u - s))
+                          , outflow := outflow e + v\<rparr>))"
+      using fnz base by arith
+    show ?thesis unfolding eq by (rule t1)
+  qed
+  have P5: "\<And>j. finite (book_support e' j)"
+  proof -
+    fix j
+    show "finite (book_support e' j)"
+    proof (cases "j = k")
+      case True
+      have fin: "finite (book_support e k)" using ok by (simp add: lp_ok_def)
+      have sub: "book_support e' j \<subseteq> insert u (book_support e j)"
+        unfolding eq book_support_def True by auto
+      have fin2: "finite (insert u (book_support e j))" using fin True by simp
+      show ?thesis by (rule finite_subset[OF sub fin2])
+    next
+      case False
+      have bs: "book_support e' j = book_support e j"
+        using eq False by (simp add: book_support_def)
+      show ?thesis unfolding bs using ok by (simp add: lp_ok_def)
+    qed
+  qed
+  show ?thesis using P1 Jf P2 P3 P4 P5 zsync ok eq
+    by (auto simp: lp_ok_def book_support_def lp_holders_def)
 qed
 
 theorem one_op_lp:
@@ -1112,6 +2065,18 @@ next
 next
   case (LpRemove u s)
   show ?thesis using assms(1) assms(2) LpRemove lp_ok_lpremove by blast
+next
+  case (PoolOpen k)
+  show ?thesis using assms(1) assms(2) PoolOpen lp_ok_poolopen by blast
+next
+  case (PoolClose k)
+  show ?thesis using assms(1) assms(2) PoolClose lp_ok_poolclose by blast
+next
+  case (LpKeyOpen k u a)
+  show ?thesis using assms(1) assms(2) LpKeyOpen lp_ok_keyopen by blast
+next
+  case (LpKeyRemove k u s)
+  show ?thesis using assms(1) assms(2) LpKeyRemove lp_ok_keyremove by blast
 qed
 
 text \<open>Sequence lift for the share ledger, mirroring seq_ok.\<close>
@@ -1142,7 +2107,9 @@ qed
 theorem one_op_ok:
   assumes "escrow_ok e" "apply_op op e = Some e'"
   shows "escrow_ok e'"
-  using assms by (cases op; blast intro: deposit_ok withdraw_ok swapin_ok swapout_ok lpopen_ok lpremove_ok)
+  using assms by (cases op; blast intro: deposit_ok withdraw_ok swapin_ok
+    swapout_ok lpopen_ok lpremove_ok ok_poolopen ok_poolclose
+    ok_lpkeyopen ok_lpkeyremove)
 
 theorem seq_ok:
   assumes "escrow_ok e" "apply_seq ops e = Some e'"

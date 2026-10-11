@@ -5,6 +5,8 @@
 ;; Executed theorem: reachable_conservation — after every step,
 ;;   sum(e:bal:*) + e:reserve == e:in - e:out   (no hypotheses).
 ;; Keys ("e:...") are wire format — do NOT rename.
+;; Keyed layer (additive; legacy keys = default pool): e:key:<k>,
+;;   e:pool:<k>:{lp,supply}, e:shares:<k>:<u>, e:lp_total.
 (define (sput k v) (near/storage_set k v))
 (define (sget k d) (default (near/storage_get k) d))
 (define (fail m) (near/log m) (near/abort m))
@@ -17,6 +19,10 @@
 (define (debit u a)
   (if (ult (bal u) a) (fail "ERR_FUNDS") "ok")
   (sput (str-cat "e:bal:" u) (sub (bal u) a)))
+(define (kpool k) (sget (str-cat "e:pool:" (str-cat k ":lp")) "0"))
+(define (ksupply k) (sget (str-cat "e:pool:" (str-cat k ":supply")) "0"))
+(define (kshares k u)
+  (sget (str-cat "e:shares:" (str-cat k (str-cat ":" u))) "0"))
 
 ;; theory Deposit u a (guard 0 < a): single-hop credit, caller attaches.
 (define (deposit)
@@ -68,14 +74,15 @@
       (sput "e:reserve" (add (sget "e:reserve" "0") a))
       (near/return (sget "e:reserve" "0")))))
 
-;; theory SwapOut u a (guard 0 < a & a <= reserve - lp_pool): the LP slice
-;; of the reserve is protected — swap flow can only touch the free float.
+;; theory SwapOut u a (guard 0 < a & a <= reserve - (lp_pool + lp_total)):
+;; the LP slices — default pool AND every keyed pool (e:lp_total) — are
+;; protected; swap flow can only touch the free float.
 (define (swap_out)
   (let* ((a (default (near/json_get_str "amount") "0"))
          (u (near/predecessor_account_id)))
     (begin
       (if (u128/eq a "0") (fail "ERR_ZERO") "ok")
-      (if (ult (sub (sget "e:reserve" "0") (sget "e:lp_pool" "0")) a) (fail "ERR_RESERVE") "ok")
+      (if (ult (sub (sget "e:reserve" "0") (add (sget "e:lp_pool" "0") (sget "e:lp_total" "0"))) a) (fail "ERR_RESERVE") "ok")
       (sput "e:reserve" (sub (sget "e:reserve" "0") a))
       (credit u a)
       (near/return (bal u)))))
@@ -122,6 +129,77 @@
       (near/log (str-cat "lp_remove u=" (str-cat u (str-cat " s=" (str-cat s (str-cat " v=" v))))))
       (near/return v))))
 
+;; theory PoolOpen k (guard k notin keys): register a fresh pool key.
+;; Pure registry — pools/supply read 0 by default; the ledger is keyed.
+;; The empty key is refused at the wire (theory is silent on key shape).
+(define (pool_open)
+  (let* ((k (default (near/json_get_str "key") "")))
+    (begin
+      (if (= k "") (fail "ERR_KEY") "ok")
+      (if (= (sget (str-cat "e:key:" k) "0") "1") (fail "ERR_EXISTS") "ok")
+      (sput (str-cat "e:key:" k) "1")
+      (near/log (str-cat "pool_open k=" k))
+      (near/return k))))
+
+;; theory PoolClose k (guard k in keys & pool[k] = 0 & supply[k] = 0):
+;; a close can never orphan shares — empty pools only.
+(define (pool_close)
+  (let* ((k (default (near/json_get_str "key") "")))
+    (begin
+      (if (= (sget (str-cat "e:key:" k) "0") "1") "ok" (fail "ERR_NOKEY"))
+      (if (= (kpool k) "0") "ok" (fail "ERR_NOTEMPTY"))
+      (if (= (ksupply k) "0") "ok" (fail "ERR_NOTEMPTY"))
+      (sput (str-cat "e:key:" k) "0")
+      (near/log (str-cat "pool_close k=" k))
+      (near/return k))))
+
+;; theory LpKeyOpen k u a (guard 0 < a & a <= bal[u] & 0 < m): credits
+;; join keyed pool k at the current ratio; fresh pool mints 1:1.
+;; e:lp_total bumps by a — swap_out reads it, no storage enumeration.
+(define (lp_key_open)
+  (let* ((k (default (near/json_get_str "key") ""))
+         (a (default (near/json_get_str "amount") "0"))
+         (u (near/predecessor_account_id))
+         (pk (kpool k))
+         (tk (ksupply k))
+         (m (if (= pk "0") a (u128/muldiv a tk pk))))
+    (begin
+      (if (u128/eq a "0") (fail "ERR_ZERO") "ok")
+      (if (ult (bal u) a) (fail "ERR_FUNDS") "ok")
+      (if (u128/eq m "0") (fail "ERR_ZERO_MINT") "ok")
+      (debit u a)
+      (sput "e:reserve" (add (sget "e:reserve" "0") a))
+      (sput (str-cat "e:pool:" (str-cat k ":lp")) (add pk a))
+      (sput (str-cat "e:pool:" (str-cat k ":supply")) (add tk m))
+      (sput (str-cat "e:shares:" (str-cat k (str-cat ":" u))) (add (kshares k u) m))
+      (sput "e:lp_total" (add (sget "e:lp_total" "0") a))
+      (near/log (str-cat "lp_key_open k=" (str-cat k (str-cat " u=" (str-cat u (str-cat " a=" (str-cat a (str-cat " m=" m))))))))
+      (near/return m))))
+
+;; theory LpKeyRemove k u s (guard 0 < s & s <= shares[k][u] & 0 < v &
+;; v <= reserve): burn pool-k shares, redeem v = s*pool[k]/supply[k]
+;; (floors, never overpays); ledger arg — outflow bumps. e:lp_total -v.
+(define (lp_key_remove)
+  (let* ((k (default (near/json_get_str "key") ""))
+         (s (default (near/json_get_str "amount") "0"))
+         (u (near/predecessor_account_id))
+         (pk (kpool k))
+         (tk (ksupply k))
+         (v (u128/muldiv s pk tk)))
+    (begin
+      (if (u128/eq s "0") (fail "ERR_ZERO") "ok")
+      (if (ult (kshares k u) s) (fail "ERR_SHARES") "ok")
+      (if (u128/eq v "0") (fail "ERR_ZERO_PAYOUT") "ok")
+      (if (ult (sget "e:reserve" "0") v) (fail "ERR_RESERVE") "ok")
+      (sput "e:reserve" (sub (sget "e:reserve" "0") v))
+      (sput (str-cat "e:pool:" (str-cat k ":lp")) (sub pk v))
+      (sput (str-cat "e:pool:" (str-cat k ":supply")) (sub tk s))
+      (sput (str-cat "e:shares:" (str-cat k (str-cat ":" u))) (sub (kshares k u) s))
+      (sput "e:lp_total" (sub (sget "e:lp_total" "0") v))
+      (sput "e:out" (add (sget "e:out" "0") v))
+      (near/log (str-cat "lp_key_remove k=" (str-cat k (str-cat " u=" (str-cat u (str-cat " s=" (str-cat s (str-cat " v=" v))))))))
+      (near/return v))))
+
 ;; views: storage ground truth for scenario asserts (paid:/left: convention).
 (define (get_balance) (near/return (bal (near/predecessor_account_id))))
 (define (get_balance_of)
@@ -133,6 +211,16 @@
 (define (get_supply) (near/return (sget "e:supply" "0")))
 (define (get_shares_of)
   (near/return (shares (default (near/json_get_str "account") ""))))
+(define (has_pool)
+  (near/return (sget (str-cat "e:key:" (default (near/json_get_str "key") "")) "0")))
+(define (get_pool_of)
+  (near/return (kpool (default (near/json_get_str "key") ""))))
+(define (get_pool_supply_of)
+  (near/return (ksupply (default (near/json_get_str "key") ""))))
+(define (get_pool_shares_of)
+  (near/return (kshares (default (near/json_get_str "key") "")
+                        (default (near/json_get_str "account") ""))))
+(define (get_lp_total) (near/return (sget "e:lp_total" "0")))
 
 (export "deposit" deposit)
 (export "ft_on_transfer" ft_on_transfer)
@@ -141,6 +229,10 @@
 (export "swap_out" swap_out)
 (export "lp_open" lp_open)
 (export "lp_remove" lp_remove)
+(export "pool_open" pool_open)
+(export "pool_close" pool_close)
+(export "lp_key_open" lp_key_open)
+(export "lp_key_remove" lp_key_remove)
 (export "get_balance" get_balance)
 (export "get_balance_of" get_balance_of)
 (export "get_reserve" get_reserve)
@@ -149,3 +241,8 @@
 (export "get_lp_pool" get_lp_pool)
 (export "get_supply" get_supply)
 (export "get_shares_of" get_shares_of)
+(export "has_pool" has_pool)
+(export "get_pool_of" get_pool_of)
+(export "get_pool_supply_of" get_pool_supply_of)
+(export "get_pool_shares_of" get_pool_shares_of)
+(export "get_lp_total" get_lp_total)

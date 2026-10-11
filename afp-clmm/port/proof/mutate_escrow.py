@@ -39,9 +39,9 @@ SCEN_LP = os.path.join(HERE, "scenarios", "lisp", "lp-ledger")
 
 T1 = ('      (debit u a)\n      (sput "e:reserve"',
       '      ;; MUTANT T1: debit removed\n      (sput "e:reserve"')
-T2 = ('      (if (ult (sub (sget "e:reserve" "0") (sget "e:lp_pool" "0")) a) (fail "ERR_RESERVE") "ok")\n'
+T2 = ('      (if (ult (sub (sget "e:reserve" "0") (add (sget "e:lp_pool" "0") (sget "e:lp_total" "0"))) a) (fail "ERR_RESERVE") "ok")\n'
       '      (sput "e:reserve" (sub (sget "e:reserve" "0") a))',
-      '      ;; MUTANT T2: reserve guard removed\n'
+      '      ;; MUTANT T2: reserve guard removed (lp_pool + lp_total unprotected)\n'
       '      (sput "e:reserve" (sub (sget "e:reserve" "0") a))')
 T3 = ('      (sput "e:in" (add (sget "e:in" "0") a))\n'
       '      (near/log (str-cat "deposit u="',
@@ -59,8 +59,8 @@ def build_mutant(name, old, new):
     p = os.path.join(MUT, "src", "main.lisp")
     src = open(p).read()
     if old not in src:
-        print(f"SKIP {name}: pattern not found (generator drifted — fix gate)")
-        return False
+        print(f"DIE {name}: pattern not found (generator drifted — fix gate)")
+        sys.exit(2)
     open(p, "w").write(src.replace(old, new, 1))
     r = sp.run([NC, "build", "."], cwd=MUT, capture_output=True, text=True)
     if r.returncode != 0:
