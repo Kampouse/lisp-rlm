@@ -9,4 +9,5 @@ session "CLMM_Escrow" = "Concentrated_Liquidity_Market_Making_Operations" +
   (* quick_and_dirty removed 2026-10-10: the former 6-sorry skeleton is fully
      discharged; from here on any `sorry` FAILS the build. *)
   theories
+    CLMM_Saturation
     CLMM_Escrow
