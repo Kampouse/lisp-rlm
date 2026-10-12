@@ -49,3 +49,4 @@ afp-clmm/port/**/*.wasm
 afp-clmm/port/**/*.stamp
 afp-clmm/port/**/state.bin
 afp-clmm/port/ts-scen/
+tests/scenarios/state.bin
