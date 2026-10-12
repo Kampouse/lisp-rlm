@@ -49,10 +49,45 @@ proof -
   then show ?thesis by (rule div_le_mono)
 qed
 
+text \<open>Canonical split workhorse: dividing X + Y across s costs at
+most one scale unit over dividing the parts separately. All other
+split lemmas (growth_add, accrue_step_slack) derive from this one.\<close>
+lemma div_add_slack:
+  fixes X Y s :: nat
+  assumes "1 \<le> s"
+  shows "X div s + Y div s \<le> (X + Y) div s + 1"
+proof (rule ccontr)
+  have r1: "X div s * s + X mod s = X" by simp
+  have r2: "Y div s * s + Y mod s = Y" by simp
+  have r3: "(X + Y) div s * s + (X + Y) mod s = X + Y" by simp
+  have m1: "X mod s < s" using assms by simp
+  have m2: "Y mod s < s" using assms by simp
+  have m3: "(X + Y) mod s < s" using assms by simp
+  have eq: "X div s * s + Y div s * s + (X mod s + Y mod s)
+      = (X + Y) div s * s + (X + Y) mod s"
+    using r1 r2 r3 by arith
+  have up: "X div s * s + Y div s * s + (X mod s + Y mod s)
+      < (X + Y) div s * s + 2 * s"
+    using eq m3 by arith
+  have up2: "X div s * s + Y div s * s < (X + Y) div s * s + 2 * s"
+    using up m1 m2 by arith
+  assume "\<not> X div s + Y div s \<le> (X + Y) div s + 1"
+  then have cc: "(X + Y) div s + 2 \<le> X div s + Y div s" by arith
+  have step1: "((X + Y) div s + 2) * s \<le> (X div s + Y div s) * s"
+    by (rule mult_le_mono [OF cc le_refl])
+  have cc2: "(X + Y) div s * s + 2 * s \<le> X div s * s + Y div s * s"
+    using step1 by (simp add: distrib_right)
+  show False using cc2 up2 by arith
+qed
 lemma sat_div_add_bound:
   fixes a g :: nat
   shows "(a + g) div 2^64 \<le> a div 2^64 + g div 2^64 + 1"
-  by (arith | simp | fastforce)
+proof -
+  have one: "1 \<le> (2^64::nat)" by simp
+  then have "a div 2^64 + g div 2^64 \<le> (a + g) div 2^64 + 1"
+    by (rule div_add_slack [where X = a and Y = g and s = "2^64::nat"])
+  then show ?thesis by simp
+qed
 
 lemma sat_low_word:
   fixes x :: nat
@@ -83,37 +118,13 @@ lemma growth_add:
   fixes g c L s :: nat
   assumes "c \<le> g" and "1 \<le> s"
   shows "(g - c) * L div s + c * L div s \<le> g * L div s + 1"
-proof (rule ccontr)
-  have d1: "g - c + c = g" using assms(1) by simp
-  have t1: "(g - c) * L + c * L = (g - c + c) * L"
-    by (simp add: distrib_right [symmetric])
-  have tot: "(g - c) * L + c * L = g * L" using t1 d1 by simp
-  have r1: "(g - c) * L div s * s + (g - c) * L mod s = (g - c) * L" by simp
-  have r2: "c * L div s * s + c * L mod s = c * L" by simp
-  have r3: "g * L div s * s + g * L mod s = g * L" by simp
-  have m1: "(g - c) * L mod s < s" using assms(2) by simp
-  have m2: "c * L mod s < s" using assms(2) by simp
-  have m3: "g * L mod s < s" using assms(2) by simp
-  have eq: "(g - c) * L div s * s + c * L div s * s
-        + ((g - c) * L mod s + c * L mod s)
-      = g * L div s * s + g * L mod s"
-    using r1 r2 r3 tot by arith
-  have up: "(g - c) * L div s * s + c * L div s * s
-        + ((g - c) * L mod s + c * L mod s)
-      < g * L div s * s + 2 * s"
-    using eq m3 by arith
-  have up2: "(g - c) * L div s * s + c * L div s * s
-      < g * L div s * s + 2 * s"
-    using up m1 m2 by arith
-  assume "\<not> (g - c) * L div s + c * L div s \<le> g * L div s + 1"
-  then have cc: "g * L div s + 2 \<le> (g - c) * L div s + c * L div s" by arith
-  have step1: "(g * L div s + 2) * s
-      \<le> ((g - c) * L div s + c * L div s) * s"
-    by (rule mult_le_mono [OF cc le_refl])
-  have cc2: "g * L div s * s + 2 * s
-      \<le> (g - c) * L div s * s + c * L div s * s"
-    using step1 by (simp add: distrib_right)
-  show False using cc2 up2 by arith
+proof -
+  have sum: "(g - c) * L + c * L = g * L"
+    using assms(1) by (simp add: distrib_right [symmetric])
+  have work: "(g - c) * L div s + c * L div s
+      \<le> ((g - c) * L + c * L) div s + 1"
+    using assms(2) by (rule div_add_slack)
+  show ?thesis using work sum by simp
 qed
 
 text \<open>A3: ceil-fee rounding costs at most one scale unit (pool-favored
@@ -149,6 +160,87 @@ proof -
   have "wrap_diff g c \<le> g + 2^128" using assms by (rule wrap_diff_le)
   then have "wrap_diff g c * L \<le> (g + 2^128) * L" by (rule mult_le_mono1)
   then show ?thesis by (rule div_le_mono)
+qed
+
+section \<open>Layer 2: fee-growth accrual over op sequences\<close>
+
+text \<open>The accrue fold threads the checkpoint through a sorted op list:\
+ each op adds (g_i - prev_checkpoint) * L div 2^64 (FlowX owed kernel).\
+ The sequence bound composes growth_add across ops: per-position owed\
+ over a sequence is at most the total-growth accrual plus one\
+ truncation unit per op -- the machine-arithmetic form of the layer-2\
+ fee-growth question sketched in CLMM_Dynamic.thy.\<close>
+
+fun accrue :: "nat \<Rightarrow> nat \<Rightarrow> nat list \<Rightarrow> nat" where
+  "accrue L _ [] = 0"
+| "accrue L c (g # gs) = (g - c) * L div 2^64 + accrue L g gs"
+
+text \<open>Workhorse: splitting a quantity across div costs at most one
+scale unit.\<close>
+
+lemma accrue_step_slack:
+  fixes L g g' c s :: nat
+  assumes "c \<le> g" and "g \<le> g'" and "1 \<le> s"
+  shows "(g - c) * L div s + (g' - g) * L div s \<le> (g' - c) * L div s + 1"
+proof -
+  have sum: "(g - c) * L + (g' - g) * L = (g' - c) * L"
+    using assms by (simp add: distrib_right [symmetric])
+  have work: "(g - c) * L div s + (g' - g) * L div s
+      \<le> ((g - c) * L + (g' - g) * L) div s + 1"
+    using assms(3) by (rule div_add_slack)
+  show ?thesis using work sum by simp
+qed
+
+lemma sorted_hd_le_last:
+  fixes xs :: "nat list"
+  assumes "sorted (x # xs)"
+  shows "x \<le> last (x # xs)"
+  using assms
+proof (induction xs arbitrary: x)
+  case Nil
+  then show ?case by simp
+next
+  case (Cons y ys)
+  have xy: "x \<le> y" using Cons.prems by (auto simp add: sorted_simps)
+  have srt: "sorted (y # ys)" using Cons.prems by (auto simp add: sorted_simps)
+  have lasteq: "last (x # y # ys) = last (y # ys)" by (simp add: last_ConsR)
+  show ?case using xy Cons.IH [OF srt] lasteq by arith
+qed
+
+text \<open>Main bound: no tail case split.\<close>
+lemma accrue_bound:
+  "sorted (c # gs) \<Longrightarrow>
+    accrue L c gs \<le> (last (c # gs) - c) * L div 2^64 + length gs"
+proof (induction gs arbitrary: c)
+  case Nil
+  then show ?case by simp
+next
+  case (Cons g gs)
+  have c1: "c \<le> g" using Cons.prems by (auto simp add: sorted_simps)
+  have s2: "sorted (g # gs)" using Cons.prems by (auto simp add: sorted_simps)
+  have g2: "g \<le> last (g # gs)" using s2 by (rule sorted_hd_le_last)
+  have ih: "accrue L g gs \<le> (last (g # gs) - g) * L div 2^64 + length gs"
+    using Cons.IH [OF s2] .
+  have unfold: "accrue L c (g # gs)
+      = (g - c) * L div 2^64 + accrue L g gs" by simp
+  have lasteq: "last (c # g # gs) = last (g # gs)" by (simp add: last_ConsR)
+  have step: "(g - c) * L div 2^64 + (last (g # gs) - g) * L div 2^64
+      \<le> (last (g # gs) - c) * L div 2^64 + 1"
+  proof (rule accrue_step_slack
+      [where L = L and g = g and g' = "last (g # gs)" and c = c and s = "2^64::nat"])
+    show "c \<le> g" using c1 .
+    show "g \<le> last (g # gs)" using g2 .
+    show "1 \<le> (2^64::nat)" by simp
+  qed
+  have lensimp: "length (g # gs) = Suc (length gs)" by simp
+  have t2: "accrue L c (g # gs)
+      \<le> (g - c) * L div 2^64
+        + (last (g # gs) - g) * L div 2^64 + length gs"
+    using unfold ih by simp
+  have t3: "accrue L c (g # gs)
+      \<le> (last (g # gs) - c) * L div 2^64 + 1 + length gs"
+    using t2 step by arith
+  show ?case using t3 lasteq lensimp by simp
 qed
 
 end
