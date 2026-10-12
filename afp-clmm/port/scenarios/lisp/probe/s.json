@@ -1,356 +1,400 @@
 {
-  "name": "probe-v3",
-  "manifest": "probe.test.near=../../../contracts/probe/probe/target/probe.wasm",
-  "steps": [
-    {
-      "method": "q1",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "xs": "a,b,c"
-      },
-      "expect": "3"
-    },
-    {
-      "method": "q2",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "xs": "a,b,c",
-        "ys": "d,e,f"
-      },
-      "expect": "4"
-    },
-    {
-      "method": "q3",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "xs": "a,b,c",
-        "ys": "d,e,f"
-      },
-      "expect": "4"
-    },
-    {
-      "method": "q4",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {},
-      "expect": "4"
-    },
-    {
-      "method": "q5",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {},
-      "expect": "4"
-    },
-    {
-      "method": "q6",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "gs": "a,b,c",
-        "ls": "x,y,z"
-      },
-      "expect": "3"
-    },
-    {
-      "method": "q7",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "xs": "a,b,c",
-        "ys": "d,e,f"
-      },
-      "expect": "a"
-    },
-    {
-      "method": "q10",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "gs": "8,12,28",
-        "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
-      },
-      "expect": "7"
-    },
-    {
-      "method": "q11",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "gs": "8,12,28",
-        "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
-      },
-      "expect": "7"
-    },
-    {
-      "method": "q12",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "gs": "16,32,48",
-        "ls": "2305843009213693952,2305843009213693952,2305843009213693952"
-      },
-      "expect": "12"
-    },
-    {
-      "method": "q13",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {},
-      "expect": "16"
-    },
-    {
-      "method": "q14",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {},
-      "expect": "2"
-    },
-    {
-      "method": "q15",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {},
-      "expect": "2"
-    },
-    {
-      "method": "q16",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {},
-      "expect": "16"
-    },
-    {
-      "method": "q11",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "gs": "28",
-        "ls": "4611686018427387904"
-      },
-      "expect": "7"
-    },
-    {
-      "method": "q11",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "gs": "12,28",
-        "ls": "4611686018427387904,4611686018427387904"
-      },
-      "expect": "7"
-    },
-    {
-      "method": "q11",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "gs": "8,12",
-        "ls": "4611686018427387904,4611686018427387904"
-      },
-      "expect": "3"
-    },
-    {
-      "method": "q11",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "gs": "16,32,48",
-        "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
-      },
-      "expect": "12"
-    },
-    {
-      "method": "q17",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {},
-      "expect": "7"
-    },
-    {
-      "method": "q18",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {},
-      "expect": "7",
-      "contains": [
-        "p:c0=4",
-        "p:c1=4",
-        "p:b1=5"
-      ]
-    },
-    {
-      "method": "q19",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "gs": "8,12,28",
-        "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
-      },
-      "expect": null,
-      "contains": [
-        "p:0c=0",
-        "p:0g=8",
-        "p:0t=2",
-        "p:1c=8",
-        "p:1g=12",
-        "p:1t=1",
-        "p:2c=12",
-        "p:2g=28",
-        "p:2t=4"
-      ]
-    },
-    {
-      "method": "q21",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "gs": "8,12,28",
-        "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
-      },
-      "expect": "7"
-    },
-    {
-      "method": "m1",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {},
-      "expect": "4"
-    },
-    {
-      "method": "m2",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {},
-      "expect": "4"
-    },
-    {
-      "method": "m3",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {},
-      "expect": "8"
-    },
-    {
-      "method": "m4",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {},
-      "expect": "5"
-    },
-    {
-      "method": "m5",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {},
-      "expect": "2"
-    },
-    {
-      "method": "m6",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {},
-      "expect": "4"
-    },
-    {
-      "method": "q13b",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "gs": "8,12,28",
-        "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
-      },
-      "expect": "12"
-    },
-    {
-      "method": "q14b",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "gs": "8,12,28",
-        "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
-      },
-      "expect": "12"
-    },
-    {
-      "method": "q22",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "gs": "8,12,28",
-        "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
-      },
-      "expect": "12",
-      "contains": [
-        "p:0k=8",
-        "p:1k=12",
-        "p:2k=28"
-      ]
-    },
-    {
-      "method": "q23",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "gs": "8,12,28",
-        "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
-      },
-      "expect": "7",
-      "contains": [
-        "p:0x=0",
-        "p:1x=8",
-        "p:2x=12"
-      ]
-    },
-    {
-      "method": "q25",
-      "as": "u.test.near",
-      "contract": "probe.test.near",
-      "attach": "0",
-      "args": {
-        "gs": "8,12,28",
-        "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
-      },
-      "expect": "7",
-      "contains": [
-        "p:k3=8",
-        "p:k3=12"
-      ]
-    }
-  ]
+ "name": "probe-v3",
+ "manifest": "probe.test.near=../../../contracts/probe/probe/target/probe.wasm",
+ "steps": [
+  {
+   "method": "q1",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "xs": "a,b,c"
+   },
+   "expect": "3"
+  },
+  {
+   "method": "q2",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "xs": "a,b,c",
+    "ys": "d,e,f"
+   },
+   "expect": "4"
+  },
+  {
+   "method": "q3",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "xs": "a,b,c",
+    "ys": "d,e,f"
+   },
+   "expect": "4"
+  },
+  {
+   "method": "q4",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "4"
+  },
+  {
+   "method": "q5",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "4"
+  },
+  {
+   "method": "q6",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "gs": "a,b,c",
+    "ls": "x,y,z"
+   },
+   "expect": "3"
+  },
+  {
+   "method": "q7",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "xs": "a,b,c",
+    "ys": "d,e,f"
+   },
+   "expect": "a"
+  },
+  {
+   "method": "q10",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "gs": "8,12,28",
+    "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
+   },
+   "expect": "7"
+  },
+  {
+   "method": "q11",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "gs": "8,12,28",
+    "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
+   },
+   "expect": "7"
+  },
+  {
+   "method": "q12",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "gs": "16,32,48",
+    "ls": "2305843009213693952,2305843009213693952,2305843009213693952"
+   },
+   "expect": "12"
+  },
+  {
+   "method": "q13",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "16"
+  },
+  {
+   "method": "q14",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "2"
+  },
+  {
+   "method": "q15",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "2"
+  },
+  {
+   "method": "q16",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "16"
+  },
+  {
+   "method": "q11",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "gs": "28",
+    "ls": "4611686018427387904"
+   },
+   "expect": "7"
+  },
+  {
+   "method": "q11",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "gs": "12,28",
+    "ls": "4611686018427387904,4611686018427387904"
+   },
+   "expect": "7"
+  },
+  {
+   "method": "q11",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "gs": "8,12",
+    "ls": "4611686018427387904,4611686018427387904"
+   },
+   "expect": "3"
+  },
+  {
+   "method": "q11",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "gs": "16,32,48",
+    "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
+   },
+   "expect": "12"
+  },
+  {
+   "method": "q17",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "7"
+  },
+  {
+   "method": "q18",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "7",
+   "contains": [
+    "p:c0=4",
+    "p:c1=4",
+    "p:b1=5"
+   ]
+  },
+  {
+   "method": "q19",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "gs": "8,12,28",
+    "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
+   },
+   "expect": null,
+   "contains": [
+    "p:0c=0",
+    "p:0g=8",
+    "p:0t=2",
+    "p:1c=8",
+    "p:1g=12",
+    "p:1t=1",
+    "p:2c=12",
+    "p:2g=28",
+    "p:2t=4"
+   ]
+  },
+  {
+   "method": "q21",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "gs": "8,12,28",
+    "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
+   },
+   "expect": "7"
+  },
+  {
+   "method": "m1",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "4"
+  },
+  {
+   "method": "m2",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "4"
+  },
+  {
+   "method": "m3",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "8"
+  },
+  {
+   "method": "m4",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "5"
+  },
+  {
+   "method": "m5",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "2"
+  },
+  {
+   "method": "m6",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "4"
+  },
+  {
+   "method": "q13b",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "gs": "8,12,28",
+    "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
+   },
+   "expect": "12"
+  },
+  {
+   "method": "q14b",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "gs": "8,12,28",
+    "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
+   },
+   "expect": "12"
+  },
+  {
+   "method": "q22",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "gs": "8,12,28",
+    "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
+   },
+   "expect": "12",
+   "contains": [
+    "p:0k=8",
+    "p:1k=12",
+    "p:2k=28"
+   ]
+  },
+  {
+   "method": "q23",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "gs": "8,12,28",
+    "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
+   },
+   "expect": "7",
+   "contains": [
+    "p:0x=0",
+    "p:1x=8",
+    "p:2x=12"
+   ]
+  },
+  {
+   "method": "q25",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "gs": "8,12,28",
+    "ls": "4611686018427387904,4611686018427387904,4611686018427387904"
+   },
+   "expect": "7",
+   "contains": [
+    "p:k3=8",
+    "p:k3=12"
+   ]
+  },
+  {
+   "method": "q26",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "3"
+  },
+  {
+   "method": "q27",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "3"
+  },
+  {
+   "method": "q28",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {},
+   "expect": "3"
+  },
+  {
+   "method": "q29",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "n": "3"
+   },
+   "expect": "6"
+  },
+  {
+   "method": "q30",
+   "as": "u.test.near",
+   "contract": "probe.test.near",
+   "attach": "0",
+   "args": {
+    "n": "3"
+   },
+   "expect": "6"
+  }
+ ]
 }

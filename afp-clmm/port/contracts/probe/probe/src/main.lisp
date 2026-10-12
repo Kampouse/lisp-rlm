@@ -304,3 +304,68 @@
 (export "q22" q22)
 (export "q23" q23)
 (export "q25" q25)
+
+; ===== static-buffer audit probes v2 (2026-10-12) =====
+; Principle: a compile-time (heap_bump) buffer is per-CALL-SITE; any
+; repeated activation of the enclosing function re-writes it, and any
+; result read AFTER a later activation of the same site sees the newer
+; content. Discriminating shape: two productions through one site, both
+; reads deferred (let*) until after both activations, numeric payloads.
+; v1 of these probes was VACUOUS: reads were interleaved with
+; productions (arg-eval order) and payloads were non-numeric, so the
+; sums could not distinguish aliasing. Fixed here.
+; q26 control: dict/get loads a value, allocates nothing -> immune to
+; buffer aliasing by construction. Must stay 3 under any lowering.
+(define (q26)
+  (let* ((d (dict "a" "1" "b" "2")))
+    (near/return (to-string (+ (str->num (dict/get d "a"))
+                               (str->num (dict/get d "b")))))))
+
+; q27 cons kill-shot: pair2 holds ONE static cons site. c1 = ("1"), then
+; c2 = ("2") re-writes the same buffer, THEN both cars read. Correct:
+; 1+2 = 3. Static: car(c1) reads "2" too => 2+2 = 4.
+(define (pair2 x) (cons x nil))
+(define (q27)
+  (let* ((c1 (pair2 "1"))
+         (c2 (pair2 "2")))
+    (near/return (to-string (+ (str->num (car c1))
+                               (str->num (car c2)))))))
+
+; q28 dict/set kill-shot: ext holds ONE static dict/set site. d1 gets
+; {"a":"1"}, then d2 = {"b":"2"} re-writes the same buffer, THEN both
+; gets read. Correct: 1+2 = 3. Static: get(d1 "a") finds nothing => 0,
+; 0+2 = 2.
+(define (ext d) (dict/set d "z" "9"))
+(define (q28)
+  (let* ((d1 (ext (dict "a" "1")))
+         (d2 (ext (dict "b" "2"))))
+    (near/return (to-string (+ (str->num (dict/get d1 "a"))
+                               (str->num (dict/get d2 "b")))))))
+
+(export "q26" q26)
+(export "q27" q27)
+(export "q28" q28)
+
+; q29/q30: RECURSIVE kill-shots (payload varies per activation; the
+; result reference is read AFTER the recursion returns). Correct sum for
+; n=3 is 3+2+1 = 6 (python-pinned n(n+1)/2). If the static per-site
+; buffer aliases across activations, every read sees the LAST
+; activation's payload => 1+1+1 = 3. Exports take NO params — depth
+; arrives via (g "n" ...) per the house input pattern.
+(define (p2 x) (cons x nil))
+(define (q29loop n)
+  (if (= (str->num n) 0) "0"
+      (let* ((c (p2 n))
+             (r (q29loop (to-string (- (str->num n) 1)))))
+        (to-string (+ (str->num (car c)) (str->num r))))))
+(define (q29) (near/return (q29loop (g "n" "3"))))
+(define (e2 v) (dict/set (dict "a" "0") "s" v))
+(define (q30loop n)
+  (if (= (str->num n) 0) "0"
+      (let* ((d (e2 n))
+             (r (q30loop (to-string (- (str->num n) 1)))))
+        (to-string (+ (str->num (dict/get d "s")) (str->num r))))))
+(define (q30) (near/return (q30loop (g "n" "3"))))
+(export "q29" q29)
+(export "q30" q30)
+
