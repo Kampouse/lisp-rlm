@@ -4,4 +4,5 @@ session "CLMM_Dynamic" = "Concentrated_Liquidity_Market_Making_Operations" +
   options [timeout = 600]
   theories
     Aggregate_Book
+    Aggregate_Accrual
     CLMM_Dynamic
