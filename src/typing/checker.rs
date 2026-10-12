@@ -3656,6 +3656,90 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Bare JSON param reads are forbidden (2026-10-12, money safety): a missing
+/// key yields TAG_NIL, which silently flows into downstream math as zero.
+/// Every param read must declare its fallback: `(jsonGetStr("k") ?? fb)` —
+/// lowering wraps it as (default (near/json_get_str "k") fb). Bare reads are
+/// a compile error, not a warning: a defaulted zero-value transfer is worse
+/// than a failed build.
+pub fn check_bare_json_get(exprs: &[LispVal]) {
+    if let Err(msg) = check_bare_json_get_result(exprs) {
+        panic!("{}", msg);
+    }
+}
+
+/// Result-returning variant — used by the compile pipeline so the error is
+/// reported as a normal compile error instead of a deep-stack thread panic
+/// (which would show as opaque `Any { .. }`).
+pub fn check_bare_json_get_result(exprs: &[LispVal]) -> Result<(), String> {
+    const BARE_OPS: [&str; 4] = [
+        "near/json_get_str",
+        "near/json_get_int",
+        "near/json_get_u128",
+        "near/json_get_arr",
+    ];
+
+    fn walk(expr: &LispVal, in_default: bool, errs: &mut Vec<String>) {
+        if let LispVal::List(list) = expr {
+            if !list.is_empty() {
+                if let LispVal::Sym(head) = &list[0] {
+                    if head == "default" {
+                        if list.len() >= 2 {
+                            walk(&list[1], true, errs);
+                        }
+                        if list.len() >= 3 {
+                            walk(&list[2], in_default, errs);
+                        }
+                        for sub in list.iter().skip(3) {
+                            walk(sub, in_default, errs);
+                        }
+                        return;
+                    }
+                    if BARE_OPS.contains(&head.as_str()) && !in_default {
+                        let key = list
+                            .get(1)
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "?".into());
+                        errs.push(format!(
+                            "bare JSON param read `({} {})` — missing keys return nil, not an error; a nil read flows into arithmetic as zero. Declare a fallback: ({} {} ?? fallback), or panic explicitly on miss",
+                            head, key, head, key
+                        ));
+                        return;
+                    }
+                }
+            }
+            for sub in list {
+                walk(sub, in_default, errs);
+            }
+        }
+    }
+
+    let mut errs = Vec::new();
+    for e in exprs {
+        walk(e, false, &mut errs);
+    }
+    if errs.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} bare JSON param read(s) — every param read must have an explicit fallback:\n  {}",
+            errs.len(),
+            errs.join("\n  ")
+        ))
+    }
+}
+
+/// Source-level variant for gates that must run before parsing (money-safety,
+/// 2026-10-12): parse resolved source and check every expression. Panics on
+/// bare `(near/json_get_* "k")` reads — missing keys yield nil→0, which is
+/// unsafe for value-bearing params. Every read needs `(default ... fb)`.
+pub fn check_bare_json_get_source(source: &str) -> Result<(), String> {
+    match crate::parser::parse_all(source) {
+        Ok(exprs) => check_bare_json_get_result(&exprs),
+        Err(_) => Ok(()), // let the normal pipeline report parse errors
+    }
+}
+
 /// Scan all expressions for storage key consistency.
 /// Tracks `(near/storage_write "key" val)` and `(near/store_num key val)` to
 /// build a schema, then warns if reads don't match writes.

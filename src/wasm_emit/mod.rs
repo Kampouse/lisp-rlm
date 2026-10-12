@@ -2073,7 +2073,7 @@ mod json_auto_test {
 
     #[test]
     fn test_json_get_auto_int() {
-        let src = r#"(define (run) (near/json_get_int "price")) (export "run" run true)"#;
+        let src = r#"(define (run) (default (near/json_get_int "price") 0)) (export "run" run true)"#;
         let wat = compile_near_to_wat(src).expect("wat");
         assert!(wat.contains("call"), "should emit host calls");
         eprintln!("INT WAT:\n{}", wat);

@@ -1347,6 +1347,10 @@ fn compile_near_with_map_inner_labelled(
     label: &str,
 ) -> Result<(Vec<u8>, serde_json::Value), String> {
     let resolved = resolve_modules(source, std::path::Path::new("."))?;
+    // Money-safety gate: bare JSON param reads must panic the build, not
+    // silently default to nil→0 downstream (2026-10-12). Runs on the resolved
+    // source so every entrypoint (CLI, tests, CI) gets the same gate.
+    crate::typing::check_bare_json_get_source(&resolved)?;
     let mut em = parse_and_compile_labelled(&resolved, true, label)?;
     if std::env::var("DEBUG_FUNCS").is_ok() {
         eprintln!(
@@ -1457,6 +1461,7 @@ fn compile_near_from_exprs_with_map_inner(
     add_default_run_export(&mut em, &names);
     crate::typing::check_storage_schema(exprs);
     crate::typing::check_set_value_positions(exprs);
+    crate::typing::check_bare_json_get(exprs);
     em.print_gas_table();
 
     let wasm = em.finish("_run");
