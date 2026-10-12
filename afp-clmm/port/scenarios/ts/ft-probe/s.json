@@ -1,0 +1,57 @@
+{
+ "name": "clmm-ft-probe-ts",
+ "manifest": "ft.clmm.test.near=/Users/jean/dev/lisp-rlm/afp-clmm/port/contracts/escrow/ft/ts/target/ft-ts.wasm,escrow.clmm.test.near=/Users/jean/dev/lisp-rlm/afp-clmm/port/contracts/escrow/escrow/ts/target/escrow-ts.wasm",
+ "steps": [
+  {
+   "method": "mint",
+   "as": "trader.test.near",
+   "contract": "ft.clmm.test.near",
+   "attach": "0",
+   "args": {
+    "to": "trader.test.near",
+    "amount": "5000"
+   },
+   "contains": "s:bal:trader.test.near=5000"
+  },
+  {
+   "method": "ft_transfer_call",
+   "as": "trader.test.near",
+   "contract": "ft.clmm.test.near",
+   "attach": "0",
+   "args": {
+    "receiver_id": "escrow.clmm.test.near",
+    "amount": "1000",
+    "msg": "trader.test.near"
+   },
+   "args_contains": "pending"
+  },
+  {
+   "method": "ft_balance_of",
+   "as": "trader.test.near",
+   "contract": "ft.clmm.test.near",
+   "view": true,
+   "args": {
+    "account": "trader.test.near"
+   },
+   "contains": "s:bal:trader.test.near=4000"
+  },
+  {
+   "method": "get_balance_of",
+   "as": "trader.test.near",
+   "contract": "escrow.clmm.test.near",
+   "view": true,
+   "args": {
+    "account": "trader.test.near"
+   },
+   "contains": "e:bal:trader.test.near=1000"
+  },
+  {
+   "method": "get_inflow",
+   "as": "trader.test.near",
+   "contract": "escrow.clmm.test.near",
+   "view": true,
+   "args": {},
+   "contains": "e:in=1000"
+  }
+ ]
+}

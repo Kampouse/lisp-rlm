@@ -10,17 +10,21 @@ Order matters: direct comparison swaps FIRST, split LAST (the splitter's
 callbacks settle around subsequent receipts). Asserts use storage ground
 truth (paid:/left: keys), not logs.
 """
+import os
 import json, os, shutil, subprocess as sp, sys
 
+import os
 import sys as _sys, os as _os; _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(HERE)), "generators"))
+import os
 import gen
 
-NM = "/Users/asil/dev/lisp-rlm/target/release/near-mock"
+NM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "target", "release", "near-mock")
 BASE = HERE
 ACCTS = ("pa", "pb", "pd", "splt", "pc", "pj", "pbref", "pe", "j3l", "j3r")
+import os
 import paths
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(HERE)), "generators"))
 _SCEN_BASE = paths.scen_lisp("_")  # any name: only the dir prefix matters for relpath

@@ -59,6 +59,7 @@ def main():
         with open(os.path.join(d, "s.json"), "w") as f:
             json.dump(sc, f, indent=1)
         r = sp.run([NM, "scenario", "s.json"], cwd=d,
+                   env={**os.environ, "NEAR_MOCK_STATE": os.path.join(d, "state.bin")},
                    capture_output=True, text=True, timeout=300)
         out = r.stdout + r.stderr
         fails = [ln.strip()[:170] for ln in out.splitlines() if "✗" in ln or "❌" in ln]

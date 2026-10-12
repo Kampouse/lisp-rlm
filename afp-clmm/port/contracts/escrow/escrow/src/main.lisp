@@ -125,7 +125,7 @@
       (sput "e:lp_pool" (sub pool v))
       (sput "e:supply" (sub T s))
       (sput (str-cat "e:shares:" u) (sub (shares u) s))
-      (sput "e:out" (add (sget "e:out" "0") v))
+      (credit u v)
       (near/log (str-cat "lp_remove u=" (str-cat u (str-cat " s=" (str-cat s (str-cat " v=" v))))))
       (near/return v))))
 
@@ -196,7 +196,6 @@
       (sput (str-cat "e:pool:" (str-cat k ":supply")) (sub tk s))
       (sput (str-cat "e:shares:" (str-cat k (str-cat ":" u))) (sub (kshares k u) s))
       (sput "e:lp_total" (sub (sget "e:lp_total" "0") v))
-      (sput "e:out" (add (sget "e:out" "0") v))
       (credit u v)
       (near/log (str-cat "lp_key_remove k=" (str-cat k (str-cat " u=" (str-cat u (str-cat " s=" (str-cat s (str-cat " v=" v))))))))
       (near/return v))))

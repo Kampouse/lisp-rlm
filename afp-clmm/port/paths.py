@@ -22,6 +22,8 @@ MAP = {  # acct -> (group, dirname)
     "n1":   ("n-pool", "pool-n1"),
     "n2":   ("n-pool", "pool-n2"),
     "splt3":("n-pool", "split-3"),
+    "escrow": ("escrow", "escrow"),
+    "ft": ("escrow", "ft"),
 }
 ACCTS = list(MAP)
 
