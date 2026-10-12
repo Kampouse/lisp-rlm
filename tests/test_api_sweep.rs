@@ -78,7 +78,7 @@ fn sweep_input_reads() {
 fn sweep_json_builders() {
     compiles_and_runs("json-set", r#"(json-set "{}" "k" "v")"#);
     compiles_and_runs("json-get auto", r#"(default (json/get "k") "")"#);
-    compiles_and_runs("json-get-str", r#"(json-get-str "k" "{}")"#);
+    compiles_and_runs("json-get-str", r#"(default (json-get-str "k" "{}") "")"#);
     compiles_and_runs("json-quote", r#"(json-quote "hi")"#);
     compiles_and_runs("json-return", r#"(json-return "{}")"#);
 }
