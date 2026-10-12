@@ -3944,7 +3944,6 @@ impl WasmEmitter {
         let pat_off = self.alloc_data(&pattern);
         let pat_len = pattern.len() as i64;
         let pos = self.local_idx("__ju_pos");
-        let ilen = self.local_idx("__ju_ilen");
         let mi = self.local_idx("__ju_mi");
         let jj = self.local_idx("__ju_j");
         let lo = self.local_idx("__ju_lo");
