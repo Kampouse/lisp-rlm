@@ -220,10 +220,7 @@
   (let
     (
       (id
-        (default
-          (near/json_get_str "order")
-          ""
-        )
+        (arg "order")
       )
       (k
         (default
