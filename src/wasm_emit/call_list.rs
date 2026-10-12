@@ -1058,14 +1058,17 @@ impl WasmEmitter {
                 v.push(Instruction::I64Sub);
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new
+                // NEAR mode MUST runtime-bump too: a static per-call-site
+                // buffer is re-written on every recursive activation of the
+                // site, so a sibling arg evaluated after this cdr (e.g.
+                // (f (cdr gs) (cdr ls) (car gs)) — arg3 reads gs, which IS
+                // frame 0's siteA buffer) sees clobbered elements. Found
+                // 2026-10-12 via the accrual port (innermost fold term
+                // silently 0): frames share the literal address; first use
+                // wins, later uses corrupt. p2/wasi always did this right.
                 let alloc_size = (1 + 64) * 8;
-                if self.p2_mode || self.wasi_mode {
-                    v.extend(self.heap_bump_runtime(alloc_size, "__cdr_alloc"));
-                    v.push(Instruction::LocalGet(self.local_idx("__cdr_alloc")));
-                } else {
-                    let new_heap = self.heap_bump(alloc_size);
-                    v.push(Instruction::I64Const(new_heap as i64));
-                }
+                v.extend(self.heap_bump_runtime(alloc_size, "__cdr_alloc"));
+                v.push(Instruction::LocalGet(self.local_idx("__cdr_alloc")));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store new_count
                 v.push(Instruction::LocalGet(new_ptr));
