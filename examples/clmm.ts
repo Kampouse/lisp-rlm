@@ -86,12 +86,21 @@ function spAtTickRaw(tick: number): number {
   return intSqrt(pow32(baseQ32(), tick)) << 16;
 }
 
+// ── call shapes (2026-10-12) — typed interface params. Optional numeric
+// props lower to nil-on-miss near/json_get_int, so `args.x ?? 0` coalesces
+// real fallbacks — no more hand-rolled jsonGetInt strings.
+
+interface InitArgs { sp?: number; tick?: number }
+interface LiqArgs { lower?: number; upper?: number; liq?: number }
+interface SwapArgs { dx?: number; dy_in?: number }
+interface TickArgs { tick?: number }
+
 // ── pool initialization ──
 
-export function initialize(): number {
+export function initialize(args: InitArgs): number {
   accCarry();
-  const sp = near.jsonGetInt("sp") ?? 0;
-  const tick = near.jsonGetInt("tick") ?? 0;
+  const sp = args.sp ?? 0;
+  const tick = args.tick ?? 0;
   near.storeNum(0, sp);
   near.storeNum(1, tick);
   near.storeNum(2, 0);
@@ -100,11 +109,11 @@ export function initialize(): number {
 
 // ── add liquidity: range [lower, upper) ──
 
-export function add_liquidity(): number {
+export function add_liquidity(args: LiqArgs): number {
   accCarry();
-  const lower = near.jsonGetInt("lower") ?? 0;
-  const upper = near.jsonGetInt("upper") ?? 0;
-  const liq = near.jsonGetInt("liq") ?? 0;
+  const lower = args.lower ?? 0;
+  const upper = args.upper ?? 0;
+  const liq = args.liq ?? 0;
   // lower: crossing DOWN removes → net -= liq ; upper: net += liq
   near.storeNum(tickKey(lower, 0), tickNetRaw(lower) + (0 - liq));
   near.storeNum(tickKey(upper, 0), tickNetRaw(upper) + liq);
@@ -120,11 +129,11 @@ export function add_liquidity(): number {
 
 // ── remove liquidity ──
 
-export function remove_liquidity(): number {
+export function remove_liquidity(args: LiqArgs): number {
   accCarry();
-  const lower = near.jsonGetInt("lower") ?? 0;
-  const upper = near.jsonGetInt("upper") ?? 0;
-  const liq = near.jsonGetInt("liq") ?? 0;
+  const lower = args.lower ?? 0;
+  const upper = args.upper ?? 0;
+  const liq = args.liq ?? 0;
   near.storeNum(tickKey(lower, 0), tickNetRaw(lower) + liq);
   near.storeNum(tickKey(upper, 0), tickNetRaw(upper) + (0 - liq));
   near.storeNum(tickKey(lower, 1), tickGrossRaw(lower) + (0 - liq));
@@ -139,9 +148,9 @@ export function remove_liquidity(): number {
 
 // ── swap token0 → token1 (price decreases) ──
 
-export function swap0(): number {
+export function swap0(args: SwapArgs): number {
   accCarry();
-  const dx = near.jsonGetInt("dx") ?? 0;
+  const dx = args.dx ?? 0;
   const sp = priceRaw();
   const liq = liqRaw();
   if (liq === 0) {
@@ -156,9 +165,9 @@ export function swap0(): number {
 
 // ── swap token1 → token0 (price increases) ──
 
-export function swap1(): number {
+export function swap1(args: SwapArgs): number {
   accCarry();
-  const dyIn = near.jsonGetInt("dy_in") ?? 0;
+  const dyIn = args.dy_in ?? 0;
   const sp = priceRaw();
   const liq = liqRaw();
   if (liq === 0) {
@@ -228,14 +237,14 @@ export function get_liq(): number {
 
 // lisp exports tick_net/tick_gross/sp_at_tick as views — TS twins
 // carry the get_ prefix (auto-view); the differential test maps names.
-export function get_tick_net(): number {
-  return tickNetRaw(near.jsonGetInt("tick") ?? 0);
+export function get_tick_net(args: TickArgs): number {
+  return tickNetRaw(args.tick ?? 0);
 }
 
-export function get_tick_gross(): number {
-  return tickGrossRaw(near.jsonGetInt("tick") ?? 0);
+export function get_tick_gross(args: TickArgs): number {
+  return tickGrossRaw(args.tick ?? 0);
 }
 
-export function get_sp_at_tick(): number {
-  return spAtTickRaw(near.jsonGetInt("tick") ?? 0);
+export function get_sp_at_tick(args: TickArgs): number {
+  return spAtTickRaw(args.tick ?? 0);
 }

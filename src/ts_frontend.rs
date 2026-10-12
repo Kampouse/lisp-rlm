@@ -110,6 +110,7 @@ fn ts_to_lisp_source_inner(src: &str) -> Result<String, String> {
     MONEY_ALIASES.with(|s| s.borrow_mut().clear());
     USER_FNS.with(|m| m.borrow_mut().clear());
     U128_PURE_FNS.with(|m| m.borrow_mut().clear());
+    MONEY_PARAM_FNS.with(|m| m.borrow_mut().clear());
     let exprs = parse_ts(src)?;
     let mut out = String::new();
     for e in &exprs {
@@ -184,11 +185,11 @@ thread_local! {
     /// is_number per key. Drives (1) read-time auto str->num on
     /// `param.numericProp`, (2) encode-time raw embedding of the param
     /// into object literals (its value already IS JSON text).
-    static OBJ_PARAM_PROPS: std::cell::RefCell<Vec<(String, Vec<(String, bool)>)>> =
+    static OBJ_PARAM_PROPS: std::cell::RefCell<Vec<(String, Vec<(String, bool, bool)>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// `type X = { ... }` aliases collected at statement level; resolved
     /// when a param is annotated with a named type. Compile-time only.
-    static TYPE_ALIASES: std::cell::RefCell<Vec<(String, Vec<(String, bool)>)>> =
+    static TYPE_ALIASES: std::cell::RefCell<Vec<(String, Vec<(String, bool, bool)>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// Object-shaped params by NAME (`params`, `ctx`…): their property
     /// reads lower against the CACHED-INPUT contract (near/json_get_str
@@ -220,6 +221,19 @@ thread_local! {
     /// let/define slot-selection site.
     static U128_PURE_FNS: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+    /// Module-level money consts with validated decimal literals
+    /// (`const Q32: U = "4294967296"`). Live for the whole program —
+    /// NOT cleared per-function.
+    static MONEY_CONSTS: std::cell::RefCell<Vec<String>> =
+        std::cell::RefCell::new(Vec::new());
+    /// Functions with money-annotated params, as (fn_name, [money_param_indices]).
+    /// Populated at the param scan (ann_is_money_alias hit); consulted by
+    /// check_money_sinks so a call site feeding an UNSEEDED string into a
+    /// `: Yocto`-param is a compile error — the call-side half of the seal
+    /// (2026-10-12). Without this, `probe("hello world")` passed even with
+    /// `probe(dx: Yocto)`: only transferU128 was a checked sink.
+    static MONEY_PARAM_FNS: std::cell::RefCell<Vec<(String, Vec<usize>)>> =
+        std::cell::RefCell::new(Vec::new());
     static CONST_FOLDS: std::cell::RefCell<Vec<(String, LispVal)>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// Top-level `const K = <n-literal>;` names — bigint-shaped identifiers
@@ -603,6 +617,31 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
     // still emit (define ...) forms in source order — those were never
     // forward-referenceable and stay that way; found compiling the PLONK
     // verifier, 2026-09-15.)
+    // Money-alias pre-registration (2026-10-12): `type U = Yocto` etc. must
+    // be known BEFORE the const pre-scan below, or a money-annotated
+    // decimal const (`const Q32: U = "4294967296"`) fails the ann check
+    // (MONEY_ALIASES still empty) and never joins the provable registry.
+    seed_u128_pure_fns(&p.body);
+    for stmt in &p.body {
+        if let Some(Declaration::TSTypeAliasDeclaration(a)) = stmt.as_declaration() {
+            let an = a.id.name.as_str();
+            let money = matches!(an, "Yocto" | "Amount" | "Money")
+                || match &a.type_annotation {
+                    oxc_ast::ast::TSType::TSTypeReference(r) => {
+                        matches!(&r.type_name,
+                            oxc_ast::ast::TSTypeName::IdentifierReference(id)
+                                if matches!(id.name.as_str(), "Yocto" | "Amount" | "Money")
+                                    || MONEY_ALIASES.with(|m| {
+                                        m.borrow().iter().any(|x| *x == id.name.as_str())
+                                    }))
+                }
+                _ => false,
+            };
+            if money {
+                MONEY_ALIASES.with(|m| m.borrow_mut().push(an.to_string()));
+            }
+        }
+    }
     for stmt in &p.body {
         if let Statement::VariableDeclaration(v) = stmt {
             for d in &v.declarations {
@@ -617,7 +656,18 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                     let mut is_bigint = false;
                     let literal = match init {
                         Expression::NumericLiteral(n) => Some(Num(n.value as i64)),
-                        Expression::StringLiteral(s) => Some(Str(s.value.as_str().to_string())),
+                        Expression::StringLiteral(s) => {
+                            // A money-annotated decimal-string const
+                            // (`const Q32: U = "4294967296"`) is a PROVABLE
+                            // u128 source: the literal is range-checked here
+                            // at registration (2026-10-12).
+                            if declarator_ann_is_money(d)
+                                && s.value.parse::<u128>().is_ok()
+                            {
+                                MONEY_CONSTS.with(|m| m.borrow_mut().push(name.clone()));
+                            }
+                            Some(Str(s.value.as_str().to_string()))
+                        }
                         Expression::BooleanLiteral(b) => Some(LispVal::Bool(b.value)),
                         Expression::BigIntLiteral(b) => {
                             is_bigint = true;
@@ -823,6 +873,23 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                     }
                 }
             }
+            // `interface X { ... }` (2026-10-12): same compile-time
+            // treatment as `type X = { ... }` — record shape in
+            // TYPE_ALIASES, emit nothing. Interfaces are reusable arg
+            // shapes shared across exported functions.
+            s if matches!(
+                s.as_declaration(),
+                Some(Declaration::TSInterfaceDeclaration(_))
+            ) => {
+                let iface = match s.as_declaration() {
+                    Some(Declaration::TSInterfaceDeclaration(i)) => i,
+                    _ => unreachable!(),
+                };
+                let props = literal_props(&iface.body.body);
+                TYPE_ALIASES.with(|m| {
+                    m.borrow_mut().push((iface.id.name.as_str().to_string(), props));
+                });
+            }
             // Types-only imports from the near module family are ELIDED.
             // The ambient d.ts (ts/lisp-rlm.d.ts → Monaco addExtraLib)
             // provides editor completions without any import; near-sdk-js
@@ -910,7 +977,8 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
     MONEY_NAMES.with(|s| s.borrow_mut().clear());
     LEDGER_NAMES.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
-    for p in &f.params.items {
+    let mut money_param_idx: Vec<usize> = Vec::new();
+    for (idx, p) in f.params.items.iter().enumerate() {
         let n = binding_name(&p.pattern)?;
         let kind = if param_is_bigint(p) {
             4
@@ -934,6 +1002,7 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         }
         if ann_is_money_alias(p.type_annotation.as_deref()) {
             MONEY_NAMES.with(|s| s.borrow_mut().push(n.clone()));
+            money_param_idx.push(idx);
         }
         if kind == 0 {
             // See lower_function: string params skip the to-string
@@ -941,6 +1010,11 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
             mark_string_local(&n);
         }
         param_names.push((n.clone(), kind));
+    }
+    if !money_param_idx.is_empty() {
+        MONEY_PARAM_FNS.with(|m| {
+            m.borrow_mut().push((name.clone(), money_param_idx.clone()));
+        });
     }
 
     let body = f
@@ -1817,7 +1891,8 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
     LEDGER_NAMES.with(|s| s.borrow_mut().clear());
     INPUT_HANDLES.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
-    for p in &f.params.items {
+    let mut money_param_idx: Vec<usize> = Vec::new();
+    for (idx, p) in f.params.items.iter().enumerate() {
         let n = binding_name(&p.pattern)?;
         let kind = if param_is_bigint(p) {
             4
@@ -1841,6 +1916,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
         }
         if ann_is_money_alias(p.type_annotation.as_deref()) {
             MONEY_NAMES.with(|s| s.borrow_mut().push(n.clone()));
+            money_param_idx.push(idx);
         }
         if kind == 0 {
             // String-typed params (unannotated defaults to str in this
@@ -1850,6 +1926,11 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
             mark_string_local(&n);
         }
         param_names.push((n.clone(), kind));
+    }
+    if !money_param_idx.is_empty() {
+        MONEY_PARAM_FNS.with(|m| {
+            m.borrow_mut().push((name.clone(), money_param_idx.clone()));
+        });
     }
 
     let body = f
@@ -5425,6 +5506,16 @@ fn u128_arith_call(c: &oxc_ast::ast::CallExpression<'_>) -> bool {
         Expression::Identifier(id) => matches!(
             id.name.as_str(),
             "u128Add" | "u128Sub" | "u128Mul" | "u128MulDiv" | "u128Div" | "u128Mod"
+                // u128FromNum: the number→money conversion (u128/from-i64,
+                // range-checked by the host) — its result is a sealed u128.
+                | "u128FromNum"
+                // u128FromStr: the hardened string→money door (u128/from_str
+                // traps on junk) — result is a sealed u128 (2026-10-12)
+                | "u128FromStr"
+                // bare 2-arg record read: jsonGetU128("k", poolJson) — the
+                // hardened-parse read is itself a provable u128 source
+                // (clmm pool records, 2026-10-12)
+                | "jsonGetU128"
         ),
         Expression::StaticMemberExpression(sm) => {
             matches!(&sm.object, Expression::Identifier(obj) if obj.name == "u128")
@@ -5449,6 +5540,11 @@ fn expr_is_u128_value(e: &Expression<'_>) -> bool {
             MONEY_NAMES.with(|s| s.borrow().iter().any(|x| *x == n))
                 || BIGINT_NAMES.with(|s| s.borrow().iter().any(|x| *x == n))
                 || BIGINT_LOCALS.with(|s| s.borrow().iter().any(|x| *x == n))
+                // Module-level consts with validated bigint/money literal
+                // initializers (Q32 = "4294967296" etc.) — the literal was
+                // range-checked at registration, so the name is provable.
+                || BIGINT_CONSTS.with(|s| s.borrow().iter().any(|x| *x == n))
+                || MONEY_CONSTS.with(|s| s.borrow().iter().any(|x| *x == n))
         }
         Expression::AwaitExpression(a) => expr_is_u128_value(&a.argument),
         Expression::StringLiteral(s) => s.value.parse::<u128>().is_ok(),
@@ -5457,12 +5553,25 @@ fn expr_is_u128_value(e: &Expression<'_>) -> bool {
         }
         Expression::CallExpression(c) => {
             u128_arith_call(c)
+                // A user fn registered u128-pure (every return provable)
+                // yields a sealed value — e.g. the `seal(v)` conversion
+                // helper pattern (clmm, 2026-10-12).
+                || matches!(&c.callee, Expression::Identifier(id)
+                    if U128_PURE_FNS.with(|m| m.borrow().contains(id.name.as_str())))
                 || matches!(&c.callee, Expression::StaticMemberExpression(sm)
                     if matches!(&sm.object, Expression::Identifier(obj) if obj.name == "near")
                     && matches!(
                         sm.property.name.as_str(),
                         "attachedDeposit" | "attachedDepositU128"
                             | "accountBalance" | "loadU128" | "readU128"
+                            // jsonGetU128 is a PROVABLE u128 SOURCE (d.ts
+                            // 2026-10-12): hardened parser, writes a (lo,hi)
+                            // limb pair — the read itself validates the
+                            // payload, so the result carries the seal.
+                            | "jsonGetU128"
+                            // blockTimestamp: host-provided u128 (ns), never
+                            // user text (clmm TWAP, 2026-10-12)
+                            | "blockTimestamp"
                     ))
         }
         // (2026-10-11, micro_v3) `return u128Mul(a, b) / c` — arithmetic
@@ -5651,6 +5760,20 @@ fn register_await_names(stmts: &[Statement<'_>]) {
                     } else if d
                         .init
                         .as_ref()
+                        .is_some_and(|iv| is_json_get_u128_stamp(iv))
+                    {
+                        // jsonGetU128 custody stamp (2026-10-12): `let v =
+                        // near.jsonGetU128("k") ?? "0"` is money at BIRTH —
+                        // the read harden-parses, so unlike jsonGetStr this
+                        // carries the full SEAL, not just ledger tier.
+                        if let Ok(names) = pattern_names(&d.id) {
+                            for n in names {
+                                MONEY_NAMES.with(|s| s.borrow_mut().push(n));
+                            }
+                        }
+                    } else if d
+                        .init
+                        .as_ref()
                         .is_some_and(|iv| is_storage_read_fallback(iv))
                     {
                         // Ledger boundary (SEAL tier): `const bal =
@@ -5719,11 +5842,165 @@ fn register_await_names(stmts: &[Statement<'_>]) {
     }
 }
 
+/// jsonGetU128 custody stamp: `near.jsonGetU128("k") ?? fb` — the read
+/// harden-parses so the BOUND value is a provable u128 (unlike jsonGetStr,
+/// whose fallback form only stamps LEDGER tier). Used both for the
+/// decl-site MONEY_NAMES seeding and the call-site arg check.
+fn is_json_get_u128_stamp(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::ParenthesizedExpression(pe) => is_json_get_u128_stamp(&pe.expression),
+        Expression::LogicalExpression(l)
+            if l.operator == oxc_ast::ast::LogicalOperator::Coalesce =>
+        {
+            boundary_reader_name(&l.left) == Some("jsonGetU128")
+        }
+        Expression::CallExpression(c) => {
+            matches!(&c.callee, Expression::StaticMemberExpression(sm)
+                if matches!(&sm.object, Expression::Identifier(obj) if obj.name == "near")
+                && sm.property.name == "jsonGetU128")
+        }
+        _ => false,
+    }
+}
+
 /// Return CONTRACT: a function promising `Yocto`/`Amount` (or a Promise of
 /// one) must return a provable u128 value — await result, u128 arithmetic
 /// call, deposit/balance read, or a decimal string literal. Labeled strings
 /// (`"total:" + x`) are display text, not money: annotate `: Promise<string>`
 /// instead. This is the annotation made checkable.
+/// u128-purity PRE-PASS (2026-10-12): TS hoists function declarations, so a
+/// helper may be CALLED (and its result fed into a money param or a `: Yocto`
+/// return) before the per-fn registration at lowering time runs. This seed
+/// walks every function declaration up front and registers those whose
+/// returns are STRUCTURALLY u128-shaped: u128 arith calls, decimal string
+/// literals, jsonGetU128 reads, bare identifiers, or calls to other user fns.
+/// Deliberately permissive on identifier/user-call (per-fn state like
+/// MONEY_NAMES does not exist yet) — the authoritative check_return_contract
+/// still fires when each fn lowers, so an over-approximated seed can never
+/// let a junk-returning fn through: its own lowering aborts the compile.
+fn seed_u128_pure_fns(stmts: &[Statement<'_>]) {
+    // Forward pass in source order, then ONE more pass: a helper defined
+    // before its callee (pow32 above muldiv in test fixtures) misses the
+    // first sweep; the second sweep picks it up. Two passes cover any
+    // call DAG that a single pass plus one reorder round can satisfy —
+    // the per-fn check at lowering remains the authority.
+    seed_u128_pure_fns_pass(stmts);
+    seed_u128_pure_fns_pass(stmts);
+}
+
+fn seed_u128_pure_fns_pass(stmts: &[Statement<'_>]) {
+    for s in stmts {
+        let f = match s.as_declaration() {
+            Some(Declaration::FunctionDeclaration(f)) => f,
+            _ => continue,
+        };
+        if f.r#async {
+            continue;
+        }
+        let Some(body) = f.body.as_ref() else {
+            continue;
+        };
+        // Explicit `: number` / `: string` returns are NOT money — never
+        // seed them, even if the body looks shaped (a literal `50000` is a
+        // number in TS terms; seeding tickOff(): number made `tick +
+        // tickOff()` emit u128/add on ints — examples/clmm.ts, 2026-10-12).
+        if let Some(rt) = f.return_type.as_ref() {
+            if matches!(
+                &rt.type_annotation,
+                TSType::TSNumberKeyword(_) | TSType::TSStringKeyword(_) | TSType::TSBooleanKeyword(_)
+            ) {
+                continue;
+            }
+        }
+        let mut rets: Vec<&Expression<'_>> = Vec::new();
+        stmts_exprs(&body.statements, &mut rets);
+        let all_shaped = !rets.is_empty()
+            && rets.iter().all(|e| ret_structurally_u128(e));
+        if all_shaped {
+            if let Some(id) = &f.id {
+                U128_PURE_FNS
+                    .with(|m| m.borrow_mut().insert(id.name.as_str().to_string()));
+            }
+        }
+    }
+}
+
+/// Structural return shape for the seed pre-pass (see seed_u128_pure_fns).
+fn ret_structurally_u128(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::ParenthesizedExpression(pe) => ret_structurally_u128(&pe.expression),
+        Expression::AwaitExpression(_) => true,
+        Expression::StringLiteral(sl) => sl.value.parse::<u128>().is_ok(),
+        Expression::Identifier(_) => true,
+        Expression::ConditionalExpression(c) => {
+            ret_structurally_u128(&c.consequent) && ret_structurally_u128(&c.alternate)
+        }
+        Expression::BinaryExpression(b) => {
+            // Arithmetic ops: both sides u128-shaped. Comparison/equality
+            // (while tests like `n > 0` ride in via stmts_exprs): any shape
+            // is fine — a test result is a bool, never a money value.
+            let arith = matches!(
+                b.operator,
+                oxc_ast::ast::BinaryOperator::Addition
+                    | oxc_ast::ast::BinaryOperator::Subtraction
+                    | oxc_ast::ast::BinaryOperator::Multiplication
+                    | oxc_ast::ast::BinaryOperator::Division
+                    | oxc_ast::ast::BinaryOperator::Remainder
+            );
+            if arith {
+                ret_structurally_u128(&b.left) && ret_structurally_u128(&b.right)
+            } else {
+                matches!(b.operator,
+                    oxc_ast::ast::BinaryOperator::GreaterThan
+                    | oxc_ast::ast::BinaryOperator::GreaterEqualThan
+                    | oxc_ast::ast::BinaryOperator::LessThan
+                    | oxc_ast::ast::BinaryOperator::LessEqualThan
+                    | oxc_ast::ast::BinaryOperator::Equality
+                    | oxc_ast::ast::BinaryOperator::Inequality
+                    | oxc_ast::ast::BinaryOperator::StrictEquality
+                    | oxc_ast::ast::BinaryOperator::StrictInequality)
+            }
+        }
+        Expression::CallExpression(c) => match &c.callee {
+            // u128-shaped callees only: the arith family, u128FromStr, the
+            // hardened record read, or a user fn ALREADY seeded by this
+            // forward pass (statements visited in source order). A blanket
+            // "any identifier" registered num()/s() (strToNum/to-string —
+            // int/str producers) as u128-pure and made TS `+` on their
+            // results emit u128/add → "str ≠ int" (clmm accCarry,
+            // 2026-10-12). NOT recursive on not-yet-seeded calls: those
+            // fail the seed (conservative), and the per-fn contract check
+            // at lowering is the authority that re-registers them.
+            Expression::Identifier(id) => {
+                let n = id.name.as_str();
+                matches!(
+                    n,
+                    "u128Add" | "u128Sub" | "u128Mul" | "u128MulDiv" | "u128Div"
+                        | "u128Mod" | "u128FromNum" | "u128FromStr" | "u128Lt" | "u128Gt"
+                        | "u128Eq" | "u128IsZero" | "jsonGetU128"
+                ) || U128_PURE_FNS.with(|m| m.borrow().contains(n))
+            }
+            Expression::StaticMemberExpression(sm) => {
+                matches!(&sm.object, Expression::Identifier(obj) if obj.name == "u128")
+                    || matches!(
+                        (&sm.object, sm.property.name.as_str()),
+                        // abort is a void trap statement, never a value
+                        (Expression::Identifier(o), "jsonGetU128" | "abort") if o.name == "near"
+                    )
+            }
+            _ => false,
+        },
+        // number-typed locals (`n / 2` on an exp counter) ride in via
+        // stmts_exprs too — a numeric literal never carries a money seal,
+        // and the per-fn contract check is the authority anyway
+        Expression::NumericLiteral(_) => true,
+        // stmts_exprs also collects expression statements — loop bodies are
+        // full of `r = muldiv(...)` assignments; judge by the RHS only.
+        Expression::AssignmentExpression(ae) => ret_structurally_u128(&ae.right),
+        _ => false,
+    }
+}
+
 fn check_return_contract(
     fname: &str,
     body_stmts: &[Statement<'_>],
@@ -5931,6 +6208,12 @@ fn boundary_reader_name<'a>(e: &Expression<'a>) -> Option<&'a str> {
                         if sm.property.name == "jsonGetStr" {
                             return Some("jsonGetStr");
                         }
+                        // jsonGetU128 is itself a PROVABLE u128 SOURCE (the
+                        // read harden-parses) — the ?? fallback form is the
+                        // canonical custody stamp (2026-10-12).
+                        if sm.property.name == "jsonGetU128" {
+                            return Some("jsonGetU128");
+                        }
                         if sm.property.name == "storageGet" {
                             return Some("storageGet");
                         }
@@ -6005,7 +6288,7 @@ fn is_boundary_stamp(e: &Expression<'_>) -> bool {
             match boundary_reader_name(&l.left) {
                 // param boundary: the read is the author's custody point —
                 // the fallback choice is theirs too (STORAGE_MIN etc.)
-                Some("jsonGet") | Some("jsonGetStr") => true,
+                Some("jsonGet") | Some("jsonGetStr") | Some("jsonGetU128") => true,
                 // ledger boundary: digit-parsable fallback declares a
                 // u128 key; `?? ""` is optional TEXT and does not stamp
                 Some("storageGet") => match &l.right {
@@ -6033,6 +6316,37 @@ fn check_money_sinks(stmts: &[Statement<'_>]) -> Result<(), String> {
     for_each_stmt_call(stmts, &mut |c| {
         if bad.borrow().is_some() {
             return;
+        }
+        // User-fn money params (2026-10-12): a call feeding an UNSEEDED
+        // argument into a `: Yocto`-annotated param is a sink violation —
+        // the call-side half of the seal. Previously only transferU128 was
+        // a checked sink, so `probe("hello world")` compiled even though
+        // probe(dx: Yocto) promised money.
+        if let Expression::Identifier(id) = &c.callee {
+            let fname = id.name.as_str();
+            let money_params: Option<Vec<usize>> = MONEY_PARAM_FNS
+                .with(|m| {
+                    m.borrow()
+                        .iter()
+                        .find(|(k, _)| k == fname)
+                        .map(|(_, idx)| idx.clone())
+                });
+            if let Some(idxs) = money_params {
+                for &i in &idxs {
+                    if let Some(arg) = c.arguments.get(i).and_then(|a| a.as_expression()) {
+                        let ok = expr_is_u128_value(arg)
+                            || is_boundary_stamp(arg)
+                            || is_ledger_read(arg);
+                        if !ok {
+                            *bad.borrow_mut() = Some(format!(
+                                "argument {i} of `{fname}(...)` must be a provable u128 value — the parameter is money-annotated (Yocto/Amount). Sources: near.jsonGetU128(...) ?? fallback, u128* op results, decimal string literals, or a `: Yocto`-annotated const"
+                            ));
+                            return;
+                        }
+                    }
+                }
+                return;
+            }
         }
         let Expression::StaticMemberExpression(sm) = &c.callee else {
             return;
@@ -6268,23 +6582,35 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                     list(vec![Sym("near/json_get_str"), Str(top)]),
                                 ])
                             };
-                            let is_num_leaf = dotted.len() == 1
-                                && OBJ_PARAM_PROPS.with(|s| {
+                            let leaf = if dotted.len() == 1 {
+                                OBJ_PARAM_PROPS.with(|s| {
                                     s.borrow()
                                         .iter()
-                                        .find(|(n, _)| n == id.name.as_str())
+                                        .find(|(n, ..)| n == id.name.as_str())
                                         .and_then(|(_, props)| {
                                             props
                                                 .iter()
-                                                .find(|(k, _)| k.as_str() == dotted[0])
-                                                .map(|(_, num)| *num)
+                                                .find(|(k, ..)| k.as_str() == dotted[0])
+                                                .map(|(_, num, opt)| (*num, *opt))
                                         })
                                 })
-                                .unwrap_or(false);
-                            return Ok(if is_num_leaf {
-                                list(vec![Sym("str->num"), get])
                             } else {
-                                get
+                                None
+                            };
+                            return Ok(match leaf {
+                                // (2026-10-12) numeric+optional: json_get_int
+                                // alone (nil-on-miss) — wrapping in str->num
+                                // garbage-parses a miss into 0 and kills `??`.
+                                Some((true, true)) => {
+                                    list(vec![Sym("near/json_get_int"), Str(dotted.join("."))])
+                                }
+                                Some((true, _)) => list(vec![Sym("str->num"), get]),
+                                // (2026-10-12) optional prop -> _opt form so the
+                                // params section can mark the key optional
+                                Some((false, true)) => {
+                                    list(vec![Sym("near/json_get_str_opt"), Str(dotted.join("."))])
+                                }
+                                _ => get,
                             });
                         }
                     }
@@ -6447,6 +6773,29 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     }
                     BinaryOperator::Inequality | BinaryOperator::StrictInequality => {
                         return Ok(list(vec![Sym("not"), list(vec![Sym("u128/eq"), l, r])]))
+                    }
+                    // x << n on a u128-shaped value = x · 2^n in the money
+                    // domain (exact power of two, no overflow beyond u128/mul's
+                    // own trap). examples/clmm.ts uses `isqrt(...) << 16` for
+                    // the Q32.16 view (2026-10-12).
+                    BinaryOperator::ShiftLeft => {
+                        if let Some(exp) = match &b.right {
+                            Expression::NumericLiteral(nl) => {
+                                if nl.value.fract() == 0.0 && nl.value >= 0.0 && nl.value < 128.0 {
+                                    Some(nl.value as u32)
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        } {
+                            let factor = format!("{}", 1u128 << exp);
+                            return Ok(list(vec![Sym("u128/mul"), l, Str(factor)]));
+                        }
+                        return Err(
+                            "ts_frontend: `<<` on a u128 value needs a constant 0..127 shift count (lowered to u128/mul by 2^n)"
+                                .into(),
+                        );
                     }
                     _ => {
                         return Err(format!(
@@ -8101,6 +8450,10 @@ fn map_builtin_call(name: &str) -> String {
         "toStr" | "toString" => "to-string",
         "jsonGet" => "json-get",
         "jsonGetStr" => "json-get-str",
+        // bare 2-arg record read (jsonGetU128("k", poolJson)) — hardened
+        // parse, emits near/json_get_u128; the seal rides the hardened read
+        // (clmm pool-record reads, 2026-10-12)
+        "jsonGetU128" => "near/json_get_u128",
         "jsonExtract" => "json-extract-input",
         "strSplit" => "str-split",
         "strJoin" => "str-join",
@@ -8135,6 +8488,10 @@ fn map_builtin_call(name: &str) -> String {
         "u128Eq" => "u128/eq",
         "u128IsZero" => "u128/is-zero",
         "u128FromNum" => "u128/from-i64",
+        // explicit string→money conversion: harden-parses the decimal text,
+        // TRAPS on junk — the one sanctioned door from runtime text to a
+        // sealed u128 (clmm memo minOut/deadline, 2026-10-12)
+        "u128FromStr" => "u128/from_str",
         "u128ToNum" => "u128/to-i64",
         // numeric intrinsics (Q32 CLMM surface, 2026-10-09): camelCase TS
         // spellings mapping to the lisp builtins — raw==head would trip
@@ -8176,7 +8533,7 @@ fn param_is_number(p: &FormalParameter<'_>) -> bool {
 /// literal type's properties (name, is_number). Returns None for every
 /// other annotation shape. Named type references (TypeReference) are
 /// deliberately rejected — see param_is_type_ref.
-fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool)>> {
+fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool, bool)>> {
     let a = p.type_annotation.as_ref()?;
     match &a.type_annotation {
         TSType::TSTypeLiteral(lit) => {
@@ -8194,7 +8551,8 @@ fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool)>> {
                     sig.type_annotation.as_ref().map(|t| &t.type_annotation),
                     Some(TSType::TSNumberKeyword(_))
                 );
-                props.push((key, is_num));
+                let optional = sig.optional;
+                props.push((key, is_num, optional));
             }
             if props.is_empty() {
                 None
@@ -8211,9 +8569,9 @@ fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool)>> {
             TYPE_ALIASES.with(|m| {
                 m.borrow()
                     .iter()
-                    .find(|(k, _)| *k == name)
+                    .find(|(k, ..)| *k == name)
                     .and_then(|(_, props)| {
-                        if props.first().map(|(k, _)| k == SCALAR_ALIAS_MARK).unwrap_or(false) {
+                        if props.first().map(|(k, ..)| k == SCALAR_ALIAS_MARK).unwrap_or(false) {
                             // scalar alias (`type Money = string`) — a plain
                             // param, not an object shape
                             None
@@ -8249,32 +8607,38 @@ fn param_is_type_ref(p: &FormalParameter<'_>) -> bool {
 /// used to register a dead object binding and corrupt the entry ABI).
 const SCALAR_ALIAS_MARK: &str = "\u{0}scalar";
 
+/// Property shape of a TS type-literal member list. Shared by
+/// `type X = { ... }` aliases and `interface X { ... }` declarations
+/// (2026-10-12) so both resolve identically via TYPE_ALIASES.
+fn literal_props(members: &[oxc_ast::ast::TSSignature<'_>]) -> Vec<(String, bool, bool)> {
+    let mut props = Vec::new();
+    for m in members {
+        if let oxc_ast::ast::TSSignature::TSPropertySignature(sig) = m {
+            if let oxc_ast::ast::PropertyKey::StaticIdentifier(id) = &sig.key {
+                let is_num = matches!(
+                    sig.type_annotation.as_ref().map(|t| &t.type_annotation),
+                    Some(oxc_ast::ast::TSType::TSNumberKeyword(_))
+                );
+                let optional = sig.optional;
+                props.push((id.name.as_str().to_string(), is_num, optional));
+            }
+        }
+    }
+    props
+}
+
 /// Shape of a `type X = { prop: string; num: number; ... }` alias.
-fn alias_props(a: &oxc_ast::ast::TSTypeAliasDeclaration<'_>) -> Vec<(String, bool)> {
+fn alias_props(a: &oxc_ast::ast::TSTypeAliasDeclaration<'_>) -> Vec<(String, bool, bool)> {
     match &a.type_annotation {
         // `type Money = string` (u128-decimal ABI hover docs, 2026-10-07):
         // SCALAR aliases record as marker ([] + is_scalar) so
         // param_object_props resolves the ref to None (plain str param)
         // instead of kind-3-empty (which used to register a dead
         // object-param binding and corrupt the entry ABI).
-        oxc_ast::ast::TSType::TSStringKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false)],
-        oxc_ast::ast::TSType::TSNumberKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false)],
-        oxc_ast::ast::TSType::TSBigIntKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false)],
-        oxc_ast::ast::TSType::TSTypeLiteral(lit) => {
-            let mut props = Vec::new();
-            for m in &lit.members {
-                if let oxc_ast::ast::TSSignature::TSPropertySignature(sig) = m {
-                    if let oxc_ast::ast::PropertyKey::StaticIdentifier(id) = &sig.key {
-                        let is_num = matches!(
-                            sig.type_annotation.as_ref().map(|t| &t.type_annotation),
-                            Some(oxc_ast::ast::TSType::TSNumberKeyword(_))
-                        );
-                        props.push((id.name.as_str().to_string(), is_num));
-                    }
-                }
-            }
-            props
-        }
+        oxc_ast::ast::TSType::TSStringKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false, false)],
+        oxc_ast::ast::TSType::TSNumberKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false, false)],
+        oxc_ast::ast::TSType::TSBigIntKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false, false)],
+        oxc_ast::ast::TSType::TSTypeLiteral(lit) => literal_props(&lit.members),
         _ => Vec::new(),
     }
 }
@@ -8282,7 +8646,7 @@ fn alias_props(a: &oxc_ast::ast::TSTypeAliasDeclaration<'_>) -> Vec<(String, boo
 /// Register an object param's shape for read-time numeric decoding and
 /// encode-time raw embedding (side-channel, cleared with NUM_PARAM_NAMES
 /// after body lowering).
-fn register_obj_param(name: &str, props: Vec<(String, bool)>) {
+fn register_obj_param(name: &str, props: Vec<(String, bool, bool)>) {
     OBJECT_PARAMS.with(|s| s.borrow_mut().push(name.to_string()));
     OBJ_PARAM_PROPS.with(|s| {
         s.borrow_mut().push((name.to_string(), props));
@@ -8296,6 +8660,22 @@ fn ts_ann_to_lisp(t: Option<&oxc_ast::ast::TSTypeAnnotation<'_>>) -> Option<&'st
     match &a.type_annotation {
         TSType::TSNumberKeyword(_) => Some("int"),
         TSType::TSStringKeyword(_) => Some("str"),
+        // Money aliases (type U = Yocto etc.) map to the lisp money domain:
+        // u128 decimal strings (checker: u128/add : str,str -> str). Without
+        // this, U-annotated fns emit no `::` sig and their results infer as
+        // int/generic — then (u128/add pos liq) dies with "str ≠ int"
+        // (clmm, 2026-10-12).
+        TSType::TSTypeReference(r) => {
+            let money = match &r.type_name {
+                oxc_ast::ast::TSTypeName::IdentifierReference(id) => {
+                    matches!(id.name.as_str(), "Yocto" | "Amount" | "Money")
+                        || MONEY_ALIASES
+                            .with(|m| m.borrow().iter().any(|x| *x == id.name.as_str()))
+                }
+                _ => false,
+            };
+            if money { Some("str") } else { None }
+        }
         // TS booleans are first-class Bool values (2026-09-30): literals
         // lower as Bool, comparisons/str-contains already type Bool, and
         // the checker's `=`/`!=` are total on mixed pairs — so

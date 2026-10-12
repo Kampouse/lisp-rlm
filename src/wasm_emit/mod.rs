@@ -44,6 +44,7 @@ pub mod json;
 pub mod lambda;
 pub mod limb_locals;
 pub mod name_map;
+pub mod param_map;
 use call_u128_str::U128Helpers;
 pub mod call_bitwise;
 pub mod call_defi;

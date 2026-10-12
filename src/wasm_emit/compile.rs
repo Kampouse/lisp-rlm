@@ -1377,7 +1377,15 @@ fn compile_near_with_map_inner_labelled(
     }
     em.print_gas_table();
 
-    let wasm = em.finish("_run");
+    let mut wasm = em.finish("_run");
+
+    // near:params custom section — declares the JSON param keys the contract
+    // reads via bare (near/json_get_* "key") reads. Lets hosts/indexers know
+    // the entrypoint schema without executing code (2026-10-12).
+    if let Ok(exprs) = crate::parser::parse_all(&resolved) {
+        let keys = crate::wasm_emit::param_map::collect_param_keys(&exprs);
+        crate::wasm_emit::param_map::append_params_section(&mut wasm, &keys);
+    }
 
     // finish() takes &mut self, so fn_sources survives. em.funcs is post-DCE —
     // exactly the functions the name section names.

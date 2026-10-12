@@ -54,9 +54,31 @@ impl WasmEmitter {
                 }
             }
             "near/json_get_u128" => {
-                if a.len() < 2 {
+                // 1-arg form (2026-10-12): near.jsonGetU128("key") — reads the
+                // tx INPUT (same contract as 1-arg jsonGetStr) into the
+                // dedicated 16-byte u128 scratch slot (STORAGE_U128_BUF), the
+                // same destination the Lisp typed form (json-get :u128 "k")
+                // uses. The read itself hardens-parses, so the result is a
+                // provable u128 SOURCE. Previously only the internal 2-arg
+                // (key, offset-addr) form existed, so the documented 1-arg
+                // TS surface failed with "requires a string key and offset
+                // argument" — and passing a TS string as the raw offset
+                // (the 2-arg form reached from TS) would use a tagged-string
+                // payload pointer as a WRITE ADDRESS. 2-arg from TS is now
+                // rejected: the offset ABI is emitter-internal.
+                if a.len() == 1 {
+                    return match &a[0] {
+                        LispVal::Str(key) => {
+                            let offset_expr =
+                                vec![Instruction::I64Const(STORAGE_U128_BUF as i64)];
+                            self.json_get_u128(key, offset_expr)
+                        }
+                        _ => Err("near/json_get_u128 key must be a string literal".into()),
+                    };
+                }
+                if a.len() != 2 {
                     return Err(
-                        "near/json_get_u128 requires a string key and offset argument".into(),
+                        "near/json_get_u128 requires a string key (optionally + internal offset addr)".into(),
                     );
                 }
                 match &a[0] {
@@ -74,6 +96,42 @@ impl WasmEmitter {
                 match &a[0] {
                     LispVal::Str(key) => self.json_get_arr(key),
                     _ => Err("near/json_get_arr key must be a string literal".into()),
+                }
+            }
+            "near/json_get_str_opt" => {
+                // (2026-10-12) Optional param prop (TS `prop?: string`):
+                // NIL-on-miss so callers can distinguish absent from "".
+                // Same emission as near/json_get_str 1-arg + miss gate.
+                if a.is_empty() {
+                    return Err("near/json_get_str_opt requires a string key argument".into());
+                }
+                if a.len() >= 2 {
+                    if !matches!(&a[0], LispVal::Str(_)) {
+                        return Err("jsonGetStrOpt(key, json): key must be a string literal".into());
+                    }
+                    let args2: Vec<LispVal> = a[..2].to_vec();
+                    return self.call_json("json-get-str?", &args2);
+                }
+                match &a[0] {
+                    LispVal::Str(key) => {
+                        let mut v = self.json_get_str(key)?;
+                        let t = self.local_idx("__jgs_miss");
+                        v.push(Instruction::LocalTee(t));
+                        v.push(Instruction::I64Eqz);
+                        v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                        v.push(Instruction::I64Const(TAG_NIL));
+                        v.push(Instruction::Else);
+                        v.push(Instruction::LocalGet(t));
+                        // (2026-10-12) Hit branch must TAG the raw packed
+                        // span — same as near/json_get_str below. It used to
+                        // return the untagged (len<<32|ptr), so downstream
+                        // tagged-string consumers (u128 parse, str ops) saw
+                        // garbage tag bits and trapped at the tag check.
+                        v.extend(self.emit_tag_str());
+                        v.push(Instruction::End);
+                        Ok(v)
+                    }
+                    _ => Err("near/json_get_str_opt: key must be a string literal".into()),
                 }
             }
             "near/json_get_str" => {

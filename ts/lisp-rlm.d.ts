@@ -119,6 +119,7 @@ declare const u128: {
 // Free-function u128 spellings (u128Add → u128/add etc). Args `any`:
 // they coerce both NUM (bigint literal / param) and STR decimal strings.
 declare function u128Add(a: any, b: any): string;
+declare function u128FromStr(v: string): string;
 declare function u128Sub(a: any, b: any): string;
 declare function u128Mul(a: any, b: any): string;
 declare function u128MulDiv(a: any, b: any, d: any): string;

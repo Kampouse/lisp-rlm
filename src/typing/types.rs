@@ -175,6 +175,12 @@ const KNOWN_NEAR_FUNCS: &[&str] = &[
     // JSON convenience builtins
     "json_get_int",
     "json_get_str",
+    "json_get_str_opt",
+    // Typed u128 input read (2026-10-12, money seal SOURCE — hardened
+    // parser, writes a (lo,hi) limb pair; checker: types.rs json-get-u128
+    // arrow). Missing here made near/json_get_u128 fail the scope check
+    // ("undefined variable") even though the emitter implements it.
+    "json_get_u128",
     "json_return_int",
     "json_return_str",
 ];
@@ -1159,6 +1165,14 @@ impl TcEnv {
             env.insert_mono(
                 "u128/from-i64".into(),
                 TcType::Arrow(vec![int_ty], Box::new(str_ty.clone())),
+            );
+            // u128/from_str : str → str — the hardened string→money door
+            // (traps on junk); missing entry made `seal(v)` infer generic
+            // and (u128/add pos (seal ...)) die with "str ≠ int"
+            // (clmm, 2026-10-12)
+            env.insert_mono(
+                "u128/from_str".into(),
+                TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
             );
             env.insert_mono(
                 "u128/to-i64".into(),

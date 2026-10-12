@@ -5116,7 +5116,7 @@ pub fn eval_near_builtin_match(name: &str) -> bool {
         // ── near/* iteration ──
         | "near/iter_prefix" | "near/iter_range" | "near/iter_next"
         // ── near/* JSON helpers ──
-        | "near/json_get_int" | "near/json_get_str"
+        | "near/json_get_int" | "near/json_get_str" | "near/json_get_str_opt"
         | "near/json_return_int" | "near/json_return_str"
         // ── Mock contract registry ──
         | "near-register" | "near-register-source" | "near-contracts"
@@ -6051,6 +6051,7 @@ fn eval_near_builtin(
         // ═══════════════════════════════════════════════════════════════
         "near/json_get_int" => Some(Ok(LispVal::Num(0))),
         "near/json_get_str" => Some(Ok(LispVal::Str(String::new()))),
+        "near/json_get_str_opt" => Some(Ok(LispVal::Nil)),
         "near/json_return_int" => Some(Ok(LispVal::Num(0))),
         "near/json_return_str" => Some(Ok(LispVal::Num(0))),
 
