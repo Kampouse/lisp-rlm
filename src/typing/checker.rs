@@ -3665,7 +3665,8 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
 /// reported as a normal compile error instead of a deep-stack thread panic
 /// (which would show as opaque `Any { .. }`).
 pub fn check_bare_json_get_result(exprs: &[LispVal]) -> Result<(), String> {
-    const BARE_OPS: [&str; 8] = [
+    const BARE_OPS: [&str; 9] = [
+        "near/json_get_str_opt",
         "near/json_get_str",
         "near/json_get_int",
         "near/json_get_u128",

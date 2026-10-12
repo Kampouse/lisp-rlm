@@ -230,3 +230,18 @@ fn ts_percent_compiles() {
     // in tests/test_api_sweep.rs matrix_ts_percent_js_semantics.
     compile("export function m(): number { return -7 % 2; }\n");
 }
+
+#[test]
+fn interface_decl_reusable_shape() {
+    // (2026-10-12) `interface X { ... }` registers in TYPE_ALIASES like
+    // `type X = {...}` — reusable across functions, optional fields
+    // lower to json_get_str_opt (NIL on miss).
+    let out = ts_to_lisp_source(
+        "interface EscrowArgs { buyer: string; memo?: string; amt: number }\n\
+         export function a(x: EscrowArgs): string { return x.memo; }\n\
+         export function b(x: EscrowArgs): string { return x.buyer; }",
+    )
+    .expect("interface + two fns must lower");
+    assert!(out.contains("json_get_str_opt \"memo\""), "opt prop -> json_get_str_opt, got:\n{out}");
+    assert!(out.contains("json_get_str \"buyer\""), "required prop stays plain, got:\n{out}");
+}

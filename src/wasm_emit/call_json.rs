@@ -76,6 +76,36 @@ impl WasmEmitter {
                     _ => Err("near/json_get_arr key must be a string literal".into()),
                 }
             }
+            "near/json_get_str_opt" => {
+                // (2026-10-12) Optional param prop (TS `prop?: string`):
+                // NIL-on-miss so callers can distinguish absent from "".
+                // Same emission as near/json_get_str 1-arg + miss gate.
+                if a.is_empty() {
+                    return Err("near/json_get_str_opt requires a string key argument".into());
+                }
+                if a.len() >= 2 {
+                    if !matches!(&a[0], LispVal::Str(_)) {
+                        return Err("jsonGetStrOpt(key, json): key must be a string literal".into());
+                    }
+                    let args2: Vec<LispVal> = a[..2].to_vec();
+                    return self.call_json("json-get-str?", &args2);
+                }
+                match &a[0] {
+                    LispVal::Str(key) => {
+                        let mut v = self.json_get_str(key)?;
+                        let t = self.local_idx("__jgs_miss");
+                        v.push(Instruction::LocalTee(t));
+                        v.push(Instruction::I64Eqz);
+                        v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                        v.push(Instruction::I64Const(TAG_NIL));
+                        v.push(Instruction::Else);
+                        v.push(Instruction::LocalGet(t));
+                        v.push(Instruction::End);
+                        Ok(v)
+                    }
+                    _ => Err("near/json_get_str_opt: key must be a string literal".into()),
+                }
+            }
             "near/json_get_str" => {
                 if a.is_empty() {
                     return Err("near/json_get_str requires a string key argument".into());
