@@ -70,7 +70,7 @@ fn has_near_mock() -> bool {
 fn raw_object_value_json_get_str_compiles() {
     let src = r#"
 (define (cast resp)
-    (json-get-str "b.title" resp))
+    (default (json-get-str "b.title" resp) ""))
 "#;
     let wasm = compile_near(src).expect("dot-path through raw object compiles");
     let wat = to_wat(&wasm);
@@ -90,7 +90,7 @@ fn nm_raw_object_value_returns_raw_span() {
     // pinned by nm_miss_over_*_span below.)
     let src = r#"
 (define (main)
-  (json-get-str "cfg" (near/json_get_str "data")))
+  (default (json-get-str "cfg" (near/json_get_str "data")) ""))
 "#;
     let out = run_near_mock(
         src,
@@ -111,7 +111,7 @@ fn nm_raw_array_value_returns_raw_span() {
     }
     let src = r#"
 (define (main)
-  (json-get-str "tags" (near/json_get_str "cfg")))
+  (default (json-get-str "tags" (near/json_get_str "cfg")) ""))
 "#;
     let out = run_near_mock(
         src,
@@ -133,7 +133,7 @@ fn nm_empty_object_value() {
     // Depth-1 close on the FIRST byte: {} must terminate the span.
     let src = r#"
 (define (main)
-  (json-get-str "x" "{\"x\":{},\"y\":2}"))
+  (default (json-get-str "x" "{\"x\":{},\"y\":2}") ""))
 "#;
     let out = run_near_mock(src, "_run", "{}");
     let ret = extract_return(&out).expect("should have return value");
@@ -152,7 +152,7 @@ fn nm_dot_path_through_raw_span() {
     // is a full JSON value), remainder via the buffer dot-path scanner.
     let src = r#"
 (define (main)
-  (json-get-str "server.port" (near/json_get_str "cfg")))
+  (default (json-get-str "server.port" (near/json_get_str "cfg")) ""))
 "#;
     let out = run_near_mock(src, "_run", r#"{"cfg": {"server": {"port": "9090"}}}"#);
     let ret = extract_return(&out).expect("should have return value");
@@ -166,7 +166,7 @@ fn nm_array_index_through_raw_span() {
     }
     let src = r#"
 (define (main)
-  (json-get-str "items[1].name" (near/json_get_str "data")))
+  (default (json-get-str "items[1].name" (near/json_get_str "data")) ""))
 "#;
     let out = run_near_mock(
         src,
@@ -187,7 +187,7 @@ fn nm_string_encoded_still_works() {
     // calling convention — callers that escaped the object themselves).
     let src = r#"
 (define (main)
-  (json-get-str "cfg" "{\"cfg\":{\"server\":{\"port\":\"80\"}}}"))
+  (default (json-get-str "cfg" "{\"cfg\":{\"server\":{\"port\":\"80\"}}}") ""))
 "#;
     let out = run_near_mock(src, "_run", "{}");
     let ret = extract_return(&out).expect("should have return value");
@@ -214,7 +214,7 @@ fn nm_miss_over_object_span_returns_empty() {
     }
     let src = r#"
 (define (main)
-  (json-get-str "nope" (near/json_get_str "cfg")))
+  (default (json-get-str "nope" (near/json_get_str "cfg")) ""))
 "#;
     let out = run_near_mock(src, "_run", r#"{"cfg": {"server": {"port": "XYZ"}}}"#);
     assert!(
@@ -232,7 +232,7 @@ fn nm_miss_over_string_span_returns_empty() {
     // scan iteration takes the depth != 1 path (the old corruption source).
     let src = r#"
 (define (main)
-  (json-get-str "zzz" (near/json_get_str "cfg")))
+  (default (json-get-str "zzz" (near/json_get_str "cfg")) ""))
 "#;
     let out = run_near_mock(src, "_run", r#"{"cfg": "hello world 12345"}"#);
     assert!(
@@ -249,7 +249,7 @@ fn nm_deep_key_hit_still_works() {
     // The fix must not break deep matches: key sits past a nested object.
     let src = r#"
 (define (main)
-  (json-get-str "name" (near/json_get_str "info")))
+  (default (json-get-str "name" (near/json_get_str "info")) ""))
 "#;
     let out = run_near_mock(src, "_run", r#"{"info": {"name": "ABCDEFGHI"}}"#);
     let ret = extract_return(&out).expect("deep hit should return a value");
