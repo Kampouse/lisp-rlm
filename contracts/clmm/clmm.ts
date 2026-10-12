@@ -4,7 +4,7 @@
 // u128Add/Sub/Mul/MulDiv/Div + u128Lt/Gt/Eq. Ticks are small numbers used
 // only as loop counters / keys; Q32 fixed point: sp = price^0.5 * 2^32.
 
-type U = string; // u128 decimal string
+type U = Yocto; // phantom money seal: only provable u128 sources mint it
 
 const Q32: U = "4294967296"; // 2^32
 const TICK_OFF: number = 50000;
@@ -13,8 +13,12 @@ const POOL0 = '{"sp":"3221225472","tick":"0","liq":"0","ts":"0","tc":"0","bal0":
 
 // ── small integer helpers (lattice Num domain) ──
 function num(x: any): number { return strToNum(x); }
-function s(n: any): U { return toStr(n); }
+function s(n: any): string { return toStr(n); }
 function s128(n: number): U { return u128FromNum(n); }
+// Explicit conversion (the only string->money door): validates the
+// decimal parse via the u128 host (traps on junk) and returns an
+// op result, which carries the seal.
+function seal(v: string): U { return u128Add(v, "0"); }
 
 // ── pool record ──
 function poolRec(): any {
@@ -29,17 +33,17 @@ function tickKey(tick: number, field: number): string {
 }
 // signed net liquidity as sign-magnitude pair: field 0 = pos mag, field 2 = neg mag
 function netPos(tick: number): U {
-  return near.storageGet(tickKey(tick, 0)) ?? "0";
+  return seal(near.storageGet(tickKey(tick, 0)) ?? "0");
 }
 function netNeg(tick: number): U {
-  return near.storageGet(tickKey(tick, 2)) ?? "0";
+  return seal(near.storageGet(tickKey(tick, 2)) ?? "0");
 }
-function netSet(tick: number, pos: U, neg: U): void {
+function netSet(tick: number, pos: U, neg: U): number {
   near.storageSet(tickKey(tick, 0), pos);
   near.storageSet(tickKey(tick, 2), neg);
 }
 // net += liq (signed)
-function netAdd(tick: number, liq: U): void {
+function netAdd(tick: number, liq: U): number {
   let pos: U = netPos(tick);
   let neg: U = netNeg(tick);
   if (u128IsZero(neg)) {
@@ -51,7 +55,7 @@ function netAdd(tick: number, liq: U): void {
   }
 }
 // net -= liq (signed)
-function netSub(tick: number, liq: U): void {
+function netSub(tick: number, liq: U): number {
   let pos: U = netPos(tick);
   let neg: U = netNeg(tick);
   if (u128IsZero(pos)) {
@@ -74,8 +78,9 @@ function netApply(liq: U, tick: number): U {
   }
   return u128Sub(liq, neg);
 }
-function tickNet(tick: number): U {
-  // display form: pos - neg, "-" prefix when negative
+function tickNet(tick: number): string {
+  // display form: pos - neg, "-" prefix when negative (NOT money —
+  // the sign-prefixed shape is display text by design)
   let pos: U = netPos(tick);
   let neg: U = netNeg(tick);
   if (u128IsZero(neg)) {
@@ -87,7 +92,7 @@ function tickNet(tick: number): U {
   return u128Sub(pos, neg);
 }
 function tickGross(tick: number): U {
-  return near.storageGet(tickKey(tick, 1)) ?? "0";
+  return seal(near.storageGet(tickKey(tick, 1)) ?? "0");
 }
 
 // ── u128 arithmetic (a*b/c full precision; div0 aborts in host) ──
@@ -162,12 +167,12 @@ function dxForDrop(liq: U, sp: U, spTgt: U): U {
 function accCarry() {
   let p = poolRec();
   let now: U = near.blockTimestamp();
-  let last: U = jsonGetStr("ts", p);
+  let last: U = jsonGetU128("ts", p);
   if (u128Gt(now, last)) {
     // cum = tc + (tick+BIAS) * (now - last)
     let d: U = u128Sub(now, last);
     let rate: U = s128(num(jsonGet("tick", p)) + TICK_OFF);
-    let cum: U = u128Add(jsonGetStr("tc", p), u128Mul(rate, d));
+    let cum: U = u128Add(jsonGetU128("tc", p), u128Mul(rate, d));
     savePool(jsonSet(jsonSet(p, "ts", now), "tc", cum));
   } else {
     savePool(jsonSet(p, "ts", now));
@@ -189,25 +194,25 @@ export function initialize(sp: U, tick: number, t0: string, t1: string): string 
 
 function balAdd0(amt: U) {
   let p = poolRec();
-  savePool(jsonSet(p, "bal0", u128Add(jsonGetStr("bal0", p), amt)));
+  savePool(jsonSet(p, "bal0", u128Add(jsonGetU128("bal0", p), amt)));
 }
 function balAdd1(amt: U) {
   let p = poolRec();
-  savePool(jsonSet(p, "bal1", u128Add(jsonGetStr("bal1", p), amt)));
+  savePool(jsonSet(p, "bal1", u128Add(jsonGetU128("bal1", p), amt)));
 }
 function balSub0(amt: U) {
   let p = poolRec();
-  if (u128Lt(jsonGetStr("bal0", p), amt)) {
+  if (u128Lt(jsonGetU128("bal0", p), amt)) {
     near.abort("insufficient pool bal0");
   }
-  savePool(jsonSet(p, "bal0", u128Sub(jsonGetStr("bal0", p), amt)));
+  savePool(jsonSet(p, "bal0", u128Sub(jsonGetU128("bal0", p), amt)));
 }
 function balSub1(amt: U) {
   let p = poolRec();
-  if (u128Lt(jsonGetStr("bal1", p), amt)) {
+  if (u128Lt(jsonGetU128("bal1", p), amt)) {
     near.abort("insufficient pool bal1");
   }
-  savePool(jsonSet(p, "bal1", u128Sub(jsonGetStr("bal1", p), amt)));
+  savePool(jsonSet(p, "bal1", u128Sub(jsonGetU128("bal1", p), amt)));
 }
 
 function doAddLiquidity(lower: number, upper: number, liq: U): string {
@@ -219,7 +224,7 @@ function doAddLiquidity(lower: number, upper: number, liq: U): string {
   let p = poolRec();
   let tick = num(jsonGet("tick", p));
   if (tick >= lower && tick < upper) {
-    savePool(jsonSet(p, "liq", u128Add(jsonGetStr("liq", p), liq)));
+    savePool(jsonSet(p, "liq", u128Add(jsonGetU128("liq", p), liq)));
   }
   return liq;
 }
@@ -233,10 +238,10 @@ function doRemoveLiquidity(lower: number, upper: number, liq: U): string {
   let p = poolRec();
   let tick = num(jsonGet("tick", p));
   if (tick >= lower && tick < upper) {
-    if (u128Lt(jsonGetStr("liq", p), liq)) {
+    if (u128Lt(jsonGetU128("liq", p), liq)) {
       near.abort("liq underflow");
     }
-    savePool(jsonSet(p, "liq", u128Sub(jsonGetStr("liq", p), liq)));
+    savePool(jsonSet(p, "liq", u128Sub(jsonGetU128("liq", p), liq)));
   }
   return liq;
 }
@@ -248,8 +253,8 @@ export function removeLiquidity(lower: number, upper: number, liq: U): string {
 // one in-range fill of dx at current liquidity; updates sp, returns dy
 function swap0Fill(dx: U): U {
   let p = poolRec();
-  let sp: U = jsonGetStr("sp", p);
-  let liq: U = jsonGetStr("liq", p);
+  let sp: U = jsonGetU128("sp", p);
+  let liq: U = jsonGetU128("liq", p);
   // newSp = sp*L / (L + dx*sp/Q32)
   let denom: U = u128Add(liq, muldiv(dx, sp, Q32));
   let newSp: U = muldiv(sp, liq, denom);
@@ -265,11 +270,11 @@ function swap0Core(dx: U): string {
   let remaining: U = dx;
   while (!u128IsZero(remaining)) {
     let p = poolRec();
-    let liq: U = jsonGetStr("liq", p);
+    let liq: U = jsonGetU128("liq", p);
     if (u128IsZero(liq)) {
       break;
     }
-    let sp: U = jsonGetStr("sp", p);
+    let sp: U = jsonGetU128("sp", p);
     let tick = num(jsonGet("tick", p));
     let spBelow: U = spAtTick(tick); // lower edge of current tick cell
     if (!u128Lt(spBelow, sp)) {
@@ -293,7 +298,7 @@ function swap0Core(dx: U): string {
   }
   // recompute final tick from new sqrtP (fixes drift from per-cell stepping)
   let p = poolRec();
-  savePool(jsonSet(p, "tick", s(tickFromSp(jsonGetStr("sp", p), num(jsonGet("tick", p))))));
+  savePool(jsonSet(p, "tick", s(tickFromSp(jsonGetU128("sp", p), num(jsonGet("tick", p))))));
   return out;
 }
 
@@ -301,8 +306,8 @@ function swap0Core(dx: U): string {
 function swap1Core(dyIn: U): string {
   accCarry();
   let p = poolRec();
-  let sp: U = jsonGetStr("sp", p);
-  let liq: U = jsonGetStr("liq", p);
+  let sp: U = jsonGetU128("sp", p);
+  let liq: U = jsonGetU128("liq", p);
   if (u128IsZero(liq)) {
     near.abort("no liquidity");
   }
@@ -343,9 +348,9 @@ export function removePosition(id: number): string {
   if (rec == "") {
     near.abort("no such position");
   }
-  let freed = doRemoveLiquidity(num(jsonGetStr("lo", rec)), num(jsonGetStr("up", rec)), jsonGetStr("lq", rec));
-  let a0: U = jsonGetStr("a0", rec);
-  let a1: U = jsonGetStr("a1", rec);
+  let freed = doRemoveLiquidity(num(jsonGetStr("lo", rec)), num(jsonGetStr("up", rec)), jsonGetU128("lq", rec));
+  let a0: U = jsonGetU128("a0", rec);
+  let a1: U = jsonGetU128("a1", rec);
   balSub0(a0);
   balSub1(a1);
   near.storageSet("clmm:p:" + s(id), "");
@@ -365,9 +370,9 @@ export function position(id: number): string {
 export function twapSnap(): string {
   accCarry();
   let p = poolRec();
-  near.storageSet("clmm:snap_ts", jsonGetStr("ts", p));
-  near.storageSet("clmm:snap_tc", jsonGetStr("tc", p));
-  return jsonGetStr("tc", p);
+  near.storageSet("clmm:snap_ts", jsonGetU128("ts", p));
+  near.storageSet("clmm:snap_tc", jsonGetU128("tc", p));
+  return jsonGetU128("tc", p);
 }
 
 // arithmetic-mean biased tick since last snap; subtract BIAS for true mean.
@@ -383,7 +388,7 @@ export function twapTick(): string {
   let p = poolRec();
   // pure = tc + (tick+BIAS) * (now - ts)
   let rate: U = s128(num(jsonGet("tick", p)) + TICK_OFF);
-  let pure: U = u128Add(jsonGetStr("tc", p), u128Mul(rate, u128Sub(now, jsonGetStr("ts", p))));
+  let pure: U = u128Add(jsonGetU128("tc", p), u128Mul(rate, u128Sub(now, jsonGetU128("ts", p))));
   return s(num(u128Sub(u128Div(u128Sub(pure, snapTc), dt), s128(TICK_OFF))));
 }
 
@@ -437,7 +442,7 @@ function msgSplit1(msg: string): string[] {
 //   "swap1:<minOut>:<deadline>"   -> same, other direction
 export function ft_on_transfer(): string {
   let sender = near.jsonGetStr("sender_id") ?? "";
-  let amt: U = near.jsonGetStr("amount") ?? "0";
+  let amt: U = near.jsonGetU128("amount") ?? "0";
   let msg = near.jsonGetStr("msg") ?? "";
   let from = near.predecessorAccountId();
   near.log("DBG from=[" + from + "] t0=[" + jsonGetStr("t0", poolRec()) + "] t1=[" + jsonGetStr("t1", poolRec()) + "]");
@@ -463,8 +468,10 @@ export function ft_on_transfer(): string {
       i = i + 1;
     }
     if (colon < 1) { near.abort("ERR_MSG"); }
-    let minOut: U = strSlice(rest, 0, colon);
-    let deadline: U = strSlice(rest, colon + 1, strLength(rest));
+    // memo text parsed at runtime — strSlice is NOT a provable source;
+    // seal() is the explicit conversion (traps on junk via the u128 parse)
+    let minOut: U = seal(strSlice(rest, 0, colon));
+    let deadline: U = seal(strSlice(rest, colon + 1, strLength(rest)));
     if (u128Gt(near.blockTimestamp(), deadline)) {
       near.abort("ERR_DEADLINE");
     }
@@ -506,8 +513,8 @@ export function ft_on_transfer(): string {
 }
 
 // ── views ──
-export function getPrice(): string { return jsonGetStr("sp", poolRec()); }
+export function getPrice(): string { return jsonGetU128("sp", poolRec()); }
 export function getTick(): string { return jsonGet("tick", poolRec()); }
-export function getLiq(): string { return jsonGetStr("liq", poolRec()); }
+export function getLiq(): string { return jsonGetU128("liq", poolRec()); }
 export function viewSpAtTick(tick: number): string { return spAtTick(tick); }
 export function viewTickNet(tick: number): string { return tickNet(tick); }

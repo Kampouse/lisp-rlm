@@ -3693,7 +3693,16 @@ pub fn check_bare_json_get_result(exprs: &[LispVal]) -> Result<(), String> {
                         }
                         return;
                     }
-                    if BARE_OPS.contains(&head.as_str()) && !in_default {
+                    // Arity-aware (2026-10-12): the gate exists for INPUT
+                    // reads — 1-arg (op "k") returns NIL on miss, which
+                    // silently flows into math as zero. Helper-form reads
+                    // with an explicit buffer argument ((op "k" buf), 3+
+                    // elements) scan a given JSON string whose missing-key
+                    // contract is "" — the buffer itself is the custody
+                    // point, so they are exempt. json-get (Lisp-side
+                    // (json-get "k" buf)) never was in the list.
+                    let helper_form = list.len() >= 3;
+                    if BARE_OPS.contains(&head.as_str()) && !in_default && !helper_form {
                         let key = list
                             .get(1)
                             .map(|v| v.to_string())
