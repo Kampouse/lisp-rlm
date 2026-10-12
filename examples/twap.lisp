@@ -53,6 +53,11 @@
   (near/log m)
   (near/abort m))
 
+;; Money-safe param read: missing key => abort with ERR_ARGS (never nil/0).
+(define (arg k)
+  (let ((v (default (near/json_get_str k) "")))
+    (if (= v "") (fail "ERR_ARGS") v)))
+
 ;; storage keys — "o:" + id + ":" + field
 (define (k-of id f) (str-cat "o:" (str-cat id (str-cat ":" f))))
 
@@ -123,7 +128,7 @@
 ;; ── tick — the permissionless engine ──
 ;; One call advances the order by ONE slice (swap or expiry).
 (define (tick)
-  (let ((id (default (near/json_get_str "order_id") ""))
+  (let ((id (arg "order_id"))
         (h  (near/block_height))
         (ex (near/predecessor_account_id)))
     (let ((seller (g id "seller" "")))
@@ -360,7 +365,7 @@
 )
 
 (define (cancel)
-  (let ((id (default (near/json_get_str "order_id") ""))
+  (let ((id (arg "order_id"))
         (who (near/predecessor_account_id))
         (h (near/block_height)))
     (let ((seller (g id "seller" "")))
@@ -391,7 +396,7 @@
 ;; Callable once every slice has been consumed (nx == ns) — expired
 ;; slices carry their refund in rx.
 (define (finalize)
-  (let ((id (default (near/json_get_str "order_id") "")))
+  (let ((id (arg "order_id")))
     (let ((seller (g id "seller" "")))
       (if (= seller "")
           (fail "ERR_NO_ORDER")
@@ -418,7 +423,7 @@
 
 ;; ── view ──
 (define (get-order)
-  (let ((id (default (near/json_get_str "order_id") "")))
+  (let ((id (arg "order_id")))
     (let ((seller (g id "seller" "")))
       (if (= seller "")
           (near/return "null")
