@@ -306,7 +306,9 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         // the empty state, else the stale pre-wipe map resurrects on the
         // next load. Fresh-state read-only calls still skip the write.
         let had_state_file = std::path::Path::new(state_path).exists();
-        if !st.storage.is_empty() || had_state_file {
+        // Failed tx must not persist partial writes — a stale-wasm failure
+        // would poison state.bin and every later run loads it as pre-state.
+        if outcome.ok && (!st.storage.is_empty() || had_state_file) {
             let mut keys: Vec<(&Vec<u8>, &Vec<u8>)> = st.storage.iter().collect();
             keys.sort();
             println!("💾 Saved {} keys", keys.len());
