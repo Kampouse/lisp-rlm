@@ -1930,7 +1930,12 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
-            "u128/is-zero" => {
+            "u128/is-zero" | "u128/is_zero" => {
+                // u128/is_zero aliased here (2026-10-11, twap_tick): the
+                // underscore spelling previously fell through call.rs to the
+                // LEGACY address-based call_u128, which loaded memory at the
+                // untagged tagged-string → guard read garbage → div-by-zero
+                // trap in dt=0 scenarios.
                 if a.len() != 1 {
                     return Err("u128/is-zero: need 1 arg".into());
                 }

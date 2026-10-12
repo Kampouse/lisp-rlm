@@ -49,6 +49,7 @@ impl WasmEmitter {
                 | "u128/from-i64"
                 | "u128/to-i64"
                 | "u128/is-zero"
+                | "u128/is_zero"
         ) {
             try_domain!(self.call_u128(op, a));
         }
