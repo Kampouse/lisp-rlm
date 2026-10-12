@@ -1480,7 +1480,14 @@ fn compile_near_from_exprs_with_map_inner(
     crate::typing::check_bare_json_get_result(exprs)?;
     em.print_gas_table();
 
-    let wasm = em.finish("_run");
+    let mut wasm = em.finish("_run");
+
+    // near:params custom section — the source path appends this after
+    // finish() (compile_near_with_map_inner_labelled); mirror it here so
+    // source vs exprs stay byte-identical (pipeline-parity pins assert
+    // this). No-op when collect_param_keys finds no param reads.
+    let keys = crate::wasm_emit::param_map::collect_param_keys(exprs);
+    crate::wasm_emit::param_map::append_params_section(&mut wasm, &keys);
     let mut map = serde_json::Map::new();
     for f in &em.funcs {
         if let Some(s) = em.fn_sources.get(&f.name) {
