@@ -1,7 +1,10 @@
+(* Provenance: probe kb91 + kb92 (2026-10-11, /tmp/kb91 /tmp/kb92 EXIT:0),
+   promoted. All proofs deterministic (rule/blast/linarith/simp/arith) --
+   no auto_sledgehammer. *)
 (* Provenance: probe kb91 (2026-10-11, /tmp/kb91 EXIT:0), promoted. All proofs
    deterministic (rule/blast/linarith/simp) -- no auto_sledgehammer. *)
 theory CLMM_Route
-  imports CLMM_Escrow
+  imports CLMM_Escrow CLMM_Curve
 begin
 
 section \<open>Routes: multi-token composition of escrow operations (gap 2, rung B)\<close>
@@ -99,5 +102,62 @@ theorem route_genesis_zero_sum:
   shows "balance a' + balance b'
        = (inflow a' + inflow b') - (outflow a' + outflow b')"
   using route_conservation init_ok init_ok ap by blast
+
+
+section \<open>kb92: per-hop amount binding -- the curve consumes the trade\<close>
+
+text \<open>A forward swap pays the GROSS book: moving the price point from p to
+  p+d costs nqgross (p+d) - nqgross p. The reverse swap is credited at the
+  NET book: it returns nqnet (p+d) - nqnet p. The fee-slack law (kb90)
+  rearranges exactly to: the reverse never returns more than the forward
+  paid -- the shortfall is the accumulated fee. This is cycle_loses, the
+  nat twin of the AFP roundtrip story (quote_net/quote_gross).\<close>
+
+context curve_ctx
+begin
+
+lemma net_le_gross: "nqnet p \<le> nqgross p"
+proof (cases "p \<le> G1")
+  case True
+  show ?thesis
+    unfolding nqnet_def nqgross_def using True book0_le by simp
+next
+  case False
+  hence g1p: "G1 < p" by simp
+  have m0: "Q0 * G1 \<le> Qg0 * G1" by (rule mult_le_mono) (simp_all add: book0_le)
+  have m1: "Q1 * (p - G1) \<le> Qg1 * (p - G1)"
+    by (rule mult_le_mono) (simp_all add: book1_le)
+  have n: "nqnet p = Q0 * G1 + Q1 * (p - G1)"
+    unfolding nqnet_def using g1p by simp
+  have g: "nqgross p = Qg0 * G1 + Qg1 * (p - G1)"
+    unfolding nqgross_def using g1p by simp
+  show ?thesis using n g m0 m1 by linarith
+qed
+
+definition swapfwd :: "nat \<Rightarrow> nat \<Rightarrow> nat" where
+  "swapfwd p d = nqgross (p + d) - nqgross p"
+
+definition swapback :: "nat \<Rightarrow> nat \<Rightarrow> nat" where
+  "swapback p d = nqnet (p + d) - nqnet p"
+
+text \<open>Roundtrip through one pool: buy d, sell d back immediately; the
+  return is at most the payment.\<close>
+
+theorem cycle_loses:
+  assumes le: "p \<le> p'"
+  shows "nqnet p' - nqnet p \<le> nqgross p' - nqgross p"
+proof -
+  have S: "nqnet p' + nqgross p \<le> nqgross p' + nqnet p"
+    by (rule slack_mono [OF le])
+  have B0: "nqnet p \<le> nqgross p" by (rule net_le_gross)
+  have B1: "nqnet p' \<le> nqgross p'" by (rule net_le_gross)
+  show ?thesis using S B0 B1 by arith
+qed
+
+corollary roundtrip_bound: "swapback p d \<le> swapfwd p d"
+  unfolding swapback_def swapfwd_def
+  by (rule cycle_loses) simp
+
+end
 
 end

@@ -1,3 +1,6 @@
+(* Promoted from probe kb90 (2026-10-11): /tmp/kb90, EXIT:0. Locale conversion
+   (curve_ctx) for kb92: 2026-10-11. Proofs are deterministic
+   (simp/linarith/arith/rule) -- no auto_sledgehammer. *)
 (* Promoted from probe kb90 (2026-10-11): /tmp/kb90, EXIT:0. Proofs are
    deterministic (simp/linarith/arith/rule) -- no auto_sledgehammer. *)
 theory CLMM_Curve
@@ -21,7 +24,7 @@ text \<open>Provenance: AFP CLMM_Description quote_net/quote_gross (gen_token =
   -- never negative. v1: two cells, uniform fee 997/1000 (mirror of gen.py
   3e15/1e18), grid edge G1 with G0 = 0.\<close>
 
-context
+locale curve_ctx =
   fixes Q0 Q1 :: nat                \<comment> \<open>net books per cell (gen.py Q pat)\<close>
     and Qg0 Qg1 :: nat              \<comment> \<open>gross books (fee-inflated, ceil via muldiv)\<close>
     and G1 :: nat                   \<comment> \<open>inner grid edge; G0 = 0\<close>
