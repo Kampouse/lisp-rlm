@@ -786,6 +786,14 @@ fn pipeline_from_exprs(
         crate::typing::gas_fill::expand_gas_defaults(&mut exprs)?;
     }
 
+    // Trivial u128 wrapper inlining (native-chain phase 1, layer 2):
+    // rewrite `(add a b)`-style wrapper CALLS to the bare u128 op BEFORE
+    // the type check and the emitter's limb-eligibility pre-scan — all
+    // downstream layers then agree on op forms. Semantics-preserving
+    // (arg order/eval counts identical; try/assert-raises subtrees and
+    // value-used/shadowed names skipped — see u128_inline.rs).
+    crate::u128_inline::inline_trivial_u128(&mut exprs);
+
     // Promise single-use lint (docs/promise-single-use.md Tier 1) — runs on
     // pre-desugar shapes? No: AFTER desugar, so sugar-expanded bodies are
     // covered too; consuming calls are host ops desugar leaves intact.
