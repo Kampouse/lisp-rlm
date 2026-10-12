@@ -2823,7 +2823,13 @@ pub(crate) fn run_scenario_opts(
     // persist final state (single write at end of scenario)
     let st = state.lock().unwrap();
     let encoded = bincode::serialize(&st.storage)?;
-    std::fs::write(&state_path, encoded)?;
+    // Only persist on a fully-green run — a failing scenario's partial state
+    // would poison the next run's pre-state (stale-wasm cascade).
+    if fail == 0 {
+        std::fs::write(&state_path, encoded)?;
+    } else {
+        println!("  (state not saved — {} failing step(s))", fail);
+    }
     // state-budget check (#8): assert_state_under kills runaway storage
     // growth (the TOO_LARGE_CONTRACT_STATE death: >~200KB view_state makes
     // the live contract unobservabale — 431KB went unnoticed for 14 days).
