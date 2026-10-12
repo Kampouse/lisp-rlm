@@ -6545,12 +6545,18 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                             // dot-path scanner. Buffer reads are ""-on-miss
                             // (legacy contract) — `??` on nested paths is
                             // rejected in the Coalesce arm below.
+                            // (default … "") satisfies the bare-read money
+                            // gate while preserving the ""-on-miss contract.
                             let top = dotted[0].to_string();
                             let rest = dotted[1..].join(".");
                             return Ok(list(vec![
-                                Sym("json-get-str"),
-                                Str(rest),
-                                list(vec![Sym("near/json_get_str"), Str(top)]),
+                                Sym("default"),
+                                list(vec![
+                                    Sym("json-get-str"),
+                                    Str(rest),
+                                    list(vec![Sym("near/json_get_str"), Str(top)]),
+                                ]),
+                                Str(String::from("")),
                             ]));
                         }
                         // Object-param property read (`params.to`): the
@@ -6568,7 +6574,13 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                             .with(|s| s.borrow().iter().any(|x| x == id.name.as_str()))
                         {
                             let dotted: Vec<&str> = path.iter().rev().map(|s| s.as_str()).collect();
-                            let get = if dotted.len() == 1 {
+                            // (default … "") satisfies the bare-read money
+                            // gate: required string props miss to "" (legacy
+                            // contract); numeric leaves keep the str->num
+                            // decode below ("" ≈ 0, the pre-gate behavior).
+                            // Optional arms bypass `get` entirely (_opt /
+                            // json_get_int nil-on-miss by design).
+                            let raw_get = if dotted.len() == 1 {
                                 list(vec![
                                     Sym("near/json_get_str"),
                                     Str(dotted.join(".")),
@@ -6582,6 +6594,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                     list(vec![Sym("near/json_get_str"), Str(top)]),
                                 ])
                             };
+                            let get = list(vec![Sym("default"), raw_get, Str(String::from(""))]);
                             let leaf = if dotted.len() == 1 {
                                 OBJ_PARAM_PROPS.with(|s| {
                                     s.borrow()

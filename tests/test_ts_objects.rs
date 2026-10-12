@@ -169,8 +169,8 @@ fn object_param_numeric_prop_auto_decodes() {
         "export function f(u: { name: string; votes: number }): number {\n  return u.votes;\n}",
     );
     assert!(
-        out.contains(r#"(str->num (near/json_get_str "votes"))"#),
-        "annotated numeric prop auto str->num: {out}"
+        out.contains(r#"(str->num (default (near/json_get_str "votes") ""))"#),
+        "annotated numeric prop auto str->num (default-wrapped for the bare-read gate): {out}"
     );
 }
 
@@ -200,8 +200,8 @@ fn object_param_type_alias_resolves() {
         "type U = { name: string; votes: number };\nexport function f(u: U): number {\n  return u.votes;\n}",
     );
     assert!(
-        out.contains(r#"(str->num (near/json_get_str "votes"))"#),
-        "type alias resolves with numeric prop: {out}"
+        out.contains(r#"(str->num (default (near/json_get_str "votes") ""))"#),
+        "type alias resolves with numeric prop (default-wrapped for the bare-read gate): {out}"
     );
 }
 
