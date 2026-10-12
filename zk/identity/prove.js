@@ -79,7 +79,7 @@ async function main() {
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(
     input,
     "circuit_js/circuit.wasm",
-    "circuit_final.zkey"
+    "squad_circuit_final.zkey"
   );
 
   fs.writeFileSync("proof.json", JSON.stringify(proof, null, 2));
@@ -89,7 +89,7 @@ async function main() {
   console.log(`  public signals: [root, nullifier, claim]=${publicSignals.map(s => s.slice(0, 12) + "…").join(", ")}`);
 
   // ── 6. Verify locally (snarkjs) ──
-  const vkey = JSON.parse(fs.readFileSync("vkey.json"));
+  const vkey = JSON.parse(fs.readFileSync("squad_vkey.json"));
   const valid = await snarkjs.groth16.verify(vkey, publicSignals, proof);
   console.log(`\n${valid ? "✅ snarkjs verify: VALID" : "❌ snarkjs verify: INVALID"}`);
 

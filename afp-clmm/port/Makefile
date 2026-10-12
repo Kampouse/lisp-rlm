@@ -10,11 +10,16 @@ prove:            ## run every proof stage, exit 0 only if ALL GREEN
 escrow:           ## escrow leg: regenerate twins, compile, scenarios + mutation gate
 	python3 generators/gen_escrow.py
 	cd contracts/escrow/escrow && $(NC) build .
+	cd contracts/escrow/escrow/ts && $(NC) build .
 	cd contracts/escrow/ft && $(NC) build .
 	cd scenarios/lisp/escrow-ledger && rm -f state.bin && $(NM) scenario s.json
 	cd scenarios/lisp/ft-probe && rm -f state.bin && $(NM) scenario s.json
 	cd scenarios/lisp/ft-refund && rm -f state.bin && $(NM) scenario s.json
+	cd scenarios/lisp/lp-ledger && rm -f state.bin && $(NM) scenario s.json
 	cd scenarios/ts/escrow-probe && rm -f state.bin && $(NM) scenario s.json
+	cd scenarios/ts/lp-ts && rm -f state.bin && $(NM) scenario s.json
+	cd scenarios/lisp/lp-keyed && rm -f state.bin && $(NM) scenario s.json
+	cd scenarios/ts/lp-keyed && rm -f state.bin && $(NM) scenario s.json
 	python3 proof/mutate_escrow.py
 
 build-ts:         ## compile all TS twins (13 pool twins + escrow-ts)

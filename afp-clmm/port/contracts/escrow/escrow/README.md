@@ -6,8 +6,9 @@ file (`make regenerate` keeps the tree byte-identical).
 ## The law
 
 `afp-clmm/escrow/CLMM_Escrow.thy` (strict Isabelle, 0 sorries) defines
-`apply_op` over ops Deposit / Withdraw / SwapIn / SwapOut and proves
-`reachable_conservation` with no hypotheses: after every reachable step
+`apply_op` over ops Deposit / Withdraw / SwapIn / SwapOut / LpOpen /
+LpRemove and proves `reachable_conservation` with no hypotheses: after
+every reachable step
 
     sum(e:bal:*) + e:reserve == e:in − e:out
 
@@ -22,9 +23,11 @@ wasm (byte-lockstep).
 | `deposit` | Deposit u a | `0 < a` | credit u, `e:in += a` (a = attached) |
 | `withdraw` | Withdraw u a | `0 < a ∧ a <= bal u` | debit u, `e:out += a` (a = ledger arg) |
 | `swap_in` | SwapIn u a | `a <= bal u` | bal→reserve (a = ledger arg) |
-| `swap_out` | SwapOut u a | `a <= reserve` | reserve→bal (a = ledger arg) |
+| `swap_out` | SwapOut u a | `a <= reserve − lp_pool` | reserve→bal; LP slice protected (a = ledger arg) |
+| `lp_open` | LpOpen u a | `0 < a ∧ a <= bal u ∧ 0 < m` | bal→reserve; mint `m = a` (fresh pool) else `a·T/pool`; shares += m |
+| `lp_remove` | LpRemove u s | `0 < s ∧ s <= shares u ∧ 0 < v ∧ v <= reserve` | payout `v = s·pool/T` (floor, dust stays pooled); pool −= v, T −= s, `e:out += v` |
 | `ft_on_transfer` | Deposit u a | — | NEP-141 two-hop credit (a = msg amount) |
-| `get_balance*`, `get_reserve`, `get_inflow`, `get_outflow` | views | — | raw key reads |
+| `get_balance*`, `get_reserve`, `get_inflow`, `get_outflow`, `get_lp_pool`, `get_supply`, `get_shares_of` | views | — | raw key reads |
 
 Only `deposit` consumes an attached balance. Attaching on
 withdraw/swap_in/swap_out would add untracked value and break
@@ -37,10 +40,17 @@ withdraw/swap_in/swap_out would add untracked value and break
   `e:in−e:out = 700 = bal 450 + reserve 250`.
 - `scenarios/lisp/ft-probe` 5/5: NEP-141 two-hop credit via
   `ft_transfer_call` → `ft_on_transfer`.
-- `proof/mutate_escrow.py`: three known-BAD mutants must FAIL, original
-  must re-verify green.
+- `scenarios/lisp/lp-ledger` 16/16 (+ TS `scenarios/ts/lp-ts` 16/16
+  lockstep): deposit×2 → swap_in → lp_open 300 & 33 → lp_remove 13 →
+  swap_out 100; ratio minting exact in pure custody (m = a while
+  supply = pool), payout floors, over-slice swap_out traps ERR_RESERVE,
+  and the guard-trap step reverts with state intact.
+- `proof/mutate_escrow.py`: four known-BAD mutants must FAIL (T4 =
+  redemption overpays by one unit — the floor law), original must
+  re-verify green.
 
 ## Wire format
 
-Keys `e:bal:<account>`, `e:reserve`, `e:in`, `e:out` — never rename.
+Keys `e:bal:<account>`, `e:reserve`, `e:in`, `e:out`, `e:lp_pool`,
+`e:supply`, `e:shares:<account>` — never rename.
 Account ids are wire format (`escrow.clmm.test.near`).

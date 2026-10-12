@@ -8,7 +8,7 @@ numbers.
 ```
 cd port
 make prove    # pool-join + fee-join: 9/9 · n-pool: 5/5 · TS twins: 14/14 — exit 0 only if ALL GREEN
-make escrow   # escrow leg: regenerate → compile → 4 scenarios (19 asserts) → mutation gate 3/3
+make escrow   # escrow leg: regenerate → compile → 6 scenarios (51 asserts) → mutation gate 4/4
 ```
 
 ## Layout (6 entries, that's all)
@@ -52,7 +52,7 @@ every export mirrors exactly one `.thy` constructor (twin-lockstep law).
 
 | dir | what it pins |
 |-----|--------------|
-| `contracts/escrow/escrow/` | Deposit / Withdraw / SwapIn / SwapOut ledger — conservation executed on wasm (`escrow-ledger`), NEP-141 two-hop credit (`ft-probe`), TS twin byte-lockstep (`ts/escrow-probe`) |
+| `contracts/escrow/escrow/` | Deposit / Withdraw / SwapIn / SwapOut / LpOpen / LpRemove ledger — conservation executed on wasm (`escrow-ledger`), LP share lifecycle with ratio minting + floor redemption (`lp-ledger`), NEP-141 two-hop credit (`ft-probe`), TS twin byte-lockstep (`ts/escrow-probe`, `ts/lp-ts`) |
 | `contracts/escrow/ft/` | static NEP-141 probe fixture (not a product) — mint / `ft_transfer_call` / resolve; its own failed-receipt run (`ft-refund`) proves the bounce refunds exactly |
 
 Laws worth knowing before editing:
@@ -61,8 +61,12 @@ Laws worth knowing before editing:
   (mirrors the theory). Only `deposit` consumes an attached balance —
   attaching on the others would add untracked value and break
   `reachable_conservation`. This is pinned by the mutation gate
-  (`proof/mutate_escrow.py`: three known-BAD mutants, each must FAIL
+  (`proof/mutate_escrow.py`: four known-BAD mutants, each must FAIL
   the scenarios, then the original must re-verify green).
+- `swap_out` touches only `reserve − lp_pool`: the LP slice is
+  protected from swap flow (theory guard `a <= reserve - lp_pool`).
+- LP payouts floor: `v = s·pool/T` never rounds up, so dust stays
+  pooled and redemption can never overpay (pinned by mutant T4).
 - `"e:..."` storage keys are wire format — never rename.
 - Guards (`0 < a`, `a <= bal[u]`, `a <= reserve`) ARE the semantics of
   "operation succeeded"; a failed guard aborts with state unchanged.
@@ -177,7 +181,7 @@ over reals; this port is the same guarantees expressed deployably, with each
 | command | does |
 |---------|------|
 | `make prove` | every pool stage, ALL GREEN or exit 1 |
-| `make escrow` | escrow leg: regenerate → compile both twins → 4 scenarios → mutation gate (exit 0 only all green) |
+| `make escrow` | escrow leg: regenerate → compile both twins → 6 scenarios → mutation gate (exit 0 only all green) |
 | `make regenerate` | rewrite contracts from `generators/` — result is byte-identical to what's committed |
 | `make build-ts` | compile all TS twins (13 pool twins + escrow-ts) |
 | `make clean` | remove build artifacts + scenario `state.bin` (see pitfall below) |
