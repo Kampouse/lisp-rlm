@@ -10,6 +10,7 @@ pub use checker::check_storage_schema;
 #[allow(unused_imports)]
 pub use checker::parse_type_list;
 pub use checker::type_check_program;
+pub use checker::{Provenance, FnProvenance, u128_provenance_report};
 #[allow(unused_imports)]
 pub use probe::{format_signature, probe_function};
 pub use types::{TcCon, TcType};
