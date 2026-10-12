@@ -184,11 +184,11 @@ thread_local! {
     /// is_number per key. Drives (1) read-time auto str->num on
     /// `param.numericProp`, (2) encode-time raw embedding of the param
     /// into object literals (its value already IS JSON text).
-    static OBJ_PARAM_PROPS: std::cell::RefCell<Vec<(String, Vec<(String, bool)>)>> =
+    static OBJ_PARAM_PROPS: std::cell::RefCell<Vec<(String, Vec<(String, bool, bool)>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// `type X = { ... }` aliases collected at statement level; resolved
     /// when a param is annotated with a named type. Compile-time only.
-    static TYPE_ALIASES: std::cell::RefCell<Vec<(String, Vec<(String, bool)>)>> =
+    static TYPE_ALIASES: std::cell::RefCell<Vec<(String, Vec<(String, bool, bool)>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// Object-shaped params by NAME (`params`, `ctx`…): their property
     /// reads lower against the CACHED-INPUT contract (near/json_get_str
@@ -822,6 +822,23 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                         MONEY_ALIASES.with(|m| m.borrow_mut().push(an.to_string()));
                     }
                 }
+            }
+            // `interface X { ... }` (2026-10-12): same compile-time
+            // treatment as `type X = { ... }` — record shape in
+            // TYPE_ALIASES, emit nothing. Interfaces are reusable arg
+            // shapes shared across exported functions.
+            s if matches!(
+                s.as_declaration(),
+                Some(Declaration::TSInterfaceDeclaration(_))
+            ) => {
+                let iface = match s.as_declaration() {
+                    Some(Declaration::TSInterfaceDeclaration(i)) => i,
+                    _ => unreachable!(),
+                };
+                let props = literal_props(&iface.body.body);
+                TYPE_ALIASES.with(|m| {
+                    m.borrow_mut().push((iface.id.name.as_str().to_string(), props));
+                });
             }
             // Types-only imports from the near module family are ELIDED.
             // The ambient d.ts (ts/lisp-rlm.d.ts → Monaco addExtraLib)
@@ -6268,23 +6285,29 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                     list(vec![Sym("near/json_get_str"), Str(top)]),
                                 ])
                             };
-                            let is_num_leaf = dotted.len() == 1
-                                && OBJ_PARAM_PROPS.with(|s| {
+                            let leaf = if dotted.len() == 1 {
+                                OBJ_PARAM_PROPS.with(|s| {
                                     s.borrow()
                                         .iter()
-                                        .find(|(n, _)| n == id.name.as_str())
+                                        .find(|(n, ..)| n == id.name.as_str())
                                         .and_then(|(_, props)| {
                                             props
                                                 .iter()
-                                                .find(|(k, _)| k.as_str() == dotted[0])
-                                                .map(|(_, num)| *num)
+                                                .find(|(k, ..)| k.as_str() == dotted[0])
+                                                .map(|(_, num, opt)| (*num, *opt))
                                         })
                                 })
-                                .unwrap_or(false);
-                            return Ok(if is_num_leaf {
-                                list(vec![Sym("str->num"), get])
                             } else {
-                                get
+                                None
+                            };
+                            return Ok(match leaf {
+                                Some((true, _)) => list(vec![Sym("str->num"), get]),
+                                // (2026-10-12) optional prop -> _opt form so the
+                                // params section can mark the key optional
+                                Some((false, true)) => {
+                                    list(vec![Sym("near/json_get_str_opt"), Str(dotted.join("."))])
+                                }
+                                _ => get,
                             });
                         }
                     }
@@ -8176,7 +8199,7 @@ fn param_is_number(p: &FormalParameter<'_>) -> bool {
 /// literal type's properties (name, is_number). Returns None for every
 /// other annotation shape. Named type references (TypeReference) are
 /// deliberately rejected — see param_is_type_ref.
-fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool)>> {
+fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool, bool)>> {
     let a = p.type_annotation.as_ref()?;
     match &a.type_annotation {
         TSType::TSTypeLiteral(lit) => {
@@ -8194,7 +8217,8 @@ fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool)>> {
                     sig.type_annotation.as_ref().map(|t| &t.type_annotation),
                     Some(TSType::TSNumberKeyword(_))
                 );
-                props.push((key, is_num));
+                let optional = sig.optional;
+                props.push((key, is_num, optional));
             }
             if props.is_empty() {
                 None
@@ -8211,9 +8235,9 @@ fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool)>> {
             TYPE_ALIASES.with(|m| {
                 m.borrow()
                     .iter()
-                    .find(|(k, _)| *k == name)
+                    .find(|(k, ..)| *k == name)
                     .and_then(|(_, props)| {
-                        if props.first().map(|(k, _)| k == SCALAR_ALIAS_MARK).unwrap_or(false) {
+                        if props.first().map(|(k, ..)| k == SCALAR_ALIAS_MARK).unwrap_or(false) {
                             // scalar alias (`type Money = string`) — a plain
                             // param, not an object shape
                             None
@@ -8249,32 +8273,38 @@ fn param_is_type_ref(p: &FormalParameter<'_>) -> bool {
 /// used to register a dead object binding and corrupt the entry ABI).
 const SCALAR_ALIAS_MARK: &str = "\u{0}scalar";
 
+/// Property shape of a TS type-literal member list. Shared by
+/// `type X = { ... }` aliases and `interface X { ... }` declarations
+/// (2026-10-12) so both resolve identically via TYPE_ALIASES.
+fn literal_props(members: &[oxc_ast::ast::TSSignature<'_>]) -> Vec<(String, bool, bool)> {
+    let mut props = Vec::new();
+    for m in members {
+        if let oxc_ast::ast::TSSignature::TSPropertySignature(sig) = m {
+            if let oxc_ast::ast::PropertyKey::StaticIdentifier(id) = &sig.key {
+                let is_num = matches!(
+                    sig.type_annotation.as_ref().map(|t| &t.type_annotation),
+                    Some(oxc_ast::ast::TSType::TSNumberKeyword(_))
+                );
+                let optional = sig.optional;
+                props.push((id.name.as_str().to_string(), is_num, optional));
+            }
+        }
+    }
+    props
+}
+
 /// Shape of a `type X = { prop: string; num: number; ... }` alias.
-fn alias_props(a: &oxc_ast::ast::TSTypeAliasDeclaration<'_>) -> Vec<(String, bool)> {
+fn alias_props(a: &oxc_ast::ast::TSTypeAliasDeclaration<'_>) -> Vec<(String, bool, bool)> {
     match &a.type_annotation {
         // `type Money = string` (u128-decimal ABI hover docs, 2026-10-07):
         // SCALAR aliases record as marker ([] + is_scalar) so
         // param_object_props resolves the ref to None (plain str param)
         // instead of kind-3-empty (which used to register a dead
         // object-param binding and corrupt the entry ABI).
-        oxc_ast::ast::TSType::TSStringKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false)],
-        oxc_ast::ast::TSType::TSNumberKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false)],
-        oxc_ast::ast::TSType::TSBigIntKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false)],
-        oxc_ast::ast::TSType::TSTypeLiteral(lit) => {
-            let mut props = Vec::new();
-            for m in &lit.members {
-                if let oxc_ast::ast::TSSignature::TSPropertySignature(sig) = m {
-                    if let oxc_ast::ast::PropertyKey::StaticIdentifier(id) = &sig.key {
-                        let is_num = matches!(
-                            sig.type_annotation.as_ref().map(|t| &t.type_annotation),
-                            Some(oxc_ast::ast::TSType::TSNumberKeyword(_))
-                        );
-                        props.push((id.name.as_str().to_string(), is_num));
-                    }
-                }
-            }
-            props
-        }
+        oxc_ast::ast::TSType::TSStringKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false, false)],
+        oxc_ast::ast::TSType::TSNumberKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false, false)],
+        oxc_ast::ast::TSType::TSBigIntKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false, false)],
+        oxc_ast::ast::TSType::TSTypeLiteral(lit) => literal_props(&lit.members),
         _ => Vec::new(),
     }
 }
@@ -8282,7 +8312,7 @@ fn alias_props(a: &oxc_ast::ast::TSTypeAliasDeclaration<'_>) -> Vec<(String, boo
 /// Register an object param's shape for read-time numeric decoding and
 /// encode-time raw embedding (side-channel, cleared with NUM_PARAM_NAMES
 /// after body lowering).
-fn register_obj_param(name: &str, props: Vec<(String, bool)>) {
+fn register_obj_param(name: &str, props: Vec<(String, bool, bool)>) {
     OBJECT_PARAMS.with(|s| s.borrow_mut().push(name.to_string()));
     OBJ_PARAM_PROPS.with(|s| {
         s.borrow_mut().push((name.to_string(), props));
