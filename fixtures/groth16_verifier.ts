@@ -38,7 +38,7 @@ export function init(): number {
   near.storageSet("vk:gamma2", g2);
   near.storageSet("vk:delta2", d2);
   near.storageSet("vk:n", `${n}`);
-  const IC = near.jsonArr("ic");
+  const IC = near.jsonArr("ic") ?? [];
   if (IC.length != n + 1) { near.abort("ic: want n+1 points"); return 0; }
   let i = 0;
   while (i <= n) {
@@ -60,7 +60,7 @@ export function verify(): string {
   if (strLength(negA) != 128) { near.abort("BAD:proof:negA"); }
   if (strLength(B) != 256) { near.abort("BAD:proof:B"); }
   if (strLength(C) != 128) { near.abort("BAD:proof:C"); }
-  const ins = near.jsonArr("inputs");
+  const ins = near.jsonArr("inputs") ?? [];
   if (ins.length != n) { near.abort("BAD:inputs:count"); }
 
   // pub = multiexp(IC[0]|1, IC[1]|x1, ..., IC[n]|xn) — scalar 1 folds
@@ -89,7 +89,7 @@ export function verify(): string {
 // debug: report assembled multiexp buffer length
 export function debugMx(): string {
   const n = strToNum(near.storageGet("vk:n") ?? "0");
-  const ins = near.jsonArr("inputs");
+  const ins = near.jsonArr("inputs") ?? [];
   let mx = (near.storageGet("vk:ic:0") ?? "") + ONE_HEX;
   let i = 1;
   while (i <= n) {
@@ -100,7 +100,7 @@ export function debugMx(): string {
 }
 
 export function debugIns(): string {
-  const ins = near.jsonArr("inputs");
+  const ins = near.jsonArr("inputs") ?? [];
   let r = `count=${ins.length}`;
   let i = 0;
   while (i < ins.length) {
@@ -112,7 +112,7 @@ export function debugIns(): string {
 
 export function debugMx2(): string {
   const n = strToNum(near.storageGet("vk:n") ?? "0");
-  const ins = near.jsonArr("inputs");
+  const ins = near.jsonArr("inputs") ?? [];
   let mx = (near.storageGet("vk:ic:0") ?? "") + ONE_HEX;
   let i = 1;
   while (i <= n) {
@@ -124,7 +124,7 @@ export function debugMx2(): string {
 
 export function debugMx3(): string {
   const n = strToNum(near.storageGet("vk:n") ?? "0");
-  const ins = near.jsonArr("inputs");
+  const ins = near.jsonArr("inputs") ?? [];
   let mx = (near.storageGet("vk:ic:0") ?? "") + ONE_HEX;
   let i = 1;
   while (i <= n) {
