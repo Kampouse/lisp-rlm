@@ -40,15 +40,13 @@ function u128Shr64(a: string): string {
 // gs: per-op growth deltas (charged book entries, Aggregate_Book);
 // ls: per-op liquidity Lf; c: starting checkpoint (<= every g, else ERR_ORDER).
 // Returns owed as string; checkpoint advances to last g.
-// 2^64 = 18446744073709551616
 function accrue(gs: string[], ls: string[], c: string): string {
   let ck = BigInt(c);
   let acc = 0n;
   for (let i = 0; i < gs.length; i++) {
     const g = BigInt(gs[i]);
     if (g < ck) fail("ERR_ORDER");
-    const l = BigInt(ls[i]);
-    acc += (BigInt(u128.mul(g - ck, l)) / (1n << 64n));
+    acc += BigInt(divFloor64((g - ck).toString(), ls[i]));
     ck = g;
   }
   return acc.toString();

@@ -27,8 +27,7 @@
         (begin
           (if (< (car gs) ck) (fail "ERR_ORDER") "ok")
           (loop (cdr gs) (cdr ls) (car gs)
-                (+ acc (u128/muldiv (- (car gs) ck) (car ls)
-                                    "18446744073709551616")))))))
+                (+ acc (div-floor64 (- (car gs) ck) (car ls)))))))
 
 ; entry: accrue { "gs": "g1,g2", "ls": "l1,l2", "c": "ck" }
 ; charges owed into caller's cell, preserves invariant owed <= charged
