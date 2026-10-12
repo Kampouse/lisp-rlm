@@ -3914,6 +3914,25 @@ impl WasmEmitter {
         key: &str,
         offset_expr: Vec<Instruction<'static>>,
     ) -> Result<Vec<Instruction<'static>>, String> {
+        self.json_get_u128_from(key, offset_expr, INPUT_CACHE_BUF, None)
+    }
+
+    /// Scan `scan_buf` for `"key": <decimal>` and store the 128-bit value at
+    /// offset_expr. `ilen_expr` = None: scan_buf is INPUT_CACHE_BUF, filled by
+    /// the cached host input read (legacy near/json_get_u128 path). Some(e):
+    /// scan_buf already holds the bytes and e yields the scanned length
+    /// (callers stage the tagged json string's `len>>32` themselves — the
+    /// dst address in offset_expr is NOT the length source).
+    /// The destination is zeroed BEFORE the scan (2026-10-12): a miss must
+    /// yield 0, never stale bits from a previous scan (typed json-get
+    /// surfaced exactly that via the shared scratch).
+    pub(crate) fn json_get_u128_from(
+        &mut self,
+        key: &str,
+        offset_expr: Vec<Instruction<'static>>,
+        scan_buf: i64,
+        ilen_expr: Option<Vec<Instruction<'static>>>,
+    ) -> Result<Vec<Instruction<'static>>, String> {
         self.need_host(7);
         self.need_host(0);
         self.need_host(1);
@@ -3940,21 +3959,51 @@ impl WasmEmitter {
             align: 0,
             memory_index: 0,
         };
-        let ib = INPUT_CACHE_BUF; // cached input (2026-09-14)
+        let ib = scan_buf;
         let mut v = offset_expr;
 
         // Store offset to a temp local
         let off_local = self.local_idx("__ju_offset");
         v.push(Instruction::LocalSet(off_local));
 
-        // Cached input read; ilen is i64 here — wrap up from the i32 local
-        {
-            let ilen32 = self.local_idx_i32("__ju_ilen32");
-            self.emit_input_read_cached(ilen32, &mut v);
-            v.push(Instruction::LocalGet(ilen32));
-            v.push(Instruction::I64ExtendI32U);
-            v.push(Instruction::LocalSet(ilen));
+        // ilen: length of the scanned region. None: cached host input read
+        // (i64 wrapped up from the i32 local). Some(e): caller-provided
+        // length expression (the copied json string's len>>32).
+        let ilen = self.local_idx("__ju_ilen");
+        match ilen_expr {
+            None => {
+                let ilen32 = self.local_idx_i32("__ju_ilen32");
+                self.emit_input_read_cached(ilen32, &mut v);
+                v.push(Instruction::LocalGet(ilen32));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(ilen));
+            }
+            Some(e) => {
+                v.extend(e);
+                v.push(Instruction::LocalSet(ilen));
+            }
         }
+
+        // Zero the destination before scanning — miss ⇒ 0, never stale
+        // memory (2026-10-12).
+        v.push(Instruction::LocalGet(off_local));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64Store(wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        }));
+        v.push(Instruction::LocalGet(off_local));
+        v.push(Instruction::I64Const(8));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64Store(wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        }));
 
         // pos = 0, depth = 0
         v.push(Instruction::I64Const(0));
@@ -3972,6 +4021,14 @@ impl WasmEmitter {
         v.push(Instruction::I64GtS);
         v.push(Instruction::If(BlockType::Empty));
         // Miss-gate fix (2026-08-31, same as json_get_str): pin pos=ilen.
+        // EXIT CONTRACT (2026-10-12): this `br 2` exits the whole form and
+        // SKIPS the destination stores below — the exit must still yield
+        // exactly one value (the dst address) to keep the legacy
+        // near/json_get_u128 contract "returns dst addr" intact on BOTH
+        // paths. The dst was zero-filled pre-scan, so the address IS the
+        // "miss ⇒ 0" value. Typed callers Drop it and read the slot; legacy
+        // callers get the same tagged address as before.
+        v.push(Instruction::LocalGet(off_local));
         v.push(Instruction::LocalGet(ilen));
         v.push(Instruction::LocalSet(pos));
         v.push(Instruction::Br(2));

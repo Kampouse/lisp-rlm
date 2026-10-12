@@ -1461,7 +1461,7 @@ fn compile_near_from_exprs_with_map_inner(
     add_default_run_export(&mut em, &names);
     crate::typing::check_storage_schema(exprs);
     crate::typing::check_set_value_positions(exprs);
-    crate::typing::check_bare_json_get(exprs);
+    crate::typing::check_bare_json_get_result(exprs)?;
     em.print_gas_table();
 
     let wasm = em.finish("_run");

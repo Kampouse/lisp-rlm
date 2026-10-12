@@ -158,19 +158,118 @@ impl WasmEmitter {
                 Ok(v)
             }
             "json-get" if !a.is_empty() && matches!(&a[0], LispVal::Sym(s) if s == ":u128") => {
-                // Typed form (json-get :u128 <json> "key") / (json-get :u128 "key")
-                // — full 128-bit parse, lo/hi tagged pair, carry on overflow.
-                // Reuses the near/json_get_u128 emitter which already handles
-                // arbitrary nesting-depth numbers. Compile-time type: U128.
-                let key = match a.last() {
-                    Some(LispVal::Str(k)) => k.clone(),
+                // Typed form (2026-10-12 rebuild). Emits the exact DECIMAL
+                // STRING of the 128-bit value (tagged str): composes with the
+                // str-typed u128/* builtin family; the checker types it U128,
+                // which unifies with Str but never Num (tagged-i64 firewall).
+                // Mechanics, proven parts only:
+                //   1. eval the json expr, copy bytes to JSON_SCAN_BUF
+                //      (fixed scratch — never INPUT_CACHE_BUF, the
+                //      2026-09-14 clobber rule);
+                //   2. scan THAT buffer (miss ⇒ 0) into a fresh
+                //      runtime-bumped 16-byte cell (cdr-rule: never a static
+                //      per-site buffer);
+                //   3. render via __h_u128_to_str (bumps the runtime heap
+                //      for its own scratch, returns a tagged decimal str).
+                let (json_arg, key_arg) = match a.len() {
+                    2 => (None, &a[1]),   // (json-get :u128 "key") — input scan
+                    3 => (Some(&a[1]), &a[2]),
+                    _ => {
+                        return Err(
+                            "json-get :u128 expects (json-get :u128 <json> \"key\") or (json-get :u128 \"key\")"
+                                .into(),
+                        )
+                    }
+                };
+                let key = match key_arg {
+                    LispVal::Str(k) => k.clone(),
                     _ => return Err("json-get :u128 key must be a string literal".into()),
                 };
-                // json_get_u128 scans INPUT_BUF and writes lo/hi to the given
-                // offset — use the dedicated 16-byte scratch slot so the
-                // result is address-shaped for near/batch-transfer etc.
-                let offset_expr = vec![Instruction::I64Const(STORAGE_U128_BUF as i64)];
-                self.json_get_u128(&key, offset_expr)
+                let slot = self.local_idx("__jgu128_slot");
+                let mut v = Vec::new();
+                match json_arg {
+                    Some(je) => {
+                        // Copy the json text to the scan buffer (same
+                        // copy-loop discipline as the 2-arg auto arm).
+                        let tmp = self.local_idx("__jgu128_tmp");
+                        v.extend(self.expr(je)?);
+                        v.push(Instruction::I64Const(3));
+                        v.push(Instruction::I64ShrU);
+                        v.push(Instruction::LocalSet(tmp));
+                        let src_ptr_l = self.local_idx("__jgu128_sp");
+                        let copy_i = self.local_idx("__jgu128_ci");
+                        let ma8b = wasm_encoder::MemArg {
+                            offset: 0,
+                            align: 0,
+                            memory_index: 0,
+                        };
+                        v.push(Instruction::LocalGet(tmp));
+                        v.push(Instruction::I64Const(0xFFFFFFFF));
+                        v.push(Instruction::I64And);
+                        v.push(Instruction::LocalSet(src_ptr_l));
+                        // counter init only — the loop condition re-derives
+                        // len each iteration; nothing left on the stack
+                        v.push(Instruction::I64Const(0));
+                        v.push(Instruction::LocalSet(copy_i));
+                        v.push(Instruction::Block(BlockType::Empty));
+                        v.push(Instruction::Loop(BlockType::Empty));
+                        v.push(Instruction::LocalGet(copy_i));
+                        v.push(Instruction::LocalGet(tmp));
+                        v.push(Instruction::I64Const(32));
+                        v.push(Instruction::I64ShrU);
+                        v.push(Instruction::I64GeU);
+                        v.push(Instruction::BrIf(1));
+                        v.push(Instruction::I64Const(JSON_SCAN_BUF));
+                        v.push(Instruction::LocalGet(copy_i));
+                        v.push(Instruction::I64Add);
+                        v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::LocalGet(src_ptr_l));
+                        v.push(Instruction::LocalGet(copy_i));
+                        v.push(Instruction::I64Add);
+                        v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::I32Load8U(ma8b.clone()));
+                        v.push(Instruction::I32Store8(ma8b));
+                        v.push(Instruction::LocalGet(copy_i));
+                        v.push(Instruction::I64Const(1));
+                        v.push(Instruction::I64Add);
+                        v.push(Instruction::LocalSet(copy_i));
+                        v.push(Instruction::Br(0));
+                        v.push(Instruction::End);
+                        v.push(Instruction::End);
+                        v.extend(self.heap_bump_runtime(16, "__jgu128_res"));
+                        // heap_bump_runtime leaves NOTHING on the stack — the
+                        // result lands in the __jgu128_res local (cdr-site
+                        // pattern, call_list.rs:1070). LocalSet directly after
+                        // the bump pops an empty stack (validation error).
+                        v.push(Instruction::LocalGet(self.local_idx("__jgu128_res")));
+                        v.push(Instruction::LocalSet(slot));
+                        // scanned length = the staged json string's len>>32
+                        let ilen_v = vec![
+                            Instruction::LocalGet(tmp),
+                            Instruction::I64Const(32),
+                            Instruction::I64ShrU,
+                        ];
+                        let call = vec![Instruction::LocalGet(slot)];
+                        v.extend(self.json_get_u128_from(&key, call, JSON_SCAN_BUF, Some(ilen_v))?);
+                        // json_get_u128_from pushes exactly one value on both
+                        // paths (hit: re-pushed dst addr; miss: dst addr) —
+                        // Drop it; to_str reads the slot local instead.
+                        v.push(Instruction::Drop);
+                    }
+                    None => {
+                        v.extend(self.heap_bump_runtime(16, "__jgu128_res"));
+                        v.push(Instruction::LocalGet(self.local_idx("__jgu128_res")));
+                        v.push(Instruction::LocalSet(slot));
+                        let call = vec![Instruction::LocalGet(slot)];
+                        v.extend(self.json_get_u128_from(&key, call, INPUT_CACHE_BUF, None)?);
+                        // one value on both paths — Drop; to_str reads slot
+                        v.push(Instruction::Drop);
+                    }
+                }
+                let h = self.ensure_u128_str_helpers();
+                v.push(Instruction::LocalGet(slot));
+                v.push(Self::call_user(h.to_str));
+                Ok(v)
             }
             "json-get" => {
                 // Unified argument order (2026-10-07): (json-get <json> "key")

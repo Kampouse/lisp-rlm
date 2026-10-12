@@ -1583,13 +1583,17 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64Const(STORAGE_U128_BUF));
                 v.push(Self::host_call(0));
-                // fresh 41-byte buffer on the runtime heap; to_str(addr, buf)
-                // renders the decimal string there and returns a tagged str
-                v.extend(self.heap_bump_runtime(41, "__nl128_buf"));
-                v.extend(self.call_u128(
-                    "u128/to_str",
-                    &[LispVal::Num(STORAGE_U128_BUF), LispVal::Num(0)],
-                )?);
+                // Drop the bump address the register_load tail left on the
+                // stack (it was never consumed — stack leak), then render
+                // the decimal string from the 16 bytes at STORAGE_U128_BUF
+                // via the shared 1-param helper (bumps its own scratch,
+                // returns a tagged str). (2026-10-12) The old tail passed
+                // literal 0 as the render buffer — the helper wrote through
+                // address 0 and the call trapped on every invocation.
+                v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(STORAGE_U128_BUF));
+                let h = self.ensure_u128_str_helpers();
+                v.push(Self::call_user(h.to_str));
                 Ok(v)
             }
             _ => Err("__not_handled__".into()),

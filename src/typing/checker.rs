@@ -158,6 +158,11 @@ fn unify_con(c1: &TcCon, c2: &TcCon) -> UnifyResult {
         // token-amount overflow bug this type exists to prevent. Destructure
         // via u128 arith intrinsics instead.
         (TcCon::U128, TcCon::U128) => Ok(Subst::new()),
+        // U128 values are decimal STRINGS at runtime (str-typed u128/*
+        // family is their consumer surface). Unify with Str so typed
+        // json-get flows into u128/add etc.; NEVER with Num — that is the
+        // tagged-i64 firewall this type exists to enforce.
+        (TcCon::U128, TcCon::Str) | (TcCon::Str, TcCon::U128) => Ok(Subst::new()),
         // Ptr and Num are the same i64 at runtime (raw untagged) — unifiable so
         // address literals/offsets can flow into mem-get/mem-set!/ptr-add, which
         // validate protected regions at runtime. (2026-08-29)
@@ -1041,13 +1046,7 @@ fn infer(
                         Ok(TcType::Con(TcCon::Any))
                     }
                 }
-                LispVal::Sym(s) if false && s == "json-get" && list.len() == 2 => {
-                    let t = infer(&list[1], env, supply, subst)?;
-                    let su = unify(&subst.apply(&t), &TcType::Con(TcCon::Str))
-                        .map_err(|e| format!("in call (json-get ...): {}", e))?;
-                    *subst = su.compose(subst.clone());
-                    Ok(TcType::Con(TcCon::Any))
-                }
+
                 LispVal::Sym(s) if s == "list" => {
                     infer_list_literal(&list[1..], env, supply, subst)
                 }
@@ -3662,12 +3661,6 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
 /// lowering wraps it as (default (near/json_get_str "k") fb). Bare reads are
 /// a compile error, not a warning: a defaulted zero-value transfer is worse
 /// than a failed build.
-pub fn check_bare_json_get(exprs: &[LispVal]) {
-    if let Err(msg) = check_bare_json_get_result(exprs) {
-        panic!("{}", msg);
-    }
-}
-
 /// Result-returning variant — used by the compile pipeline so the error is
 /// reported as a normal compile error instead of a deep-stack thread panic
 /// (which would show as opaque `Any { .. }`).
