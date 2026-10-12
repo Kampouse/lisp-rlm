@@ -38,8 +38,7 @@ pub(crate) use hosts::{build_env_linker, host_fn};
 // Lifted to the lib (src/instrument.rs): browser compiler + near-mock now
 // share ONE meter, so JS and CLI can never disagree on gas.
 pub(crate) use lisp_rlm_wasm::instrument::{
-    instrument, InstrumentError, LINEAR_OP_BASE_COST, LINEAR_OP_UNIT_COST, MAX_STACK_HEIGHT,
-    REGULAR_OP_COST, REMAINING_GAS_EXPORT,
+    instrument, REMAINING_GAS_EXPORT,
 };
 
 /// Function-call action fee (execution side, protocol-86): burned by the
@@ -257,6 +256,12 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = &pos[1];
     let contract_acct = &pos[2];
     let method = &pos[3];
+    // A missing args-json is almost always a caller mistake (the default {}
+    // silently produced empty input in the json_get_arr_repro case). Warn
+    // loudly but proceed — {} is still the correct default for argless calls.
+    if pos.len() < 5 {
+        eprintln!("⚠️  no args-json positional; defaulting to {{}} (empty input). Pass the args JSON explicitly if the method expects input.");
+    }
     let args_json = pos
         .get(4)
         .filter(|s| !s.starts_with('-'))
@@ -2058,7 +2063,7 @@ pub(crate) fn expand_fuzz_steps(
         .and_then(|s| s.as_u64())
         .unwrap_or(200)
         .min(5000);
-    let mut ops: Vec<String> = f
+    let ops: Vec<String> = f
         .get("ops")
         .and_then(|o| o.as_array())
         .map(|a| {
@@ -2243,7 +2248,7 @@ pub(crate) fn run_scenario_opts(
     // steps appended AFTER the literal steps — the executor loop is
     // untouched (ops become ordinary method steps; --update-pins and
     // assertions work on them like any other step).
-    let mut fuzz_count = 0usize;
+    let fuzz_count;
     let mut owned_steps: Vec<serde_json::Value> = steps.to_vec();
     match expand_fuzz_steps(&spec) {
         Ok(gen) => {
@@ -4168,7 +4173,7 @@ fn run_replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .from(predecessor.clone())
         .attach(deposit)
         .fire()?;
-    if let Some(f) = &state_file {
+    if let Some(_f) = &state_file {
         crate::fork_sync_absents_to_storage(&state_arc_tls().unwrap());
         chain.save().ok();
     }
