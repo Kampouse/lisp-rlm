@@ -69,10 +69,10 @@ use oxc_syntax::operator::{BinaryOperator, LogicalOperator, UnaryOperator};
 
 // ── Public entry ──────────────────────────────────────────────────────────
 
-/// WASI/P2 lowering mode: exported `run` keeps REAL params (the P2 _start
-/// wrapper passes the stdin input as an argument) instead of the NEAR
-/// tx-input convention (params re-bound to near/json_get_str reads —
-/// a NEAR host op that doesn't exist on the OutLayer runtime).
+// WASI/P2 lowering mode: exported `run` keeps REAL params (the P2 _start
+// wrapper passes the stdin input as an argument) instead of the NEAR
+// tx-input convention (params re-bound to near/json_get_str reads —
+// a NEAR host op that doesn't exist on the OutLayer runtime).
 thread_local! {
     pub(crate) static TS_WASI_MODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -481,10 +481,10 @@ pub fn locate_form_error(
 /// cheatsheet COMPLETE EXAMPLE). Runtime defines loaded before eval.
 const RLM_RUNTIME_API: &[&str] = &["rlm_set", "rlm_get"];
 
-/// Definition sites (name, byte-offset) recorded during collect_user_fns —
-/// unlike IDENT_OFFSETS (first occurrence, often a call above the def in
-/// hoisted lowering order) these always land ON the definition for
-/// locate_form_error.
+// Definition sites (name, byte-offset) recorded during collect_user_fns —
+// unlike IDENT_OFFSETS (first occurrence, often a call above the def in
+// hoisted lowering order) these always land ON the definition for
+// locate_form_error.
 thread_local! {
     static FN_DEF_OFFSETS: std::cell::RefCell<Vec<(String, u32)>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -766,7 +766,7 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
             Statement::ForStatement(f) => {
                 out.push(lower_for_form(f, false)?);
             }
-            Statement::ForOfStatement(fo) => {
+            Statement::ForOfStatement(_fo) => {
                 // M1.5+ (2026-10-05): top-level for..of — reuse the
                 // function-body machinery (self-contained flag lets);
                 // Num(0) tail, view=false. The brain hit this exact gap
@@ -1522,7 +1522,7 @@ fn pattern_names(p: &oxc_ast::ast::BindingPattern<'_>) -> Result<Vec<String>, St
                     }
                 }
             }
-            if let Some(rest) = &ap.rest {
+            if let Some(_rest) = &ap.rest {
                 return Err(
                     "ts_frontend: rest elements unsupported in await bindings".into(),
                 );
@@ -2008,6 +2008,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
 
 /// A bare mid-function return: `return e;` as a statement at this level
 /// (nested ifs/loops handle their own exits via takeover / __wl guards).
+#[allow(dead_code)]
 fn stmts_have_bare_return(stmts: &[Statement<'_>]) -> bool {
     stmts.iter().any(|s| match s {
         Statement::ReturnStatement(_) => true,
@@ -2022,6 +2023,7 @@ fn stmts_have_bare_return(stmts: &[Statement<'_>]) -> bool {
 /// shadowed per level, so without the function flags the value vanishes
 /// (nested-return bug, 2026-09-11: `while(..){ while(..){ return 77; } }`
 /// returned the accumulator instead).
+#[allow(dead_code)]
 fn has_return_inside_loop(stmts: &[Statement<'_>]) -> bool {
     fn in_loop(s: &Statement<'_>) -> bool {
         match s {
@@ -3804,7 +3806,7 @@ fn lower_for(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<LispVal, String> {
 /// For → (has_exits, core). Core = (let ((v init)...) (while cond body))
 /// with flag-guarded cond when the body can exit; flags bound by caller.
 fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal), String> {
-    use oxc_ast::ast::{AssignmentOperator, ForStatementInit};
+    use oxc_ast::ast::ForStatementInit;
 
     // init: must be a let/const declaration
     let decl = match &fr.init {
@@ -4207,7 +4209,7 @@ fn effect_expr(e: &Expression<'_>) -> Result<LispVal, String> {
 fn lower_assign_form(asg: &oxc_ast::ast::AssignmentExpression<'_>) -> Result<LispVal, String> {
     use oxc_syntax::operator::AssignmentOperator;
     match &asg.left {
-        oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(id) => {
+        oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(_id) => {
             let (v, expr) = lower_assignment(asg)?;
             Ok(list(vec![Sym("set!"), Sym(v), expr]))
         }
@@ -4869,6 +4871,7 @@ fn lower_assignment(
     Ok((v, out))
 }
 
+#[allow(dead_code)]
 fn update_target_name(e: &Expression<'_>) -> Result<String, String> {
     match e {
         Expression::Identifier(id) => Ok(id.name.as_str().to_string()),
@@ -7184,8 +7187,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                             }
                             return Err("ts_frontend: push target must be a plain variable".into());
                         }
-                        _ => {} // push handled; pipeline members were matched above
-                        _ => {} // fall through to the generic path
+                        _ => {} // push/pipeline handled above; fall through
                     }
                 }
             }
@@ -7823,6 +7825,7 @@ pub const KNOWN_NEAR_MEMBERS: &[&str] = &[
     // input/args
     "jsonGetStr",
     "jsonGetInt",
+    "jsonGetU128",
     "jsonGetArr",
     "jsonArr",
     "jsonGet",
@@ -7955,6 +7958,7 @@ fn known_near_member(p: &str) -> bool {
 /// same rule as KNOWN_NEAR_MEMBERS.
 pub const KNOWN_DB_MEMBERS: &[&str] = &["del", "has", "key", "keys", "put"];
 
+#[allow(dead_code)]
 fn known_db_member(p: &str) -> bool {
     KNOWN_DB_MEMBERS.contains(&p)
 }
@@ -8435,12 +8439,14 @@ fn lower_args_destructuring(
 fn list(items: Vec<LispVal>) -> LispVal {
     LispVal::List(items)
 }
+#[allow(non_snake_case)]
 fn Sym(s: impl Into<String>) -> LispVal {
     LispVal::Sym(s.into())
 }
 fn Num(n: i64) -> LispVal {
     LispVal::Num(n)
 }
+#[allow(non_snake_case)]
 fn Str(s: impl Into<String>) -> LispVal {
     LispVal::Str(s.into())
 }

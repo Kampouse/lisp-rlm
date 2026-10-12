@@ -1804,12 +1804,6 @@ struct Summary {
     calls: Vec<CallEdge>,
 }
 
-/// Origin registry: creating defn for each handle origin.
-#[derive(Default)]
-struct OriginInfo {
-    creator: String,
-}
-
 /// Static promise-single-use gate (2026-10-08, v3 origin flow).
 ///
 /// Model: every producer/consuming call mints a fresh handle origin. Each
@@ -2822,7 +2816,6 @@ fn res_line(
 struct ResCx<'a> {
     defns: &'a std::collections::HashMap<String, usize>,
     bodies: &'a std::collections::HashMap<String, Vec<LispVal>>,
-    param_u128: &'a std::collections::HashMap<(String, usize), MVal>,
     op_lines: &'a std::collections::HashMap<&'a str, Vec<usize>>,
     seen: std::collections::HashMap<String, usize>,
     errs: Vec<String>,
@@ -3316,7 +3309,6 @@ pub fn check_resource_flow(source: Option<&str>, exprs: &[LispVal]) -> Result<()
     let mut cx = ResCx {
         defns: &defns,
         bodies: &bodies,
-        param_u128: &param_u128,
         op_lines: &op_lines,
         seen: std::collections::HashMap::new(),
         errs: Vec::new(),

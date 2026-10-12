@@ -1407,7 +1407,6 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
     // ═══ Data Section (string literals + URL data segments) ═══
     {
         let mut data = DataSection::new();
-        let mut has_data = false;
         // Initialize RUNTIME_HEAP_PTR (addr 56) to HEAP_START (200000)
         {
             let heap_start_bytes: [u8; 8] = (HEAP_START as u64).to_le_bytes();
@@ -1416,13 +1415,11 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
                 &ConstExpr::i32_const(56),
                 heap_start_bytes.iter().copied(),
             );
-            has_data = true;
         }
         // Initialize DEPTH_COUNTER (addr 999980) to 0
         {
             let depth_zero: [u8; 8] = 0u64.to_le_bytes();
             data.active(0, &ConstExpr::i32_const(999980), depth_zero.iter().copied());
-            has_data = true;
         }
         // Initialize wit-component adapter bump pointer (addr 900000)
         // The wit-component encoder generates a cabi_realloc that uses address 900000
@@ -1435,21 +1432,16 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
                 &ConstExpr::i32_const(900000),
                 adapter_bump.iter().copied(),
             );
-            has_data = true;
         }
         // String literals from lisp emitter
         for (off, bytes) in &em.data_segments {
             data.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
-            has_data = true;
         }
         // URL data segments (authority + path pre-loaded at instantiation)
         for (off, bytes) in &all_http_data_segments {
             data.active(0, &ConstExpr::i32_const(*off as i32), bytes.iter().copied());
-            has_data = true;
         }
-        if has_data {
-            module.section(&data);
-        }
+        module.section(&data);
     }
 
     // ═══ Build component using manual encoding ═══
@@ -1654,10 +1646,10 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
         wasi_p1_imports()
     };
     // Tree-shake: only import outlayer functions that are actually used
-    let (ol, ol_sentinel_map_p1, ol_count) = if skip_outlayer {
+    let (_ol, ol_sentinel_map_p1, ol_count) = if skip_outlayer {
         (vec![], std::collections::HashMap::new(), 0u32)
     } else {
-        let mut used_ol_indices = scan_used_outlayer_indices(em);
+        let used_ol_indices = scan_used_outlayer_indices(em);
         let (filtered, smap, count) = build_filtered_outlayer(&used_ol_indices, wasi.len() as u32);
         (filtered, smap, count)
     };
@@ -1818,7 +1810,7 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     nti += 1;
     // type: (i32) -> () — get-environment retptr form (sentinel 150)
     types.ty().function([ValType::I32], []);
-    let env_getenv_retptr_type = nti;
+    let _env_getenv_retptr_type = nti;
     nti += 1;
     // type: () -> i32 — get-environment pointer-return form
     types.ty().function([], [ValType::I32]);
@@ -2015,23 +2007,13 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     funcs.function(0);
     // cabi_realloc: (i32, i32, i32, i32) -> i32 — type 1
     funcs.function(1);
-    // memcpy helper: (i32, i32, i32) -> () — needs a new type
-    let mut memcpy_type_idx: u32 = 0;
+    // memcpy helper: (i32, i32, i32) -> () — only if str-cat was used
+    // (generates Call(91) = MEMCPY_SENTINEL). Piggyback on type 8 =
+    // (i32, i32, i32) -> () in finish_outlayer_inner.
     {
-        // Check if str-cat was used (generates Call(91) = MEMCPY_SENTINEL)
         let uses_memcpy = em.funcs.iter().any(|f| f.instrs.iter().any(|i| matches!(i, Instruction::Call(idx) if *idx == crate::wasm_emit::MEMCPY_SENTINEL)));
         if uses_memcpy {
-            memcpy_type_idx = user_type_base
-                + em.funcs.iter().map(|f| f.param_count).max().unwrap_or(0) as u32
-                + 1; // one past user types
-                     // Already in type section? No — need to add it dynamically
-                     // Actually we need to append to types. Since types are already emitted,
-                     // we'll use an existing 3-i32-param type if available, or piggyback on type 8 (3 i32 -> ())
-                     // type 8 = (i32, i32, i32) -> () in finish_outlayer_inner
-            memcpy_type_idx = 8; // (i32, i32, i32) -> ()
-            funcs.function(memcpy_type_idx);
-        } else {
-            memcpy_type_idx = 0; // unused
+            funcs.function(8);
         }
     }
     // http_get shim: (i32*5) -> i32 — after _start(+0), cabi_realloc(+1), memcpy(+2 if present)
@@ -2816,7 +2798,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         used_ol_indices, bridge_native_post
     );
     let ol_import_base = HTTP_IMPORT_COUNT + 1; // 29
-    let (ol, ol_sentinel_map, ol_count) = build_filtered_outlayer(&used_ol_indices, ol_import_base);
+    let (_ol, ol_sentinel_map, ol_count) = build_filtered_outlayer(&used_ol_indices, ol_import_base);
 
     // Import layout: HTTP 0..27, get-stdin 28, outlayer 29..29+ol_count,
     // stitched wasm (schnorr_*) env.* imports after that.
@@ -2842,13 +2824,13 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     let ol_type_7 = ol_type_base + 4; // (i32*7) -> ()
     let ol_type_9 = ol_type_base + 5; // (i32*9) -> ()
     let ol_type_11 = ol_type_base + 6; // (i32*11) -> ()
-    let ol_type_13 = ol_type_base + 7; // (i32*13) -> ()
+    let _ol_type_13 = ol_type_base + 7; // (i32*13) -> ()
     let ol_type_17 = ol_type_base + 8; // (i32*17) -> ()
     let ol_type_6 = ol_type_base + 9; // (i32*6) -> ()
     let ol_type_s64 = ol_type_base + 10; // (i32,i32,i64,i32) -> ()
     let ol_type_2ret = ol_type_base + 11; // (i32*2) -> (i32)
     let memcpy_type = ol_type_base + 12; // (i64, i64, i64) -> ()
-    let ol_type_ret_i32 = ol_type_base + 13; // () -> i32
+    let _ol_type_ret_i32 = ol_type_base + 13; // () -> i32
 
     // Function indices
     let get_fn_count = http_get_count * 2;
@@ -2956,7 +2938,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     imports.import("wasi:cli/stdin@0.2.2", "get-stdin", EntityType::Function(0));
 
     // Emit only filtered outlayer imports
-    for &(sentinel, ol_idx) in OUTLAYER_SENTINELS {
+    for &(_sentinel, ol_idx) in OUTLAYER_SENTINELS {
         if used_ol_indices.contains(&ol_idx) {
             let all_ol = outlayer_imports();
             let f = &all_ol[ol_idx];
@@ -2983,7 +2965,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         imports.import("env", name, EntityType::Function(type_idx));
         wasm_import_fn_idx_c.insert(i, func_idx);
     }
-    let wasm_import_count_c = em.wasm_imports.len() as u32;
+    let _wasm_import_count_c = em.wasm_imports.len() as u32;
 
     module.section(&imports);
 
@@ -3142,7 +3124,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     ];
 
     // ── HTTP GET internal functions ──
-    for (idx, (authority, path)) in http_urls.iter().enumerate() {
+    for (_idx, (authority, path)) in http_urls.iter().enumerate() {
         let http_data = crate::wasi_http_buffer::build_url_data_segments_with_base(
             authority.as_bytes(),
             path.as_bytes(),
@@ -3194,7 +3176,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     }
 
     // ── HTTP POST internal functions ──
-    for (idx, (authority, path)) in em.http_post_urls.iter().enumerate() {
+    for (_idx, (authority, path)) in em.http_post_urls.iter().enumerate() {
         let http_data = crate::wasi_http_buffer::build_url_data_segments_with_base(
             authority.as_bytes(),
             path.as_bytes(),
@@ -3545,12 +3527,12 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         let mut realloc = Function::new([
             (2u32, ValType::I32), // extra locals 4: returned ptr, 5: diag idx
         ]);
-        let ma4 = MemArg {
+        let _ma4 = MemArg {
             offset: 0,
             align: 2,
             memory_index: 0,
         };
-        let ma8 = MemArg {
+        let _ma8 = MemArg {
             offset: 0,
             align: 3,
             memory_index: 0,
@@ -3657,67 +3639,67 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     // the interpreter heap at 200000).
     //   +24..+112 match scratch (80 bytes, >= longest env key)
     if uses_env_lookup {
-        let o0 = MemArg {
+        let _o0 = MemArg {
             offset: 0,
             align: 2,
             memory_index: 0,
         };
-        let o4 = MemArg {
+        let _o4 = MemArg {
             offset: 4,
             align: 2,
             memory_index: 0,
         };
-        let o8 = MemArg {
+        let _o8 = MemArg {
             offset: 8,
             align: 2,
             memory_index: 0,
         };
-        let o12 = MemArg {
+        let _o12 = MemArg {
             offset: 12,
             align: 2,
             memory_index: 0,
         };
-        let o16 = MemArg {
+        let _o16 = MemArg {
             offset: 16,
             align: 2,
             memory_index: 0,
         };
-        let o20 = MemArg {
+        let _o20 = MemArg {
             offset: 20,
             align: 2,
             memory_index: 0,
         };
-        let o40 = MemArg {
+        let _o40 = MemArg {
             offset: 40,
             align: 2,
             memory_index: 0,
         };
-        let o44 = MemArg {
+        let _o44 = MemArg {
             offset: 44,
             align: 2,
             memory_index: 0,
         };
-        let o48 = MemArg {
+        let _o48 = MemArg {
             offset: 48,
             align: 2,
             memory_index: 0,
         };
-        let o24 = MemArg {
+        let _o24 = MemArg {
             offset: 24,
             align: 2,
             memory_index: 0,
         };
-        let o28 = MemArg {
+        let _o28 = MemArg {
             offset: 28,
             align: 2,
             memory_index: 0,
         };
-        let o52 = MemArg {
+        let _o52 = MemArg {
             offset: 52,
             align: 2,
             memory_index: 0,
         };
-        let oB = MemArg {
+        let _oB = MemArg {
             offset: 0,
             align: 0,
             memory_index: 0,
