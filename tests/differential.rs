@@ -643,19 +643,11 @@ fn known_divergences() -> Vec<(&'static str, LispVal)> {
         // emit Call to the memoized fn) — counter never increments. Interp
         // mutates the env binding: 3.
         ("closures/counter", LispVal::Num(0)),
-        // wasm: recursion through a memoizable define reuses the FIRST call's
-        // result — (build 6) yields six 6s. Interp: (6 5 4 3 2 1).
-        (
-            "lists/cons-build",
-            LispVal::List(vec![
-                LispVal::Num(6),
-                LispVal::Num(6),
-                LispVal::Num(6),
-                LispVal::Num(6),
-                LispVal::Num(6),
-                LispVal::Num(6),
-            ]),
-        ),
+        // "lists/cons-build" was pinned here: the static per-site cons buffer
+        // aliased across recursive activations — every cell read the LAST
+        // activation's payload, so (build 6) yielded six 6s. The
+        // runtime-bump-in-all-modes audit (call_list.rs "cons") gives each
+        // activation its own cell; wasm now matches interp, pin retired.
     ]
 }
 

@@ -19,79 +19,50 @@ impl WasmEmitter {
                     memory_index: 0,
                 };
                 let mut v = Vec::new();
-                if self.p2_mode || self.wasi_mode {
-                    let alloc_local = self.local_idx("__dict_alloc");
-                    v.extend(self.heap_bump_runtime(
-                        std::cmp::max((total_slots * 8) as u32, 64 * 8),
-                        "__dict_alloc",
-                    ));
-                    // Store n_pairs at ptr[0]: addr, value, store
+                // Runtime-bump in ALL modes: a static per-call-site dict
+                // buffer is re-written by every recursive activation of the
+                // site (see "cdr" in call_list.rs, 0ccdc06c).
+                let alloc_local = self.local_idx("__dict_alloc");
+                v.extend(self.heap_bump_runtime(
+                    std::cmp::max((total_slots * 8) as u32, 64 * 8),
+                    "__dict_alloc",
+                ));
+                // Store n_pairs at ptr[0]: addr, value, store
+                v.push(Instruction::LocalGet(alloc_local));
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I64Const(n_pairs as i64));
+                v.push(Instruction::I64Store(ma));
+                // Store key/val pairs
+                for i in 0..n_pairs {
+                    let off = (1 + 2 * i) as u64;
+                    let tmp = self.local_idx("__dict_kv");
+                    // key: emit value → save to local → push addr → push value → store
+                    v.extend(self.expr(&a[2 * i])?);
+                    v.push(Instruction::LocalSet(tmp));
                     v.push(Instruction::LocalGet(alloc_local));
+                    v.push(Instruction::I64Const(off as i64 * 8));
+                    v.push(Instruction::I64Add);
                     v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::I64Const(n_pairs as i64));
+                    v.push(Instruction::LocalGet(tmp));
                     v.push(Instruction::I64Store(ma));
-                    // Store key/val pairs
-                    for i in 0..n_pairs {
-                        let off = (1 + 2 * i) as u64;
-                        let tmp = self.local_idx("__dict_kv");
-                        // key: emit value → save to local → push addr → push value → store
-                        v.extend(self.expr(&a[2 * i])?);
-                        v.push(Instruction::LocalSet(tmp));
-                        v.push(Instruction::LocalGet(alloc_local));
-                        v.push(Instruction::I64Const(off as i64 * 8));
-                        v.push(Instruction::I64Add);
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::LocalGet(tmp));
-                        v.push(Instruction::I64Store(ma));
-                        // val: same pattern
-                        v.extend(self.expr(&a[2 * i + 1])?);
-                        let off2 = (2 + 2 * i) as u64;
-                        v.push(Instruction::LocalSet(tmp));
-                        v.push(Instruction::LocalGet(alloc_local));
-                        v.push(Instruction::I64Const(off2 as i64 * 8));
-                        v.push(Instruction::I64Add);
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::LocalGet(tmp));
-                        v.push(Instruction::I64Store(ma));
-                    }
-                    // Return tagged array
+                    // val: same pattern
+                    v.extend(self.expr(&a[2 * i + 1])?);
+                    let off2 = (2 + 2 * i) as u64;
+                    v.push(Instruction::LocalSet(tmp));
                     v.push(Instruction::LocalGet(alloc_local));
-                    v.push(Instruction::I64Const(TAG_BITS as i64));
-                    v.push(Instruction::I64Shl);
-                    v.push(Instruction::I64Const(TAG_ARRAY));
-                    v.push(Instruction::I64Or);
-                } else {
-                    let heap = self.heap_bump(std::cmp::max((total_slots * 8) as u32, 64 * 8));
-                    // Store n_pairs at ptr[0]: addr, value, store
-                    v.push(Instruction::I64Const(heap as i64));
+                    v.push(Instruction::I64Const(off2 as i64 * 8));
+                    v.push(Instruction::I64Add);
                     v.push(Instruction::I32WrapI64);
-                    v.push(Instruction::I64Const(n_pairs as i64));
+                    v.push(Instruction::LocalGet(tmp));
                     v.push(Instruction::I64Store(ma));
-                    // Store key/val pairs
-                    for i in 0..n_pairs {
-                        let off = (1 + 2 * i) as u64;
-                        let tmp = self.local_idx("__dict_kv");
-                        // key: emit value → save to local → push addr → push value → store
-                        v.extend(self.expr(&a[2 * i])?);
-                        v.push(Instruction::LocalSet(tmp));
-                        v.push(Instruction::I64Const(heap as i64 + off as i64 * 8));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::LocalGet(tmp));
-                        v.push(Instruction::I64Store(ma));
-                        // val: same pattern
-                        v.extend(self.expr(&a[2 * i + 1])?);
-                        let off2 = (2 + 2 * i) as u64;
-                        v.push(Instruction::LocalSet(tmp));
-                        v.push(Instruction::I64Const(heap as i64 + off2 as i64 * 8));
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::LocalGet(tmp));
-                        v.push(Instruction::I64Store(ma));
-                    }
-                    // Return tagged array
-                    v.push(Instruction::I64Const(
-                        ((heap as i64) << TAG_BITS) | TAG_ARRAY,
-                    ));
                 }
+                // Return tagged array
+                v.push(Instruction::LocalGet(alloc_local));
+                v.push(Instruction::I64Const(TAG_BITS as i64));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_ARRAY));
+                v.push(Instruction::I64Or);
+
                 Ok(v)
             }
             "dict/get" => {
@@ -254,13 +225,9 @@ impl WasmEmitter {
                 // Determine new count: if found, same count; else count+1
                 // Alloc new dict
                 let alloc_size = (1 + 2 * 64) * 8;
-                if self.p2_mode || self.wasi_mode {
-                    v.extend(self.heap_bump_runtime(alloc_size, "__dset_alloc"));
-                    v.push(Instruction::LocalGet(self.local_idx("__dset_alloc")));
-                } else {
-                    let new_heap = self.heap_bump(alloc_size);
-                    v.push(Instruction::I64Const(new_heap as i64));
-                }
+                // Runtime-bump in ALL modes — see "cdr" in call_list.rs (0ccdc06c).
+                v.extend(self.heap_bump_runtime(alloc_size, "__dset_alloc"));
+                v.push(Instruction::LocalGet(self.local_idx("__dset_alloc")));
                 v.push(Instruction::LocalSet(new_ptr));
 
                 // Branch: key found or not
@@ -537,13 +504,9 @@ impl WasmEmitter {
                 // Alloc result list: [n, key0, key1, ...]
                 let alloc_size = (std::cmp::max(1 + n as usize, 64) * 8) as u32;
                 let res_local = self.local_idx("__dk_res");
-                if self.p2_mode || self.wasi_mode {
-                    v.extend(self.heap_bump_runtime(alloc_size, "__dk_res"));
-                } else {
-                    let res_heap = self.heap_bump(alloc_size);
-                    v.push(Instruction::I64Const(res_heap as i64));
-                    v.push(Instruction::LocalSet(res_local));
-                }
+                // Runtime-bump in ALL modes — see "cdr" in call_list.rs (0ccdc06c).
+                v.extend(self.heap_bump_runtime(alloc_size, "__dk_res"));
+                v.push(Instruction::LocalSet(res_local));
                 // Store count
                 v.push(Instruction::LocalGet(res_local));
                 v.push(Instruction::I32WrapI64);
@@ -617,13 +580,9 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(n));
                 let alloc_size = (std::cmp::max(1 + n as usize, 64) * 8) as u32;
                 let res_local = self.local_idx("__dv_res");
-                if self.p2_mode || self.wasi_mode {
-                    v.extend(self.heap_bump_runtime(alloc_size, "__dv_res"));
-                } else {
-                    let res_heap = self.heap_bump(alloc_size);
-                    v.push(Instruction::I64Const(res_heap as i64));
-                    v.push(Instruction::LocalSet(res_local));
-                }
+                // Runtime-bump in ALL modes — see "cdr" in call_list.rs (0ccdc06c).
+                v.extend(self.heap_bump_runtime(alloc_size, "__dv_res"));
+                v.push(Instruction::LocalSet(res_local));
                 v.push(Instruction::LocalGet(res_local));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::LocalGet(n));

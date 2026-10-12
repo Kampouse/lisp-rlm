@@ -1168,13 +1168,11 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new: count + 1 elements
                 let alloc_size = (1 + 64) * 8;
-                if self.p2_mode || self.wasi_mode {
-                    v.extend(self.heap_bump_runtime(alloc_size, "__cons_alloc"));
-                    v.push(Instruction::LocalGet(self.local_idx("__cons_alloc")));
-                } else {
-                    let new_heap = self.heap_bump(alloc_size);
-                    v.push(Instruction::I64Const(new_heap as i64));
-                }
+                // Runtime-bump in ALL modes: a static per-call-site buffer is
+                // re-written by every recursive activation of this site (see
+                // the "cdr" comment above; found 2026-10-12, fixed 0ccdc06c).
+                v.extend(self.heap_bump_runtime(alloc_size, "__cons_alloc"));
+                v.push(Instruction::LocalGet(self.local_idx("__cons_alloc")));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store new_count = old_count + 1
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1381,13 +1379,9 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(end_tmp));
                 let alloc_size = (1 + 64) * 8;
-                if self.p2_mode || self.wasi_mode {
-                    v.extend(self.heap_bump_runtime(alloc_size, "__rng_alloc"));
-                    v.push(Instruction::LocalGet(self.local_idx("__rng_alloc")));
-                } else {
-                    let new_heap = self.heap_bump(alloc_size);
-                    v.push(Instruction::I64Const(new_heap as i64));
-                }
+                // Runtime-bump in ALL modes — see "cdr" (0ccdc06c).
+                v.extend(self.heap_bump_runtime(alloc_size, "__rng_alloc"));
+                v.push(Instruction::LocalGet(self.local_idx("__rng_alloc")));
                 v.push(Instruction::LocalSet(new_ptr));
                 // count = 0
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1468,13 +1462,9 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new
                 let alloc_size = (1 + 64) * 8;
-                if self.p2_mode || self.wasi_mode {
-                    v.extend(self.heap_bump_runtime(alloc_size, "__rev_alloc"));
-                    v.push(Instruction::LocalGet(self.local_idx("__rev_alloc")));
-                } else {
-                    let new_heap = self.heap_bump(alloc_size);
-                    v.push(Instruction::I64Const(new_heap as i64));
-                }
+                // Runtime-bump in ALL modes — see "cdr" (0ccdc06c).
+                v.extend(self.heap_bump_runtime(alloc_size, "__rev_alloc"));
+                v.push(Instruction::LocalGet(self.local_idx("__rev_alloc")));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store count
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1661,13 +1651,9 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(n2_tmp));
                 // Alloc new
                 let alloc_size = (1 + 64) * 8;
-                if self.p2_mode || self.wasi_mode {
-                    v.extend(self.heap_bump_runtime(alloc_size, "__ap_alloc"));
-                    v.push(Instruction::LocalGet(self.local_idx("__ap_alloc")));
-                } else {
-                    let new_heap = self.heap_bump(alloc_size);
-                    v.push(Instruction::I64Const(new_heap as i64));
-                }
+                // Runtime-bump in ALL modes — see "cdr" (0ccdc06c).
+                v.extend(self.heap_bump_runtime(alloc_size, "__ap_alloc"));
+                v.push(Instruction::LocalGet(self.local_idx("__ap_alloc")));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store total count
                 v.push(Instruction::LocalGet(new_ptr));
