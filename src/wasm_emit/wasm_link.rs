@@ -506,7 +506,7 @@ fn merge_lib_wasm(
     }
     let import_idx = import_idx.ok_or_else(|| format!("import '{}' not found", import_name))?;
 
-    let total_funcs = import_func_count + contract.func_type_indices.len() as u32;
+    let _total_funcs = import_func_count + contract.func_type_indices.len() as u32;
 
     // In the merged module: [imports sans schnorr] [schnorr] [contract defs] [lib defs]
     let schnorr_idx = import_func_count - 1;
@@ -576,7 +576,6 @@ fn merge_lib_wasm(
 
     // Import section: contract imports MINUS the schnorr one
     let mut imp_sec = wasm_encoder::ImportSection::new();
-    let mut new_import_func_count = 0u32;
     for imp in &contract.imports {
         if imp.kind == 0 && imp.name == import_name {
             continue;
@@ -588,7 +587,6 @@ fn merge_lib_wasm(
                     &imp.name,
                     wasm_encoder::EntityType::Function(imp.type_idx),
                 );
-                new_import_func_count += 1;
             }
             3 => {
                 imp_sec.import(
@@ -921,7 +919,7 @@ fn merge_lib_wasm_multi(
 
     let sorted_contract_indices: Vec<u32> = sorted.iter().map(|&(_, ci, _, _)| ci).collect();
     let sorted_lib_indices: Vec<u32> = sorted.iter().map(|&(_, _, li, _)| li).collect();
-    let sorted_original_pos: Vec<usize> = sorted.iter().map(|&(op, _, _, _)| op).collect();
+    let _sorted_original_pos: Vec<usize> = sorted.iter().map(|&(op, _, _, _)| op).collect();
 
     // Map from lib export index to its position in sorted list (for lib remapping)
     // sorted_original_pos[k] = original position k, so for a given lib index we find its sorted position
@@ -1016,9 +1014,8 @@ fn merge_lib_wasm_multi(
 
     // Import section: contract imports MINUS the resolved ones
     let mut imp_sec = wasm_encoder::ImportSection::new();
-    let mut removed_import_names: std::collections::HashSet<&str> =
+    let removed_import_names: std::collections::HashSet<&str> =
         import_export_pairs.iter().map(|&(name, _)| name).collect();
-    let mut new_import_func_count = 0u32;
     for imp in &contract.imports {
         if imp.kind == 0 && removed_import_names.contains(imp.name.as_str()) {
             continue;
@@ -1030,7 +1027,7 @@ fn merge_lib_wasm_multi(
                     &imp.name,
                     wasm_encoder::EntityType::Function(imp.type_idx),
                 );
-                new_import_func_count += 1;
+
             }
             3 => {
                 imp_sec.import(

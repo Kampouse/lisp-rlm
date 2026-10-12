@@ -1063,7 +1063,6 @@ pub fn get_doc(name: &str) -> Option<&'static str> {
 // ─────────────────────────────────────────────────────
 // Uses RefCell inside thread_local! — WASM-compatible (no Mutex/LazyLock).
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 /// A registered variant constructor.

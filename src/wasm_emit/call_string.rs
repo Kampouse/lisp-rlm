@@ -4503,7 +4503,7 @@ impl WasmEmitter {
         &mut self,
         a: &[LispVal],
     ) -> Result<Vec<Instruction<'static>>, String> {
-        use wasm_encoder::Instruction as I;
+        
         if a.len() != 1 {
             return Err("json-quote: expected 1 arg".into());
         }

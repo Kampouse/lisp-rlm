@@ -766,7 +766,7 @@ impl WasmEmitter {
                         "near/promise_batch_action_create_account: need 1 args (idx)".into(),
                     );
                 }
-                let idx = self.expr(&a[0])?;
+                let _idx = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(self.expr(&a[0])?);
                 v.extend(self.emit_untag()); // idx

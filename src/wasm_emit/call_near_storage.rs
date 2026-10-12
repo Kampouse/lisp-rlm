@@ -266,7 +266,7 @@ impl WasmEmitter {
     /// reuse, heap aliasing) can never poison a cached entry.
     pub(crate) fn emit_storage_cache_insert(
         &mut self,
-        k: u32,
+        _k: u32,
         res_l: u32,
         cnt_l: u32,
         slot_l: u32,

@@ -23,7 +23,7 @@
 
 use crate::types::LispVal;
 use crate::typing::checker::{collect_bodies, collect_top_defns, hosts_closure_of};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Receipt base: receive + execute any receipt. Same constant and provenance
 /// as the checker's callback-floor warning (checker.rs CB_FLOOR_BASE).

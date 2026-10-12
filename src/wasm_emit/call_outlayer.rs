@@ -357,8 +357,8 @@ impl WasmEmitter {
                     align: 3,
                     memory_index: 0,
                 };
-                let buf_local = self.local_idx_i32("__sg_buf");
-                let len_local = self.local_idx_i32("__sg_len");
+                let _buf_local = self.local_idx_i32("__sg_buf");
+                let _len_local = self.local_idx_i32("__sg_len");
                 // result<option<list<u8>>, string> canonical ABI:
                 // +0: result disc (0=Ok, 1=Err)
                 // +4: option disc (0=None, 1=Some) [Ok only]
@@ -622,7 +622,7 @@ impl WasmEmitter {
                 }
                 self.need_outlayer = true;
                 let key_expr = self.expr(&a[0])?;
-                let ma4 = wasm_encoder::MemArg {
+                let _ma4 = wasm_encoder::MemArg {
                     offset: 0,
                     align: 2,
                     memory_index: 0,
@@ -643,7 +643,7 @@ impl WasmEmitter {
                 // 8000 is below HEAP_START (200000) and clear of all data
                 // segments (strings end < 16600), so nothing writes there.
                 let key_area: i32 = 8000;
-                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 512;
+                let _ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE + 512;
 
                 // unique heap buffer per call (result copied out of ret area)
                 let call_idx = self.env_get_count;

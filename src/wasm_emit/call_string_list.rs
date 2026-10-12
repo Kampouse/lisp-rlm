@@ -464,7 +464,7 @@ impl WasmEmitter {
             v.push(Instruction::I32WrapI64);
             v.push(Instruction::I32Store8(ma0.clone()));
         }
-        let (mut body, len_i, _ptr_i) = self.str_unwrap(&a[0], "ssl");
+        let (mut body, _len_i, _ptr_i) = self.str_unwrap(&a[0], "ssl");
         v.append(&mut body);
         let i_i = self.local_idx("__ssl_i");
         let start_i = self.local_idx("__ssl_start");

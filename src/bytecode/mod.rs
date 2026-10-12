@@ -5556,7 +5556,7 @@ fn eval_near_builtin(
             state.near_promises.push(LispVal::Map(m));
 
             // If base promise has a result and target is registered, execute immediately
-            let base_result = state
+            let _base_result = state
                 .near_promise_results
                 .get(base_idx as usize)
                 .cloned()
@@ -6303,7 +6303,7 @@ pub fn eval_builtin(
             while r
                 .checked_add(1)
                 .and_then(|r1| r1.checked_mul(r1).map(|sq| (r1, sq)))
-                .map(|(r1, sq)| sq <= n)
+                .map(|(_r1, sq)| sq <= n)
                 .unwrap_or(false)
             {
                 r += 1;
