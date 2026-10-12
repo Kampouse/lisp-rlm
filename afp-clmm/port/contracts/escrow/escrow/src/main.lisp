@@ -197,6 +197,7 @@
       (sput (str-cat "e:shares:" (str-cat k (str-cat ":" u))) (sub (kshares k u) s))
       (sput "e:lp_total" (sub (sget "e:lp_total" "0") v))
       (sput "e:out" (add (sget "e:out" "0") v))
+      (credit u v)
       (near/log (str-cat "lp_key_remove k=" (str-cat k (str-cat " u=" (str-cat u (str-cat " s=" (str-cat s (str-cat " v=" v))))))))
       (near/return v))))
 

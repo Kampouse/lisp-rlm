@@ -217,6 +217,7 @@ def lisp_src():
       (sput "e:supply" (sub T s))
       (sput (str-cat "e:shares:" u) (sub (shares u) s))
       (sput "e:out" (add (sget "e:out" "0") v))
+      (credit u v)
       (near/log (str-cat "lp_remove u=" (str-cat u (str-cat " s=" (str-cat s (str-cat " v=" v))))))
       (near/return v))))
 
@@ -288,6 +289,7 @@ def lisp_src():
       (sput (str-cat "e:shares:" (str-cat k (str-cat ":" u))) (sub (kshares k u) s))
       (sput "e:lp_total" (sub (sget "e:lp_total" "0") v))
       (sput "e:out" (add (sget "e:out" "0") v))
+      (sput (str-cat "e:bal:" u) (add (bal u) v))
       (near/log (str-cat "lp_key_remove k=" (str-cat k (str-cat " u=" (str-cat u (str-cat " s=" (str-cat s (str-cat " v=" v))))))))
       (near/return v))))
 
@@ -511,6 +513,7 @@ export function lp_key_remove(): string {{
   sput("e:shares:" + k + ":" + u, u128.sub(kshares(k, u), s));
   sput("e:lp_total", u128.sub(sget("e:lp_total"), v));
   sput("e:out", u128.add(sget("e:out"), v));
+  sput("e:bal:" + u, u128.add(bal(u), v));
   near.log("lp_key_remove k=" + k + " u=" + u + " s=" + s + " v=" + v);
   return v;
 }}

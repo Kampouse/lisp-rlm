@@ -199,6 +199,7 @@ export function lp_key_remove(): string {
   sput("e:shares:" + k + ":" + u, u128.sub(kshares(k, u), s));
   sput("e:lp_total", u128.sub(sget("e:lp_total"), v));
   sput("e:out", u128.add(sget("e:out"), v));
+  sput("e:bal:" + u, u128.add(bal(u), v));
   near.log("lp_key_remove k=" + k + " u=" + u + " s=" + s + " v=" + v);
   return v;
 }

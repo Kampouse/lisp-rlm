@@ -1,6 +1,6 @@
 {
  "name": "clmm-lp-keyed-ts",
- "manifest": "escrow.clmm.test.near=../../../contracts/escrow/escrow/ts/target/escrow-ts.wasm",
+ "manifest": "escrow.clmm.test.near=/Users/jean/dev/lisp-rlm/afp-clmm/port/contracts/escrow/escrow/ts/target/escrow-ts.wasm",
  "steps": [
   {
    "method": "deposit",
@@ -188,7 +188,7 @@
    "args": {
     "account": "bob"
    },
-   "expect": "400"
+   "expect": "450"
   },
   {
    "method": "get_pool_of",
@@ -245,7 +245,7 @@
    "args": {
     "account": "alice"
    },
-   "expect": "200"
+   "expect": "500"
   },
   {
    "method": "get_pool_of",
@@ -278,7 +278,7 @@
    "args": {
     "account": "bob"
    },
-   "expect": "400"
+   "expect": "500"
   },
   {
    "method": "get_pool_of",

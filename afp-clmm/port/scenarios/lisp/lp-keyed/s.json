@@ -188,7 +188,7 @@
    "args": {
     "account": "bob"
    },
-   "expect": "400"
+   "expect": "450"
   },
   {
    "method": "get_pool_of",
@@ -245,7 +245,7 @@
    "args": {
     "account": "alice"
    },
-   "expect": "200"
+   "expect": "500"
   },
   {
    "method": "get_pool_of",
@@ -278,7 +278,7 @@
    "args": {
     "account": "bob"
    },
-   "expect": "400"
+   "expect": "500"
   },
   {
    "method": "get_pool_of",
