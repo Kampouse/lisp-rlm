@@ -84,7 +84,7 @@ const TSS: &str = include_str!("../examples/clmm.ts");
 // ── shared scenario steps (identical for both languages) ──
 
 const INIT_AND_ADD: &str = r#"[
-    {"method": "initialize", "args": {"sp": 4294967296, "tick": 0}},
+    {"method": "initialize", "args": {"sp": 4294967296, "tick": 0, "t0": "token0.test.near", "t1": "token1.test.near"}},
     {"method": "add_liquidity", "args": {"lower": -100, "upper": 100, "liq": 1000000}},
     {"method": "get_price"},
     {"method": "get_liq"},
@@ -185,14 +185,14 @@ fn clmm_ts_tick_nets_differential() {
 
     // add liquidity, then read boundary tick nets: -1000000 / +1000000.
     let lis_steps = r#"[
-    {"method": "initialize", "args": {"sp": 4294967296, "tick": 0}},
+    {"method": "initialize", "args": {"sp": 4294967296, "tick": 0, "t0": "token0.test.near", "t1": "token1.test.near"}},
     {"method": "add_liquidity", "args": {"lower": -100, "upper": 100, "liq": 1000000}},
     {"method": "tick_net", "args": {"tick": -100}},
     {"method": "tick_net", "args": {"tick": 100}},
     {"method": "tick_gross", "args": {"tick": -100}}
   ]"#;
     let ts_steps = r#"[
-    {"method": "initialize", "args": {"sp": 4294967296, "tick": 0}},
+    {"method": "initialize", "args": {"sp": 4294967296, "tick": 0, "t0": "token0.test.near", "t1": "token1.test.near"}},
     {"method": "add_liquidity", "args": {"lower": -100, "upper": 100, "liq": 1000000}},
     {"method": "get_tick_net", "args": {"tick": -100}},
     {"method": "get_tick_net", "args": {"tick": 100}},
