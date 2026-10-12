@@ -1411,7 +1411,11 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
                 let get = list(vec![Sym("default"), list(vec![Sym("near/json_get_str"), Str(n.clone())]), Str(String::from(""))]);
                 let v = match kind {
                     1 => list(vec![Sym("str->num"), get]),
-                    2 => list(vec![Sym("near/json_get_arr"), Str(n.clone())]),
+                    2 => list(vec![
+                        Sym("default"),
+                        list(vec![Sym("near/json_get_arr"), Str(n.clone())]),
+                        Sym("nil"),
+                    ]),
                     _ => get,
                 };
                 list(vec![Sym(n.clone()), v])
@@ -1992,7 +1996,11 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
                             NUM_PARAM_NAMES.with(|s| s.borrow_mut().push(n.clone()));
                             list(vec![Sym("str->num"), get])
                         }
-                        2 => list(vec![Sym("near/json_get_arr"), Str(n.clone())]),
+                        2 => list(vec![
+                        Sym("default"),
+                        list(vec![Sym("near/json_get_arr"), Str(n.clone())]),
+                        Sym("nil"),
+                    ]),
                         _ => get,
                     };
                     list(vec![Sym(n.clone()), v])
@@ -7719,6 +7727,23 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 }
             }
             let head = callee_name(&c.callee)?;
+            // jsonArr(): Opt-typed since the Opt json/get migration
+            // (6720ab23) — arm with the sanctioned `?? []` shape so
+            // `.length` / indexing type as a plain list (miss → empty
+            // array). TS jsonArr exposes no nil state to the user.
+            if head == "near/json_get_arr" {
+                if c.arguments.len() != 1 {
+                    return Err("ts_frontend: near.jsonArr takes exactly (key)".into());
+                }
+                let a0 = c.arguments[0]
+                    .as_expression()
+                    .ok_or("ts_frontend: bad jsonArr key")?;
+                return Ok(list(vec![
+                    Sym("default"),
+                    list(vec![Sym("near/json_get_arr"), lower_expr(a0)?]),
+                    Sym("nil"),
+                ]));
+            }
             // blockTimestampNum() → RAW numeric ns (alias for the host op
             // — near/block_timestamp_num doesn't exist)
             // ── ergonomics-v2 builtins (2026-10-07) ─────────────────────
