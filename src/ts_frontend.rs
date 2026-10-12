@@ -5285,7 +5285,7 @@ fn expr_is_bigint(e: &Expression<'_>) -> bool {
             if let Expression::Identifier(id) = &c.callee {
                 matches!(
                     id.name.as_str(),
-                    "u128Add" | "u128Sub" | "u128Mul" | "u128Div" | "u128Mod" | "u128FromNum"
+                    "u128Add" | "u128Sub" | "u128Mul" | "u128MulDiv" | "u128Div" | "u128Mod" | "u128FromNum"
                 )
             } else {
                 false
