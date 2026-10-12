@@ -572,7 +572,14 @@ fn cmd_test(dir: Option<&str>, json: bool) -> Result<(), String> {
                 a.push("--view".into());
             }
             a.extend(["--prepaid".into(), "200".into()]);
-            let out = capture("near-mock", &a)?;
+            let out = match capture("near-mock", &a) {
+                Ok(s) => s,
+                // a nonzero exit is a legitimate outcome for expect_error /
+                // expect:"trap" steps (contract abort → exit 1). Capture the
+                // combined output and let the expect logic judge it.
+                Err(msg) => msg,
+            };
+            // expect_error: the call MUST fail (abort/panic) — trap expected
             // expect_error: the call MUST fail (abort/panic) — trap expected
             if let Some(want_err) = step["expect_error"].as_str() {
                 let errored = out.contains("❌") || out.contains("trap");

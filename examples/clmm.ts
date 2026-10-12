@@ -89,6 +89,7 @@ function spAtTickRaw(tick: number): number {
 // ── pool initialization ──
 
 export function initialize(): number {
+  accCarry();
   const sp = near.jsonGetInt("sp") ?? 0;
   const tick = near.jsonGetInt("tick") ?? 0;
   near.storeNum(0, sp);
@@ -100,6 +101,7 @@ export function initialize(): number {
 // ── add liquidity: range [lower, upper) ──
 
 export function add_liquidity(): number {
+  accCarry();
   const lower = near.jsonGetInt("lower") ?? 0;
   const upper = near.jsonGetInt("upper") ?? 0;
   const liq = near.jsonGetInt("liq") ?? 0;
@@ -119,6 +121,7 @@ export function add_liquidity(): number {
 // ── remove liquidity ──
 
 export function remove_liquidity(): number {
+  accCarry();
   const lower = near.jsonGetInt("lower") ?? 0;
   const upper = near.jsonGetInt("upper") ?? 0;
   const liq = near.jsonGetInt("liq") ?? 0;
@@ -137,6 +140,7 @@ export function remove_liquidity(): number {
 // ── swap token0 → token1 (price decreases) ──
 
 export function swap0(): number {
+  accCarry();
   const dx = near.jsonGetInt("dx") ?? 0;
   const sp = priceRaw();
   const liq = liqRaw();
@@ -153,6 +157,7 @@ export function swap0(): number {
 // ── swap token1 → token0 (price increases) ──
 
 export function swap1(): number {
+  accCarry();
   const dyIn = near.jsonGetInt("dy_in") ?? 0;
   const sp = priceRaw();
   const liq = liqRaw();
@@ -164,6 +169,47 @@ export function swap1(): number {
   const dx = mulDiv(liq, mulDiv(dp, q32(), sp), newSp);
   near.storeNum(0, newSp);
   return dx;
+}
+
+// ── TWAP accumulator (twin of the lisp acc_carry/twap_snap/twap_tick) ──
+// keys "ts"/"tc": last update ns + biased u128 cum Σ(tick+50000)·dt;
+// "tc_snap_ts"/"tc_snap": observation pin. Same bias scheme — tick can be
+// negative, u128 strings cannot.
+
+function accLastTs(): string {
+  return near.storageGet("ts") ?? "0";
+}
+
+function accCumRaw(): string {
+  return near.storageGet("tc") ?? "0";
+}
+
+function accCarry(): void {
+  const now = near.blockTimestamp();
+  const last = accLastTs();
+  if (u128.lt(last, now)) {
+    const dt = u128.sub(now, last);
+    near.storageSet("ts", now);
+    near.storageSet("tc", u128.add(accCumRaw(), u128.mul(u128FromNum(tickRaw() + tickOff()), dt)));
+  } else {
+    near.storageSet("ts", now);
+  }
+}
+
+export function twap_snap(): string {
+  accCarry();
+  near.storageSet("tc_snap_ts", accLastTs());
+  near.storageSet("tc_snap", accCumRaw());
+  return accCumRaw();
+}
+
+export function get_twap_tick(): string {
+  accCarry();
+  const sTs = near.storageGet("tc_snap_ts") ?? "0";
+  const sCum = near.storageGet("tc_snap") ?? "0";
+  const dt = u128.sub(accLastTs(), sTs);
+  const biased = u128.div(u128.sub(accCumRaw(), sCum), dt);
+  return u128.sub(biased, u128FromNum(tickOff()));
 }
 
 // ── views (get_* → view exports) ──

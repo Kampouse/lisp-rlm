@@ -2637,7 +2637,10 @@ pub(crate) fn build_env_linker(
         };
         // Build all trap funcs through the closure first — its &mut *store
         // borrow must end before linker.define borrows store immutably.
-        let (f_pc, f_pt, f_pa, f_pbc, f_pbt, f_prc, f_pr, f_pret, f_pafc, f_pyc, f_pyr, f_pbat) = (
+        // Defensive pyr must keep the near-sdk I32 ABI (contract imports
+        // (i64x4)->i32; an I64 return breaks instantiation).
+        // Build AFTER all trap0 closures' &mut *store borrows have ended.
+        let (f_pc, f_pt, f_pa, f_pbc, f_pbt, f_prc, f_pr, f_pret, f_pafc, f_pyc, f_pbat) = (
             trap0("promise_create", 8, true),
             trap0("promise_then", 9, true),
             trap0("promise_and", 2, true),
@@ -2648,8 +2651,17 @@ pub(crate) fn build_env_linker(
             trap0("promise_return", 1, false),
             trap0("promise_batch_action_function_call", 7, false),
             trap0("promise_yield_create", 7, true),
-            trap0("promise_yield_resume", 4, true),
             trap0("promise_batch_action_transfer", 2, false),
+        );
+        let f_pyr_def = host_fn(
+            "promise_yield_resume",
+            &mut *store,
+            FuncType::new(engine, vec![ValType::I64; 4], vec![ValType::I32]),
+            move |_, _, _| {
+                Err(wasmtime::Error::msg(
+                    "CannotClaimPromise: promise_yield_resume called with no execution state — run via a near-mock driver (cross/run/state), never bare",
+                ))
+            },
         );
         linker.define(&*store, "env", "promise_create", f_pc)?;
         linker.define(&*store, "env", "promise_then", f_pt)?;
@@ -2661,7 +2673,7 @@ pub(crate) fn build_env_linker(
         linker.define(&*store, "env", "promise_return", f_pret)?;
         linker.define(&*store, "env", "promise_batch_action_function_call", f_pafc)?;
         linker.define(&*store, "env", "promise_yield_create", f_pyc)?;
-        linker.define(&*store, "env", "promise_yield_resume", f_pyr)?;
+        linker.define(&*store, "env", "promise_yield_resume", f_pyr_def)?;
         linker.define(&*store, "env", "promise_batch_action_transfer", f_pbat)?;
     }
 

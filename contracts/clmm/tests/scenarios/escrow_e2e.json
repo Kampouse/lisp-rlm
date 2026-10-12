@@ -1,0 +1,76 @@
+{
+ "name": "clmm escrow flow",
+ "manifest": "pool.c.test.near=contracts/clmm/clmm.wasm",
+ "steps": [
+  {
+   "as": "alice.test.near",
+   "method": "initialize",
+   "args": {
+    "sp": 4294967296,
+    "tick": 0
+   }
+  },
+  {
+   "as": "token0.test.near",
+   "predecessor": "token0.test.near",
+   "method": "ft_on_transfer",
+   "args": {
+    "sender_id": "alice.test.near",
+    "amount": "5000000000000000000000000",
+    "msg": "",
+    "t0": "token0.test.near",
+    "t1": "token1.test.near"
+   }
+  },
+  {
+   "as": "alice.test.near",
+   "method": "mint_position",
+   "args": {
+    "lower": -10,
+    "upper": 10,
+    "liq": 1000
+   }
+  },
+  {
+   "as": "alice.test.near",
+   "method": "position",
+   "args": {
+    "id": 0
+   }
+  },
+  {
+   "as": "bob.test.near",
+   "method": "remove_position",
+   "args": {
+    "id": 0
+   }
+  },
+  {
+   "as": "alice.test.near",
+   "method": "transfer_position",
+   "args": {
+    "id": 0,
+    "new_owner": "bob.test.near"
+   }
+  },
+  {
+   "as": "alice.test.near",
+   "method": "remove_position",
+   "args": {
+    "id": 0
+   }
+  },
+  {
+   "as": "bob.test.near",
+   "method": "remove_position",
+   "args": {
+    "id": 0
+   }
+  },
+  {
+   "as": "bob.test.near",
+   "method": "get_liq",
+   "args": {}
+  }
+ ]
+}

@@ -6680,8 +6680,16 @@ pub fn eval_builtin(
                 },
                 "u128/to-i64" => {
                     let v = parse_u128_arg(name, args.get(0))?;
-                    if v > i64::MAX as u128 {
-                        return Err(format!("u128/to-i64: value {} exceeds i64::MAX", v));
+                    // Aligned with wasm tagged-Num payload limit (2^60 - 1,
+                    // 2026-10-11): previously the interpreter accepted up to
+                    // i64::MAX while the wasm emitter trapped above 2^60-1 —
+                    // a test/pass, wasm/trap divergence. Both now enforce the
+                    // same boundary; the compiler rejects statically.
+                    if v > 0x0FFF_FFFF_FFFF_FFFF {
+                        return Err(format!(
+                            "u128/to-i64: value {} exceeds tagged-Num limit 2^60-1; keep u128-domain values in u128 ops",
+                            v
+                        ));
                     }
                     Ok(LispVal::Num(v as i64))
                 }

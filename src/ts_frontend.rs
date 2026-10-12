@@ -109,6 +109,7 @@ fn ts_to_lisp_source_inner(src: &str) -> Result<String, String> {
     LEDGER_NAMES.with(|s| s.borrow_mut().clear());
     MONEY_ALIASES.with(|s| s.borrow_mut().clear());
     USER_FNS.with(|m| m.borrow_mut().clear());
+    U128_PURE_FNS.with(|m| m.borrow_mut().clear());
     let exprs = parse_ts(src)?;
     let mut out = String::new();
     for e in &exprs {
@@ -208,6 +209,16 @@ thread_local! {
     /// rejected. The old unknown-name passthrough let brain-written lisp
     /// (reduce/lambda/array…) compile as "TS" and game the checker.
     static USER_FNS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    /// User-defined functions whose (non-async) body returns a u128-pure
+    /// expression (e.g. `function muldiv(a: bigint, b: bigint) { return
+    /// u128Mul(a, b) / c }`). A `let r = muldiv(...)` lowers to a plain
+    /// call — without this registry init_is_u128_pure saw only the native
+    /// u128/* forms, the local got a raw-i64 slot, and the tagged u128
+    /// value was smashed into it (silent i64 truncation of money math,
+    /// found in clmm 2026-10-11). Consulted by init_is_u128_pure at every
+    /// let/define slot-selection site.
+    static U128_PURE_FNS: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
     static CONST_FOLDS: std::cell::RefCell<Vec<(String, LispVal)>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -1851,6 +1862,24 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
         return_ann_money(f),
     )?;
     check_money_sinks(&body.statements)?;
+
+    // u128-purity registry (clmm bug, 2026-10-11): if every return in this
+    // function is a u128-pure expression, record the name so init_is_u128_pure
+    // gives `let x = <this fn>(...)` a tagged u128 slot. Async fns are
+    // skipped — their results go through the await/bind machinery, which
+    // seeds shapes separately.
+    if !f.r#async {
+        let mut rets: Vec<&Expression<'_>> = Vec::new();
+        stmts_exprs(&body.statements, &mut rets);
+        let all_pure = !rets.is_empty()
+            && rets.iter().all(|e| {
+                matches!(e, Expression::AwaitExpression(_)) || expr_is_u128_value(e)
+            });
+        if all_pure {
+            U128_PURE_FNS
+                .with(|m| m.borrow_mut().insert(name.clone()));
+        }
+    }
 
     // forward-scan bigint lets (CPS lowering means let-site registration
     // runs after statements that reference the binding — see scan_bigint_lets)
@@ -5242,10 +5271,20 @@ fn mark_string_local(n: &str) {
 fn init_is_u128_pure(init: &LispVal) -> bool {
     if let LispVal::List(items) = init {
         if let Some(LispVal::Sym(head)) = items.first() {
-            return matches!(
+            // Native u128 arithmetic lowers to the u128/* forms...
+            if matches!(
                 head.as_str(),
                 "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod"
-            ) && items.len() == 3;
+            ) && items.len() == 3 {
+                return true;
+            }
+            // ...and a call to a user fn whose own body returns a
+            // u128-pure expression must get the same slot treatment —
+            // otherwise the local gets a raw-i64 slot and the tagged
+            // u128 value is truncated on store (clmm bug, 2026-10-11).
+            if items.len() >= 1 && U128_PURE_FNS.with(|m| m.borrow().contains(head.as_str())) {
+                return true;
+            }
         }
     }
     false
@@ -5283,10 +5322,19 @@ fn expr_is_bigint(e: &Expression<'_>) -> bool {
         Expression::ParenthesizedExpression(pe) => expr_is_bigint(&pe.expression),
         Expression::CallExpression(c) => {
             if let Expression::Identifier(id) = &c.callee {
-                matches!(
-                    id.name.as_str(),
+                let n = id.name.as_str();
+                if matches!(
+                    n,
                     "u128Add" | "u128Sub" | "u128Mul" | "u128MulDiv" | "u128Div" | "u128Mod" | "u128FromNum"
-                )
+                ) {
+                    return true;
+                }
+                // (2026-10-11) A call to a user fn registered as
+                // u128-pure (U128_PURE_FNS) yields a tagged u128 value,
+                // so `let r = muldiv(...)` must make `r` bigint-shaped —
+                // otherwise `r / 10n ** 18n` picked the generic `/` and
+                // type_check failed with "num ≠ str" (micro_v3).
+                U128_PURE_FNS.with(|m| m.borrow().contains(n))
             } else {
                 false
             }
@@ -5413,6 +5461,22 @@ fn expr_is_u128_value(e: &Expression<'_>) -> bool {
                         "attachedDeposit" | "attachedDepositU128"
                             | "accountBalance" | "loadU128" | "readU128"
                     ))
+        }
+        // (2026-10-11, micro_v3) `return u128Mul(a, b) / c` — arithmetic
+        // over u128 values stays in the u128 domain, so such a return
+        // counts as u128-pure for the U128_PURE_FNS registry. Without
+        // this the fn was never registered and `let r = f(...)` locals
+        // lost bigint shape (generic `/` → "num ≠ str" type error).
+        Expression::BinaryExpression(b) => {
+            matches!(
+                b.operator,
+                BinaryOperator::Addition
+                    | BinaryOperator::Subtraction
+                    | BinaryOperator::Multiplication
+                    | BinaryOperator::Division
+                    | BinaryOperator::Remainder
+            ) && expr_is_u128_value(&b.left)
+                && expr_is_u128_value(&b.right)
         }
         _ => false,
     }
@@ -6318,6 +6382,42 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     BinaryOperator::GreaterThan => Some("u128/gt"),
                     _ => None,
                 };
+                // (2026-10-11) `**` on bigint operands: money code writes
+                // 10n ** 18n constantly, and the generic arm's hard error
+                // made every such contract fail to compile. Lower
+                // `base ** N` (N a non-negative integer LITERAL) to a
+                // chain of u128/mul — exact, no new builtin. Non-literal
+                // or negative exponent stays a hard error (no silent
+                // u64 fallback).
+                if b.operator == BinaryOperator::Exponential {
+                    let exp = match &b.right {
+                        Expression::BigIntLiteral(bl) => {
+                            bl.value.to_string().parse::<u32>().ok()
+                        }
+                        Expression::NumericLiteral(nl) => {
+                            if nl.value.fract() == 0.0 && nl.value >= 0.0 {
+                                Some(nl.value as u32)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    let Some(exp) = exp else {
+                        return Err(
+                            "ts_frontend: bigint `**` requires a non-negative integer literal exponent (e.g. 10n ** 18n); computed exponents are not supported".into(),
+                        );
+                    };
+                    let base = lower_expr(&b.left)?;
+                    if exp == 0 {
+                        return Ok(list(vec![Sym("u128/from-num"), Num(1)]));
+                    }
+                    let mut acc = base.clone();
+                    for _ in 1..exp {
+                        acc = list(vec![Sym("u128/mul"), acc, base.clone()]);
+                    }
+                    return Ok(acc);
+                }
                 let l = lower_expr(&b.left)?;
                 let r = lower_expr(&b.right)?;
                 if let Some(uop) = uop {
@@ -7329,7 +7429,36 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             } else {
                 head
             };
-            let head = map_builtin_call(&head);
+            let mut head = map_builtin_call(&head);
+            // (2026-10-11, micro_v3) Number(<bigint>) must convert the
+            // u128 value, not parse a string: if the head is str->num and
+            // the argument is bigint-shaped, emit u128/to-i64. Previously
+            // Number(r / 10n**18n) fed a tagged u128 limb value into the
+            // string parser and __h_u128_parse trapped.
+            if head == "str->num" && c.arguments.len() == 1
+                && c.arguments[0].as_expression().is_some_and(expr_is_bigint)
+            {
+                head = "u128/to-i64".to_string();
+                // (2026-10-12, tagged-Num parity) A bigint LITERAL above
+                // 2^60-1 can never round-trip the tagged-Num ABI — both
+                // backends trap at runtime. Reject at compile time instead,
+                // so CLMM-scale amounts fail the build, not on-chain.
+                if let Some(Expression::BigIntLiteral(b)) = c.arguments[0].as_expression() {
+                    let raw = b
+                        .raw
+                        .as_ref()
+                        .map(|s| s.as_str().trim_end_matches('n'))
+                        .unwrap_or_default();
+                    if let Ok(v) = raw.parse::<u128>() {
+                        if v > 0x0FFF_FFFF_FFFF_FFFF {
+                            return Err(format!(
+                                "Number({}n): literal {} exceeds tagged-Num limit 2^60-1 (~1.15e18); keep u128-domain values in u128 ops (u128MulDiv etc.), never Number() them",
+                                raw, v
+                            ));
+                        }
+                    }
+                }
+            }
             // strict surface: a BARE-IDENTIFIER callee whose RAW name
             // survives every mapping unchanged (raw == final head) and is
             // neither a user-defined function nor RLM runtime API is a

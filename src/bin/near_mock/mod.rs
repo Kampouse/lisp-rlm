@@ -1413,7 +1413,10 @@ fn build_promise_hosts(
     let pyr = host_fn(
         "promise_yield_resume",
         &mut *store,
-        FuncType::new(engine, vec![ValType::I64; 4], vec![ValType::I64]),
+        // near-sdk yield ABI returns I32 (1/0 resumed flag); I64 here broke
+        // linking of modern contracts (omni.bridge.near): 'incompatible
+        // import type for env::promise_yield_resume' (2026-10-04).
+        FuncType::new(engine, vec![ValType::I64; 4], vec![ValType::I32]),
         move |mut caller, args, results| {
             // ABI: (data_id_len, data_id_ptr, payload_len, payload_ptr) — the
             // emitter passes the data_id as a STRING ("yd:<idx>" or "<idx>")
@@ -1462,13 +1465,13 @@ fn build_promise_hosts(
                                 }
                             } else {
                                 mtrace!("  ⚠ yield_resume: bad persisted spec at {}", idx);
-                                results[0] = Val::I64(0);
+                                results[0] = Val::I32(0);
                                 return Ok(());
                             }
                         }
                         None => {
                             mtrace!("  ⚠ yield_resume: idx {} is not a yield promise", idx);
-                            results[0] = Val::I64(0);
+                            results[0] = Val::I32(0);
                             return Ok(());
                         }
                     }
@@ -1481,7 +1484,7 @@ fn build_promise_hosts(
                 }) => (method.clone(), args.clone(), gas),
                 _ => {
                     mtrace!("  ⚠ yield_resume: no callback action on idx {}", idx);
-                    results[0] = Val::I64(0);
+                    results[0] = Val::I32(0);
                     return Ok(());
                 }
             };
@@ -1511,7 +1514,7 @@ fn build_promise_hosts(
                 Ok(None) => mtrace!("  ⚠ yield callback trapped"),
                 Err(e) => mtrace!("  ⚠ yield callback error: {}", e),
             }
-            results[0] = Val::I64(1);
+            results[0] = Val::I32(1);
             Ok(())
         },
     );

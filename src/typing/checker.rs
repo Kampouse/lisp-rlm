@@ -3031,6 +3031,22 @@ fn cwalk(
         return MVal::U128;
     }
     if is_u128_truncator(head) {
+        // Static bound check (2026-10-11): a literal arg above 2^60-1 can
+        // never round-trip the tagged-Num ABI — reject at compile time
+        // instead of trapping at wasm runtime. Mirrors the interpreter and
+        // emitter guards exactly.
+        if list.len() == 2 {
+            if let LispVal::Num(n) = &list[1] {
+                // Tagged-Num payload limit: (1i64 << 60) - 1.
+                if *n > (1i64 << 60) - 1 {
+                    cx.errs.push(format!(
+                        "error: {} on literal {} exceeds tagged-Num limit 2^60-1 — keep u128-domain values in u128 ops",
+                        head,
+                        n,
+                    ));
+                }
+            }
+        }
         for a in &list[1..] {
             cwalk(a, env, global_env, cx, cur_defn);
         }

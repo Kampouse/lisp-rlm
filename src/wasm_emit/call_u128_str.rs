@@ -1913,8 +1913,11 @@ impl WasmEmitter {
                 v.push(Instruction::Unreachable);
                 v.push(Instruction::End);
                 // tagged-Num payloads are 61-bit signed: values above 2^60-1
-                // cannot round-trip through the tagged ABI → hard error
-                // (interpreter accepts up to i64::MAX — documented deviation).
+                // cannot round-trip through the tagged ABI → hard error.
+                // (2026-10-12) Interpreter enforces the SAME boundary — the
+                // old test/pass / wasm/trap divergence is closed; the TS
+                // frontend additionally rejects literal overflows at
+                // compile time.
                 v.push(Instruction::I64Const(U128_A));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma8()));
