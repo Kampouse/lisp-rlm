@@ -1520,7 +1520,7 @@ impl WasmEmitter {
                 }
                 self.need_host(17);
                 let key = self.expr(&a[0])?;
-                let ma = wasm_encoder::MemArg {
+                let _ma = wasm_encoder::MemArg {
                     offset: 0,
                     align: 3,
                     memory_index: 0,

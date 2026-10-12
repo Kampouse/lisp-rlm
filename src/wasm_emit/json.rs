@@ -2772,7 +2772,7 @@ impl WasmEmitter {
         let scratch = self.heap_bump((8 * MAXELEM) as u32) as i32;
 
         let mut v = Vec::new();
-        let mut skip_ws = |v: &mut Vec<Instruction<'static>>| {
+        let skip_ws = |v: &mut Vec<Instruction<'static>>| {
             v.push(Instruction::Block(BlockType::Empty));
             v.push(Instruction::Loop(BlockType::Empty));
             v.push(Instruction::LocalGet(pos));

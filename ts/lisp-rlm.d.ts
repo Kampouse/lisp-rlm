@@ -248,6 +248,14 @@ declare const near: {
    *  (Previously compiled but silently ignored the second arg — the
    *  literal/dynamic key was looked up in the tx input instead.) */
   jsonGetInt(key: string, json: string): number | null;
+  /** Read a u128 (string) value from the transaction input JSON.
+   *  Miss → null; found-but-not-a-u128 → null (?? fires).
+   *  PROVABLE u128 SOURCE: the result carries the money seal —
+   *  feeds Yocto sinks and u128 ops without re-annotation. */
+  jsonGetU128(key: string): Yocto | null;
+  /** 2-arg form: scan the GIVEN JSON string (not the tx input) —
+   *  mirrors jsonGetInt(key, json). Dot-paths supported. Miss → null. */
+  jsonGetU128(key: string, json: string): Yocto | null;
   jsonReturnStr(v: string): void;
   jsonReturnInt(v: number): void;
   /** Free-function parity as near.* members — all of these lower to the
@@ -494,6 +502,7 @@ interface JSON {
  *  it as `: Promise<Yocto>` is rejected. SINKS: transferU128's amount
  *  must be a provable u128 value — an unannotated string is rejected
  *  (`const s: Yocto = "5"` is the fix). Boundaries (greppable custody):
+ *  `near.jsonGetU128(...)` reads are provable u128 SOURCES (carry the seal).
  *  `jsonGet`/`jsonGetStr` reads and `storageGet(k) ?? "0"` ledger reads
  *  may feed sinks but carry NO arithmetic seal (the reader can't know
  *  the domain) — assert the money domain with the annotation:

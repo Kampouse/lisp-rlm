@@ -1334,7 +1334,7 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         let bindings = param_names
             .iter()
             .map(|(n, kind)| {
-                let get = list(vec![Sym("near/json_get_str"), Str(n.clone())]);
+                let get = list(vec![Sym("default"), list(vec![Sym("near/json_get_str"), Str(n.clone())]), Str(String::from(""))]);
                 let v = match kind {
                     1 => list(vec![Sym("str->num"), get]),
                     2 => list(vec![Sym("near/json_get_arr"), Str(n.clone())]),
@@ -1905,7 +1905,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
             let bindings = param_names
                 .iter()
                 .map(|(n, kind)| {
-                    let get = list(vec![Sym("near/json_get_str"), Str(n.clone())]);
+                    let get = list(vec![Sym("default"), list(vec![Sym("near/json_get_str"), Str(n.clone())]), Str(String::from(""))]);
                     let v = match kind {
                         1 => {
                             NUM_PARAM_NAMES.with(|s| s.borrow_mut().push(n.clone()));

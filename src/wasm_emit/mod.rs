@@ -2081,7 +2081,7 @@ mod json_auto_test {
 
     #[test]
     fn test_json_get_auto_compiles() {
-        let src = r#"(define (run) (json/get "price")) (export "run" run true)"#;
+        let src = r#"(define (run) (default (json/get "price") 0)) (export "run" run true)"#;
         let result = compile_near(src);
         assert!(result.is_ok(), "json/get should compile: {:?}", result);
         let wasm = result.unwrap();
@@ -2090,19 +2090,20 @@ mod json_auto_test {
 
     #[test]
     fn test_json_get_auto_str() {
-        let src = r#"(define (run) (json/get "name")) (export "run" run true)"#;
+        let src = r#"(define (run) (default (json/get "name") "")) (export "run" run true)"#;
         let result = compile_near(src);
         assert!(result.is_ok(), "json/get str should compile: {:?}", result);
     }
 
     #[test]
     fn test_json_get_auto_missing_key() {
-        // Should still compile — key not found returns 0 at runtime
+        // Bare read is now a compile error (money-safety gate): missing keys
+        // return nil, not 0 — callers must declare an explicit fallback.
         let src = r#"(define (run) (json/get "nonexistent")) (export "run" run true)"#;
         let result = compile_near(src);
         assert!(
-            result.is_ok(),
-            "json/get missing key should compile: {:?}",
+            result.is_err(),
+            "bare json/get should be rejected: {:?}",
             result
         );
     }

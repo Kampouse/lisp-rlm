@@ -215,6 +215,7 @@ pub enum TcCon {
     Tuple(Vec<TcType>),
     Opt(Box<TcType>), // T | nil — storage reads and other maybe-missing values
     Ptr,              // raw WASM pointer — distinct from tagged Num
+    U128,             // money-safe 128-bit unsigned (near/json_get_u128, lo/hi pair)
     Any,              // escape hatch
 }
 
@@ -862,12 +863,14 @@ impl TcEnv {
             ),
         );
         // json-extract: (str, str, str, ...) → array  — extracts multiple values at once
-        // json/get: (str) → num  — single-key shorthand from input (NEAR)
+        // json/get: (str) → opt num — single-key shorthand from input (NEAR).
+        // Typed Opt so (default (json/get "k") fb) unifies; bare reads are
+        // rejected by the money-safety gate in the checker anyway.
         env.insert_mono(
             "json/get".to_string(),
             TcType::Arrow(
                 vec![TcType::Con(TcCon::Str)],
-                Box::new(TcType::Con(TcCon::Int)),
+                Box::new(TcType::Con(TcCon::Opt(Box::new(TcType::Con(TcCon::Any))))),
             ),
         );
         // json-return: (any) → nil  — return JSON result (host)
@@ -1997,7 +2000,10 @@ impl TcEnv {
         );
         env.insert_mono(
             "near/json_get_arr".into(),
-            TcType::Arrow(vec![str_ty.clone()], Box::new(any_arr_ty.clone())),
+            TcType::Arrow(
+                vec![str_ty.clone()],
+                Box::new(TcType::Con(TcCon::Opt(Box::new(any_arr_ty.clone())))),
+            ),
         );
         // lisp-rlm list builtins (emitter: call_list.rs)
         env.insert_mono(
@@ -2341,6 +2347,7 @@ impl std::fmt::Display for TcCon {
             }
             TcCon::Opt(t) => write!(f, "(opt {})", t),
             TcCon::Ptr => write!(f, "ptr"),
+            TcCon::U128 => write!(f, "u128"),
             TcCon::Any => write!(f, "any"),
         }
     }

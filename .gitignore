@@ -50,3 +50,5 @@ afp-clmm/port/**/*.stamp
 afp-clmm/port/**/state.bin
 afp-clmm/port/ts-scen/
 tests/scenarios/state.bin
+tests/state.bin
+contracts/clmm/tests/scenarios/state.bin

@@ -3672,11 +3672,15 @@ pub fn check_bare_json_get(exprs: &[LispVal]) {
 /// reported as a normal compile error instead of a deep-stack thread panic
 /// (which would show as opaque `Any { .. }`).
 pub fn check_bare_json_get_result(exprs: &[LispVal]) -> Result<(), String> {
-    const BARE_OPS: [&str; 4] = [
+    const BARE_OPS: [&str; 8] = [
         "near/json_get_str",
         "near/json_get_int",
         "near/json_get_u128",
         "near/json_get_arr",
+        "json/get",
+        "json-get-str",
+        "json-get-float",
+        "json-get-in",
     ];
 
     fn walk(expr: &LispVal, in_default: bool, errs: &mut Vec<String>) {
