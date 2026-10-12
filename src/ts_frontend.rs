@@ -6301,6 +6301,12 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 None
                             };
                             return Ok(match leaf {
+                                // (2026-10-12) numeric+optional: json_get_int
+                                // alone (nil-on-miss) — wrapping in str->num
+                                // garbage-parses a miss into 0 and kills `??`.
+                                Some((true, true)) => {
+                                    list(vec![Sym("near/json_get_int"), Str(dotted.join("."))])
+                                }
                                 Some((true, _)) => list(vec![Sym("str->num"), get]),
                                 // (2026-10-12) optional prop -> _opt form so the
                                 // params section can mark the key optional
