@@ -157,6 +157,21 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
             }
+            "json-get" if !a.is_empty() && matches!(&a[0], LispVal::Sym(s) if s == ":u128") => {
+                // Typed form (json-get :u128 <json> "key") / (json-get :u128 "key")
+                // — full 128-bit parse, lo/hi tagged pair, carry on overflow.
+                // Reuses the near/json_get_u128 emitter which already handles
+                // arbitrary nesting-depth numbers. Compile-time type: U128.
+                let key = match a.last() {
+                    Some(LispVal::Str(k)) => k.clone(),
+                    _ => return Err("json-get :u128 key must be a string literal".into()),
+                };
+                // json_get_u128 scans INPUT_BUF and writes lo/hi to the given
+                // offset — use the dedicated 16-byte scratch slot so the
+                // result is address-shaped for near/batch-transfer etc.
+                let offset_expr = vec![Instruction::I64Const(STORAGE_U128_BUF as i64)];
+                self.json_get_u128(&key, offset_expr)
+            }
             "json-get" => {
                 // Unified argument order (2026-10-07): (json-get <json> "key")
                 // — the interpreter's documented contract. The emitter used

@@ -153,6 +153,11 @@ fn unify_con(c1: &TcCon, c2: &TcCon) -> UnifyResult {
         (TcCon::Str, TcCon::Str) => Ok(Subst::new()),
         (TcCon::Sym, TcCon::Sym) => Ok(Subst::new()),
         (TcCon::Ptr, TcCon::Ptr) => Ok(Subst::new()),
+        // U128 is deliberately OPAQUE (2026-10-12): unifies only with itself
+        // and Any. Mixing u128 into tagged-i64 arithmetic is exactly the
+        // token-amount overflow bug this type exists to prevent. Destructure
+        // via u128 arith intrinsics instead.
+        (TcCon::U128, TcCon::U128) => Ok(Subst::new()),
         // Ptr and Num are the same i64 at runtime (raw untagged) — unifiable so
         // address literals/offsets can flow into mem-get/mem-set!/ptr-add, which
         // validate protected regions at runtime. (2026-08-29)
@@ -987,7 +992,56 @@ fn infer(
                 // buffer (NEAR input() / outlayer stdin). The emitter
                 // supports both arities; the typing env only carries the
                 // 2-arg signature. Result is dynamic (num or str) → Any.
-                LispVal::Sym(s) if s == "json-get" && list.len() == 2 => {
+                // Typed json-get (2026-10-12): (json-get :u128 <json> "key")
+                // — the type keyword picks the parser at COMPILE time and
+                // gives the checker a real type to flow (no 'any leak into
+                // arithmetic). Also 1-arg typed form (json-get :u128 "key")
+                // for input-buffer scans. Type params: :u128 only for now.
+                LispVal::Sym(s) if s == "json-get" && list.len() >= 2 => {
+                    // Type params are ':'-prefixed keywords (:u128). A bare
+                    // symbol in position 1 is a variable holding the JSON —
+                    // that's the legacy untyped form.
+                    if let LispVal::Sym(tp) = &list[1] {
+                        if !tp.starts_with(':') {
+                            // Legacy untyped form with a symbol expression.
+                            let t = infer(&list[1], env, supply, subst)?;
+                            let su = unify(&subst.apply(&t), &TcType::Con(TcCon::Str))
+                                .map_err(|e| format!("in call (json-get ...): {}", e))?;
+                            *subst = su.compose(subst.clone());
+                            return Ok(TcType::Con(TcCon::Any));
+                        }
+                        let ty = match tp.as_str() {
+                            ":u128" => TcType::Con(TcCon::U128),
+                            other => {
+                                return Err(format!(
+                                    "json-get: unknown type param {} (supported: :u128)", other))
+                            }
+                        };
+                        if list.len() == 3 || list.len() == 4 {
+                            // len 3: (json-get :u128 "key") — input-buffer scan
+                            // len 4: (json-get :u128 <json> "key")
+                            for arg in &list[2..] {
+                                let t = infer(arg, env, supply, subst)?;
+                                let su = unify(&subst.apply(&t), &TcType::Con(TcCon::Str))
+                                    .map_err(|e| format!("in call (json-get ...): {}", e))?;
+                                *subst = su.compose(subst.clone());
+                            }
+                            Ok(ty)
+                        } else if list.len() == 2 {
+                            Err("json-get: type param given but no key".into())
+                        } else {
+                            Err("json-get: too many arguments".into())
+                        }
+                    } else {
+                        // Legacy untyped 2-arg form — dynamic result.
+                        let t = infer(&list[1], env, supply, subst)?;
+                        let su = unify(&subst.apply(&t), &TcType::Con(TcCon::Str))
+                            .map_err(|e| format!("in call (json-get ...): {}", e))?;
+                        *subst = su.compose(subst.clone());
+                        Ok(TcType::Con(TcCon::Any))
+                    }
+                }
+                LispVal::Sym(s) if false && s == "json-get" && list.len() == 2 => {
                     let t = infer(&list[1], env, supply, subst)?;
                     let su = unify(&subst.apply(&t), &TcType::Con(TcCon::Str))
                         .map_err(|e| format!("in call (json-get ...): {}", e))?;

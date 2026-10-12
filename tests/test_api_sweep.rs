@@ -213,3 +213,17 @@ fn matrix_ts_percent_js_semantics() {
         assert!(out.contains(expect), "{call} must give {expect}: {out}");
     }
 }
+
+// ── Typed json-get (:u128) — opaque U128 money type ─────────────────────────
+
+#[test]
+fn sweep_json_get_u128_typed_compiles_and_runs() {
+    compiles_and_runs(
+        "json-get :u128 (two-arg)",
+        r#"(json-get :u128 "{\"amount\": \"340282366920938463463374607431768211455\"}" "amount")"#,
+    );
+    compiles_and_runs(
+        "json-get :u128 (small value)",
+        r#"(json-get :u128 "{\"n\": 42}" "n")"#,
+    );
+}
