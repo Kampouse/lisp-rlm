@@ -103,7 +103,8 @@ definition lp_ok :: "escrow \<Rightarrow> bool" where
      \<and> (\<forall>k. totals e k = 0 \<longleftrightarrow> pools e k = 0)
      \<and> (\<forall>k. pools e k \<le> totals e k)
      \<and> (\<forall>k. sum (books e k) (book_support e k) = totals e k)
-     \<and> (\<forall>k. finite (book_support e k))"
+     \<and> (\<forall>k. finite (book_support e k))
+     \<and> total_support e \<subseteq> keys e"
 (* LP solvency: the pool is a real slice of the reserve; shares exist only
    when the pool does; the share ledger is finite and its total EQUALS the
    total_shares (no unbacked shares, no lost shares). Equality is the honest
@@ -209,7 +210,7 @@ fun apply_op :: "escrow_op \<Rightarrow> escrow \<Rightarrow> escrow option" whe
       else Some (e \<lparr> keys := keys e - {k} \<rparr>))"
 | "apply_op (LpKeyOpen k u a) e =
      (let m = (if pools e k = 0 then a else a * totals e k div pools e k) in
-      if 0 < a \<and> a \<le> credits e u \<and> 0 < m then
+      if k \<in> keys e \<and> 0 < a \<and> a \<le> credits e u \<and> 0 < m then
         Some (e \<lparr> credits := (credits e)(u := credits e u - a)
                     , reserve := reserve e + a
                     , pools := (pools e)(k := pools e k + a)
@@ -218,7 +219,7 @@ fun apply_op :: "escrow_op \<Rightarrow> escrow \<Rightarrow> escrow option" whe
       else None)"
 | "apply_op (LpKeyRemove k u s) e =
      (let v = s * pools e k div totals e k in
-      if 0 < s \<and> s \<le> books e k u \<and> 0 < v \<and> v \<le> reserve e then
+      if k \<in> keys e \<and> 0 < s \<and> s \<le> books e k u \<and> 0 < v \<and> v \<le> reserve e then
         Some (e \<lparr> reserve := reserve e - v
                     , pools := (pools e)(k := pools e k - v)
                     , totals := (totals e)(k := totals e k - s)
@@ -1436,6 +1437,15 @@ qed
 lemma lp_holders_keys[simp]: "lp_holders (e\<lparr>keys := K\<rparr>) = lp_holders e"
   by (simp add: lp_holders_def)
 
+(* Registry soundness (gap 5): a pool holding value is registered. *)
+lemma support_in_keys[intro]:
+  assumes sub: "{k. 0 < totals e k} \<subseteq> keys e" and pos: "0 < totals e x"
+  shows "x \<in> keys e"
+proof -
+  have mem: "x \<in> {k. 0 < totals e k}" using pos by simp
+  thus ?thesis by (rule subsetD [OF sub])
+qed
+
 lemma lp_ok_poolopen:
   assumes ok: "lp_ok e" and ap: "apply_op (PoolOpen k) e = Some e'"
   shows "lp_ok e'"
@@ -1445,8 +1455,34 @@ lemma lp_ok_poolopen:
 lemma lp_ok_poolclose:
   assumes ok: "lp_ok e" and ap: "apply_op (PoolClose k) e = Some e'"
   shows "lp_ok e'"
-  using ok ap by (cases "k \<notin> keys e \<or> pools e k \<noteq> 0 \<or> totals e k \<noteq> 0")
-    (auto simp: lp_ok_def total_support_def book_support_def apply_op.simps split: if_splits)
+  using ok ap
+proof (cases "k \<notin> keys e \<or> pools e k \<noteq> 0 \<or> totals e k \<noteq> 0")
+  case True
+  hence C: "apply_op (PoolClose k) e = None" by simp
+  thus ?thesis using ap by simp
+next
+  case False
+  hence g: "k \<in> keys e" "pools e k = 0" "totals e k = 0" by simp_all
+  from ap False have eq: "e' = e\<lparr>keys := keys e - {k}\<rparr>"
+    by (auto simp: apply_op.simps split: if_splits)
+  have old_sub: "{k. 0 < totals e k} \<subseteq> keys e"
+    using ok by (simp add: lp_ok_def total_support_def)
+  have new_sub: "{k. 0 < totals e k} \<subseteq> keys e - {k}"
+  proof
+    fix x assume xm: "x \<in> {k. 0 < totals e k}"
+    hence ink: "x \<in> keys e" by (rule subsetD [OF old_sub])
+    have xnk: "x \<noteq> k"
+    proof (rule notI)
+      assume xk: "x = k"
+      hence t0: "totals e x = 0" using g(3) by simp
+      show False using xm t0 by simp
+    qed
+    show "x \<in> keys e - {k}" using ink xnk by simp
+  qed
+  show ?thesis unfolding eq
+    using ok g new_sub
+    by (auto simp: lp_ok_def book_support_def total_support_def)
+qed
 
 lemma lp_ok_keyopen:
   assumes ok: "lp_ok e" and ap: "apply_op (LpKeyOpen k u a) e = Some e'"
@@ -1567,7 +1603,9 @@ proof (cases "pools e k = 0")
     using ok by (simp add: lp_ok_def)
   have P1j: "lp_pool e' + sum (pools e') (total_support e') \<le> reserve e'"
     using Ssum lp' brid jointe r' by arith
-  show ?thesis using P1 P1j P2 P3 P4 P5 ok True m tk0 eq
+  have gk: "k \<in> keys e"
+    using ap by (auto simp: apply_op.simps Let_def split: if_splits)
+  show ?thesis using P1 P1j P2 P3 P4 P5 ok True m tk0 eq gk
     by (auto simp: lp_ok_def book_support_def total_support_def lp_holders_def)
 next
   (* live pool: mint = a * totals k div pools k; support UNCHANGED *)
@@ -1714,7 +1752,9 @@ next
     using ok by (simp add: lp_ok_def)
   have P1j: "lp_pool e' + sum (pools e') (total_support e') \<le> reserve e'"
     using lp' Ssum jointe ksum r' by arith
-  show ?thesis using P1 P1j P2 P3 P4 P5 ok False eq
+  have gk: "k \<in> keys e"
+    using ap by (auto simp: apply_op.simps Let_def split: if_splits)
+  show ?thesis using P1 P1j P2 P3 P4 P5 ok False eq gk
     by (auto simp: lp_ok_def book_support_def total_support_def lp_holders_def)
 qed
 
@@ -2039,8 +2079,29 @@ proof -
       show ?thesis unfolding bs using ok by (simp add: lp_ok_def)
     qed
   qed
-  show ?thesis using P1 Jf P2 P3 P4 P5 zsync ok eq
-    by (auto simp: lp_ok_def book_support_def lp_holders_def)
+  have old_sub: "{k. 0 < totals e k} \<subseteq> keys e"
+    using ok by (simp add: lp_ok_def total_support_def)
+  have ts: "{k. 0 < totals e' k} \<subseteq> keys e"
+  proof
+    fix x assume xm: "x \<in> {k. 0 < totals e' k}"
+    hence xp: "0 < totals e' x" by simp
+    show "x \<in> keys e"
+    proof (cases "x = k")
+      case True
+      hence "totals e' x = totals e k - s" unfolding eq by simp
+      hence tp: "0 < totals e k" using xp by arith
+      have mem: "x \<in> {k. 0 < totals e k}" using True tp by simp
+      show "x \<in> keys e" by (rule subsetD [OF old_sub mem])
+    next
+      case False
+      have "totals e' x = totals e x" using False unfolding eq by simp
+      hence tp: "0 < totals e x" using xp by simp
+      have mem: "x \<in> {k. 0 < totals e k}" using tp by simp
+      show "x \<in> keys e" by (rule subsetD [OF old_sub mem])
+    qed
+  qed
+  show ?thesis using P1 Jf P2 P3 P4 P5 zsync ok eq ts
+    by (auto simp: lp_ok_def book_support_def lp_holders_def total_support_def)
 qed
 
 theorem one_op_lp:
@@ -2179,6 +2240,20 @@ theorem reachable_lp:
   assumes "reachable e"
   shows "lp_ok e"
   using reachable_ok[OF assms] by blast
+
+text \<open>Registry soundness (the ERR_NOKEY twin): in every reachable state,
+  a keyed pool that holds value is registered - the ledger can never hold
+  funds in an unregistered pool. PoolOpen/PoolClose manage the registry,
+  and both keyed money ops now demand membership in it.\<close>
+
+theorem reachable_registered:
+  assumes "reachable e" and "k \<in> total_support e"
+  shows "k \<in> keys e"
+proof -
+  have lp: "lp_ok e" using assms(1) reachable_lp by blast
+  have sub: "total_support e \<subseteq> keys e" using lp by (simp add: lp_ok_def)
+  show ?thesis by (rule subsetD [OF sub assms(2)])
+qed
 
 text \<open>Redemption honesty: in any reachable state with an LP present, a
   user's per-share payout bound holds - floor(s * pool / total_shares) is at
