@@ -127,11 +127,7 @@ impl WasmEmitter {
         let wrappers = self.src_wrapper_defns.borrow().clone();
         let read_is_hot = |e: &LispVal| -> bool {
             self.storage_reads_hot
-                && matches!(
-                    crate::typing::storage_prov::storage_site(e, &wrappers),
-                    Some(crate::typing::storage_prov::StorageSite::Read(k, _))
-                        if crate::typing::storage_prov::literal_key(&k).is_some()
-                )
+                && crate::typing::storage_prov::hot_limb_read(e, &wrappers)
         };
         // single fixpoint over the ENRICHED predicate: original limb-purity
         // plus hot literal-key reads as pure atoms (no-op when cold — the
@@ -248,15 +244,14 @@ impl WasmEmitter {
         // 2B hot-cell read: sniff the value's first byte — NUL ⇒ binary
         // cell hydrate; anything else ⇒ the SAME strict decimal parse the
         // generic path runs (identical result-or-trap). Only fires for
-        // sites the SHARED resolver classifies as literal-key reads and
-        // only when the program's storage mode is 2B.
+        // sites the SHARED resolver classifies as literal-key reads AND
+        // whose default (if any) is a digit literal ("" default ⇒ the
+        // resolved miss string has len 0 → hydrate's len==0 guard traps;
+        // those sites stay on the tagged string path). Only when the
+        // program's storage mode is 2B.
         if self.storage_reads_hot {
             let wrappers = self.src_wrapper_defns.borrow().clone();
-            if matches!(
-                crate::typing::storage_prov::storage_site(e, &wrappers),
-                Some(crate::typing::storage_prov::StorageSite::Read(k, _))
-                    if crate::typing::storage_prov::literal_key(&k).is_some()
-            ) {
+            if crate::typing::storage_prov::hot_limb_read(e, &wrappers) {
                 let h = self.ensure_u128_str_helpers();
                 let tv = {
                     self.b2b_limb_read_active = true;

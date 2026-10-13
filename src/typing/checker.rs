@@ -4359,12 +4359,12 @@ fn prov_of(
                         // Stringly (they keep the tagged path, which sniffs
                         // too — binary only ever lands on literal cells,
                         // but an aliased read must still parse).
-                        if let Some(crate::typing::storage_prov::StorageSite::Read(k, _)) =
-                            crate::typing::storage_prov::storage_site(e, wrappers)
-                        {
-                            if crate::typing::storage_prov::literal_key(&k).is_some() {
-                                return Native;
-                            }
+                        // hot_limb_read ALSO demands a digit-literal default:
+                        // "cell-or-\"\"" (default "") hydrate-resolves "" →
+                        // len==0 → trap. Those sites stay Stringly (tagged
+                        // path, no sniff, plain concat semantics).
+                        if crate::typing::storage_prov::hot_limb_read(e, wrappers) {
+                            return Native;
                         }
                         // user call: a trivial wrapper classifies as its op
                         // (predicate wrappers leave the u128 domain)

@@ -577,29 +577,32 @@ impl WasmEmitter {
                     self.emit_storage_cache_insert(k, res_l, cnt_l, slot_l, j_l, klen_l, kptr_l),
                 );
                 v.push(Instruction::End);
-                // 2B string-context normalization: a hot literal-key read can
-                // return a binary cell (0x00 || 16B LE). String sinks (log /
-                // str-cat / return) need canonical decimal. Sniff byte 0:
-                // NUL ⇒ render limbs via __h_u128_to_str (identical text to
-                // the tagged path); anything else ⇒ pass through untouched.
+                // 2B string-context normalization: any storage_get can
+                // return a binary cell (0x00 || 16B LE) — the write-side
+                // splice makes them reachable under ANY key spelling.
+                // String sinks (log / str-cat / return / decimal parse)
+                // need canonical decimal. Sniff: Str-tag + non-empty +
+                // NUL first byte ⇒ render limbs via __h_u128_to_str
+                // (identical text to the tagged path); anything else ⇒
+                // pass through untouched.
                 // Placed AFTER the cache insert so hit and miss normalize
                 // alike and the cache itself stays raw. Limb-context callers
                 // (emit_u128_val sniff) consume the raw cell directly and
                 // never reach this arm twice.
                 if self.storage_reads_hot && !self.b2b_limb_read_active {
-                    let wrappers = self.src_wrapper_defns.borrow().clone();
-                    let form = LispVal::List(
-                        std::iter::once(LispVal::Sym("near/storage_get".into()))
-                            .chain(a.iter().cloned())
-                            .collect(),
-                    );
-                    if matches!(
-                        crate::typing::storage_prov::storage_site(&form, &wrappers),
-                        Some(crate::typing::storage_prov::StorageSite::Read(k, _))
-                            if crate::typing::storage_prov::literal_key(&k).is_some()
-                    ) {
+                    // 2B-fixed: normalize at EVERY storage_get site whose
+                    // value can reach a string sink — dynamic keys included.
+                    // The write-side splice makes binary cells reachable
+                    // under any key spelling (computed keys that alias a
+                    // literal-written cell), so a literal-key-only guard
+                    // leaks raw 17-byte cells into __h_u128_parse
+                    // (pool_internal quote_buy trap). NIL-miss guard keeps
+                    // misses untouched; len>0 keeps byte-exact empty values
+                    // (decimal "" and binary cells are never confusable).
+                    {
                         let h = self.ensure_u128_str_helpers();
                         let ptr_l = self.local_idx("__b2b_norm_ptr");
+                        let len_l = self.local_idx("__b2b_norm_len");
                         // NIL-miss guard: only Str-tagged results are
                         // normalized. A miss returns TAG_NIL — untagging it
                         // yields ptr 0 and load8(addr 0) would misread heap
@@ -623,12 +626,32 @@ impl WasmEmitter {
                             align: 0,
                             memory_index: 0,
                         }));
+                        // First byte as condition — but we need INVERTED
+                        // polarity (normalize when byte == 0), so route the
+                        // byte through Eqz FIRST, then If on the result.
                         v.push(Instruction::I64Eqz);
                         v.push(Instruction::If(BlockType::Empty));
-                        // NUL ⇒ binary cell: __h_u128_to_str(ptr) → tagged Str
+                        // Second tier: a zero-LENGTH Str ("") is never a
+                        // binary cell (cells are 17 bytes) — skip so
+                        // byte-exact empty values stay empty. Non-empty +
+                        // NUL first byte is the binary-cell shape.
+                        v.push(Instruction::LocalGet(res_l));
+                        v.extend(self.emit_untag());
+                        v.push(Instruction::I64Const(32));
+                        v.push(Instruction::I64ShrU);
+                        v.push(Instruction::I64Eqz);
+                        v.push(Instruction::If(BlockType::Empty));
+                        v.push(Instruction::Else);
+                        // NUL + non-empty ⇒ binary cell: render the PAYLOAD
+                        // (ptr+1 skips the 0x00 tag byte — cells are
+                        // 0x00 || 16B LE; rendering at ptr would fold the
+                        // tag into the value, 1000 → 256000).
                         v.push(Instruction::LocalGet(ptr_l));
+                        v.push(Instruction::I64Const(1));
+                        v.push(Instruction::I64Add);
                         v.push(Self::call_user(h.to_str));
                         v.push(Instruction::LocalSet(res_l));
+                        v.push(Instruction::End);
                         v.push(Instruction::End);
                         v.push(Instruction::End); // close the Str-tag guard
                     }

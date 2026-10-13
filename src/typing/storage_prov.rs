@@ -85,6 +85,35 @@ pub(crate) fn literal_key(k: &LispVal) -> Option<&str> {
     }
 }
 
+/// Hot LIMB-read predicate (scan seeding, sniff arm, checker carrier rule).
+/// Literal key AND the default — when present — is a non-empty digit
+/// literal. A non-digit default ("" above all) makes the site's result
+/// "cell-or-default-text"; the hydrate's len==0 guard treats the resolved
+/// "" as invalid and traps (probes pa/pc, 2026-10-13). Digit defaults are
+/// safe: miss → "0" parses decimal; hit → cell sniffs. No default → the
+/// raw cell itself.
+pub(crate) fn hot_limb_read(
+    e: &LispVal,
+    wrappers: &std::collections::HashMap<String, (Vec<String>, LispVal)>,
+) -> bool {
+    match storage_site(e, wrappers) {
+        Some(StorageSite::Read(k, d)) => {
+            if literal_key(&k).is_none() {
+                return false;
+            }
+            match d {
+                None => true,
+                Some(dd) => matches!(
+                    dd.as_ref(),
+                    LispVal::Str(s)
+                        if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+                ),
+            }
+        }
+        _ => false,
+    }
+}
+
 /// Recursive program-walk: does ANY form in `e` classify as a storage site
 /// with a literal key? (The pipeline's hot-mode probe must see inside
 /// define bodies — reads hide under `(define (main) …)`, and a top-level
