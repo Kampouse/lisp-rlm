@@ -486,8 +486,8 @@ pub(crate) const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
     (
         "promise_yield_resume",
         &[ValType::I64, ValType::I64, ValType::I64, ValType::I64],
-        &[ValType::I64],
-    ), // 83
+        &[ValType::I32],
+    ), // 83 — near-sdk 5 ABI (bool result); call site extends to i64
     // Validator
     (
         "validator_stake",

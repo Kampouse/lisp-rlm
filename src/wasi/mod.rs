@@ -2788,8 +2788,14 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     // URL (all hoisted into http_post_urls), sentinel 143 can resolve to an
     // internal wasi:http POST fn instead of the outlayer:api/host import —
     // letting the component run under plain wasi:http runtimes.
+    // NOTE: dedup means urls.len() <= call_count (N sites can share 1 URL);
+    // what matters is that every call site's URL registered (idx < len) —
+    // bridges are per-UNIQUE-URL, not per-call-site. The old `==` condition
+    // silently disabled bridges for any program with 2+ calls to the same
+    // URL while call sites still emitted sentinel 200+i → dangling call
+    // (func index past end) → invalid component (found 2026-10-13, xexec-a).
     let bridge_native_post =
-        em.http_post_call_count > 0 && em.http_post_urls.len() as u32 == em.http_post_call_count;
+        em.http_post_call_count > 0 && em.http_post_urls.len() > 0;
     if bridge_native_post {
         used_ol_indices.remove(&21); // http-post-dynamic import no longer needed
     }

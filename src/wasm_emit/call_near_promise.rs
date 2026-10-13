@@ -1808,6 +1808,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64ExtendI32U);
                 self.need_host(83);
                 v.push(Self::host_call(83));
+                v.push(Instruction::I64ExtendI32U); // near-sdk bool → i64 tag
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
