@@ -38,8 +38,8 @@ fn compile_twap_ts() -> Vec<u8> {
 // double-debit would visibly change the money math.
 const POOL: &str = r#"(define (sget k d) (default (near/storage_get k) d))
 (define (swap)
-  (let ((order (near/json_get_str "order")))
-    (let ((k (near/json_get_str "k")))
+  (let ((order (default (near/json_get_str "order") nil)))
+    (let ((k (default (near/json_get_str "k") nil)))
       (let ((key (str-cat "p:" (str-cat order (str-cat ":" k)))))
         (let ((times (sget key "0")))
           (let ((n (u128/add times "1")))
