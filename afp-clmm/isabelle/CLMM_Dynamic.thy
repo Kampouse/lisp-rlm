@@ -475,12 +475,45 @@ proof -
     by (simp add: P0_def P1_def grd_def lq_def fee_def clmm_state_def)
 qed
 
-text \<open>Swap: price moves by the static-layer walk, fees charged. Next step:
-define the walk as the entry's refined swap (CLMM_Transformation) applied
-at the active cell, with the post-span condition as guard. Both liquidity
-preservation obligations are now discharged: mint_rel and burn_rel keep
-clmm_state, so provision/removal can never strand the venue outside the
-static layer's validity domain.\<close>
+section \<open>Swap: the price walk as an event\<close>
+
+text \<open>The entry's swap primitive is a refinement followed by a quote walk:
+\<^term>\<open>refine P sqp'\<close> makes the destination price a grid bound (wedge inserts
+it into the grid and shifts liquidity accordingly), and the trade then moves
+the current price inside the refined pool. We model the event directly: the
+destination is the start price plus a signed displacement, the post pool is
+the entry's own refinement at the destination, and the guard is exactly the
+venue invariant at the post state. The guard is sufficient: refine_clmm
+(carried by the entry) preserves clmm_dsc, refine_grd_max pins the span
+ceiling, and the post-span conjunct pins the floor.\<close>
+
+definition swap_rel :: "real \<Rightarrow> pool \<Rightarrow> real \<Rightarrow> pool \<Rightarrow> real \<Rightarrow> bool" where
+"swap_rel v P s P' s' \<longleftrightarrow>
+  s' = s + v \<and> P' = refine P s' \<and>
+  0 < s' \<and> nz_support (lq P') \<noteq> {} \<and>
+  grd_min P' \<le> s' \<and> s' \<le> grd_max P'"
+
+subsection \<open>Swap preserves the venue\<close>
+
+text \<open>Everything except the guard's own consistency is carried by the
+static layer: refine_clmm gives clmm_dsc of the refined pool outright.\<close>
+
+theorem swap_preserves:
+  assumes st: "clmm_state P s"
+    and sw: "swap_rel v P s P' s'"
+  shows "clmm_state P' s'"
+proof -
+  have dsc: "clmm_dsc P" using st by (simp add: clmm_state_def)
+  from sw have Peq: "P' = refine P s'" unfolding swap_rel_def by blast
+  from sw have guard: "0 < s' \<and> nz_support (lq P') \<noteq> {} \<and>
+    grd_min P' \<le> s' \<and> s' \<le> grd_max P'"
+    unfolding swap_rel_def by blast
+  from guard have lt0: "0 < s'" by simp
+  from guard have nz': "nz_support (lq P') \<noteq> {}" by simp
+  from guard have sp': "grd_min P' \<le> s' \<and> s' \<le> grd_max P'" by simp
+  have dsc': "clmm_dsc P'" using dsc lt0 Peq by (rule refine_clmm)
+  show "clmm_state P' s'" using dsc' nz' sp' by (simp add: clmm_state_def)
+qed
 
 text \<open>THE invariant (layer 1, weeks): every reachable state satisfies the
 static layer's combination/optimality theorems — because per-cell liquidity
