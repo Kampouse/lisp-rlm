@@ -16,7 +16,23 @@ impl WasmEmitter {
             ($method:expr) => {
                 match $method {
                     Ok(mut v) => {
-                        if Self::is_storage_write_op(op) {
+                        // P3: the string-family set/write coalesces INTO the
+                        // memo table (upsert + dirty bit) — its cache update
+                        // is the write, so no flush/nuke may follow it. Every
+                        // OTHER storage-write op (remove, tagged store, kv,
+                        // u128/store_storage, …) keeps the 2B semantics with
+                        // one P3 correction: the REPLAY flush goes BEFORE the
+                        // op's own host write (appending it after would let
+                        // the replay clobber the newer value — observed as
+                        // near/store resurrecting "seeded" over 4242). The
+                        // count=0 nuke still runs after (post-op reads miss
+                        // to the host, never to stale table entries).
+                        let p3_coalesced = self.wt_active()
+                            && matches!(op, "near/storage_set" | "near/storage_write");
+                        if Self::is_storage_write_op(op) && !p3_coalesced {
+                            let mut pre = self.emit_wt_flush_call();
+                            pre.extend(v);
+                            v = pre;
                             Self::emit_storage_cache_flush(&mut v);
                         }
                         return Ok(v);
@@ -157,8 +173,11 @@ impl WasmEmitter {
                 crate::typing::storage_prov::storage_site(&form, &wrappers)
             {
                 if crate::wasm_emit::u128_storage::is_limb_borne_write(self, &k, &val) {
-                    let mut v = self.call_near_storage("near/storage_set", a)?;
-                    Self::emit_storage_cache_flush(&mut v);
+                    // P3: the storage_set arm now UPSERTS into the memo table
+                    // (dirty bit + boundary flush). No post-call flush/nuke
+                    // here — under write-through the upsert IS the cache
+                    // update, and a nuke would orphan the dirty slot.
+                    let v = self.call_near_storage("near/storage_set", a)?;
                     return Ok(v);
                 }
             }

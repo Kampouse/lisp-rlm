@@ -413,25 +413,44 @@ impl WasmEmitter {
                         v.push(Instruction::LocalSet(val_l));
                         Self::emit_assert_tag_str(&mut v, k);
                         Self::emit_assert_tag_str(&mut v, val_l);
+                        // ── P3 write-through: the 2B binary-cell write
+                        // coalesces exactly like the generic one — upsert
+                        // (k, val_l) and skip the immediate host write when
+                        // the table took it; __h_wt_flush replays it once
+                        // at the export boundary. ──
+                        let (upsert, wt_flag) = self.emit_wt_upsert(k, val_l)?;
+                        v.extend(upsert);
+                        if wt_flag != u32::MAX {
+                            v.push(Instruction::LocalGet(wt_flag));
+                            v.push(Instruction::I64Eqz);
+                            v.push(Instruction::If(BlockType::Empty));
+                        }
+                        // storage_write(klen, kptr, vlen, vptr, 0) — kptr is
+                        // the LOW 32 bits of the payload (mask, never
+                        // wrap(extend): that truncates the POINTER, not the
+                        // length, and the flush replays garbage key bytes).
                         v.push(Instruction::LocalGet(k));
                         v.extend(self.emit_untag());
                         v.push(Instruction::I64Const(32));
                         v.push(Instruction::I64ShrU);
                         v.push(Instruction::LocalGet(k));
                         v.extend(self.emit_untag());
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64ExtendI32U);
+                        v.push(Instruction::I64Const(0xFFFF_FFFF));
+                        v.push(Instruction::I64And);
                         v.push(Instruction::LocalGet(val_l));
                         v.extend(self.emit_untag());
                         v.push(Instruction::I64Const(32));
                         v.push(Instruction::I64ShrU);
                         v.push(Instruction::LocalGet(val_l));
                         v.extend(self.emit_untag());
-                        v.push(Instruction::I32WrapI64);
-                        v.push(Instruction::I64ExtendI32U);
+                        v.push(Instruction::I64Const(0xFFFF_FFFF));
+                        v.push(Instruction::I64And);
                         v.push(Instruction::I64Const(0));
                         v.push(Self::host_call(17));
                         v.push(Instruction::Drop);
+                        if wt_flag != u32::MAX {
+                            v.push(Instruction::End);
+                        }
                         v.push(Instruction::I64Const(0));
                         v.extend(self.emit_tag_num());
                         return Ok(v);
@@ -445,6 +464,18 @@ impl WasmEmitter {
                 // hard-errors with the same rule).
                 Self::emit_assert_tag_str(&mut v, k);
                 Self::emit_assert_tag_str(&mut v, val_l);
+                // ── P3 write-through: coalesce into the memo table with a
+                // dirty bit; the immediate host write below is SKIPPED on the
+                // upsert path (flag != u32::MAX ⇒ emitted) and replayed once
+                // by __h_wt_flush at the export boundary. Fallback paths
+                // (long key / full table) keep the immediate host write.
+                let (upsert, wt_flag) = self.emit_wt_upsert(k, val_l)?;
+                v.extend(upsert);
+                if wt_flag != u32::MAX {
+                    v.push(Instruction::LocalGet(wt_flag));
+                    v.push(Instruction::I64Eqz);
+                    v.push(Instruction::If(BlockType::Empty));
+                }
                 // storage_write(key_len, key_ptr, val_len, val_ptr, register=0)
                 v.push(Instruction::LocalGet(k));
                 v.extend(self.emit_untag());
@@ -465,6 +496,9 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(17));
                 v.push(Instruction::Drop); // evicted-length return is not the Lisp result
+                if wt_flag != u32::MAX {
+                    v.push(Instruction::End);
+                }
                 v.push(Instruction::I64Const(0));
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -695,6 +729,10 @@ impl WasmEmitter {
                 v.extend(key);
                 v.push(Instruction::LocalSet(k));
                 Self::emit_assert_tag_str(&mut v, k);
+                // P3: replay any pending coalesced writes FIRST (program
+                // order), then remove from real storage, then drop the memo
+                // table (count=0 — a later re-put upserts a fresh slot).
+                v.extend(self.emit_wt_flush_call());
                 v.push(Instruction::LocalGet(k));
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));

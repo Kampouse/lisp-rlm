@@ -76,6 +76,17 @@ impl WasmEmitter {
                 queue.push_back(idx);
             }
         }
+        // P3: the write-through flush helper is referenced only from the
+        // export wrappers (emitted AFTER this pass, outside `funcs`), so the
+        // BFS above can't see the edge. Seed it explicitly when in use.
+        if self.wt_used {
+            if let Some(&idx) = name_to_idx.get("__h_wt_flush") {
+                if !reachable[idx] {
+                    reachable[idx] = true;
+                    queue.push_back(idx);
+                }
+            }
+        }
 
         while let Some(idx) = queue.pop_front() {
             for &callee in &calls[idx] {
@@ -336,6 +347,15 @@ stitched module region at 1MiB. Split literals or shrink allocations",
         m.section(&exps);
 
         // Code
+        // P3: resolve the flush helper's FINAL index by name — tree_shake
+        // already ran above and compacted self.funcs, so any index captured
+        // earlier (wt_flush_fn cache) is stale. Inline Call sites were
+        // remapped by tree_shake itself; only the wrapper needs the lookup.
+        let wt_final_idx = self
+            .funcs
+            .iter()
+            .position(|f| f.name == "__h_wt_flush")
+            .map(|p| internal_base + p as u32);
         let name_map: HashMap<&str, u32> = self
             .funcs
             .iter()
@@ -409,6 +429,18 @@ stitched module region at 1MiB. Split literals or shrink allocations",
                         fb.instruction(&Instruction::I64Const(0));
                         fb.instruction(&Instruction::GlobalSet(RETURN_FLAG));
                         fb.instruction(&Instruction::Call(idx));
+                        // ── P3 write-through boundary: replay pending
+                        // coalesced storage writes AFTER the exported
+                        // function. At wrapper START the table is always
+                        // empty (fresh linear memory per tx — dirty bits are
+                        // set only during the call), so the flush must come
+                        // after. On trap nothing here runs and NEAR rolls
+                        // storage back regardless. Flush+Drop is net-zero on
+                        // the operand stack: `result` is undisturbed.
+                        if let Some(wt_idx) = wt_final_idx {
+                            fb.instruction(&Instruction::Call(wt_idx));
+                            fb.instruction(&Instruction::Drop);
+                        }
                         fb.instruction(&Instruction::LocalSet(0));
                         if self.fuzz_mode {
                             // Fuzz mode: store raw tagged i64 at TEMP_MEM, no value_return
@@ -527,6 +559,13 @@ stitched module region at 1MiB. Split literals or shrink allocations",
                             fb.instruction(&Instruction::I64Shl);
                         }
                         fb.instruction(&Instruction::Call(idx));
+                        // ── P3 write-through boundary (same placement as the
+                        // zero-param wrapper): AFTER the call, BEFORE the
+                        // result is consumed. Net-zero stack effect.
+                        if let Some(wt_idx) = wt_final_idx {
+                            fb.instruction(&Instruction::Call(wt_idx));
+                            fb.instruction(&Instruction::Drop);
+                        }
                         // Store result at TEMP_MEM: i64.store needs [i32 addr, i64 val]
                         // Stack: [i64 result]. Save to local 0, push addr, load local, store
                         fb.instruction(&Instruction::LocalSet(0)); // save result to local 0
@@ -830,6 +869,22 @@ fn pipeline_from_exprs(
         em.storage_reads_hot = exprs
             .iter()
             .any(|e| crate::typing::storage_prov::any_hot_read_in(e, &wrappers));
+        // P3 write-through coalescing rides the same gate as the storage
+        // codec (NEAR contracts only — fuzz/wasi excluded in wt_active).
+        // reads memoize; coalesced writes replay at the export boundary.
+        em.wt_write_through = em.storage_reads_hot;
+        if em.wt_write_through {
+            em.reserve_wt_region();
+            // Materialize __h_wt_flush NOW: with set/write coalescing there
+            // may be NO emit_wt_flush_call site left in the whole program
+            // (pure-storage_set contracts like pool-b), so nothing else
+            // creates the helper — and a program whose writes all upsert
+            // still MUST replay them at the boundary. Early creation also
+            // makes tree_shake's wt_used seed effective (the helper is just
+            // a normal func from here on; the wrapper references it by
+            // post-shake name lookup).
+            let _ = em.ensure_wt_flush_helper();
+        }
     }
 
     // Pre-scan: hoist (memory N) declarations so EVERY function body emits

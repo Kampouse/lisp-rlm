@@ -56,6 +56,7 @@ use try_catch::TryFrame;
 pub mod call_dict;
 pub mod call_outlayer;
 pub mod call_predicate;
+pub mod write_through;
 pub mod u128_twins;
 pub mod u128_storage;
 pub mod compile;
@@ -600,6 +601,17 @@ pub(crate) const CACHE_SLOTS: i64 = 64;
 pub(crate) const CACHE_KEY_CAP: i64 = 64; // max cached key length; longer keys read uncached
 pub(crate) const CACHE_STRIDE: i64 = 88; // key_ptr | key_len | value_tagged | key-bytes copy
 const CACHE_END: u32 = 136_720; // 131080 + 64*88 = 136712, 8-aligned pad
+/// ── P3 write-through coalescing (2026-10-13) ──
+/// Dirty bitmap: 64 bytes at [136720, 136784), one byte per cache slot —
+/// bit i set ⇒ slot i holds a NOT-YET-HOSTED write (set by storage_set /
+/// splice writes when they upsert the memo table). The export-boundary
+/// flush walk (`__h_wt_flush`) replays only dirty slots via storage_write,
+/// clearing bits as it goes. Tombstone byte 0xFF in slot+0 key-ptr marks a
+/// removed key (storage_remove on a dirty/unwritten slot ⇒ host remove now
+/// + slot invalidated; on a clean slot ⇒ host remove now, no tombstone
+/// needed since the read cache no longer shadows it).
+pub(crate) const WT_DIRTY_BASE: i64 = 136_720;
+const WT_DIRTY_END: u32 = 136_784; // 136720 + 64
                                 // ── Handle table for memory-safe struct access ──
 const HANDLE_COUNT_ADDR: i64 = 48; // 8-byte slot: number of allocated handles
 const HANDLE_TABLE_BASE: i64 = 49152; // base of handle table (1024 entries × 16 bytes = 16KB)
@@ -674,6 +686,14 @@ pub struct WasmEmitter {
     pub(crate) list_ptr_counter: u32, // unique temp per (list ...) site — nested dynamic lists each need their OWN __lst_ptr local
     pub(crate) str_cat_depth: u32,    // nesting depth for str-cat local isolation
     pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
+    /// P3 write-through storage coalescing: storage_set upserts the memo
+    /// table (dirty bit) instead of host-writing; __h_wt_flush replays dirty
+    /// slots at every export boundary. Off in fuzz/wasi modes.
+    pub(crate) wt_write_through: bool,
+    /// Function-table index of the synthesized __h_wt_flush helper (set on
+    /// first need), and whether any upsert site was emitted (boundary flush).
+    pub(crate) wt_flush_fn: Option<u32>,
+    pub(crate) wt_used: bool,
     pub(crate) u128h: Option<U128Helpers>, // string-based u128 helper func indices (lazily synthesized)
     pub(crate) fn_int_annotations: std::collections::HashMap<String, (usize, bool)>, // name → (n int params, ret int)
     pub(crate) raw_twins: std::collections::HashMap<String, u32>, // fn name → raw twin func idx
@@ -794,6 +814,9 @@ impl WasmEmitter {
             funcs: Vec::new(),
             memory_pages: 64,
             exports: Vec::new(),
+            wt_write_through: false,
+            wt_flush_fn: None,
+            wt_used: false,
             data_segments: Vec::new(),
             next_data_offset: 256,
             host_needed: HashSet::new(),
