@@ -600,6 +600,17 @@ impl WasmEmitter {
                     ) {
                         let h = self.ensure_u128_str_helpers();
                         let ptr_l = self.local_idx("__b2b_norm_ptr");
+                        // NIL-miss guard: only Str-tagged results are
+                        // normalized. A miss returns TAG_NIL — untagging it
+                        // yields ptr 0 and load8(addr 0) would misread heap
+                        // zero-page as a binary cell ("0" on miss, breaking
+                        // `default`/nil string sinks). Non-Str ⇒ pass through.
+                        v.push(Instruction::LocalGet(res_l));
+                        v.push(Instruction::I64Const(7));
+                        v.push(Instruction::I64And);
+                        v.push(Instruction::I64Const(TAG_STR));
+                        v.push(Instruction::I64Eq);
+                        v.push(Instruction::If(BlockType::Empty));
                         v.push(Instruction::LocalGet(res_l));
                         v.extend(self.emit_untag());
                         v.push(Instruction::I64Const(0xFFFF_FFFF));
@@ -619,6 +630,7 @@ impl WasmEmitter {
                         v.push(Self::call_user(h.to_str));
                         v.push(Instruction::LocalSet(res_l));
                         v.push(Instruction::End);
+                        v.push(Instruction::End); // close the Str-tag guard
                     }
                 }
                 v.push(Instruction::LocalGet(res_l));
