@@ -2174,6 +2174,42 @@ impl TcEnv {
             "near/account_balance".into(),
             TcType::Arrow(vec![], Box::new(int_ty.clone())),
         );
+        // u128/u64 context getters — emitter wired (call_near_context.rs:
+        // host 13 low/high limbs, host 10 tagged num, host 51 register
+        // read, host 85) but the type env never listed them, so any use
+        // died as "undefined variable" at typecheck (found 2026-10-12
+        // via the never-run hostfuncs tests).
+        env.insert_mono(
+            "near/account_locked_balance".into(),
+            TcType::Arrow(vec![], Box::new(int_ty.clone())),
+        );
+        env.insert_mono(
+            "near/account_locked_balance_high".into(),
+            TcType::Arrow(vec![], Box::new(int_ty.clone())),
+        );
+        env.insert_mono(
+            "near/account_balance_high".into(),
+            TcType::Arrow(vec![], Box::new(int_ty.clone())),
+        );
+        env.insert_mono(
+            "near/epoch_height".into(),
+            TcType::Arrow(vec![], Box::new(int_ty.clone())),
+        );
+        env.insert_mono(
+            "near/current_code_hash".into(),
+            TcType::Arrow(vec![], Box::new(str_ty.clone())),
+        );
+        env.insert_mono(
+            "near/validator_stake".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), num_ty.clone()],
+                Box::new(int_ty.clone()),
+            ),
+        );
+        env.insert_mono(
+            "near/validator_total_stake".into(),
+            TcType::Arrow(vec![], Box::new(int_ty.clone())),
+        );
         env.insert_mono(
             "near/block_timestamp".into(),
             TcType::Arrow(vec![], Box::new(str_ty.clone())),
