@@ -498,6 +498,32 @@ pub fn annotate_type_error_label(err: &str, input: &str, label: &str) -> String 
         }
     }
     let toks = tokenize(input);
+    // bugC (2026-10-12): resolve the CALL HEAD first. Checker call errors
+    // carry their head in the message ("in call (len ...): arity mismatch"),
+    // and the call site is where `(head` appears in call position — NOT the
+    // first token matching any message word (the old scrape pinned every
+    // arity error to the `(define (head ...)` header line). Word-scrape
+    // remains as fallback for messages without that shape.
+    let call_head = head
+        .strip_prefix("in call (")
+        .and_then(|r| r.split(|c: char| c.is_whitespace() || c == ')').next());
+    if let Some(h) = call_head {
+        if !h.is_empty() {
+            let pat = format!("({}", h);
+            let mut search_from = 0usize;
+            while let Some(pos) = input[search_from..].find(&pat) {
+                let abs = search_from + pos;
+                // skip the define header: `(define (len` — the match is the
+                // sig list exactly when preceded by "(define ".
+                let in_define_header = abs >= 8 && input[..abs].ends_with("(define ");
+                if !in_define_header {
+                    let (line, _col) = offset_to_line_col(input, abs);
+                    return format!("{err} ({label} line {line})");
+                }
+                search_from = abs + pat.len();
+            }
+        }
+    }
     for cand in &candidates {
         for (t, off) in &toks {
             // string tokens carry their quotes — compare both ways
