@@ -691,6 +691,15 @@ pub(crate) fn execute_tx(
             // Resolve the promise DAG returned by the entry.
             if !deferred && pending.is_some() {
                 let idx = pending.unwrap();
+                // A returned YIELD is not executable: the tx completes with the
+                // yield open; a later promise_yield_resume delivers the callback
+                // (real nearcore: tx status stays pending/claimed).
+                let yielded = PROMISE_DAG
+                    .with(|d| d.borrow().get(idx).map(|b| b.is_yield).unwrap_or(false));
+                if yielded {
+                    PENDING_RETURN.with(|p| *p.borrow_mut() = None);
+                    return Ok(outcome);
+                }
                 match execute_promise(idx) {
                     Err(e) => {
                         outcome.ok = false;
@@ -1397,10 +1406,14 @@ fn build_promise_hosts(
                 })
             };
             let did = format!("yd:{}", idx);
+            // 32-byte data_id (NUL-padded) so contract-side try_into::<CryptoHash>
+            // succeeds, matching real nearcore register semantics.
+            let mut did32 = did.into_bytes();
+            did32.resize(32, 0);
             let st = STATE_ARC.with(|s| s.borrow().clone());
             if let Some(st) = st {
                 let mut st = st.lock().unwrap();
-                st.registers.insert(reg, did.into_bytes());
+                st.registers.insert(reg, did32);
                 // persist: \x00yield:<idx> = account \x1f method \x1f creator \x1f args_json
                 let spec = format!(
                     "{}\x1f{}\x1f{}\x1f{}",
@@ -1440,6 +1453,7 @@ fn build_promise_hosts(
                 "promise-host",
             )?;
             let idx: usize = data_id
+                .trim_end_matches('\0')
                 .trim_start_matches("yd:")
                 .parse()
                 .unwrap_or(usize::MAX);
@@ -2996,7 +3010,10 @@ pub(crate) fn settle_receipts() -> Result<SettleReport, Box<dyn std::error::Erro
                 .iter()
                 .enumerate()
                 .find(|(i, b)| {
-                    !EXECUTED_PROMISES.with(|e| e.borrow().contains(i))
+                    // yields are NOT delivered as receipts: they wait for a
+                    // promise_yield_resume (real nearcore semantics).
+                    !b.is_yield
+                        && !EXECUTED_PROMISES.with(|e| e.borrow().contains(i))
                         && b.deps
                             .iter()
                             .all(|dep| EXECUTED_PROMISES.with(|e| e.borrow().contains(dep)))
