@@ -237,6 +237,11 @@ pub struct Scheme {
 #[derive(Clone, Debug)]
 pub struct TcEnv {
     bindings: HashMap<String, Scheme>,
+    /// Names introduced by user `(define ...)` forms — these SHADOW builtins
+    /// (interpreter spec, bugA 2026-10-12): a hardcoded builtin arm in
+    /// `infer_application` must defer to the env scheme when the name is
+    /// user-owned, or `(define (len s) "hi")` gets typed as `len : any → int`.
+    pub user_defined: std::collections::HashSet<String>,
     /// When true, any `near/*` symbol is accepted as `'any → 'any → ... → 'any`.
     /// This avoids having to enumerate every host function while still catching
     /// undefined user variables.
@@ -253,6 +258,7 @@ impl TcEnv {
     pub fn new() -> Self {
         TcEnv {
             bindings: HashMap::new(),
+            user_defined: std::collections::HashSet::new(),
             near_wildcard: false,
             pure_mode: false,
             storage_schema: HashMap::new(),
@@ -261,6 +267,16 @@ impl TcEnv {
 
     pub fn insert(&mut self, name: String, scheme: Scheme) {
         self.bindings.insert(name, scheme);
+    }
+
+    /// Mark `name` as user-introduced (define param/body pass or pure block).
+    /// Idempotent; see `user_defined` for why this set exists.
+    pub fn mark_user_defined(&mut self, name: &str) {
+        self.user_defined.insert(name.to_string());
+    }
+
+    pub fn is_user_defined(&self, name: &str) -> bool {
+        self.user_defined.contains(name)
     }
 
     pub fn get(&self, name: &str) -> Option<&Scheme> {

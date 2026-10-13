@@ -279,6 +279,28 @@ fn fixtures() -> Vec<Fixture> {
                    (pick (cdr (list "p" "q")) (cdr (list "r" "s")) (car (list "t" "u"))))"#,
             "",
         ),
+        // ── user definitions shadowing builtin names (bugA, 2026-10-12) ──
+        // The interpreter spec: a user define shadows the builtin (user-first
+        // resolution). The checker had a hardcoded `len` arm and the emitter a
+        // 17-domain cascade BOTH bypassing user defines — `(len "abcd")`
+        // compiled to the builtin and returned 4 while the interpreter said 42.
+        Fixture::new(
+            "shadow/user-len-over-builtin",
+            r#"(define (len s) 42)
+                 (define (main) (len "abcd"))"#,
+        ),
+        Fixture::near_with_input(
+            "near/shadow-user-len-over-builtin",
+            r#"(define (len s) 42)
+                 (define (main) (len "abcd"))"#,
+            "",
+        ),
+        Fixture::near_with_input(
+            "near/shadow-len-str-return",
+            r#"(define (len s) "hi")
+                 (define (main) (len "x"))"#,
+            "",
+        ),
         Fixture::near_with_input(
             "near/sibling-user-call-args",
             r#"(define (len2 xs) (if (nil? xs) 0 (+ 1 (len2 (cdr xs)))))

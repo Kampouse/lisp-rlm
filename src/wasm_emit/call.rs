@@ -27,6 +27,19 @@ impl WasmEmitter {
             };
         }
 
+        // ── User definitions shadow builtin ops (bugA, 2026-10-12) ──
+        // The interpreter resolves user defines first: `(define (len s) 42)`
+        // shadows the builtin for every call site in the program (interp
+        // prints 42; the cascade below claimed the name and printed 4).
+        // A name that belongs to a top-level define or a local binding jumps
+        // the whole cascade — the self-passing / closure / named-dispatch
+        // machinery below it is the same code that used to run only for
+        // non-builtin names. Forward references are safe: the pre-scan in
+        // compile_near registers every top-level define name before any
+        // body is compiled.
+        let user_owned =
+            self.funcs.iter().any(|f| f.name == op) || self.locals.contains_key(op);
+        if !user_owned {
         // ── u128 builtins (string-based): interpreter semantics on wasm ──
         // Lowered by call_u128_str (parse → limb math → decimal render) with
         // hard errors as unreachable traps. The overlapping address-based limb
@@ -118,6 +131,7 @@ impl WasmEmitter {
         try_domain!(self.call_outlayer(op, a));
         try_domain!(self.call_predicate(op, a));
         try_domain!(self.call_dict(op, a));
+        } // end !user_owned — builtin cascade skipped for shadowing names
 
         // ── Self-passing call: Y-combinator pattern ──
         if self.locals.contains_key(op)

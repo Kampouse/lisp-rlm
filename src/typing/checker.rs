@@ -418,6 +418,7 @@ pub fn check_pure_block(forms: &[&LispVal]) -> Result<Vec<PureCheckResult>, Stri
         let result = check_define_in_env(list, &mut env, &mut supply)?;
 
         // Add the inferred type to the shared environment for later forms
+        env.mark_user_defined(&result.name);
         env.insert_mono(result.name.clone(), result.inferred_type.clone());
         results.push(result);
     }
@@ -516,6 +517,7 @@ fn check_function_define_in_env(
                     ));
                 }
                 let self_type = TcType::Arrow(args.clone(), ret.clone());
+                check_env.mark_user_defined(&name);
                 check_env.insert_mono(name.clone(), self_type);
                 args.clone()
             }
@@ -530,6 +532,7 @@ fn check_function_define_in_env(
         let ret_var = supply.fresh();
         let arg_vars: Vec<TcType> = params.iter().map(|_| supply.fresh()).collect();
         let self_type = TcType::Arrow(arg_vars.clone(), Box::new(ret_var));
+        check_env.mark_user_defined(&name);
         check_env.insert_mono(name.clone(), self_type);
         arg_vars
     };
@@ -734,6 +737,7 @@ fn check_function_define(sig: &[LispVal], rest: &[LispVal]) -> Result<PureCheckR
                 }
                 // Put the function itself in scope for self-reference
                 let self_type = TcType::Arrow(args.clone(), ret.clone());
+                env.mark_user_defined(&name);
                 env.insert_mono(name.clone(), self_type);
                 args.clone()
             }
@@ -749,6 +753,7 @@ fn check_function_define(sig: &[LispVal], rest: &[LispVal]) -> Result<PureCheckR
         let ret_var = supply.fresh();
         let arg_vars: Vec<TcType> = params.iter().map(|_| supply.fresh()).collect();
         let self_type = TcType::Arrow(arg_vars.clone(), Box::new(ret_var));
+        env.mark_user_defined(&name);
         env.insert_mono(name.clone(), self_type);
         arg_vars
     };
@@ -1195,6 +1200,7 @@ fn infer_lambda(
     for name in &param_names {
         let t = supply.fresh();
         param_types.push(t.clone());
+        new_env.mark_user_defined(name);
         new_env.insert_mono(name.clone(), t);
     }
 
@@ -1315,6 +1321,7 @@ fn infer_let_star(
             }
         };
         let val_type = infer(&pair[1], &new_env, supply, subst)?;
+        new_env.mark_user_defined(&name);
         new_env.insert_mono(name, subst.apply(&val_type));
     }
 
@@ -1497,6 +1504,13 @@ fn infer_application(
 
     // Variadic builtins: accept any arity
     if let LispVal::Sym(name) = func {
+        // bugA (2026-10-12): user defines SHADOW builtins of the same name
+        // (interpreter spec — `(define (len s) "hi")` must type as str→str,
+        // not as the hardcoded `len : any → int` arm below). When the name
+        // belongs to the program, skip every hardcoded arm and fall through
+        // to generic env application — the pre-pass scheme carries the
+        // user's own signature.
+        if !env.is_user_defined(name) {
         // str-cat: variadic STRINGS-ONLY concat (emitter + interp are
         // variadic; the old binary Arrow type rejected legal 3+ arg forms
         // — matches the wasm_emit arm's n-arg single-alloc path).
@@ -1654,6 +1668,7 @@ fn infer_application(
             }
             // mixed/unknown: fall through to the num arrow for a precise error
         }
+        } // end !is_user_defined — hardcoded builtin arms defer to user schemes
     }
 
     let func_type = infer(func, env, supply, subst)?;
@@ -3456,6 +3471,10 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
             if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") {
                 if let Some(LispVal::List(header)) = items.get(1) {
                     if let Some(LispVal::Sym(name)) = header.first() {
+                        // bugA: this name SHADOWS any builtin of the same
+                        // shape — hardcoded arms in infer_application must
+                        // defer to the env for it.
+                        env.mark_user_defined(name);
                         env.insert(
                             name.clone(),
                             Scheme {
@@ -3467,6 +3486,7 @@ pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
                 }
                 // Value define: (define NAME value) — NAME is a Sym at [1]
                 if let Some(LispVal::Sym(name)) = items.get(1) {
+                    env.mark_user_defined(name);
                     env.insert(
                         name.clone(),
                         Scheme {
