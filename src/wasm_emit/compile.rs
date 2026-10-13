@@ -1037,6 +1037,15 @@ fn pipeline_from_exprs(
         };
         em.emit_define("__toplevel", &[], &body)?;
     }
+    // u128 native-chain phase 2 (lever 2A): param-provenance twins.
+    // Compile AFTER all fns exist — twin bodies route into sibling twins
+    // by name, resolved at finish(). Killed twins (bail gate) fall back
+    // to the tagged fn at every call site (routing map consulted at emit
+    // time... but twins compile LAST, so their own bodies see the final
+    // routing).
+    let twin_units = u128_twins::plan_u128_param_twins(&exprs);
+    em.declare_u128_twins(&twin_units);
+    em.compile_u128_twins(&twin_units)?;
     Ok(em)
 }
 

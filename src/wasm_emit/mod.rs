@@ -56,6 +56,7 @@ use try_catch::TryFrame;
 pub mod call_dict;
 pub mod call_outlayer;
 pub mod call_predicate;
+pub mod u128_twins;
 pub mod compile;
 pub mod int_emit;
 pub mod wasm_link;
@@ -675,6 +676,10 @@ pub struct WasmEmitter {
     pub(crate) u128h: Option<U128Helpers>, // string-based u128 helper func indices (lazily synthesized)
     pub(crate) fn_int_annotations: std::collections::HashMap<String, (usize, bool)>, // name → (n int params, ret int)
     pub(crate) raw_twins: std::collections::HashMap<String, u32>, // fn name → raw twin func idx
+    /// u128 phase 2A: name → (twin func idx, per-param limb-kind flags).
+    /// Routing consults this at every direct user-call site; a twin killed
+    /// at compile time is removed, routing falls to the tagged fn.
+    pub(crate) u128_twins: std::collections::HashMap<String, (u32, Vec<bool>, bool)>,
     /// fn name → pretty-printed source form (defines + lambdas), for the
     /// symbolication sidecar (.wasm.map) consumed by `near-mock symbolicate`.
     pub(crate) fn_sources: std::collections::HashMap<String, String>,
@@ -796,6 +801,7 @@ impl WasmEmitter {
             u128h: None,
             fn_int_annotations: std::collections::HashMap::new(),
             raw_twins: std::collections::HashMap::new(),
+            u128_twins: std::collections::HashMap::new(),
             fn_sources: std::collections::HashMap::new(),
             source_forms: Vec::new(),
             borsh_schemas: HashMap::new(),
@@ -1447,6 +1453,39 @@ impl WasmEmitter {
         } else {
             self.memory_pages = p;
         }
+    }
+
+    /// Group consecutive same-type extra locals into (count, type) entries
+    /// for the code section. Single source shared by emit_define and the
+    /// u128 param-twin compiler (was inline-only in emit_define).
+    pub(crate) fn group_local_entries(
+        param_count: usize,
+        total: usize,
+        ltm: &[ValType],
+    ) -> Vec<(u32, ValType)> {
+        if total <= param_count {
+            return vec![];
+        }
+        let mut entries = Vec::new();
+        let mut i = param_count;
+        while i < total {
+            let ty = if i < ltm.len() { ltm[i] } else { ValType::I64 };
+            let mut count = 1u32;
+            while (i + count as usize) < total {
+                let next_ty = if (i + count as usize) < ltm.len() {
+                    ltm[i + count as usize]
+                } else {
+                    ValType::I64
+                };
+                if next_ty != ty {
+                    break;
+                }
+                count += 1;
+            }
+            entries.push((count, ty));
+            i += count as usize;
+        }
+        entries
     }
     pub fn add_export(&mut self, fn_: &str, en: &str, is_view: bool) {
         // Replace existing export with same name to avoid duplicate export errors

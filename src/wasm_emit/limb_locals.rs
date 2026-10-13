@@ -215,6 +215,12 @@ impl WasmEmitter {
         lo: u32,
         hi: u32,
     ) -> Result<Vec<Instruction<'static>>, String> {
+        // u128 phase 2A: a routed twin call consumed in limb context copies
+        // its U128_W result straight into (lo, hi) — the chain stays
+        // limb-borne across the call boundary with zero re-parse.
+        if let Some(r) = self.emit_twin_call_limb(e, lo, hi) {
+            return r;
+        }
         match e {
             // direct copy from another limb local
             LispVal::Sym(n) if self.limb_slots.contains_key(n) => {

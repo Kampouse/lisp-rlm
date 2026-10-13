@@ -248,6 +248,35 @@ impl WasmEmitter {
                 )
             })?;
         let func_param_count = self.funcs[pos].param_count;
+        // u128 native-chain phase 2: param-provenance twin fast path.
+        // Runs AFTER the raw-twin path (which returns early for its own
+        // subset). Native args use limb copies when limb-borne at this
+        // site, a single boundary parse otherwise; Stringly args pass
+        // through unchanged. Result: twin returns limbs in U128_W (dummy
+        // i64 in the tagged slot) — materialize ONCE here for the generic
+        // consumer.
+        if a.len() == func_param_count {
+            if let Some((twin, kinds, ret_limb)) = self.u128_twins.get(op).cloned() {
+                if a.len() == kinds.len() {
+                    let mut v = Vec::new();
+                    self.emit_twin_call_raw_checked(op, &kinds, a, &mut v)?;
+                    if ret_limb {
+                        // limb-return twin: materialize the U128_W limbs →
+                        // tagged decimal ONCE (canonical — bit-identical to
+                        // the tagged path's string)
+                        let h = self.ensure_u128_str_helpers();
+                        v.push(Instruction::Drop);
+                        v.push(Instruction::I64Const(
+                            crate::wasm_emit::call_u128_str::U128_W,
+                        ));
+                        v.push(Self::call_user(h.to_str));
+                    }
+                    // tagged-ret twin: the twin's tagged i64 is already the
+                    // stack value — same ABI as the plain call below
+                    return Ok(v);
+                }
+            }
+        }
         // Raw-twin fast path: annotated int fns get an untagged twin. Call it
         // with boundary conversion (untag args / retag result) — same
         // semantics, raw speed inside.
