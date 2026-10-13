@@ -4292,9 +4292,9 @@ fn prov_of(
                             Stringly
                         }
                     }
-                    // storage stays decimal-string (Phase 1) — reads are
-                    // unproven carriers even when the value is numeric
-                    "near/storage_get" => Stringly,
+                    // 2B storage reads are classified in the fall-through
+                    // below (storage_site sees through sget/default wrappers,
+                    // which the name match alone cannot).
                     "default" => args
                         .first()
                         .map(|x| prov_of(x, env, wrappers, rets))
@@ -4349,6 +4349,23 @@ fn prov_of(
                     "str-cat" | "strcat" | "near/storage_set" | "near/log" | "near/return"
                     | "near/abort" => Stringly,
                     _ => {
+                        // 2B: literal-key storage reads are Native carriers.
+                        // Soundness: the emit-side read sniffs the first
+                        // value byte — NUL ⇒ binary cell, hydrate limbs;
+                        // anything else ⇒ the SAME strict-decimal parse the
+                        // tagged path uses. Identical result-or-trap for
+                        // arbitrary content, so a "wrongly hot" read is only
+                        // slower, never wrong. Dynamic-key reads stay
+                        // Stringly (they keep the tagged path, which sniffs
+                        // too — binary only ever lands on literal cells,
+                        // but an aliased read must still parse).
+                        if let Some(crate::typing::storage_prov::StorageSite::Read(k, _)) =
+                            crate::typing::storage_prov::storage_site(e, wrappers)
+                        {
+                            if crate::typing::storage_prov::literal_key(&k).is_some() {
+                                return Native;
+                            }
+                        }
                         // user call: a trivial wrapper classifies as its op
                         // (predicate wrappers leave the u128 domain)
                         if let Some((ps, body)) = wrappers.get(h) {
@@ -4994,11 +5011,15 @@ mod prov_tests {
         assert_eq!(l["b"], Provenance::Native);
         assert_eq!(l["c"], Provenance::Native, "typed json-get birth");
         assert_eq!(l["d"], Provenance::Stringly, "untyped json read");
-        assert_eq!(l["e"], Provenance::Stringly, "storage read unproven");
+        assert_eq!(
+            l["e"],
+            Provenance::Native,
+            "2B: literal-key storage read is a Native carrier (read sniffs: binary hydrate or the same decimal parse — identical result either way)"
+        );
         assert_eq!(
             l["f2"],
-            Provenance::Stringly,
-            "default(storage, lit) taints"
+            Provenance::Native,
+            "2B: default(storage lit-key, lit) is Native (sniff covers legacy decimal)"
         );
     }
 
@@ -5022,7 +5043,7 @@ mod prov_tests {
         let src = r#"
 (define (h x)
   (let* ((a (u128/add x "1"))
-         (b (near/storage_get "k")))
+         (b (near/storage_get x)))   ;; dynamic key → Stringly carrier
     (begin
       (set! a b)          ;; a re-stored unproven → Stringly from here
       (set! b (u128/mul a a)) ;; b becomes Native
@@ -5109,10 +5130,10 @@ mod prov_tests {
     fn solver_stringly_arg_demotes_only_that_param() {
         let src = r#"
 (define (f a b) (u128/add a b))
-(define (g)
+(define (g kdyn)
   (let* ((x (u128/add f0 "1"))
          (r1 (f x x))
-         (r2 (f r1 (near/storage_get "k"))))
+         (r2 (f r1 (near/storage_get kdyn))))
     r2))
 (define f0 "5")
 "#;

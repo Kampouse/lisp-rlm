@@ -57,6 +57,7 @@ pub mod call_dict;
 pub mod call_outlayer;
 pub mod call_predicate;
 pub mod u128_twins;
+pub mod u128_storage;
 pub mod compile;
 pub mod int_emit;
 pub mod wasm_link;
@@ -739,6 +740,19 @@ pub struct WasmEmitter {
     pub(crate) limb_eligible: std::collections::HashSet<String>,
     pub(crate) limb_slots: std::collections::HashMap<String, (u32, u32)>,
     pub(crate) limb_call_count: u32,
+    /// u128 native-chain 2B: when true, literal-key storage reads are
+    /// treated as Native carriers (sniff-hydrate reads; binary writes for
+    /// limb-borne values). Set from the program shape at pipeline start.
+    pub(crate) storage_reads_hot: bool,
+    // 2B: set by emit_u128_val's hot-cell sniff around its expr() call — the
+    // inner storage_get arm must return the RAW cell (limbs hydrate it with
+    // zero parses); the normalizer stands down while this is set.
+    pub(crate) b2b_limb_read_active: bool,
+    /// Source-level fn defns (params, body) of the program being compiled —
+    /// lets emit-side passes use the SHARED storage_site resolver to see
+    /// through sget/sput-style wrappers. Filled at pipeline start.
+    pub(crate) src_wrapper_defns:
+        std::cell::RefCell<std::collections::HashMap<String, (Vec<String>, LispVal)>>,
     /// u128 Level 1.5 parse-cache (2026-09-15): tagged string locals
     /// (bigint params, storage-read locals) re-parsed their decimal string
     /// on EVERY u128-op use (~140 Mgas/use). Runtime memo per local name:
@@ -806,6 +820,9 @@ impl WasmEmitter {
             source_forms: Vec::new(),
             borsh_schemas: HashMap::new(),
             storage_get_count: 0,
+            storage_reads_hot: false,
+            b2b_limb_read_active: false,
+            src_wrapper_defns: std::cell::RefCell::new(Default::default()),
             u128_call_count: 0,
             http_post_call_count: 0,
             env_get_count: 0,

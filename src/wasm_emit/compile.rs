@@ -817,6 +817,21 @@ fn pipeline_from_exprs(
 
     let mut em = WasmEmitter::new();
 
+    // ── 2B storage codec inputs (u128_storage.rs): shared-resolver state ──
+    // Collect the program's own wrapper defns (sget/sput shape) once; the
+    // resolver substitutes wrapper params → call args so literal keys hide
+    // behind wrappers still resolve. Mode flag: any literal-key READ makes
+    // the whole program hot — reads sniff at runtime (self-describing), so
+    // a cold read taking the hot path is only a slower identical semantic.
+    {
+        let (defns, _order) = crate::typing::checker::collect_fn_defns(&exprs);
+        *em.src_wrapper_defns.borrow_mut() = defns;
+        let wrappers = em.src_wrapper_defns.borrow().clone();
+        em.storage_reads_hot = exprs
+            .iter()
+            .any(|e| crate::typing::storage_prov::any_hot_read_in(e, &wrappers));
+    }
+
     // Pre-scan: hoist (memory N) declarations so EVERY function body emits
     // against the final memory size, regardless of where the decl sits in
     // the file (same treatment as export/function-name pre-scans — decl

@@ -116,14 +116,38 @@ impl WasmEmitter {
             .filter(|n| !params.iter().any(|p| p == *n))
             .cloned()
             .collect();
-        // fixpoint: a Sym store is pure only while its source is eligible
+        // 2B: literal-key storage reads are Native carriers (the read path
+        // sniffs — binary hydrate or the same decimal parse). Seeding the
+        // scan here makes the seeded bodies agree with the checker's
+        // provenance verdicts: (sget "s:sqp" "0") can be limb-borne, so
+        // bindings fed by it promote through the existing fixpoint.
+        // Gate is inside the closure: cold mode behaves EXACTLY as before
+        // (the 2026-10-13 pool_a_step_parity regression came from an early
+        // return placed before the demote fixpoint — never again).
+        let wrappers = self.src_wrapper_defns.borrow().clone();
+        let read_is_hot = |e: &LispVal| -> bool {
+            self.storage_reads_hot
+                && matches!(
+                    crate::typing::storage_prov::storage_site(e, &wrappers),
+                    Some(crate::typing::storage_prov::StorageSite::Read(k, _))
+                        if crate::typing::storage_prov::literal_key(&k).is_some()
+                )
+        };
+        // single fixpoint over the ENRICHED predicate: original limb-purity
+        // plus hot literal-key reads as pure atoms (no-op when cold — the
+        // gate lives inside read_is_hot). One loop, not promotion+demote
+        // passes: two loops with different predicates fight (the demote
+        // pass removed exactly what promotion added — 2026-10-13 [4b]=1000
+        // regression) and never converge.
         loop {
             let mut changed = false;
             for n in stores.keys() {
                 if params.iter().any(|p| p == n) {
                     continue;
                 }
-                let ok = stores[n].iter().all(|e| store_is_limb_pure(e, &eligible));
+                let ok = stores[n]
+                    .iter()
+                    .all(|e| store_is_limb_pure(e, &eligible) || read_is_hot(e));
                 if ok != eligible.contains(n) {
                     changed = true;
                     if ok {
@@ -220,6 +244,33 @@ impl WasmEmitter {
         // limb-borne across the call boundary with zero re-parse.
         if let Some(r) = self.emit_twin_call_limb(e, lo, hi) {
             return r;
+        }
+        // 2B hot-cell read: sniff the value's first byte — NUL ⇒ binary
+        // cell hydrate; anything else ⇒ the SAME strict decimal parse the
+        // generic path runs (identical result-or-trap). Only fires for
+        // sites the SHARED resolver classifies as literal-key reads and
+        // only when the program's storage mode is 2B.
+        if self.storage_reads_hot {
+            let wrappers = self.src_wrapper_defns.borrow().clone();
+            if matches!(
+                crate::typing::storage_prov::storage_site(e, &wrappers),
+                Some(crate::typing::storage_prov::StorageSite::Read(k, _))
+                    if crate::typing::storage_prov::literal_key(&k).is_some()
+            ) {
+                let h = self.ensure_u128_str_helpers();
+                let tv = {
+                    self.b2b_limb_read_active = true;
+                    let r = self.expr(e);
+                    self.b2b_limb_read_active = false;
+                    r?
+                };
+                let t = self.local_idx(&format!("__b2b_t_{}", self.limb_call_count));
+                self.limb_call_count += 1;
+                let mut v = tv;
+                v.push(Instruction::LocalSet(t));
+                self.emit_hot_cell_hydrate(&mut v, t, lo, hi);
+                return Ok(v);
+            }
         }
         match e {
             // direct copy from another limb local

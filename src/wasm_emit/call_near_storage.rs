@@ -401,6 +401,42 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 v.extend(key);
                 v.push(Instruction::LocalSet(k));
+                // ── 2B binary-cell fast path (u128_storage.rs) ──
+                // Literal key + limb-borne value ⇒ skip the to_str render:
+                // store 0x00 || 16B LE, pass the packed tagged Str to the
+                // generic write below. Dynamic keys and tagged values fall
+                // through to the plain decimal path — byte-identical to
+                // phase 1 (this is what keeps paid:/left: human-audit).
+                if self.storage_reads_hot {
+                    if let Some(binv) = self.try_hot_write(&a[0], &a[1])? {
+                        v.extend(binv);
+                        v.push(Instruction::LocalSet(val_l));
+                        Self::emit_assert_tag_str(&mut v, k);
+                        Self::emit_assert_tag_str(&mut v, val_l);
+                        v.push(Instruction::LocalGet(k));
+                        v.extend(self.emit_untag());
+                        v.push(Instruction::I64Const(32));
+                        v.push(Instruction::I64ShrU);
+                        v.push(Instruction::LocalGet(k));
+                        v.extend(self.emit_untag());
+                        v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::I64ExtendI32U);
+                        v.push(Instruction::LocalGet(val_l));
+                        v.extend(self.emit_untag());
+                        v.push(Instruction::I64Const(32));
+                        v.push(Instruction::I64ShrU);
+                        v.push(Instruction::LocalGet(val_l));
+                        v.extend(self.emit_untag());
+                        v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::I64ExtendI32U);
+                        v.push(Instruction::I64Const(0));
+                        v.push(Self::host_call(17));
+                        v.push(Instruction::Drop);
+                        v.push(Instruction::I64Const(0));
+                        v.extend(self.emit_tag_num());
+                        return Ok(v);
+                    }
+                }
                 v.extend(val);
                 v.push(Instruction::LocalSet(val_l));
                 // Runtime tag guard: both operands must be Str. A Num value
@@ -541,6 +577,50 @@ impl WasmEmitter {
                     self.emit_storage_cache_insert(k, res_l, cnt_l, slot_l, j_l, klen_l, kptr_l),
                 );
                 v.push(Instruction::End);
+                // 2B string-context normalization: a hot literal-key read can
+                // return a binary cell (0x00 || 16B LE). String sinks (log /
+                // str-cat / return) need canonical decimal. Sniff byte 0:
+                // NUL ⇒ render limbs via __h_u128_to_str (identical text to
+                // the tagged path); anything else ⇒ pass through untouched.
+                // Placed AFTER the cache insert so hit and miss normalize
+                // alike and the cache itself stays raw. Limb-context callers
+                // (emit_u128_val sniff) consume the raw cell directly and
+                // never reach this arm twice.
+                if self.storage_reads_hot && !self.b2b_limb_read_active {
+                    let wrappers = self.src_wrapper_defns.borrow().clone();
+                    let form = LispVal::List(
+                        std::iter::once(LispVal::Sym("near/storage_get".into()))
+                            .chain(a.iter().cloned())
+                            .collect(),
+                    );
+                    if matches!(
+                        crate::typing::storage_prov::storage_site(&form, &wrappers),
+                        Some(crate::typing::storage_prov::StorageSite::Read(k, _))
+                            if crate::typing::storage_prov::literal_key(&k).is_some()
+                    ) {
+                        let h = self.ensure_u128_str_helpers();
+                        let ptr_l = self.local_idx("__b2b_norm_ptr");
+                        v.push(Instruction::LocalGet(res_l));
+                        v.extend(self.emit_untag());
+                        v.push(Instruction::I64Const(0xFFFF_FFFF));
+                        v.push(Instruction::I64And);
+                        v.push(Instruction::LocalSet(ptr_l));
+                        v.push(Instruction::LocalGet(ptr_l));
+                        v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::I64Load8U(wasm_encoder::MemArg {
+                            offset: 0,
+                            align: 0,
+                            memory_index: 0,
+                        }));
+                        v.push(Instruction::I64Eqz);
+                        v.push(Instruction::If(BlockType::Empty));
+                        // NUL ⇒ binary cell: __h_u128_to_str(ptr) → tagged Str
+                        v.push(Instruction::LocalGet(ptr_l));
+                        v.push(Self::call_user(h.to_str));
+                        v.push(Instruction::LocalSet(res_l));
+                        v.push(Instruction::End);
+                    }
+                }
                 v.push(Instruction::LocalGet(res_l));
                 Ok(v)
             }
