@@ -114,3 +114,36 @@ fn dynamic_key_write_stays_decimal() {
         "dynamic-key cell must round-trip decimal: {out}"
     );
 }
+
+#[test]
+fn wrapped_sput_literal_key_goes_binary() {
+    // THE pool-b shape: sput is a 2-param WRAPPER around a bare
+    // (near/storage_set k v), called with a literal key + limb-borne value.
+    // Before the hot-write splice the wrapper boundary rendered the value
+    // Stringly (twin call → __h_u128_to_str → call $sput) and the cell went
+    // decimal; the splice inlines the storage_set emission at the call site
+    // so the binary codec fires. Structural [17b]= assertion, same as the
+    // direct-write pin — plus the sget hydrate reading it back (zero parse).
+    let src = r#"(define (sput k v) (near/storage_set k v))
+(define (sget k d) (default (near/storage_get k) d))
+(define (main)
+  (begin
+    (near/storage_remove "wrap:x")
+    (let* ((a (sget "wrap:x" "0"))
+           (b (u128/add a "1000"))
+           (_ (sput "wrap:x" b))
+           (c (sget "wrap:x" "0"))
+           (d (u128/add c "1000")))
+      (near/log (str-cat "out=" d))
+      (near/return d))))
+(export "main" main true)"#;
+    let out = near_mock(src, "", "{}");
+    assert!(
+        out.contains("out=2000"),
+        "wrapped sput binary cycle must yield 2000, got: {out}"
+    );
+    assert!(
+        out.contains("[17b]="),
+        "wrapped literal-key sput must store the 17-byte binary codec, dump: {out}"
+    );
+}

@@ -133,6 +133,37 @@ impl WasmEmitter {
         try_domain!(self.call_dict(op, a));
         } // end !user_owned — builtin cascade skipped for shadowing names
 
+        // ── 2B hot-write splice: a user wrapper call `(sput "s:out" v)`
+        // that resolves through src_wrapper_defns to a literal-key storage
+        // WRITE with a limb-borne value emits the storage_set sequence
+        // INLINE at this site (original args, literal key intact). Without
+        // the splice the named/twin route below renders the value Stringly
+        // at the wrapper boundary (__h_u128_to_str before `call $sput`),
+        // forcing the decimal codec forever — the WAT audit caught exactly
+        // that on pool-b. Resolution is exact (storage_site substituted the
+        // wrapper body and found a bare storage_set call), so splicing is
+        // semantics-identical: same arg eval order, same Num(0) result.
+        // Cold mode never reaches here (storage_reads_hot gate); sites that
+        // don't qualify (dynamic key, non-limb value) fall through to the
+        // normal call path untouched.
+        if self.storage_reads_hot {
+            let wrappers = self.src_wrapper_defns.borrow().clone();
+            let form = LispVal::List(
+                std::iter::once(LispVal::Sym(op.into()))
+                    .chain(a.iter().cloned())
+                    .collect(),
+            );
+            if let Some(crate::typing::storage_prov::StorageSite::Write(k, val)) =
+                crate::typing::storage_prov::storage_site(&form, &wrappers)
+            {
+                if crate::wasm_emit::u128_storage::is_limb_borne_write(self, &k, &val) {
+                    let mut v = self.call_near_storage("near/storage_set", a)?;
+                    Self::emit_storage_cache_flush(&mut v);
+                    return Ok(v);
+                }
+            }
+        }
+
         // ── Self-passing call: Y-combinator pattern ──
         if self.locals.contains_key(op)
             && !a.is_empty()
