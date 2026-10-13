@@ -6542,9 +6542,18 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                         if is_input_handle(id.name.as_str()) {
                             let dotted: Vec<&str> = path.iter().rev().map(|s| s.as_str()).collect();
                             if dotted.len() == 1 {
+                                // (default … nil) = the documented
+                                // nil-on-miss contract (see comment below),
+                                // armed for the bare-read money gate:
+                                // hit → value, miss → nil — byte-identical
+                                // observable behavior, `??` still fires.
                                 return Ok(list(vec![
-                                    Sym("near/json_get_str"),
-                                    Str(dotted.join(".")),
+                                    Sym("default"),
+                                    list(vec![
+                                        Sym("near/json_get_str"),
+                                        Str(dotted.join(".")),
+                                    ]),
+                                    Sym("nil"),
                                 ]));
                             }
                             // Nested handle path `o.a.b.c`: top key via the
