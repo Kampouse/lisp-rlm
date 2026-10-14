@@ -1,5 +1,5 @@
 theory CLMM_Fee_Attack
-  imports Aggregate_Accrual
+  imports Aggregate_Accrual CLMM_Fee_Slack_Fixed
 begin
 
 section \<open>Attacker-edge layer 2: dust-farming and negative slack\<close>
@@ -343,6 +343,52 @@ next
     using accruef_sum_bound [of Lf 0 gs] .
   show "accruef Lf 0 gs
       \<le> prodsum Lf 0 gs div 2^64 + length gs" using uni .
+qed
+
+section \<open>Composite: fixed-point guard vs. real slack, the full chain\<close>
+
+text \<open>kb96's fail-closed law bounds the guard's shortfall by the real
+slack, in real units. Two additions complete the chain. First, the
+guard gap is at most ONE DENOMINATOR in guard units: whenever
+usage \<le> capacity, div_ceil64 usage \<le> div_floor64 capacity + 1, so the
+fixed point never disagrees with the straight edge by more than 2^64.
+The proof composes the carry bound div_add_le (rung 5b) with
+div_le_mono. Second, the tempting refinement "shortfall in guard
+units \<le> real slack" is FALSE: capacity = usage = 10 with den = 4 gives
+gap 4 > 0 = real slack (kb96's subtraction-on-the-left absorbs this
+case into zero; a multiplied-out form does not). The subtraction-free
+formulation in kb96 is exactly what survives -- documented here so
+nobody restates the false version. Together with fee_profit_window:
+the charged bill sits within a bounded, path-independent window of
+the honest obligation, and the guard that enforces it fails closed
+with gap at most one denominator. No strategy extracts more.\<close>
+
+lemma ceil64_le_floor64_add1:
+  fixes c u :: nat
+  assumes le: "u \<le> c"
+  shows "div_ceil64 u \<le> div_floor64 c + 1"
+proof -
+  have bridge: "u + 2^64 - 1 = u + (2^64 - 1)" by simp
+  have s1: "(u + (2^64 - 1)) div 2^64 \<le> (c + (2^64 - 1)) div 2^64"
+    by (rule div_le_mono) (insert le, simp)
+  have s2: "(c + (2^64 - 1)) div 2^64
+      \<le> c div 2^64 + (2^64 - 1) div 2^64 + 1"
+    by (rule div_add_le) simp
+  show ?thesis
+    unfolding div_ceil64_def div_floor64_def
+    using bridge s1 s2 by simp
+qed
+
+theorem guard_gap_at_most_den:
+  fixes c u :: nat
+  assumes le: "u \<le> c"
+  shows "div_ceil64 u * 2^64 \<le> div_floor64 c * 2^64 + 2^64"
+proof -
+  have h: "div_ceil64 u \<le> div_floor64 c + 1"
+    using ceil64_le_floor64_add1 [OF le] .
+  have step: "div_ceil64 u * 2^64 \<le> (div_floor64 c + 1) * 2^64"
+    by (rule mult_le_mono [OF h le_refl])
+  show ?thesis using step by simp
 qed
 
 end
