@@ -1,0 +1,5 @@
+;; return price as string via string concat with + (polymorphic)
+(define (fetch-spot)
+  (http-get "https://api.coinbase.com/v2/prices/BTC-USD/spot"))
+(define (run)
+  (+ "BTC/USD " (json-get (fetch-spot) "data.amount")))
