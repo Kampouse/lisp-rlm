@@ -818,7 +818,15 @@ impl WasmEmitter {
             wt_flush_fn: None,
             wt_used: false,
             data_segments: Vec::new(),
-            next_data_offset: 256,
+            // Data segments (interned literals) start ABOVE every host scratch buffer —
+            // TEMP_MEM(64), AMOUNT_MEM(256), STORAGE_BUF(8192), INPUT_BUF(16384),
+            // RETURN_BUF(32768), BORSH_BUF(36864), INPUT_CACHE(40960), JSON_SCAN_BUF(57344),
+            // handle table [49152,65536), STDOUT (65536), STDIN_LEN (98304) — and BELOW
+            // HEAP_START (200000) where the runtime bump allocator begins. Literals used
+            // to start at 256, so any host scratch write (e.g. promise_result's register
+            // copy at TEMP_MEM) could overwrite interned strings mid-string — observed on
+            // mainnet as a job record reading back with empty fields after promiseResult.
+            next_data_offset: 139_264,
             host_needed: HashSet::new(),
             gas_local: None,
             needs_frame: false,
