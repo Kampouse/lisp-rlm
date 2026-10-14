@@ -1,5 +1,5 @@
 theory CLMM_Fee_Attack
-  imports Aggregate_Accrual CLMM_Fee_Slack_Fixed
+  imports Aggregate_Accrual CLMM_Fee_Slack CLMM_Fee_Slack_Fixed
 begin
 
 section \<open>Attacker-edge layer 2: dust-farming and negative slack\<close>
@@ -389,6 +389,69 @@ proof -
   have step: "div_ceil64 u * 2^64 \<le> (div_floor64 c + 1) * 2^64"
     by (rule mult_le_mono [OF h le_refl])
   show ?thesis using step by simp
+qed
+
+section \<open>kb94-path: fee slack telescoped over an ascent (item 2, slice A)\<close>
+
+text \<open>kb94's fee_slack_step holds for one nondecreasing price move.
+Any finite nondecreasing price path is a list of such moves, and both
+sides telescope: intermediate terms cancel in
+(a2 - a1) + (a3 - a2) + ... So total NET growth over the whole ascent is
+at most total GROSS growth -- solvency is price-path-independent on
+ascents: no arrival order of up-moves extracts more net than the gross
+book allows. Stated for nondecreasing paths only: the step theorem's
+proven direction is an ascent; descents are a separate (unproven here)
+concern, claimed by nobody.\<close>
+
+fun ascent :: "real list \<Rightarrow> bool" where
+  "ascent [] = True"
+| "ascent (x # xs) = (case xs of [] \<Rightarrow> True | y # _ \<Rightarrow> x \<le> y \<and> ascent xs)"
+
+fun growth :: "(real \<Rightarrow> real) \<Rightarrow> real list \<Rightarrow> real" where
+  "growth f [] = 0"
+| "growth f [x] = 0"
+| "growth f (x # y # ys) = (f y - f x) + growth f (y # ys)"
+
+theorem fee_slack_path:
+  assumes dsc: "clmm_dsc P"
+    and asc: "ascent ps"
+    and nn: "\<And>p. p \<in> set ps \<Longrightarrow> 0 < p"
+  shows "growth (quote_net P) ps
+      \<le> growth (quote_gross P) ps"
+using asc nn proof (induction ps)
+  case Nil
+  show ?case by simp
+next
+  case (Cons p ps)
+  note mem = Cons.prems(2)
+  note asct = Cons.prems(1)
+  note IH0 = Cons.IH
+  show ?case
+  proof (cases ps)
+    case Nil
+    then show ?thesis by simp
+  next
+    case (Cons q more)
+    have psEq: "ps = q # more" using Cons by simp
+    have a0: "p \<le> q \<and> ascent ps" using asct psEq by simp
+    have p0: "0 < p" using mem [of p] by simp
+    have pq: "p \<le> q" using a0 by blast
+    have asc': "ascent ps" using a0 by blast
+    have step: "quote_net P q - quote_net P p
+        \<le> quote_gross P q - quote_gross P p"
+      using fee_slack_step [OF dsc p0 pq] .
+    have mem2: "\<And>pa. pa \<in> set ps \<Longrightarrow> 0 < pa"
+    proof -
+      fix pa assume A: "pa \<in> set ps"
+      have S: "pa \<in> set (p # ps)" using A by simp
+      show "0 < pa" using mem [OF S] .
+    qed
+    have IH: "growth (quote_net P) ps
+        \<le> growth (quote_gross P) ps" using IH0 [OF asc' mem2] .
+    have IH': "growth (quote_net P) (q # more)
+        \<le> growth (quote_gross P) (q # more)" using IH psEq by simp
+    show ?thesis using step IH' by (simp add: psEq)
+  qed
 qed
 
 end
