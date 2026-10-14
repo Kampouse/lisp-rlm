@@ -210,10 +210,28 @@ impl ChainBuilder {
         }
 
         let storage: std::collections::HashMap<Vec<u8>, Vec<u8>> = match &self.state_path {
-            Some(p) => std::fs::read(p)
-                .ok()
-                .and_then(|d| bincode::deserialize(&d).ok())
-                .unwrap_or_default(),
+            Some(p) => {
+                let bytes =
+                    std::fs::read(p).ok().and_then(|d| bincode::deserialize(&d).ok());
+                match bytes {
+                    Some(storage) => storage,
+                    None if self.storage.is_empty() => {
+                        // A configured state file that is missing or corrupt:
+                        // refusing to boot beats silently starting an empty
+                        // genesis (a fresh-looking chain that's actually
+                        // missing pinned jobs/credits caused a wasted debug
+                        // session). Tests with no prior state should touch an
+                        // empty file or pass storage explicitly.
+                        return Err(format!(
+                            "state_path '{p}': file missing or not a valid \
+                             near-mock state — refusing to start on empty \
+                             genesis"
+                        )
+                        .into());
+                    }
+                    None => self.storage,
+                }
+            }
             None => self.storage,
         };
 
