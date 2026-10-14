@@ -63,8 +63,10 @@
 
 ;; plain transfer (no callback) for scenario asserts
 (define (ft_transfer)
+  ;; NEP-141 standard field receiver_id; legacy "to" accepted as fallback.
   (let* ((sender (near/predecessor_account_id))
-         (rid (default (near/json_get_str "to") ""))
+         (rid (default (near/json_get_str "receiver_id")
+                (default (near/json_get_str "to") "")))
          (v (default (near/json_get_str "amount") "0")))
     (begin (debit sender v) (credit rid v) (near/return "ok"))))
 

@@ -1,11 +1,22 @@
 # Accrual mount — wiring the proven fee ledger into clmm_pool_v4
 
-Status: CORE MOUNTED + GREEN (make accrual-mount: 12/12). The PS
-accumulator (H1/H2/H3) is implemented and pinned in a harness contract
-`contracts/accrual-mount/` — see its gen_scenario.py for the single
-source of the numbers. NOT yet wired into clmm_pool_v4 itself (the
-harness stands in for the pool; H4 payouts + v4 assembly are next).
-Pool files remain Jean's, read-only until he signs off.
+Status: V4 ASSEMBLY MOUNTED + GREEN (make accrual-mount-v4: 21/21). The
+PS accumulator (H1-H4) is wired into the REAL clmm_pool_v4 paths —
+generator-concat (`contracts/accrual-mount/gen_accrual_v4.py`) reads the
+lib fragments VERBATIM, applies 5 anchor-checked transforms (one-shot
+G/SHT/BAL/CK init in pool-init4; acm-grow+carry on the swap fee delta;
+settle-then-checkpoint in add-b-liq; settle-pre-burn + owed-rides-A-leg
+in withdraw4; kc/bc reversal args restored by pay_b, BAL zeroed on
+success), and emits `v4-pool/src/main.built.lisp`. lib files remain
+byte-identical (verified in git). The Python mirror is a literal port of
+the emitted lisp — scenario numbers are single-sourced from it and
+pinned bit-for-bit on-chain (G=11066201769818359 after two waves;
+claims 1799/2399/1799; withdraw paid 1,203,598 A incl. claimed credit +
+owed, and 4,816,941 B on real token legs; solvency 5997<=5999).
+Fixture fix along the way: escrow-ft ft_transfer now reads NEP-141
+`receiver_id` (was `to` only — pool payouts credited "" before); legacy
+field kept as fallback, ft-probe/ft-refund still green. Harness leg
+(make accrual-mount: 12/12) preserved.
 
 ## What exists on each side
 

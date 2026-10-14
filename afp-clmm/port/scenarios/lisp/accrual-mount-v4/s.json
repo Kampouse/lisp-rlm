@@ -1,0 +1,205 @@
+{
+ "name": "clmm-accrual-mount-v4",
+ "manifest": "pool.accrual.test.near=../../../contracts/accrual-mount/v4-pool/target/v4pool.wasm,tka.accrual.test.near=../../../contracts/escrow/ft/target/ft.wasm,tkb.accrual.test.near=../../../contracts/escrow/ft/target/ft.wasm",
+ "state": "state.bin",
+ "steps": [
+  {
+   "contract": "pool.accrual.test.near",
+   "method": "init",
+   "args": {
+    "toka": "tka.accrual.test.near",
+    "tokb": "tkb.accrual.test.near"
+   },
+   "as": "admin.accrual.test.near",
+   "contains": "ok"
+  },
+  {
+   "contract": "tkb.accrual.test.near",
+   "method": "mint",
+   "args": {
+    "to": "pool.accrual.test.near",
+    "amount": "10000000"
+   },
+   "as": "admin.accrual.test.near",
+   "contains": "10000000"
+  },
+  {
+   "contract": "tka.accrual.test.near",
+   "method": "mint",
+   "args": {
+    "to": "pool.accrual.test.near",
+    "amount": "10000000"
+   },
+   "as": "admin.accrual.test.near",
+   "contains": "10000000"
+  },
+  {
+   "contract": "pool.accrual.test.near",
+   "method": "ft_on_transfer",
+   "args": {
+    "sender_id": "lp1.accrual.test.near",
+    "amount": "6000000",
+    "msg": ""
+   },
+   "as": "tkb.accrual.test.near",
+   "predecessor": "tkb.accrual.test.near"
+  },
+  {
+   "contract": "pool.accrual.test.near",
+   "method": "ft_on_transfer",
+   "args": {
+    "sender_id": "lp2.accrual.test.near",
+    "amount": "4000000",
+    "msg": ""
+   },
+   "as": "tkb.accrual.test.near",
+   "predecessor": "tkb.accrual.test.near"
+  },
+  {
+   "contract": "pool.accrual.test.near",
+   "method": "accrual_state",
+   "args": {
+    "lp": "lp2.accrual.test.near"
+   },
+   "contains": "PB:10000000 SH:4000000"
+  },
+  {
+   "contract": "pool.accrual.test.near",
+   "method": "ft_on_transfer",
+   "args": {
+    "sender_id": "trader.accrual.test.near",
+    "amount": "1000000",
+    "msg": "swap:1"
+   },
+   "as": "tka.accrual.test.near",
+   "predecessor": "tka.accrual.test.near"
+  },
+  {
+   "contract": "pool.accrual.test.near",
+   "method": "accrual_state",
+   "args": {
+    "lp": "lp2.accrual.test.near"
+   },
+   "as": "admin.accrual.test.near",
+   "view": true,
+   "contains": "G:5532178547705494 F:2999 SHT:10000000 AB:1000000 PB:9018236"
+  },
+  {
+   "contract": "pool.accrual.test.near",
+   "method": "claim",
+   "as": "lp1.accrual.test.near",
+   "contains": "1799"
+  },
+  {
+   "contract": "pool.accrual.test.near",
+   "method": "accrual_state",
+   "args": {
+    "lp": "lp1.accrual.test.near"
+   },
+   "as": "admin.accrual.test.near",
+   "view": true,
+   "contains": "CK:5532178547705494 BAL:1799"
+  },
+  {
+   "contract": "pool.accrual.test.near",
+   "method": "ft_on_transfer",
+   "args": {
+    "sender_id": "trader.accrual.test.near",
+    "amount": "1000000",
+    "msg": "swap:1"
+   },
+   "as": "tka.accrual.test.near",
+   "predecessor": "tka.accrual.test.near"
+  },
+  {
+   "contract": "pool.accrual.test.near",
+   "method": "claim",
+   "as": "lp2.accrual.test.near",
+   "contains": "2399"
+  },
+  {
+   "contract": "pool.accrual.test.near",
+   "method": "claim",
+   "as": "lp1.accrual.test.near",
+   "contains": "1799"
+  },
+  {
+   "contract": "pool.accrual.test.near",
+   "method": "accrual_state",
+   "args": {
+    "lp": "lp2.accrual.test.near"
+   },
+   "as": "admin.accrual.test.near",
+   "view": true,
+   "contains": "SH:4000000 CK:11066201769818359 BAL:2399"
+  },
+  {
+   "contract": "pool.accrual.test.near",
+   "method": "withdraw",
+   "args": {
+    "sh": "6000000"
+   },
+   "as": "lp1.accrual.test.near"
+  },
+  {
+   "contract": "pool.accrual.test.near",
+   "method": "accrual_state",
+   "args": {
+    "lp": "lp1.accrual.test.near"
+   },
+   "as": "admin.accrual.test.near",
+   "view": true,
+   "contains": "AB:800000 PB:3211295 SH:0"
+  },
+  {
+   "contract": "tka.accrual.test.near",
+   "method": "ft_balance_of",
+   "args": {
+    "account": "lp1.accrual.test.near"
+   },
+   "as": "admin.accrual.test.near",
+   "view": true,
+   "contains": "1203598"
+  },
+  {
+   "contract": "tkb.accrual.test.near",
+   "method": "ft_balance_of",
+   "args": {
+    "account": "lp1.accrual.test.near"
+   },
+   "as": "admin.accrual.test.near",
+   "view": true,
+   "contains": "4816941"
+  },
+  {
+   "contract": "tkb.accrual.test.near",
+   "method": "ft_balance_of",
+   "args": {
+    "account": "trader.accrual.test.near"
+   },
+   "as": "admin.accrual.test.near",
+   "view": true,
+   "contains": "1971764"
+  },
+  {
+   "contract": "tka.accrual.test.near",
+   "method": "ft_balance_of",
+   "args": {
+    "account": "pool.accrual.test.near"
+   },
+   "as": "admin.accrual.test.near",
+   "view": true,
+   "contains": "8796402"
+  },
+  {
+   "contract": "tkb.accrual.test.near",
+   "method": "ft_balance_of",
+   "args": {
+    "account": "pool.accrual.test.near"
+   },
+   "as": "admin.accrual.test.near",
+   "view": true,
+   "contains": "3211295"
+  }
+ ]
+}

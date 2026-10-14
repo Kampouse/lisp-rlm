@@ -38,6 +38,12 @@ accrual-mount:    ## fee-ledger mount harness (PS accumulator, skim+solvency pin
 	cd contracts/accrual-mount && $(NC) build .
 	cd scenarios/lisp/accrual-mount && rm -f state.bin && $(NM) scenario s.json
 
+accrual-mount-v4: ## fee-ledger mount WIRED into clmm_pool_v4 (H1-H4, real FT legs)
+	cd contracts/accrual-mount && python3 gen_accrual_v4.py
+	cd contracts/accrual-mount && $(NC) build v4-pool
+	cd contracts/escrow/ft && $(NC) build .
+	cd scenarios/lisp/accrual-mount-v4 && rm -f state.bin && $(NM) scenario s.json
+
 regenerate:       ## regenerate lisp contracts + TS twins from constants
 	python3 generators/gen.py && python3 generators/gen3.py && python3 generators/gen_ts.py && python3 generators/gen_escrow.py
 
