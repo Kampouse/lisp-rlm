@@ -216,17 +216,15 @@
                                 "101" "100" (slot-get 3) 30)))
             (let ((s4 (clmm-step4 (list (car s3) (car (cdr s3)) (car (cdr (cdr s3))))
                                   "102" "100" (slot-get 4) 30)))
-              (begin
-                (slot-set 0 (car (cdr (cdr (cdr s0)))))
-                (slot-set 1 (car (cdr (cdr (cdr s1)))))
-                (slot-set 2 (car (cdr (cdr (cdr s2)))))
-                (slot-set 3 (car (cdr (cdr (cdr s3)))))
-                (slot-set 4 (car (cdr (cdr (cdr s4)))))
-                (near/store-bytes "F"
-                  (li-add (fee-get) (car (cdr (cdr s4)))))
-                (near/store-bytes "DY" (car (cdr s4)))
-                (near/store-bytes "REM" (car s4))
-                (str-cat (car (cdr s4)) "/" (car s4))))))))))
+              ;; M1a: the wave NEVER stores during the walk -- the
+              ;; whole result returns as a tuple (rem dy fee u0..u4);
+              ;; commits happen in pay_out success (or dy=0 inline).
+              ;; A hidden store here would corrupt the next tx after
+              ;; a reversal (the fail leg restores absolutes only).
+              (list (car s4) (car (cdr s4)) (car (cdr (cdr s4)))
+                (car (cdr (cdr (cdr s0)))) (car (cdr (cdr (cdr s1))))
+                (car (cdr (cdr (cdr s2)))) (car (cdr (cdr (cdr s3))))
+                (car (cdr (cdr (cdr s4))))))))))))
 
 (define (pool-state)
   (str-cat "s0:" (slot-get 0) " s1:" (slot-get 1) " s2:" (slot-get 2)
@@ -281,14 +279,12 @@
 
 ;; H1: grow the aggregate by a fee wave (non-refund branch only)
 (define (acm-grow f)
-  ;; returns the increment: store-bytes itself returns "" -- a value that
-  ;; rides the reversal args MUST be a real string (H1 exactness).
+  ;; M1a: PURE compute -- returns the increment without storing. G's commit
+  ;; moved into pay_out success ("g"+"p" args). store-bytes itself returns
+  ;; "" -- a value that rides args MUST be a real string (H1 exactness).
   (if (str= (bz "SHT") "0")
       "0"
-      (let ((inc (u128-muldiv f TWO64 (bz "SHT"))))
-        (begin
-          (near/store-bytes "G" (li-add (acm-get "G") inc))
-          inc))))
+      (u128-muldiv f TWO64 (bz "SHT"))))
 
 ;; explicit claim: settle into BAL (payout rides the withdraw A leg)
 (define (acm-claim)
@@ -377,22 +373,30 @@
             "0"))))))
 
 (define (pay-out)
+  ;; M1a: the swap wave commits HERE, not in ft-on-transfer4. Success:
+  ;; F/G/AB/PB from pre-wave absolutes + wave deltas; slots from the tuple.
+  ;; Fail: restore the four pre-wave absolutes -- slots were never touched.
   (if (self-call?)
       (let ((inp (near/input)))
         (let ((res (near/promise_result 0)))
           (if (< (str-length res) 1)
               (begin
-                (slot-set 0 (li-add (slot-get 0) (json-get-str "c0" inp)))
-                (slot-set 1 (li-add (slot-get 1) (json-get-str "c1" inp)))
-                (slot-set 2 (li-add (slot-get 2) (json-get-str "c2" inp)))
-                (slot-set 3 (li-add (slot-get 3) (json-get-str "c3" inp)))
-                (slot-set 4 (li-add (slot-get 4) (json-get-str "c4" inp)))
-                (near/store-bytes "F" (li-sub (fee-get) (json-get-str "f" inp)))
-                (near/store-bytes "G" (li-sub (acm-get "G") (json-get-str "p" inp)))
-                (near/store-bytes "AB" (li-sub (bz "AB") (json-get-str "u" inp)))
-                (near/store-bytes "PB" (li-add (bz "PB") (json-get-str "d" inp)))
+                (near/store-bytes "F" (json-get-str "f" inp))
+                (near/store-bytes "G" (json-get-str "g" inp))
+                (near/store-bytes "AB" (json-get-str "na" inp))
+                (near/store-bytes "PB" (json-get-str "np" inp))
                 (near/return (json-get-str "a" inp)))
-              (near/return (json-get-str "r" inp)))))
+              (begin
+                (slot-set 0 (json-get-str "c0" inp))
+                (slot-set 1 (json-get-str "c1" inp))
+                (slot-set 2 (json-get-str "c2" inp))
+                (slot-set 3 (json-get-str "c3" inp))
+                (slot-set 4 (json-get-str "c4" inp))
+                (near/store-bytes "F" (li-add (json-get-str "f" inp) (json-get-str "nf" inp)))
+                (near/store-bytes "G" (li-add (json-get-str "g" inp) (json-get-str "p" inp)))
+                (near/store-bytes "AB" (li-add (json-get-str "na" inp) (json-get-str "u" inp)))
+                (near/store-bytes "PB" (li-sub (json-get-str "np" inp) (json-get-str "d" inp)))
+                (near/return (json-get-str "r" inp))))))
       (near/return "forbidden")))
 
 (define (pay-b)
@@ -499,34 +503,39 @@
                   (let ((f0 (fee-get))
                         (s0v (slot-get 0)) (s1v (slot-get 1)) (s2v (slot-get 2))
                         (s3v (slot-get 3)) (s4v (slot-get 4)))
-                    (pool-swap amt)
-                    (let ((dy (bz "DY")) (rem (bz "REM")))
-                      (if (< (li-cmp dy min) 0)
-                          ;; slippage guard: restore pre-walk state, refund all A
-                          (begin
-                            (slot-set 0 s0v) (slot-set 1 s1v) (slot-set 2 s2v)
-                            (slot-set 3 s3v) (slot-set 4 s4v)
-                            (near/store-bytes "F" f0)
-                            (near/return amt))
-                          (begin
-                            (near/store-bytes "AB" (li-add (bz "AB") (li-sub amt rem)))
-                            (near/store-bytes "PB" (li-sub (bz "PB") dy))
-                            (if (str= dy "0")
-                                (near/return rem)
-                                (let ((p (near/promise_batch_create (near/load-bytes "TOKB"))))
-                                  (let ((args (json-set (json-set (json-set (json-set (json-set (json-set "{}" "r" rem) "a" amt)
-                                                    "u" (li-sub amt rem)) "d" dy) "f" (li-sub (fee-get) f0)) "p" (acm-grow (li-sub (fee-get) f0)))))
-                                    (let ((args (json-set (json-set (json-set (json-set (json-set args
-                                                    "c0" (li-sub s0v (slot-get 0))) "c1" (li-sub s1v (slot-get 1)))
-                                                    "c2" (li-sub s2v (slot-get 2))) "c3" (li-sub s3v (slot-get 3)))
-                                                    "c4" (li-sub s4v (slot-get 4)))))
-                                      (begin
-                                        (near/promise_batch_action_function_call p "ft_transfer"
-                                          (json-set (json-set "{}" "receiver_id" sender) "amount" dy)
-                                          "0" 40000000000000)
-                                        (near/promise_return
-                                          (near/promise_then p (near/current_account_id) "pay_out"
-                                            args "0" 5000000000000)))))))))))))
+                    ;; M1a write-coalesce: NOTHING stored pre-promise. The
+                    ;; walk runs in registers; the wave (slots + F/G/AB/PB)
+                    ;; rides the callback args and commits in pay_out's
+                    ;; success branch. Slippage/zero refunds are FREE (no
+                    ;; restore stores -- nothing was ever written).
+                    (let ((w (pool-swap amt)))
+                      (let ((rem (car w)) (dy (car (cdr w))))
+                        (if (< (li-cmp dy min) 0)
+                            (near/return amt)
+                            (let ((f1 (car (cdr (cdr w))))
+                                  (g0 (acm-get "G"))
+                                  (ab0 (bz "AB"))
+                                  (pb0 (bz "PB")))
+                              (let ((inc (acm-grow f1)))
+                                (if (str= dy "0")
+                                    (begin
+                                      (slot-set 0 (car (cdr (cdr (cdr w))))) (slot-set 1 (car (cdr (cdr (cdr (cdr w))))))
+                                      (slot-set 2 (car (cdr (cdr (cdr (cdr (cdr w))))))) (slot-set 3 (car (cdr (cdr (cdr (cdr (cdr (cdr w))))))))
+                                      (slot-set 4 (car (cdr (cdr (cdr (cdr (cdr (cdr (cdr w)))))))))
+                                      (near/store-bytes "F" (li-add f0 f1))
+                                      (near/store-bytes "G" (li-add g0 inc))
+                                      (near/store-bytes "AB" (li-add ab0 (li-sub amt rem)))
+                                      (near/store-bytes "PB" (li-sub pb0 dy))
+                                      (near/return rem))
+                                    (let ((p (near/promise_batch_create (near/load-bytes "TOKB"))))
+                                      (let ((args (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set "{}" "r" rem) "a" amt) "u" (li-sub amt rem)) "d" dy) "f" f0) "nf" f1) "p" inc) "g" g0) "na" ab0) "np" pb0) "c0" (car (cdr (cdr (cdr w))))) "c1" (car (cdr (cdr (cdr (cdr w)))))) ))
+                                        (begin
+                                          (near/promise_batch_action_function_call p "ft_transfer"
+                                            (json-set (json-set "{}" "receiver_id" sender) "amount" dy)
+                                            "0" 40000000000000)
+                                          (near/promise_return
+                                            (near/promise_then p (near/current_account_id) "pay_out"
+                                              args "0" 5000000000000))))))))))))))
                 (near/return amt))))))))
 
 (export "ft_on_transfer" ft-on-transfer4)

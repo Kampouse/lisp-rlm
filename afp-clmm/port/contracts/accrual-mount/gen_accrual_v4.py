@@ -83,9 +83,8 @@ class Pool:
         return owed
 
     def grow(self, f):
-        inc = self.muldiv(f, str(2**64), self.SHT) if self.SHT != "0" else "0"
-        self.G = self.add(self.G, inc)
-        return inc
+        # M1a: pure compute -- G commits in swap_a's success fork (pay_out)
+        return self.muldiv(f, str(2**64), self.SHT) if self.SHT != "0" else "0"
 
     # -- clmm-step4 / pool-swap (per-slot walk, fee floor PER SLOT) --
     def pool_swap(self, amt):
@@ -140,18 +139,21 @@ class Pool:
             self.s = s0; self.F = f0                # restore, full refund
             return {"refund": amt}
         f1 = self.sub(self.F, f0)
-        self.AB = self.add(self.AB, self.sub(amt, rem))
-        self.PB = self.sub(self.PB, dy)
-        inc = self.grow(f1)                         # H1
+        ab0, pb0 = self.AB, self.PB
+        inc = self.grow(f1)                         # H1 (pure compute)
         if fail_b:
             # pool B token float empty -> payout promise traps -> pay-out
-            # fail leg: slots + F + G + AB + PB restored, refund = amt.
+            # fail leg (M1a): F := f0; slots back (pool_swap wrote them in
+            # the mirror model); G/AB/PB were NEVER touched (commit is in
+            # pay_out success) -- reversal is the identity on them.
             self.s = s0; self.F = f0
-            self.AB = self.sub(self.AB, self.sub(amt, rem))
-            self.PB = self.add(self.PB, dy)
-            self.G = self.sub(self.G, inc)
-            assert self.G == g0, "H1 reversal: G not restored bit-exact"
+            assert self.G == g0, "H1 reversal: G moved on failed swap"
+            assert self.AB == ab0 and self.PB == pb0, "H1: AB/PB moved on fail"
             return {"refund": amt, "dy_trapped": dy, "inc_reversed": inc}
+        # success: pay_out commits the whole wave (M1a)
+        self.G = self.add(g0, inc)
+        self.AB = self.add(ab0, self.sub(amt, rem))
+        self.PB = self.sub(pb0, dy)
         # transport truth: swap A arrives via direct ft_on_transfer (no real
         # token leg); the B payout IS a real promise leg.
         self.floatB = self.sub(self.floatB, dy)
@@ -248,14 +250,12 @@ ACCRUAL_DEFS = '''
 
 ;; H1: grow the aggregate by a fee wave (non-refund branch only)
 (define (acm-grow f)
-  ;; returns the increment: store-bytes itself returns "" -- a value that
-  ;; rides the reversal args MUST be a real string (H1 exactness).
+  ;; M1a: PURE compute -- returns the increment without storing. G's commit
+  ;; moved into pay_out success ("g"+"p" args). store-bytes itself returns
+  ;; "" -- a value that rides args MUST be a real string (H1 exactness).
   (if (str= (bz "SHT") "0")
       "0"
-      (let ((inc (u128-muldiv f TWO64 (bz "SHT"))))
-        (begin
-          (near/store-bytes "G" (li-add (acm-get "G") inc))
-          inc))))
+      (u128-muldiv f TWO64 (bz "SHT"))))
 
 ;; explicit claim: settle into BAL (payout rides the withdraw A leg)
 (define (acm-claim)
@@ -275,22 +275,30 @@ ACCRUAL_DEFS = '''
 '''
 
 PAY_SECTION = '''(define (pay-out)
+  ;; M1a: the swap wave commits HERE, not in ft-on-transfer4. Success:
+  ;; F/G/AB/PB from pre-wave absolutes + wave deltas; slots from the tuple.
+  ;; Fail: restore the four pre-wave absolutes -- slots were never touched.
   (if (self-call?)
       (let ((inp (near/input)))
         (let ((res (near/promise_result 0)))
           (if (< (str-length res) 1)
               (begin
-                (slot-set 0 (li-add (slot-get 0) (json-get-str "c0" inp)))
-                (slot-set 1 (li-add (slot-get 1) (json-get-str "c1" inp)))
-                (slot-set 2 (li-add (slot-get 2) (json-get-str "c2" inp)))
-                (slot-set 3 (li-add (slot-get 3) (json-get-str "c3" inp)))
-                (slot-set 4 (li-add (slot-get 4) (json-get-str "c4" inp)))
-                (near/store-bytes "F" (li-sub (fee-get) (json-get-str "f" inp)))
-                (near/store-bytes "G" (li-sub (acm-get "G") (json-get-str "p" inp)))
-                (near/store-bytes "AB" (li-sub (bz "AB") (json-get-str "u" inp)))
-                (near/store-bytes "PB" (li-add (bz "PB") (json-get-str "d" inp)))
+                (near/store-bytes "F" (json-get-str "f" inp))
+                (near/store-bytes "G" (json-get-str "g" inp))
+                (near/store-bytes "AB" (json-get-str "na" inp))
+                (near/store-bytes "PB" (json-get-str "np" inp))
                 (near/return (json-get-str "a" inp)))
-              (near/return (json-get-str "r" inp)))))
+              (begin
+                (slot-set 0 (json-get-str "c0" inp))
+                (slot-set 1 (json-get-str "c1" inp))
+                (slot-set 2 (json-get-str "c2" inp))
+                (slot-set 3 (json-get-str "c3" inp))
+                (slot-set 4 (json-get-str "c4" inp))
+                (near/store-bytes "F" (li-add (json-get-str "f" inp) (json-get-str "nf" inp)))
+                (near/store-bytes "G" (li-add (json-get-str "g" inp) (json-get-str "p" inp)))
+                (near/store-bytes "AB" (li-add (json-get-str "na" inp) (json-get-str "u" inp)))
+                (near/store-bytes "PB" (li-sub (json-get-str "np" inp) (json-get-str "d" inp)))
+                (near/return (json-get-str "r" inp))))))
       (near/return "forbidden")))
 
 (define (pay-b)
@@ -397,11 +405,6 @@ TRANSFORMS = [
             (near/store-bytes (sh-key (json-get-str "sender_id" (near/input)))''',
      "H2 deposit"),
     # H1 swap: bind f1, grow G, carry exact increment "p" for reversal.
-    ('''                                  (let ((args (json-set (json-set (json-set (json-set (json-set "{}" "r" rem) "a" amt)
-                                                    "u" (li-sub amt rem)) "d" dy) "f" (li-sub (fee-get) f0))))''',
-     '''                                  (let ((args (json-set (json-set (json-set (json-set (json-set (json-set "{}" "r" rem) "a" amt)
-                                                    "u" (li-sub amt rem)) "d" dy) "f" (li-sub (fee-get) f0)) "p" (acm-grow (li-sub (fee-get) f0)))))''',
-     "H1 swap grow+carry"),
 
     ('(export "ft_on_transfer" ft-on-transfer4)',
      '(export "ft_on_transfer" ft-on-transfer4)\n'
@@ -410,6 +413,13 @@ TRANSFORMS = [
      '(export "withdraw" withdraw4)\n'
      '(export "init" pool-init4)',
      "exports"),
+    ('              (begin\n                (slot-set 0 (car (cdr (cdr (cdr s0)))))\n                (slot-set 1 (car (cdr (cdr (cdr s1)))))\n                (slot-set 2 (car (cdr (cdr (cdr s2)))))\n                (slot-set 3 (car (cdr (cdr (cdr s3)))))\n                (slot-set 4 (car (cdr (cdr (cdr s4)))))\n                (near/store-bytes "F"\n                  (li-add (fee-get) (car (cdr (cdr s4)))))\n                (near/store-bytes "DY" (car (cdr s4)))\n                (near/store-bytes "REM" (car s4))\n                (str-cat (car (cdr s4)) "/" (car s4))',
+     '              ;; M1a: the wave NEVER stores during the walk -- the\n              ;; whole result returns as a tuple (rem dy fee u0..u4);\n              ;; commits happen in pay_out success (or dy=0 inline).\n              ;; A hidden store here would corrupt the next tx after\n              ;; a reversal (the fail leg restores absolutes only).\n              (list (car s4) (car (cdr s4)) (car (cdr (cdr s4)))\n                (car (cdr (cdr (cdr s0)))) (car (cdr (cdr (cdr s1))))\n                (car (cdr (cdr (cdr s2)))) (car (cdr (cdr (cdr s3))))\n                (car (cdr (cdr (cdr s4))))',
+     "M1a swap wave-tuple return (full deferral)"),
+
+    ('                    (pool-swap amt)\n                    (let ((dy (bz "DY")) (rem (bz "REM")))\n                      (if (< (li-cmp dy min) 0)\n                          ;; slippage guard: restore pre-walk state, refund all A\n                          (begin\n                            (slot-set 0 s0v) (slot-set 1 s1v) (slot-set 2 s2v)\n                            (slot-set 3 s3v) (slot-set 4 s4v)\n                            (near/store-bytes "F" f0)\n                            (near/return amt))\n                          (begin\n                            (near/store-bytes "AB" (li-add (bz "AB") (li-sub amt rem)))\n                            (near/store-bytes "PB" (li-sub (bz "PB") dy))\n                            (if (str= dy "0")\n                                (near/return rem)\n                                (let ((p (near/promise_batch_create (near/load-bytes "TOKB"))))\n                                  (let ((args (json-set (json-set (json-set (json-set (json-set "{}" "r" rem) "a" amt)\n                                                    "u" (li-sub amt rem)) "d" dy) "f" (li-sub (fee-get) f0))))\n                                    (let ((args (json-set (json-set (json-set (json-set (json-set args\n                                                    "c0" (li-sub s0v (slot-get 0))) "c1" (li-sub s1v (slot-get 1)))\n                                                    "c2" (li-sub s2v (slot-get 2))) "c3" (li-sub s3v (slot-get 3)))\n                                                    "c4" (li-sub s4v (slot-get 4)))))\n                                      (begin\n                                        (near/promise_batch_action_function_call p "ft_transfer"\n                                          (json-set (json-set "{}" "receiver_id" sender) "amount" dy)\n                                          "0" 40000000000000)\n                                        (near/promise_return\n                                          (near/promise_then p (near/current_account_id) "pay_out"\n                                            args "0" 5000000000000)))))))))))))',
+     '                    ;; M1a write-coalesce: NOTHING stored pre-promise. The\n                    ;; walk runs in registers; the wave (slots + F/G/AB/PB)\n                    ;; rides the callback args and commits in pay_out\'s\n                    ;; success branch. Slippage/zero refunds are FREE (no\n                    ;; restore stores -- nothing was ever written).\n                    (let ((w (pool-swap amt)))\n                      (let ((rem (car w)) (dy (car (cdr w))))\n                        (if (< (li-cmp dy min) 0)\n                            (near/return amt)\n                            (let ((f1 (car (cdr (cdr w))))\n                                  (g0 (acm-get "G"))\n                                  (ab0 (bz "AB"))\n                                  (pb0 (bz "PB")))\n                              (let ((inc (acm-grow f1)))\n                                (if (str= dy "0")\n                                    (begin\n                                      (slot-set 0 (car (cdr (cdr (cdr w))))) (slot-set 1 (car (cdr (cdr (cdr (cdr w))))))\n                                      (slot-set 2 (car (cdr (cdr (cdr (cdr (cdr w))))))) (slot-set 3 (car (cdr (cdr (cdr (cdr (cdr (cdr w))))))))\n                                      (slot-set 4 (car (cdr (cdr (cdr (cdr (cdr (cdr (cdr w)))))))))\n                                      (near/store-bytes "F" (li-add f0 f1))\n                                      (near/store-bytes "G" (li-add g0 inc))\n                                      (near/store-bytes "AB" (li-add ab0 (li-sub amt rem)))\n                                      (near/store-bytes "PB" (li-sub pb0 dy))\n                                      (near/return rem))\n                                    (let ((p (near/promise_batch_create (near/load-bytes "TOKB"))))\n                                      (let ((args (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set "{}" "r" rem) "a" amt) "u" (li-sub amt rem)) "d" dy) "f" f0) "nf" f1) "p" inc) "g" g0) "na" ab0) "np" pb0) "c0" (car (cdr (cdr (cdr w))))) "c1" (car (cdr (cdr (cdr (cdr w)))))) ))\n                                        (begin\n                                          (near/promise_batch_action_function_call p "ft_transfer"\n                                            (json-set (json-set "{}" "receiver_id" sender) "amount" dy)\n                                            "0" 40000000000000)\n                                          (near/promise_return\n                                            (near/promise_then p (near/current_account_id) "pay_out"\n                                              args "0" 5000000000000))))))))))))))',
+     "M1a defer wave-commit into pay_out"),
 ]
 
 

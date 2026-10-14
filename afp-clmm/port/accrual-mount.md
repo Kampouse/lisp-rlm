@@ -1,30 +1,56 @@
 # Accrual mount — wiring the proven fee ledger into clmm_pool_v4
 
-Status: REVERSAL PINS GREEN (make accrual-mount-v4: 29/29). The
+Status: GAS PASS M1a GREEN (make accrual-mount-v4: 29/29). The
 PS accumulator (H1-H4) is wired into the REAL clmm_pool_v4 paths —
 generator-concat (`contracts/accrual-mount/gen_accrual_v4.py`) reads the
-lib fragments VERBATIM, applies 5 anchor-checked transforms (one-shot
-G/SHT/BAL/CK init in pool-init4; acm-grow+carry on the swap fee delta;
-settle-then-checkpoint in add-b-liq; settle-pre-burn + owed-rides-A-leg
-in withdraw4; kc/bc reversal args restored by pay_b, BAL zeroed on
-success), and emits `v4-pool/src/main.built.lisp`. lib files remain
-byte-identical (verified in git). The Python mirror is a literal port of
-the emitted lisp — scenario numbers are single-sourced from it and
-pinned bit-for-bit on-chain (G=11066201769818359 after two waves;
-claims 1799/2399/1799; withdraw paid 1,203,598 A incl. claimed credit +
+lib fragments VERBATIM, applies anchor-checked transforms (one-shot
+G/SHT/BAL/CK init in pool-init4; **M1a write-coalesce: the swap wave
+never stores during the walk — pool-swap returns the wave tuple
+(rem dy fee u0..u4), commits happen in pay_out success (F/G/AB/PB +
+slots), pay_out fail restores pre-wave absolutes with slots untouched,
+slippage/zero refunds are FREE; acm-grow is pure compute, G commits in
+pay_out; settle-then-checkpoint in add-b-liq; settle-pre-burn +
+owed-rides-A-leg in withdraw4; kc/bc reversal args restored by pay_b,
+BAL zeroed on success**), and emits `v4-pool/src/main.built.lisp`.
+lib files remain byte-identical (verified in git). The Python mirror is a
+literal port of the emitted lisp — scenario numbers are single-sourced
+from it and pinned bit-for-bit on-chain (G=11066195682399511 after two
+waves; claims 1799/2399/1799 (+0 late-LP skim); withdraw paid 1,203,598 A incl.
+claimed credit +
 owed, and 4,816,941 B on real token legs; solvency 5997<=5999).
 Reversal legs now pinned ON the real pool (scenario runs the fail legs
 FIRST, against an empty pool token float, so the payout promises
-actually trap): H1 fail-swap restores G/F/AB/PB/slots bit-exactly
-(post-reversal claim pays 0); pay_b fail leg restores SHT/SH/AB/PB +
-ck:=kc, bal:=bc. Late-LP skim pinned (lp3 joins mid-stream, entry CK =
-current G, wave-2 claim = 0 while early LPs claim 1799/2399); solvency
+actually trap): H1 fail-swap restores F/G/AB/PB to pre-wave absolutes
+(slots were never stored — M1a) bit-exactly (post-reversal claim pays
+0); pay_b fail leg restores SHT/SH/AB/PB + ck:=kc, bal:=bc. Late-LP
+skim pinned (lp3 joins mid-stream, entry CK = current G, wave-2 claim
+= 0 while early LPs claim 1799/2399); solvency
 Σowed 5997 <= fees 5999 fail-closed. Two mount bugs found & fixed by
 these pins: (1) acm-grow rode `near/store-bytes`' "" return into the
 reversal args — pay_out couldn't un-grow G (phantom +wave rippled into
 every later pin); grow now returns the increment explicitly. (2) pay_b
 fail leg credited AB with tot_a (out_a+bc+owed) though withdraw only
-debited out_a — "a" now carries out_a. Known residuals (stock-pool
+debited out_a — "a" now carries out_a.
+
+## Gas pass M1a — write-coalesce (measured, same 29-step scenario)
+
+Pool-swap's walk ran in STORAGE (5 slot stores + F + DY/REM before the
+promise). M1a moves the whole wave into registers: pool-swap returns
+the tuple, ft-on-transfer4 stores NOTHING pre-promise, pay_out commits
+on payout success and restores four absolutes on failure. Measured
+with near-mock --trace, old wasm (65a0bcd5) vs new, identical scenario:
+
+- swap calls: 3883→2942 G and 3863→2922 G (**−24%**, P3 verdict
+  predicted ≈−25%)
+- reversal swap (fail path): 5228→2117 G (**−60%**) — failed waves now
+  touch nothing, which also SHRINKS the strand window by construction
+- withdraws unchanged (M1b slot-packing = next lever); fixed-cost
+  steps (claims/views/mints) unchanged, as expected
+- scenario total: 42532→37534 G (**−11.8%**; swaps are 4 of 29 steps)
+
+M1b candidates (unstarted): pack S0–S4 into one S key + str-slice
+parse helpers (defers reads too), memoize G/F reads. residual
+deposit-path stores untouched. Known residuals (stock-pool
 design, inherited from v1, not mount bugs, flagged for Jean): share
 pricing is donation-attackable (first-depositor inflation: donate
 tokens directly to the pool, next depositor mints ~0 shares); the
