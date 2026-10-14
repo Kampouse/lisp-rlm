@@ -246,4 +246,103 @@ next
   show ?case using add by simp
 qed
 
+section \<open>Rung 5b: the aggregate window -- the profit bound, both sides\<close>
+
+text \<open>Jean's accruef_sum_bound gives the upper side (never overcharged
+beyond one unit per op). The lower side is the attacker-facing half: no
+structure --- replay, splitting, hostile checkpoints, reordering (the
+fold adds nonneg legs, so reordering legs swaps addends) --- saves more
+than one truncation unit per accrual leg off the honest bill.  Together:
+the fee bill for a growth history always sits in the window
+
+  \<^term>\<open>prodsum Lf 0 gs div 2^64 - length gs \<le> accruef Lf 0 gs\<close> and
+  \<^term>\<open>accruef Lf 0 gs \<le> prodsum Lf 0 gs div 2^64 + length gs\<close>
+
+so no strategy extracts more than the fee slack allows, and none is
+overcharged beyond it.\<close>
+
+text \<open>Core ingredient: the carry bound --- adding under a floor hides
+at most one extra truncation unit (tight, e.g. legs q-1, q-1).\<close>
+
+lemma div_add_le:
+  fixes m n q :: nat
+  assumes q: "1 \<le> q"
+  shows "(m + n) div q \<le> m div q + n div q + 1"
+proof -
+  have qpos: "0 < q" using q by simp
+  have m1: "q * (m div q) + m mod q = m" by (fact mult_div_mod_eq)
+  have n1: "q * (n div q) + n mod q = n" by (fact mult_div_mod_eq)
+  have mq: "m mod q < q" by (rule mod_less_divisor) (rule qpos)
+  have nq: "n mod q < q" by (rule mod_less_divisor) (rule qpos)
+  have S1: "q * (m div q + 1) = q * (m div q) + q"
+    by (simp add: algebra_simps)
+  have S2: "q * (n div q + 1) = q * (n div q) + q"
+    by (simp add: algebra_simps)
+  have a1: "m < q * (m div q + 1)" using m1 mq S1 by arith
+  have a2: "n < q * (n div q + 1)" using n1 nq S2 by arith
+  have S: "q * (m div q + 1) + q * (n div q + 1)
+      = q * (m div q + n div q + 2)" by (simp add: algebra_simps)
+  have lt: "m + n < q * (m div q + n div q + 2)" using a1 a2 S by arith
+  have DD: "(m + n) div q * q + (m + n) mod q = m + n"
+    by (fact div_mult_mod_eq)
+  show ?thesis
+  proof (rule ccontr)
+    assume F: "\<not> (m + n) div q \<le> m div q + n div q + 1"
+    then have ge: "m div q + n div q + 2 \<le> (m + n) div q" by simp
+    have le1: "q * (m div q + n div q + 2) \<le> q * ((m + n) div q)"
+      by (rule mult_le_mono2) (rule ge)
+    have D: "q * ((m + n) div q) \<le> m + n" using DD by simp
+    have c1: "q * (m div q + n div q + 2) \<le> m + n"
+      using le_trans [OF le1 D] .
+    show False using lt c1 by linarith
+  qed
+qed
+
+text \<open>Lower side: the fold never falls short of the honest bill by more
+than one truncation unit per leg.\<close>
+
+theorem accruef_window_lower:
+  fixes Lf :: "nat \<Rightarrow> nat" and c :: nat
+  shows "prodsum Lf c gs div 2^64 \<le> accruef Lf c gs + length gs"
+proof (induction gs arbitrary: c)
+  case Nil
+  then show ?case by simp
+next
+  case (Cons g gs)
+  have unfold: "accruef Lf c (g # gs)
+      = (g - c) * Lf g div 2^64 + accruef Lf g gs" by simp
+  have punfold: "prodsum Lf c (g # gs)
+      = (g - c) * Lf g + prodsum Lf g gs" by simp
+  have leg: "(g - c) * Lf g div 2^64
+      \<le> (g - c) * Lf g div 2^64 + 1" by arith
+  have ih: "prodsum Lf g gs div 2^64
+      \<le> accruef Lf g gs + length gs" using Cons.IH .
+  have pd: "prodsum Lf c (g # gs) div 2^64
+      = ((g - c) * Lf g + prodsum Lf g gs) div 2^64"
+    using punfold by simp
+  have tot: "((g - c) * Lf g + prodsum Lf g gs) div 2^64
+      \<le> (g - c) * Lf g div 2^64 + prodsum Lf g gs div 2^64 + 1"
+    by (rule div_add_le) simp
+  have lensimp: "length (g # gs) = Suc (length gs)" by simp
+  show ?case using unfold pd ih tot lensimp by arith
+qed
+
+text \<open>The window theorem, both sides at the genesis checkpoint.\<close>
+
+theorem fee_profit_window:
+  fixes Lf :: "nat \<Rightarrow> nat"
+  shows "prodsum Lf 0 gs div 2^64 - length gs \<le> accruef Lf 0 gs \<and>
+      accruef Lf 0 gs
+      \<le> prodsum Lf 0 gs div 2^64 + length gs"
+proof
+  show "prodsum Lf 0 gs div 2^64 - length gs \<le> accruef Lf 0 gs"
+    using accruef_window_lower [of Lf 0 gs] by arith
+next
+  have uni: "accruef Lf 0 gs
+      \<le> prodsum Lf 0 gs div 2^64 + length gs"
+    using accruef_sum_bound [of Lf 0 gs] .
+  show "accruef Lf 0 gs
+      \<le> prodsum Lf 0 gs div 2^64 + length gs" using uni .
+qed
+
 end
