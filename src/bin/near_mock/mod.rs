@@ -733,7 +733,13 @@ pub(crate) fn execute_tx(
                     d.borrow()
                         .iter()
                         .enumerate()
-                        .find(|(i, _)| !EXECUTED_PROMISES.with(|e| e.borrow().contains(i)))
+                        .find(|(i, _)| {
+                            !EXECUTED_PROMISES.with(|e| e.borrow().contains(i))
+                                && !crate::promises::is_yield_join(*i)
+                                && !PROMISE_DAG.with(|d| {
+                                    crate::promises::deps_own_open_yield(&d.borrow()[*i].deps)
+                                })
+                        })
                         .map(|(i, _)| i)
                 });
                 let Some(idx) = next else { break };
@@ -1400,7 +1406,15 @@ fn build_promise_hosts(
             let st = STATE_ARC.with(|s| s.borrow().clone());
             if let Some(st) = st {
                 let mut st = st.lock().unwrap();
-                st.registers.insert(reg, did.into_bytes());
+                // Real nearcore: data_id in the register is a 32-byte CryptoHash
+                // (near-sdk reads it back with CryptoHash::try_from — a string
+                // like "yd:2" panics "Invalid data_id"). Derive a deterministic
+                // 32-byte id and keep a hash→idx map for binary resume lookups.
+                use sha2::Digest;
+                let mut h = sha2::Sha256::new();
+                h.update(did.as_bytes());
+                let hash: [u8; 32] = h.finalize().into();
+                st.registers.insert(reg, hash.to_vec());
                 // persist: \x00yield:<idx> = account \x1f method \x1f creator \x1f args_json
                 let spec = format!(
                     "{}\x1f{}\x1f{}\x1f{}",
@@ -1408,6 +1422,19 @@ fn build_promise_hosts(
                 );
                 let key = format!("\x00yield:{}", idx);
                 st.storage.insert(key.into_bytes(), spec.into_bytes());
+                let hex: String = hash.iter().map(|b| format!("{:02X}", b)).collect();
+                let hkey = format!("\x00ydhash:{}", hex);
+                st.storage
+                    .insert(hkey.into_bytes(), idx.to_string().into_bytes());
+            }
+            crate::promises::yield_owner_add(idx);
+            if let Some(ob) = crate::promises::yield_owner_of(idx) {
+                if let Some(st) = STATE_ARC.with(|s| s.borrow().clone()) {
+                    st.lock().unwrap().storage.insert(
+                        format!("\x00yowner:{}", idx).into_bytes(),
+                        ob.to_string().into_bytes(),
+                    );
+                }
             }
             results[0] = Val::I64(idx as i64);
             Ok(())
@@ -1439,10 +1466,43 @@ fn build_promise_hosts(
                 args[3].unwrap_i64(),
                 "promise-host",
             )?;
-            let idx: usize = data_id
-                .trim_start_matches("yd:")
-                .parse()
-                .unwrap_or(usize::MAX);
+            // data_id arrives either as the legacy "yd:<idx>" string or as the
+            // RAW 32-BYTE CryptoHash the contract read from register 37. Binary
+            // ids cannot go through the UTF-8 lossy string read (bytes ≥ 0x80
+            // collapse to U+FFFD replacement chars), so read guest memory raw
+            // and map through the \x00ydhash:<HEX> index from create time.
+            let raw_id: Vec<u8> = {
+                let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
+                caller
+                    .get_export("memory")
+                    .and_then(|e| e.into_memory())
+                    .and_then(|m| {
+                        let md = m.data(&caller);
+                        if ptr + len <= md.len() {
+                            Some(md[ptr..ptr + len].to_vec())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default()
+            };
+            let idx: usize = match std::str::from_utf8(&raw_id) {
+                Ok(s) => match s.strip_prefix("yd:") {
+                    Some(n) => n.parse().unwrap_or(usize::MAX),
+                    None => usize::MAX,
+                },
+                Err(_) if raw_id.len() == 32 => {
+                    let hex: String = raw_id.iter().map(|b| format!("{:02X}", b)).collect();
+                    let st = STATE_ARC.with(|s| s.borrow().clone());
+                    let hkey = format!("\x00ydhash:{}", hex).into_bytes();
+                    st.as_ref()
+                        .and_then(|st| st.lock().unwrap().storage.get(&hkey).cloned())
+                        .and_then(|v| String::from_utf8_lossy(&v).parse().ok())
+                        .unwrap_or(usize::MAX)
+                }
+                _ => usize::MAX,
+            };
+            mtrace!("  ⏵ yield_resume data_id({}B) → idx {}", raw_id.len(), idx);
             let dag = PROMISE_DAG.with(|d| d.borrow().clone());
             let batch = match dag.get(idx) {
                 Some(b) if b.is_yield => b.clone(),
@@ -1484,6 +1544,12 @@ fn build_promise_hosts(
                     }
                 }
             };
+            mtrace!(
+                "  ⏵ yield_resume idx-resolution: data_id({}B)={:02x?} payload={}",
+                data_id.len(),
+                data_id.as_bytes(),
+                payload
+            );
             mtrace!("  ⏵ yield_resume({}) payload={}", idx, payload);
             let (method, args_json, _) = match batch.actions.first() {
                 Some(PAction::FnCall {
@@ -1496,8 +1562,9 @@ fn build_promise_hosts(
                 }
             };
             // Re-run the callback with the payload as the Successful result
+            let payload_bytes = payload.clone().into_bytes();
             let saved = PROMISE_RESULTS.with(|r| {
-                std::mem::replace(&mut *r.borrow_mut(), vec![Some(payload.into_bytes())])
+                std::mem::replace(&mut *r.borrow_mut(), vec![Some(payload_bytes)])
             });
             let ret = sub_execute(&batch.account, &method, &args_json, &batch.creator, 0);
             PROMISE_RESULTS.with(|r| *r.borrow_mut() = saved);
@@ -1509,6 +1576,128 @@ fn build_promise_hosts(
                         .unwrap()
                         .storage
                         .remove(format!("\x00yield:{}", idx).as_bytes());
+                }
+            }
+            // Real-chain join delivery: any promise_then batch registered on
+            // this yield fires NOW with the resume payload as its dep result.
+            // Also re-fires cross-account joins whose dep receipt created the
+            // yield (the outlayer pattern): their flush-time run was inert
+            // (empty payload), the real chain delivers the callback exactly
+            // here, once, with resolved data.
+            let mut joins: Vec<usize> = PROMISE_DAG.with(|d| {
+                d.borrow()
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, b)| b.deps.contains(&idx) && crate::promises::is_yield_join(*j))
+                    .map(|(j, _)| j)
+                    .collect()
+            });
+            let mut owner = crate::promises::yield_owner_of(idx);
+            if owner.is_none() {
+                if let Some(st) = STATE_ARC.with(|s| s.borrow().clone()) {
+                    let key = format!("\x00yowner:{}", idx).into_bytes();
+                    owner = st
+                        .lock()
+                        .unwrap()
+                        .storage
+                        .get(&key)
+                        .and_then(|v| String::from_utf8_lossy(v).parse().ok());
+                }
+            }
+            if let Some(ob) = owner {
+                joins.extend(crate::promises::joins_on_batch(ob));
+                joins.extend(crate::promises::joins_for_owner_batch(ob));
+            }
+            joins.sort_unstable();
+            joins.dedup();
+            for j in joins {
+                crate::promises::yield_joins_take(j);
+                EXECUTED_PROMISES.with(|e| {
+                    e.borrow_mut().insert(j);
+                });
+                match execute_promise(j) {
+                    Ok(_) => {}
+                    Err(_) => mtrace!("  ⚠ yield join {} failed", j),
+                }
+            }
+            // Cross-process join delivery: promise_then details were persisted
+            // at registration (\x00yjoin:<idx>) because the resolve process has
+            // no DAG. Deliver each pending join with the resume payload as its
+            // dep result — real-chain join-receipt semantics.
+            {
+                let pending: Vec<(usize, String, String, String)> = {
+                    let st = STATE_ARC.with(|s| s.borrow().clone());
+                    match st {
+                        Some(st) => {
+                            let st = st.lock().unwrap();
+                            let mut v = Vec::new();
+                            for (k, val) in st.storage.iter() {
+                                if let Some(rest) = k.strip_prefix(b"\x00yjoin:".as_slice()) {
+                                    if let Ok(jidx) =
+                                        std::str::from_utf8(rest).map(|s| s.parse::<usize>())
+                                    {
+                                        if let Ok(jidx) = jidx {
+                                            if let Ok(det) =
+                                                serde_json::from_slice::<serde_json::Value>(val)
+                                            {
+                                                v.push((
+                                                    jidx,
+                                                    det["account"]
+                                                        .as_str()
+                                                        .unwrap_or_default()
+                                                        .to_string(),
+                                                    det["method"]
+                                                        .as_str()
+                                                        .unwrap_or_default()
+                                                        .to_string(),
+                                                    det["args"]
+                                                        .as_str()
+                                                        .unwrap_or_default()
+                                                        .to_string(),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            v.sort_by_key(|(i, _, _, _)| *i);
+                            v
+                        }
+                        None => Vec::new(),
+                    }
+                };
+                for (jidx, jacct, jmethod, jargs) in pending {
+                    // consume the marker first (one-shot, like the real chain)
+                    crate::promises::yield_joins_persist_take(jidx);
+                    crate::promises::yield_joins_take(jidx);
+                    mtrace!("  ⛓ join receipt {} → {}.{} (payload-delivered)", jidx, jacct, jmethod);
+                    // The join callback reads its dep result (the resolved
+                    // payload) via promise_result(0) — same as nearcore. The
+                    // outlayer wraps execution results in an envelope
+                    // {"success":..,"output":{"Text":..}}; the kernel's join
+                    // reads the FLATTENED final value (the quote text), matching
+                    // the live-chain promise_return flattening.
+                    let join_result = serde_json::from_str::<serde_json::Value>(&payload)
+                        .ok()
+                        .and_then(|v| {
+                            v["output"]["Text"].as_str().map(|s| s.to_string())
+                        })
+                        .unwrap_or_else(|| payload.clone());
+                    let saved = PROMISE_RESULTS.with(|r| {
+                        std::mem::replace(
+                            &mut *r.borrow_mut(),
+                            vec![Some(join_result.into_bytes())],
+                        )
+                    });
+                    let ret = sub_execute(&jacct, &jmethod, jargs.as_bytes(), &jacct, 0);
+                    PROMISE_RESULTS.with(|r| *r.borrow_mut() = saved);
+                    match ret {
+                        Ok(Some(b)) if !b.is_empty() => {
+                            mtrace!("  ⛓ join {} returned {}B", jidx, b.len())
+                        }
+                        Ok(_) => {}
+                        Err(_) => mtrace!("  ⚠ join {} trapped", jidx),
+                    }
                 }
             }
             match ret {
@@ -1615,6 +1804,9 @@ fn build_promise_hosts(
                 }
                 u128::from_le_bytes(buf)
             };
+            let join_acct = acct.clone();
+            let join_method = method.clone();
+            let join_args = args_json.clone();
             let new_idx = dag_push(
                 vec![idx],
                 acct,
@@ -1625,6 +1817,39 @@ fn build_promise_hosts(
                     dep,
                 }],
             );
+            // Real-chain join semantics: a .then on a cross-contract promise
+            // may depend on a yield created inside that promise's execution
+            // (outlayer request_execution promise_returns a yield). Such joins
+            // must not fire from the flush drain with an empty dep result;
+            // they re-fire with the payload when the yield resolves. We can't
+            // know at registration whether the dep will yield, so register
+            // every cross-account join here and decide at resume/drain time.
+            {
+                let dep_cross = PROMISE_DAG.with(|d| {
+                    d.borrow()
+                        .get(idx)
+                        .map(|b| b.account != join_acct)
+                        .unwrap_or(false)
+                });
+                if dep_cross {
+                    crate::promises::yield_joins_add(new_idx);
+                    // Persist the join's dispatch details: the resolve process
+                    // has no DAG, so it must be able to deliver the callback
+                    // (real-chain join receipt) without the creating process.
+                    if let Some(st) = STATE_ARC.with(|s| s.borrow().clone()) {
+                        let det = serde_json::json!({
+                            "account": join_acct,
+                            "method": join_method,
+                            "args": join_args,
+                            "dep": idx,
+                        });
+                        st.lock().unwrap().storage.insert(
+                            format!("\x00yjoin:{}", new_idx).into_bytes(),
+                            serde_json::to_vec(&det).unwrap_or_default(),
+                        );
+                    }
+                }
+            }
             results[0] = Val::I64(new_idx as i64);
             Ok(())
         },
@@ -2679,7 +2904,13 @@ pub(crate) fn run_scenario_opts(
                     d.borrow()
                         .iter()
                         .enumerate()
-                        .find(|(i, _)| !EXECUTED_PROMISES.with(|e| e.borrow().contains(i)))
+                        .find(|(i, _)| {
+                            !EXECUTED_PROMISES.with(|e| e.borrow().contains(i))
+                                && !crate::promises::is_yield_join(*i)
+                                && !PROMISE_DAG.with(|d| {
+                                    crate::promises::deps_own_open_yield(&d.borrow()[*i].deps)
+                                })
+                        })
                         .map(|(i, _)| i)
                 });
                 let Some(idx) = next else { break };
@@ -4783,7 +5014,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     d.borrow()
                         .iter()
                         .enumerate()
-                        .find(|(i, _)| !EXECUTED_PROMISES.with(|e| e.borrow().contains(i)))
+                        .find(|(i, _)| {
+                            !EXECUTED_PROMISES.with(|e| e.borrow().contains(i))
+                                && !crate::promises::is_yield_join(*i)
+                                && !PROMISE_DAG.with(|d| {
+                                    crate::promises::deps_own_open_yield(&d.borrow()[*i].deps)
+                                })
+                        })
                         .map(|(i, _)| i)
                 });
                 let Some(idx) = next else { break };

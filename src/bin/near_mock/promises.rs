@@ -177,6 +177,190 @@ pub(crate) fn dag_push(deps: Vec<usize>, account: String, actions: Vec<PAction>)
 thread_local! {
     static FAIL_RECEIPTS: std::cell::RefCell<std::collections::HashSet<usize>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+    /// Join batches (promise_then) whose dep is a yield: deferred until the
+    /// yield is resumed (real-chain join-receipt semantics, 2026-10-14).
+    static YIELD_JOINS: std::cell::RefCell<std::collections::HashSet<usize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    /// Batch currently executing (set in execute_promise_uncached) so
+    /// promise_yield_create can attribute a yield to the receipt that
+    /// created it; joins on that receipt defer until the yield resolves.
+    static CURRENT_BATCH: std::cell::RefCell<Option<usize>> =
+        std::cell::RefCell::new(None);
+    /// yield_idx → batch idx that created it.
+    static YIELD_OWNER: std::cell::RefCell<std::collections::HashMap<usize, usize>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Register a promise_then batch as yield-driven (deferred until resume).
+/// Mark `idx` as a yield-driven join. Persisted in contract state under
+/// `\x00yjoin:<idx>` (TLS dies with the process; resolve_execution is a
+/// separate `near-mock call` invocation).
+pub(crate) fn yield_joins_add(idx: usize) {
+    YIELD_JOINS.with(|j| j.borrow_mut().insert(idx));
+    if let Some(st) = crate::STATE_ARC.with(|s| s.borrow().clone()) {
+        st.lock().unwrap().storage.insert(
+            format!("\x00yjoin:{}", idx).into_bytes(),
+            b"1".to_vec(),
+        );
+    }
+}
+
+/// True when this batch must not run in the flush drain (waiting on a resume).
+/// Reads the persisted marker so cross-process resolves see it.
+pub(crate) fn is_yield_join(idx: usize) -> bool {
+    if YIELD_JOINS.with(|j| j.borrow().contains(&idx)) {
+        return true;
+    }
+    if let Some(st) = crate::STATE_ARC.with(|s| s.borrow().clone()) {
+        let key = format!("\x00yjoin:{}", idx).into_bytes();
+        if st.lock().unwrap().storage.contains_key(&key) {
+            YIELD_JOINS.with(|j| j.borrow_mut().insert(idx));
+            return true;
+        }
+    }
+    false
+}
+
+/// Consume the persisted marker for a fired join.
+pub(crate) fn yield_joins_persist_take(idx: usize) {
+    if let Some(st) = crate::STATE_ARC.with(|s| s.borrow().clone()) {
+        st.lock()
+            .unwrap()
+            .storage
+            .remove(format!("\x00yjoin:{}", idx).as_bytes());
+    }
+}
+
+/// Consume the join marker after the resume delivered the payload.
+pub(crate) fn yield_joins_take(idx: usize) -> bool {
+    let taken = YIELD_JOINS.with(|j| j.borrow_mut().remove(&idx));
+    yield_joins_persist_take(idx);
+    taken
+}
+
+/// Record which batch a yield belongs to (called from promise_yield_create —
+/// the yield host runs inside the creating receipt's execution).
+pub(crate) fn yield_owner_add(yield_idx: usize) {
+    let owner = CURRENT_BATCH.with(|b| *b.borrow());
+    if let Some(owner) = owner {
+        YIELD_OWNER.with(|m| m.borrow_mut().insert(yield_idx, owner));
+    }
+}
+
+
+
+
+/// RAII: record the batch currently executing so promise_yield_create can
+/// attribute a yield to the receipt that created it.
+pub(crate) struct CurrentBatchGuard(());
+impl CurrentBatchGuard {
+    pub(crate) fn enter(idx: usize) -> CurrentBatchGuard {
+        CURRENT_BATCH.with(|b| *b.borrow_mut() = Some(idx));
+        CurrentBatchGuard(())
+    }
+}
+impl Drop for CurrentBatchGuard {
+    fn drop(&mut self) {
+        CURRENT_BATCH.with(|b| *b.borrow_mut() = None);
+    }
+}
+
+/// True if any of `deps` owns an as-yet-unresumed yield (drain-time check:
+/// joins over a receipt that promise_returns a yield must wait for resolve).
+pub(crate) fn deps_own_open_yield(deps: &[usize]) -> bool {
+    YIELD_OWNER.with(|m| !m.borrow().is_empty())
+        && deps.iter().any(|&d| {
+            YIELD_OWNER.with(|m| m.borrow().values().any(|&o| o == d))
+        })
+}
+
+
+
+/// All join indices persisted in state (cross-process view).
+pub(crate) fn persisted_joins() -> Vec<usize> {
+    if let Some(st) = crate::STATE_ARC.with(|s| s.borrow().clone()) {
+        let st = st.lock().unwrap();
+        let mut v: Vec<usize> = st
+            .storage
+            .keys()
+            .filter_map(|k| {
+                k.strip_prefix(b"\x00yjoin:".as_slice())
+                    .and_then(|r| std::str::from_utf8(r).ok())
+                    .and_then(|s| s.parse().ok())
+            })
+            .collect();
+        v.sort_unstable();
+        return v;
+    }
+    Vec::new()
+}
+
+/// Debug: current join set.
+pub(crate) fn yield_joins_dump() -> Vec<usize> {
+    let mut v: Vec<usize> = YIELD_JOINS.with(|j| j.borrow().iter().copied().collect());
+    v.sort_unstable();
+    v
+}
+
+/// Owner batch of a yield (None if unattributed).
+pub(crate) fn yield_owner_of(yield_idx: usize) -> Option<usize> {
+    YIELD_OWNER.with(|m| m.borrow().get(&yield_idx).copied())
+}
+
+/// Join indices waiting on `dep_batch` itself (the receipt that created an
+/// unresolved yield): nearcore fires the .then callback when the receipt's
+/// full chain — yield included — resolves.
+pub(crate) fn joins_on_batch(dep_batch: usize) -> Vec<usize> {
+    let mut all = persisted_joins();
+    all.extend(YIELD_JOINS.with(|j| j.borrow().iter().copied().collect::<Vec<_>>()));
+    all.sort_unstable();
+    all.dedup();
+    {
+        return all
+            .iter()
+            .copied()
+            .filter(|&j| {
+                PROMISE_DAG.with(|d| {
+                    d.borrow()
+                        .get(j)
+                        .map(|b| b.deps.contains(&dep_batch))
+                        .unwrap_or(false)
+                })
+            })
+            .collect();
+    }
+    #[allow(unreachable_code)]
+    YIELD_JOINS.with(|j| {
+        j.borrow()
+            .iter()
+            .copied()
+            .filter(|&j| {
+                PROMISE_DAG.with(|d| {
+                    d.borrow().get(j).map(|b| b.deps.contains(&dep_batch)).unwrap_or(false)
+                })
+            })
+            .collect()
+    })
+}
+
+/// Join indices deferred on `dep_batch` because its subtree opened a yield.
+pub(crate) fn joins_for_owner_batch(dep_batch: usize) -> Vec<usize> {
+    YIELD_JOINS.with(|j| {
+        YIELD_OWNER.with(|m| {
+            let m = m.borrow();
+            let owned: std::collections::HashSet<usize> =
+                m.iter().filter(|(_, &b)| b == dep_batch).map(|(&y, _)| y).collect();
+            j.borrow()
+                .iter()
+                .copied()
+                .filter(|&j| {
+                    PROMISE_DAG.with(|d| {
+                        d.borrow().get(j).map(|b| b.deps.iter().any(|d| owned.contains(d))).unwrap_or(false)
+                    })
+                })
+                .collect()
+        })
+    })
 }
 
 /// Install the forced-failure set (CLI --fail-receipt / scenario fail_receipt).
@@ -493,6 +677,18 @@ fn execute_promise_uncached(
     idx: usize,
 ) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::error::Error>> {
     let batch = PROMISE_DAG.with(|d| d.borrow()[idx].clone());
+    let _cb = crate::promises::CurrentBatchGuard::enter(idx);
+    if is_yield_join(idx) && deps_own_open_yield(&batch.deps) {
+        // Dep receipt promise_returns a yield that hasn't resolved: on the
+        // real chain this join callback fires only after resolve_execution.
+        eprintln!("  ⏸ join {} deferred: dep receipt owns an open yield", idx);
+        return Ok(vec![None]);
+    }
+    if is_yield_join(idx) {
+        // Join on a yield: only promise_yield_resume may fire it (with the
+        // resume payload as the dep result). The flush/chain walk must skip.
+        return Ok(Vec::new());
+    }
     EXECUTED_PROMISES.with(|e| e.borrow_mut().insert(idx));
     let forced = FAIL_RECEIPTS.with(|f| f.borrow().contains(&idx));
     let mut dep_results: Vec<Option<Vec<u8>>> = Vec::new();
@@ -519,25 +715,20 @@ fn execute_promise_uncached(
     let mut out = Vec::new();
     let mut batch_touched: Vec<(Vec<u8>, Option<Vec<u8>>)> = Vec::new();
     if batch.is_yield {
-        // NEAR yield: the callback runs once NOW with a NotReady result
-        // (promiseSucceeded(0)==0 → contract returns its pending path),
-        // then re-runs with the payload when host 83 resumes the handle.
-        let saved = PROMISE_RESULTS.with(|r| std::mem::replace(&mut *r.borrow_mut(), vec![None]));
-        set_promise_results_tls(vec![None]);
-        for action in &batch.actions {
-            if let PAction::FnCall {
-                method, args, dep, ..
-            } = action
-            {
-                match sub_execute(&batch.account, method, args, &batch.creator, *dep) {
-                    Ok(ret) => out.push(ret),
-                    Err(_) => out.push(None),
-                }
-            }
-        }
-        PROMISE_RESULTS.with(|r| *r.borrow_mut() = saved);
-        set_promise_results_tls(old_mirror);
-        return Ok(out);
+        // REAL nearcore semantics (2026-10-14): promise_yield_create does NOT
+        // invoke the callback. The guest returns, its register state is
+        // snapshotted against the data_id, and only promise_yield_resume
+        // (host 83) re-enters the invocation with the payload. The mock used
+        // to run a "NotReady pass" here — unreal: a callback that panics on
+        // promiseResult (any normal jsonGetStr consumer) consumed the yield
+        // before any resume could deliver the payload, breaking every
+        // outlayer-style request/resolve flow. Yield batches therefore stay
+        // inert here; promise_then JOIN batches (deps = [yield_idx]) are
+        // driven by the resume path instead of the flush drain.
+        EXECUTED_PROMISES.with(|e| {
+            e.borrow_mut().insert(idx);
+        });
+        return Ok(Vec::new());
     }
     if !batch.account.is_empty() {
         for action in &batch.actions {
