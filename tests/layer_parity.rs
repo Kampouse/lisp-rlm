@@ -366,6 +366,8 @@ const INTERP_ONLY: &[(&str, &str)] = &[
 ];
 
 const WASM_ONLY: &[(&str, &str)] = &[
+    ("json-get-str-esc", "jsonGetStrEsc: unescape+scan over JSON-escaped buffers (wasm memory, 2026-10-14)"),
+    ("json-get-str-esc?", "nil-on-miss jsonGetStrEsc (wasm memory, 2026-10-14)"),
     ("abort", "wasm test-harness assertion"),
     ("ai-chat", "wasm-run host import (harness only)"),
     ("arr_find", "array-in-linear-memory family (wasm layout)"),
