@@ -1,5 +1,5 @@
 theory CLMM_Fee_Attack
-  imports Aggregate_Accrual CLMM_Fee_Slack CLMM_Fee_Slack_Fixed
+  imports Aggregate_Accrual CLMM_Fee_Slack CLMM_Fee_Slack_Fixed CLMM_Dynamic
 begin
 
 section \<open>Attacker-edge layer 2: dust-farming and negative slack\<close>
@@ -452,6 +452,129 @@ next
         \<le> growth (quote_gross P) (q # more)" using IH psEq by simp
     show ?thesis using step IH' by (simp add: psEq)
   qed
+qed
+
+section \<open>Off-grid refine: fee values travel (item 2, slice B)\<close>
+
+text \<open>Formalizes the rung-5 prose law, with the copy term made honest. An
+off-grid swap inserts a tick level and shifts the fee book positionally;
+the inserted cell COPIES the value below it, so unconditional
+@{term "fee P' = fee P"} is FALSE (rung 5's own goal-print falsification).
+The true law has three legs, all stated here: (1) pointwise, the new book
+is the old book on every cell: identity below the boundary, a copy at the
+new boundary cell, a one-step shift above it; (2) values-travel: every
+post-state fee value is a pre-state fee value -- trading creates no fee
+value; (3) exact restore: the old fee book is recovered from the new one
+by identity below the boundary and a +1 shift above it (the copy cell is
+never read), so reindexing repositions value and adds exactly one
+boundary copy -- the venue's own single-cell double-write, not
+attacker-shaped. The book moves; the money does not.
+
+Mechanics (from the entry): off-grid refine is
+@{term "wedge (fee P) i (fee P i)"} with @{term "i = lower_tick P sqp"}.
+Scope honestly: aggregate-sum accounting follows from the pointwise law
+plus support finiteness; the boundary copy contributes that one cell's
+value to any such sum.\<close>
+
+lemma wedge_split:
+  fixes i n :: int
+  assumes w: "g = wedge f i c"
+  shows "g n = (if n \<le> i then f n
+      else if n = i + 1 then c else f (n - 1))"
+  using w by (simp add: wedge_def)
+
+theorem fee_offgrid_pointwise:
+  assumes i: "i = lower_tick P sqp"
+    and off: "grd P i \<noteq> sqp"
+    and P': "P' = refine P sqp"
+  shows "\<And>n. fee P' n = (if n \<le> i then fee P n
+      else if n = i + 1 then fee P i else fee P (n - 1))"
+proof -
+  fix n
+  have w: "fee P' = wedge (fee P) i (fee P i)"
+    using i off P' by (rule refine_fee)
+  show "fee P' n = (if n \<le> i then fee P n
+      else if n = i + 1 then fee P i else fee P (n - 1))"
+    using w by (rule wedge_split)
+qed
+
+theorem fee_offgrid_values_travel:
+  assumes i: "i = lower_tick P sqp"
+    and off: "grd P i \<noteq> sqp"
+    and P': "P' = refine P sqp"
+  shows "\<And>n. fee P' n \<in> range (fee P)"
+proof -
+  have pw: "\<And>n. fee P' n = (if n \<le> i then fee P n
+      else if n = i + 1 then fee P i else fee P (n - 1))"
+  proof -
+    fix n
+    have w: "fee P' = wedge (fee P) i (fee P i)"
+      using i off P' by (rule refine_fee)
+    show "fee P' n = (if n \<le> i then fee P n
+        else if n = i + 1 then fee P i else fee P (n - 1))"
+      using w by (rule wedge_split)
+  qed
+  fix n
+  show "fee P' n \<in> range (fee P)"
+    using pw [of n] by (cases "n \<le> i"; cases "n = i + 1") auto
+qed
+
+theorem fee_offgrid_restore:
+  assumes i: "i = lower_tick P sqp"
+    and off: "grd P i \<noteq> sqp"
+    and P': "P' = refine P sqp"
+  shows "fee P = (\<lambda>n. if n \<le> i then fee P' n else fee P' (n + 1))"
+proof -
+  have pw: "\<And>n. fee P' n = (if n \<le> i then fee P n
+      else if n = i + 1 then fee P i else fee P (n - 1))"
+  proof -
+    fix n
+    have w: "fee P' = wedge (fee P) i (fee P i)"
+      using i off P' by (rule refine_fee)
+    show "fee P' n = (if n \<le> i then fee P n
+        else if n = i + 1 then fee P i else fee P (n - 1))"
+      using w by (rule wedge_split)
+  qed
+  show ?thesis
+  proof
+    fix n
+    show "fee P n = (if n \<le> i then fee P' n else fee P' (n + 1))"
+    proof (cases "n \<le> i")
+      case True
+      have "fee P' n = fee P n" using pw [of n] True by simp
+      then show ?thesis using True by simp
+    next
+      case False
+      have gt: "i + 1 < n + 1" using False by simp
+      have "fee P' (n + 1) = fee P (n + 1 - 1)" using pw [of "n + 1"] gt by simp
+      then show ?thesis using False by simp
+    qed
+  qed
+qed
+
+subsection \<open>Swap-level hook: the rung-5 off-grid walk\<close>
+
+text \<open>Off-grid swaps (the rung-5 case @{term "grd P (lower_tick P s') \<noteq> s'"})
+reindex the fee book exactly as the three legs above: pointwise
+copy-shift, values travel, exact restore. No premise on the pool beyond
+the event itself.\<close>
+
+theorem swap_offgrid_fee_travel:
+  assumes sw: "swap_rel v P s P' s'"
+    and off: "grd P (lower_tick P s') \<noteq> s'"
+  shows "fee P = (\<lambda>n. if n \<le> lower_tick P s'
+      then fee P' n else fee P' (n + 1))"
+    and "\<And>n. fee P' n \<in> range (fee P)"
+proof -
+  from sw have Peq: "P' = refine P s'" by (simp add: swap_rel_def)
+  have r1: "fee P = (\<lambda>n. if n \<le> lower_tick P s'
+      then fee P' n else fee P' (n + 1))"
+    by (rule fee_offgrid_restore [OF _ off Peq]) simp
+  have r2: "\<And>n. fee P' n \<in> range (fee P)"
+    by (rule fee_offgrid_values_travel [OF _ off Peq]) simp
+  show "fee P = (\<lambda>n. if n \<le> lower_tick P s'
+      then fee P' n else fee P' (n + 1))" by (fact r1)
+  show "\<And>n. fee P' n \<in> range (fee P)" by (fact r2)
 qed
 
 end
