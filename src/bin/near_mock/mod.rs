@@ -22,6 +22,7 @@ mod schnorr;
 mod state;
 
 pub mod chain;
+mod serve;
 pub use chain::{CallBuilder, CallOutcome, ChainBuilder, MockChain};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -4496,6 +4497,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // self-contained binary, same pattern as near-compile 0.1.2.
     if args.get(1).map(|s| s.as_str()) == Some("fork") {
         return run_fork(&args);
+    }
+    // `serve <state.bin> <manifest>` — NEAR-RPC + neardata + coordinator
+    // server so the real outlayer worker runs against the mock unmodified.
+    if args.get(1).map(|s| s.as_str()) == Some("serve") {
+        return crate::serve::run_serve(&args);
     }
     if args.get(1).map(|s| s.as_str()) == Some("replay") {
         return run_replay(&args);

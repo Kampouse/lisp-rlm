@@ -71,6 +71,13 @@ export function ftTransfer(): number {
   return 0;
 }
 
+// NEP-141 standard snake-case entry points — venues/aggregators (Rhea, etc.)
+// call these exact names; missing ones bounce cross-contract deliveries.
+export function ft_transfer(): number { return ftTransfer(); }
+export function ft_balance_of(): string { return ftBalanceOf(); }
+export function ft_total_supply(): string { return ftTotalSupply(); }
+export function storage_deposit(): number { return storageDeposit(); }
+
 // ── NEP-141 ft_transfer_call — escrow → ft_on_transfer → resolve ──
 //
 // Standard flow: deduct the FULL amount from the sender (escrow), promise
@@ -102,7 +109,17 @@ export function ft_resolve_transfer(): number {
   const amount = near.jsonGetStr("amount") ?? "0";
   let refund = amount;
   if (near.promiseSucceeded(0) == 1) {
-    const ret = near.promiseResult(0);
+    let ret = near.promiseResult(0);
+    // Serde contracts (Rust NEP-141, e.g. Rhea) return U128 as a JSON-quoted
+    // string: the wire bytes are "0" WITH quotes. Our TS contracts return the
+    // bare digits. Normalize: strip surrounding quotes before parsing, so a
+    // venue's quoted return can never trap the resolver (it used to: u128Gt
+    // choked on the quote char and the whole wallet-credit leg died).
+    if (strLength(ret) >= 2) {
+      const first = strSlice(ret, 0, 1);
+      const last = strSlice(ret, strLength(ret) - 1, strLength(ret));
+      if (first == "\"" && last == "\"") { ret = strSlice(ret, 1, strLength(ret) - 1); }
+    }
     if (strLength(ret) > 0) {
       if (u128Gt(ret, amount)) {
         refund = amount; // callee returned nonsense → fail safe, refund all
