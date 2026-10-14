@@ -693,10 +693,73 @@ pub(crate) fn execute_tx(
                 let idx = pending.unwrap();
                 // A returned YIELD is not executable: the tx completes with the
                 // yield open; a later promise_yield_resume delivers the callback
-                // (real nearcore: tx status stays pending/claimed).
-                let yielded = PROMISE_DAG
+                // (real nearcore: tx status stays pending/claimed). Same for a
+                // root whose deps aren't ready (a .then whose base fn-call
+                // returned a child yield — e.g. SDK promise_return of a
+                // promiseThen node): its result arrives when the yield resumes.
+                let root_is_yield = PROMISE_DAG
                     .with(|d| d.borrow().get(idx).map(|b| b.is_yield).unwrap_or(false));
-                if yielded {
+                let root_deps_unready = PROMISE_DAG.with(|d| {
+                    d.borrow().get(idx).map(|b| {
+                        !b.deps.iter().all(|dep| {
+                            EXECUTED_PROMISES.with(|e| e.borrow().contains(dep))
+                        })
+                    })
+                    .unwrap_or(false)
+                });
+                // The yield node everything waits on: the returned node itself
+                // (root_is_yield) or the open yield in the DAG.
+                let yidx = if root_is_yield {
+                    Some(idx)
+                } else {
+                    PROMISE_DAG.with(|d| {
+                        d.borrow()
+                            .iter()
+                            .enumerate()
+                            .find(|(_, b)| b.is_yield)
+                            .map(|(i, _)| i)
+                    })
+                };
+                if root_is_yield || (root_deps_unready && yidx.is_some()) {
+                    let idx = yidx.unwrap();
+                    // Persist the unexecuted .then dependents with the yield: the DAG is
+                    // per-tx, but a resumed yield's callbacks fire in a LATER tx.
+                    let executed =
+                        |i: usize| EXECUTED_PROMISES.with(|e| e.borrow().contains(&i));
+                    let pending: Vec<(Vec<usize>, String, String, String, u128, u64)> =
+                        PROMISE_DAG.with(|d| {
+                            d.borrow()
+                                .iter()
+                                .enumerate()
+                                .filter(|(i, b)| !b.is_yield && !executed(*i))
+                                .map(|(_, b)| {
+                                    let (method, args_json, gas) = match b.actions.first() {
+                                        Some(PAction::FnCall { method, args, gas, .. }) => {
+                                            (method.clone(), String::from_utf8_lossy(args).into_owned(), *gas)
+                                        }
+                                        _ => (String::new(), String::new(), 0),
+                                    };
+                                    (
+                                        b.deps.clone(),
+                                        b.account.clone(),
+                                        method,
+                                        args_json,
+                                        0u128,
+                                        gas,
+                                    )
+                                })
+                                .collect()
+                        });
+                    if !pending.is_empty() {
+                        let json = serde_json::to_string(&pending).unwrap_or_default();
+                        if let Some(state) = state_arc_tls() {
+                            let mut st = state.lock().unwrap();
+                            st.storage.insert(
+                                format!("\x00yielddeps:{}", idx).into_bytes(),
+                                json.into_bytes(),
+                            );
+                        }
+                    }
                     PENDING_RETURN.with(|p| *p.borrow_mut() = None);
                     return Ok(outcome);
                 }
@@ -742,14 +805,81 @@ pub(crate) fn execute_tx(
                     d.borrow()
                         .iter()
                         .enumerate()
-                        .find(|(i, _)| !EXECUTED_PROMISES.with(|e| e.borrow().contains(i)))
+                        .find(|(i, b)| {
+                            // waiters (child returned a yield) are unresolved
+                            // until resume — not orphans; skip them here or
+                            // this drain spins forever. Nodes with unexecuted
+                            // deps aren't deliverable yet either (their .then
+                            // may be waiting on a cross-tx yield — persist
+                            // them at root-return, don't fire them early).
+                            let waiting = YIELD_WAITERS.with(|w| {
+                                w.borrow().values().any(|v| v.contains(i))
+                            });
+                            let deps_ready = b.deps.iter().all(|dep| {
+                                EXECUTED_PROMISES.with(|e| e.borrow().contains(dep))
+                            });
+                            !waiting
+                                && deps_ready
+                                && !EXECUTED_PROMISES.with(|e| e.borrow().contains(i))
+                        })
                         .map(|(i, _)| i)
                 });
                 let Some(idx) = next else { break };
                 match execute_promise(idx) {
+                    // Ok(empty) = NotReady (waiter / deps unresolved): leave
+                    // unmarked and stop draining — firing later dependents
+                    // now would give them empty promise_results.
+                    Ok(r) if r.is_empty() => break,
                     Ok(_) => {}
                     Err(_) => outcome.orphan_failures += 1,
                 }
+            }
+            // A yield opened mid-tx (waiter present): the DAG is per-tx, so
+            // persist every unexecuted non-yield node under the yield's idx —
+            // promise_yield_resume reloads and delivers them in the LATER tx
+            // (nearcore: the resumed callback's dependents fire cross-receipt).
+            let open_yield = YIELD_WAITERS.with(|w| {
+                let k = w.borrow().keys().next().copied();
+                k
+            });
+            if let Some(yidx) = open_yield {
+                let executed =
+                    |i: usize| EXECUTED_PROMISES.with(|e| e.borrow().contains(&i));
+                let pending: Vec<(Vec<usize>, String, String, String, u128, u64)> =
+                    PROMISE_DAG.with(|d| {
+                        d.borrow()
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, b)| {
+                                // waiters stay unexecuted ON PURPOSE (their
+                                // yield resolves later) — saving them would
+                                // re-run them from scratch at resume.
+                                let waiting = YIELD_WAITERS.with(|w| {
+                                    w.borrow().values().any(|v| v.contains(i))
+                                });
+                                !b.is_yield && !waiting && !executed(*i)
+                            })
+                            .map(|(_, b)| {
+                                let (method, args_json, gas) = match b.actions.first() {
+                                    Some(PAction::FnCall { method, args, gas, .. }) => {
+                                        (method.clone(), String::from_utf8_lossy(args).into_owned(), *gas)
+                                    }
+                                    _ => (String::new(), String::new(), 0),
+                                };
+                                (b.deps.clone(), b.account.clone(), method, args_json, 0u128, gas)
+                            })
+                            .collect()
+                    });
+                if !pending.is_empty() {
+                    {
+                        let mut st = state.lock().unwrap();
+                        st.storage.insert(
+                            format!("\x00yielddeps:{}", yidx).into_bytes(),
+                            serde_json::to_string(&pending).unwrap_or_default().into_bytes(),
+                        );
+                    }
+                }
+                YIELD_WAITERS.with(|w| w.borrow_mut().clear());
             }
         }
         Err(_) => {
@@ -870,6 +1000,12 @@ thread_local! {
     static PROMISE_DAG: std::cell::RefCell<Vec<PromiseBatch>> = const { std::cell::RefCell::new(Vec::new()) };
     static PROMISE_RESULTS: std::cell::RefCell<Vec<Option<Vec<u8>>>> = const { std::cell::RefCell::new(Vec::new()) };
     static PENDING_RETURN: std::cell::RefCell<Option<usize>> = const { std::cell::RefCell::new(None) };
+    /// DAG nodes whose fn-call promise_returned a yield: node idx → yield idx.
+    /// The node is NOT resolved until the yield resumes (nearcore: the promise
+    /// settles when the callee's yield resolves). resume then marks waiters
+    /// executed so .then dependents fire.
+    static YIELD_WAITERS: std::cell::RefCell<std::collections::HashMap<usize, Vec<usize>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
     static MODULES: std::cell::RefCell<Option<std::sync::Arc<HashMap<String, wasmtime::Module>>>> =
         const { std::cell::RefCell::new(None) };
     static STATE_ARC: std::cell::RefCell<Option<std::sync::Arc<Mutex<MockState>>>> =
@@ -890,7 +1026,7 @@ fn exec_ctx_or_default() -> ExecCtx {
 
 // batches already resolved this run (returned-DAG traversal + orphan drain)
 thread_local! {
-    static EXECUTED_PROMISES: std::cell::RefCell<std::collections::HashSet<usize>> =
+    pub(crate) static EXECUTED_PROMISES: std::cell::RefCell<std::collections::HashSet<usize>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
@@ -1510,6 +1646,7 @@ fn build_promise_hosts(
                 }
             };
             // Re-run the callback with the payload as the Successful result
+            let payload_bytes = payload.clone().into_bytes();
             let saved = PROMISE_RESULTS.with(|r| {
                 std::mem::replace(&mut *r.borrow_mut(), vec![Some(payload.into_bytes())])
             });
@@ -1534,6 +1671,98 @@ fn build_promise_hosts(
                 }
                 Ok(None) => mtrace!("  ⚠ yield callback trapped"),
                 Err(e) => mtrace!("  ⚠ yield callback error: {}", e),
+            }
+            // The yield node is now resolved. NOTE: `idx` here is the CREATE-
+            // tx dag index (from data_id "yd:<idx>") — it COLLIDES with this
+            // tx's fresh DAG numbering, so marking `idx`/old waiter indices
+            // EXECUTED would corrupt this tx's DAG (it marked the re-pushed
+            // onResult node!). The anchor node pushed by the re-push below is
+            // the resolved-yield representative; the waiter bookkeeping from
+            // the create tx is obsolete cross-tx state.
+            YIELD_WAITERS.with(|w| { w.borrow_mut().remove(&idx); });
+            {
+                let deps_key = format!("\x00yielddeps:{}", idx);
+                let st = STATE_ARC.with(|s| s.borrow().clone());
+                let saved = st.as_ref().and_then(|st| {
+                    st.lock().unwrap().storage.get(deps_key.as_bytes()).cloned()
+                });
+                if let Some(bytes) = saved {
+                    st.as_ref().map(|st| {
+                        st.lock().unwrap().storage.remove(deps_key.as_bytes())
+                    });
+                    if let Ok(pending) = serde_json::from_slice::<
+                        Vec<(Vec<usize>, String, String, String, u128, u64)>,
+                    >(&bytes) {
+                        // Anchor: a synthetic node standing for the resumed
+                        // yield itself, pre-resolved to the payload. Saved
+                        // .then nodes dep on it, so promise_result(0) reads
+                        // the yield's value (nearcore: the resume payload IS
+                        // the base promise's result). Old DAG indices don't
+                        // exist in THIS tx.
+                        let anchor = dag_push(
+                            vec![],
+                            batch.account.clone(),
+                            vec![PAction::FnCall {
+                                method: method.clone(),
+                                args: args_json.clone(),
+                                gas: 0,
+                                dep: 0,
+                            }],
+                        );
+                        EXECUTED_PROMISES.with(|e| {
+                            e.borrow_mut().insert(anchor);
+                        });
+                        PROMISE_OUTCOMES.with(|o| {
+                            o.borrow_mut()
+                                .insert(anchor, vec![Some(payload_bytes.clone())])
+                        });
+                        for (_deps, account, method, args_json, _dep, gas) in pending {
+                            if method.is_empty() { continue; }
+                            dag_push(vec![anchor], account, vec![PAction::FnCall {
+                                method, args: args_json.into_bytes(), gas, dep: 0,
+                            }]);
+                        }
+                    }
+                }
+            }
+            loop {
+                let next = PROMISE_DAG.with(|d| {
+                    d.borrow()
+                        .iter()
+                        .enumerate()
+                        .find(|(i, b)| {
+                            // waiters (child returned a yield) are skipped:
+                            // unmarked until THEIR yield resumes, so executing
+                            // them here would loop forever.
+                            let waiting = YIELD_WAITERS.with(|w| {
+                                w.borrow().values().any(|v| v.contains(i))
+                            });
+                            !b.is_yield
+                                && !waiting
+                                && !EXECUTED_PROMISES.with(|e| e.borrow().contains(i))
+                                && b.deps.iter().all(|dep| {
+                                    EXECUTED_PROMISES.with(|e| e.borrow().contains(dep))
+                                })
+                        })
+                        .map(|(i, _)| i)
+                });
+                let Some(didx) = next else {
+                    break;
+                };
+                let dbg = PROMISE_DAG.with(|d| {
+                    d.borrow().get(didx).map(|b| {
+                        format!("acct={} first={:?}", b.account, b.actions.first().map(|a| match a {
+                            PAction::FnCall { method, .. } => method.clone(),
+                            _ => "<other>".to_string(),
+                        }))
+                    }).unwrap_or_default()
+                });
+                match execute_promise(didx) {
+                    Ok(_) => {
+                        EXECUTED_PROMISES.with(|e| { e.borrow_mut().insert(didx); });
+                    }
+                    Err(_) => {}
+                }
             }
             results[0] = Val::I32(1);
             Ok(())
@@ -2693,7 +2922,16 @@ pub(crate) fn run_scenario_opts(
                     d.borrow()
                         .iter()
                         .enumerate()
-                        .find(|(i, _)| !EXECUTED_PROMISES.with(|e| e.borrow().contains(i)))
+                        .find(|(i, b)| {
+                            let waiting = YIELD_WAITERS.with(|w| {
+                                w.borrow().values().any(|v| v.contains(i))
+                            });
+                            let deps_ready = b.deps.iter().all(|dep| {
+                                EXECUTED_PROMISES.with(|e| e.borrow().contains(dep))
+                            });
+                            !waiting && deps_ready
+                                && !EXECUTED_PROMISES.with(|e| e.borrow().contains(i))
+                        })
                         .map(|(i, _)| i)
                 });
                 let Some(idx) = next else { break };
@@ -3011,8 +3249,13 @@ pub(crate) fn settle_receipts() -> Result<SettleReport, Box<dyn std::error::Erro
                 .enumerate()
                 .find(|(i, b)| {
                     // yields are NOT delivered as receipts: they wait for a
-                    // promise_yield_resume (real nearcore semantics).
+                    // promise_yield_resume (real nearcore semantics). Nodes
+                    // waiting on a child's yield are likewise unresolved.
+                    let waiting = YIELD_WAITERS.with(|w| {
+                        w.borrow().values().any(|v| v.contains(i))
+                    });
                     !b.is_yield
+                        && !waiting
                         && !EXECUTED_PROMISES.with(|e| e.borrow().contains(i))
                         && b.deps
                             .iter()
@@ -4800,7 +5043,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     d.borrow()
                         .iter()
                         .enumerate()
-                        .find(|(i, _)| !EXECUTED_PROMISES.with(|e| e.borrow().contains(i)))
+                        .find(|(i, b)| {
+                            let waiting = YIELD_WAITERS.with(|w| {
+                                w.borrow().values().any(|v| v.contains(i))
+                            });
+                            let deps_ready = b.deps.iter().all(|dep| {
+                                EXECUTED_PROMISES.with(|e| e.borrow().contains(dep))
+                            });
+                            !waiting && deps_ready
+                                && !EXECUTED_PROMISES.with(|e| e.borrow().contains(i))
+                        })
                         .map(|(i, _)| i)
                 });
                 let Some(idx) = next else { break };

@@ -469,6 +469,27 @@ pub(crate) fn sub_execute(
 pub(crate) fn execute_promise(
     idx: usize,
 ) -> Result<Vec<Option<Vec<u8>>>, Box<dyn std::error::Error>> {
+    // A node waiting on a child's yield is NOT resolved: never memo-replay it
+    // (a replay would mark it executed and fire its .then dependents early).
+    let waiting = YIELD_WAITERS.with(|w| w.borrow().values().any(|v| v.contains(&idx)));
+    if waiting {
+        return Ok(vec![None]);
+    }
+    // A node whose deps aren't all executed yet is unresolved too — executing
+    // it now would see empty promise_results (a .then firing before its base).
+    // Return NotReady WITHOUT marking; the caller (root pipeline / drains)
+    // persists it via \x00yielddeps so the resume host delivers it later.
+    let deps_unready = PROMISE_DAG.with(|d| {
+        d.borrow().get(idx).map(|b| {
+            !b.deps
+                .iter()
+                .all(|dep| EXECUTED_PROMISES.with(|e| e.borrow().contains(dep)))
+        })
+        .unwrap_or(false)
+    });
+    if deps_unready {
+        return Ok(Vec::new());
+    }
     if let Some(hit) = PROMISE_OUTCOMES.with(|o| o.borrow().get(&idx).cloned()) {
         ptrace!(
             "  ⛓ receipt {} — replaying memoized result (execute-once)",
@@ -514,6 +535,23 @@ fn execute_promise_uncached(
     // BEFORE promise_result(0); the host used to be a silent noop → count 0.
     let old_mirror = promise_results_tls();
     set_promise_results_tls(dep_results.clone());
+    // Callback-receipt predecessor parity (nearcore): a .then callback
+    // receipt is created by the DEP promise's TARGET contract, so the
+    // callback's predecessor = the dep node's account (e.g. MPC contract
+    // for a sign promise .then'd back to the kernel) — not the node's
+    // own creator. Single-dep nodes only; multi-dep keeps the creator
+    // (nearcore joins are desugared per-dep upstream of here anyway).
+    let callback_pred = if batch.deps.len() == 1 {
+        PROMISE_DAG.with(|d| {
+            d.borrow()
+                .get(batch.deps[0])
+                .map(|dep_node| dep_node.account.clone())
+        })
+        .filter(|acct| !acct.is_empty())
+        .unwrap_or_else(|| batch.creator.clone())
+    } else {
+        batch.creator.clone()
+    };
     let saved =
         PROMISE_RESULTS.with(|r| std::mem::replace(&mut *r.borrow_mut(), dep_results.clone()));
     let mut out = Vec::new();
@@ -529,7 +567,7 @@ fn execute_promise_uncached(
                 method, args, dep, ..
             } = action
             {
-                match sub_execute(&batch.account, method, args, &batch.creator, *dep) {
+                match sub_execute(&batch.account, method, args, &callback_pred, *dep) {
                     Ok(ret) => out.push(ret),
                     Err(_) => out.push(None),
                 }
@@ -555,7 +593,7 @@ fn execute_promise_uncached(
                     // re-execute the WHOLE returned subtree inside the child
                     // (double transfers, phantom settles).
                     let outer_ret = PENDING_RETURN.with(|p| p.borrow_mut().take());
-                    let r = sub_execute(&batch.account, method, args, &batch.creator, *dep)?;
+                    let r = sub_execute(&batch.account, method, args, &callback_pred, *dep)?;
                     // NEAR receipt semantics (matches the airdrop suite):
                     // a trapped FnCall reverts ITSELF only — its result is
                     // Failed for descendants (promiseSucceeded=0) and
@@ -566,6 +604,21 @@ fn execute_promise_uncached(
                     let child_ret =
                         PENDING_RETURN.with(|p| std::mem::replace(&mut *p.borrow_mut(), outer_ret));
                     if let Some(ridx) = child_ret {
+                        // A returned YIELD is not a resolved promise: this node
+                        // waits until the yield is resumed (nearcore: the
+                        // .then fires when the callee's yield resolves).
+                        let ridx_is_yield = PROMISE_DAG
+                            .with(|d| d.borrow().get(ridx).map(|b| b.is_yield).unwrap_or(false));
+                        if ridx_is_yield {
+                            ptrace!("  ⏸ child returned yield {ridx} — node {idx} waits for resume");
+                            YIELD_WAITERS.with(|w| {
+                                w.borrow_mut().entry(ridx).or_default().push(idx)
+                            });
+                            // un-mark this node: it resolves at resume time
+                            EXECUTED_PROMISES.with(|e| { e.borrow_mut().remove(&idx); });
+                            out.push(None);
+                            continue;
+                        }
                         ptrace!("  ⛓ child returned promise {ridx} — resolving before dependents");
                         let cres = execute_promise(ridx)?;
                         // LIVE-NEAR flattening (2026-10-06, supersedes the
