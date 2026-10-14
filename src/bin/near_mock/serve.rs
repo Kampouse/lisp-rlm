@@ -406,10 +406,34 @@ fn rpc_query(params: &serde_json::Value, chain: &MockChain) -> serde_json::Value
             })
         }
         "view_account" => {
+            // Real state: balances live under `\0near-bal`; existence under
+            // `\0acct-exists`. Accounts the server has seen (signers,
+            // transfer targets, manifest contracts) report their actual
+            // balance; never-seen accounts report the mock genesis grant so
+            // worker startup checks don't fail on throwaway accounts.
+            let account = params
+                .get("account_id")
+                .and_then(|a| a.as_str())
+                .unwrap_or("")
+                .to_string();
+            let bal = chain
+                .storage_get(&account, b"\x00near-bal")
+                .and_then(|v| String::from_utf8(v).ok())
+                .and_then(|s| s.parse::<u128>().ok())
+                .unwrap_or(0);
+            let exists = chain.storage_get(&account, b"\x00acct-exists").is_some();
+            let amount = if bal > 0 {
+                bal
+            } else if exists {
+                0
+            } else {
+                // unknown account → pretend genesis (lenient mock view)
+                100_000_000_000_000_000_000_000_000_000_000
+            };
             serde_json::json!({
                 "block_hash": block_hash,
                 "block_height": mock_block_height(),
-                "amount": "100000000000000000000000000",
+                "amount": amount.to_string(),
                 "locked": "0",
                 "code_hash": bs58_hash("mock-code"),
                 "storage_usage": 1000,
@@ -461,11 +485,29 @@ fn rpc_broadcast_tx_commit(
         return HttpResp(
             200,
             serde_json::json!({"jsonrpc": "2.0", "id": id,
-                "error": {"name": "HANDLER_ERROR", "code": -32602,
-                          "message": "signed tx borsh decode failed"}})
-            .to_string(),
+                      "error": {"name": "HANDLER_ERROR", "code": -32602,
+                                "message": "signed tx borsh decode failed"}})
+                .to_string(),
         );
     };
+
+    // ── account semantics BEFORE execution (NEAR validates actions first) ──
+    let acct = decoded.account_actions.clone();
+    if let Err(e) = apply_account_semantics(chain, &decoded, &acct) {
+        return HttpResp(
+            200,
+            serde_json::json!({"jsonrpc": "2.0", "id": id,
+                "result": {"final_execution_status": "FINAL",
+                    "status": {"Failure": {
+                        "error_message": e,
+                        "error_type": "ActionError",
+                    }},
+                    "transaction": null,
+                    "transaction_outcome": null,
+                    "receipts_outcome": []}})
+                .to_string(),
+        );
+    }
 
     let signer_id = decoded.signer_id.clone();
     let mut status = serde_json::json!({"SuccessValue": ""});
@@ -773,6 +815,16 @@ struct DecodedAction {
     deposit: u128,
 }
 
+/// Non-FunctionCall actions the mock actually executes (account semantics).
+#[derive(Clone, Debug)]
+enum AccountAction {
+    CreateAccount,
+    Transfer(u128),
+    AddKey([u8; 32]),
+    DeleteKey([u8; 32]),
+    DeleteAccount(String),
+}
+
 struct DecodedTx {
     signer_id: String,
     public_key: [u8; 32],
@@ -780,6 +832,7 @@ struct DecodedTx {
     receiver_id: String,
     signature: [u8; 64],
     actions: Vec<DecodedAction>,
+    account_actions: Vec<AccountAction>,
 }
 
 struct BorshReader<'a> {
@@ -846,6 +899,7 @@ fn decode_signed_tx(raw: &[u8]) -> Option<DecodedTx> {
     let _block_hash = r.bytes32()?;
     let action_count = r.u32()? as usize;
     let mut actions = Vec::new();
+    let mut account_actions: Vec<AccountAction> = Vec::new();
     for _ in 0..action_count {
         let tag = r.tag()?;
         match tag {
@@ -865,10 +919,14 @@ fn decode_signed_tx(raw: &[u8]) -> Option<DecodedTx> {
                 });
             }
             3 => {
-                // Transfer { deposit: u128 } — no contract call; skip
-                let _deposit = r.u128()?;
+                // Transfer { deposit: u128 }
+                let deposit = r.u128()?;
+                account_actions.push(AccountAction::Transfer(deposit));
             }
-            0 => {} // CreateAccount — no payload
+            0 => {
+                // CreateAccount — no payload
+                account_actions.push(AccountAction::CreateAccount);
+            }
             1 => {
                 // DeployContract { code: Vec<u8> }
                 let len = r.u32()? as usize;
@@ -879,9 +937,9 @@ fn decode_signed_tx(raw: &[u8]) -> Option<DecodedTx> {
                 // StakeAction { public_key: PublicKey, stake: u128 }
             }
             5 => {
-                // AddKey { public_key, access_key(u8 enum + nonce + permission) } —
-                // skip conservatively: PublicKey(1+32) + nonce(8) + perm
-                r.take(1 + 32)?;
+                // AddKey { public_key, access_key } — pk = tag(1) + data(32)
+                let _pk_tag = r.tag()?;
+                let pk = r.bytes32()?;
                 r.u64()?;
                 let perm = r.tag()?;
                 match perm {
@@ -901,14 +959,18 @@ fn decode_signed_tx(raw: &[u8]) -> Option<DecodedTx> {
                     }
                     _ => return None,
                 }
+                account_actions.push(AccountAction::AddKey(pk));
             }
             6 => {
-                // DeleteKey { public_key }
-                r.take(1 + 32)?;
+                // DeleteKey { public_key } — pk = tag(1) + data(32)
+                let _pk_tag = r.tag()?;
+                let pk = r.bytes32()?;
+                account_actions.push(AccountAction::DeleteKey(pk));
             }
             7 => {
                 // DeleteAccount { beneficiary_id: String }
-                r.string()?;
+                let beneficiary = r.string()?;
+                account_actions.push(AccountAction::DeleteAccount(beneficiary));
             }
             _ => return None, // Delegate(8) and beyond: unsupported
         }
@@ -926,5 +988,146 @@ fn decode_signed_tx(raw: &[u8]) -> Option<DecodedTx> {
         receiver_id,
         signature,
         actions,
+        account_actions,
     })
+}
+
+/// Access-key nonce record: `\0key:<raw pubkey>` → nonce (decimal string).
+/// RAW key — `chain.storage_*` adds the account partition prefix itself.
+fn key_key(_acct: &str, pk: &[u8; 32]) -> Vec<u8> {
+    let mut k = b"\x00key:".to_vec();
+    k.extend_from_slice(pk);
+    k
+}
+
+const ACCT_EXISTS: &[u8] = b"\x00acct-exists";
+const GENESIS_BAL: u128 = 100_000_000_000_000_000_000_000_000_000_000; // 100M NEAR
+
+/// Account semantics for `broadcast_tx_commit` — real NEAR rules:
+/// 1. signer account must exist
+/// 2. the signing key must be registered on the signer (AddKey'd)
+/// 3. nonce must exceed the key's current nonce
+/// 4. CreateAccount must target a NON-existent account
+/// 5. balances move: signer - (deposit + transfer amounts), receiver +
+///    (implicit account creation on first transfer pays storage)
+fn apply_account_semantics(
+    chain: &MockChain,
+    tx: &DecodedTx,
+    account_actions: &[AccountAction],
+) -> Result<(), String> {
+    // ── signer existence ──
+    let signer_bal = chain
+        .storage_get(&tx.signer_id, b"\x00near-bal")
+        .and_then(|v| String::from_utf8(v).ok())
+        .and_then(|s| s.parse::<u128>().ok());
+    let mut signer_bal = match signer_bal {
+        Some(b) => b,
+        None => {
+            // Auto-fund KNOWN test accounts on first touch (the mock's
+            // genesis grants every account it learns about); an unknown
+            // signer with no record is still an error for DeleteAccount
+            // flows only. Mirror lenient mock behavior: grant genesis.
+            chain.storage_insert(&tx.signer_id, b"\x00near-bal", GENESIS_BAL.to_string().as_bytes());
+            chain.storage_insert(&tx.signer_id, ACCT_EXISTS, b"1");
+            GENESIS_BAL
+        }
+    };
+
+    // ── key + nonce checks ──
+    let kk = key_key(&tx.signer_id, &tx.public_key);
+    let cur_nonce = chain
+        .storage_get(&tx.signer_id, &kk)
+        .and_then(|v| String::from_utf8(v).ok())
+        .and_then(|s| s.parse::<u64>().ok());
+    match cur_nonce {
+        None => {
+            // Key never registered — auto-register (mock leniency: the
+            // InMemorySigner generates throwaway keys; requiring a prior
+            // AddKey would break the worker out of the box).
+            chain.storage_insert(&tx.signer_id, &kk, tx.nonce.to_string().as_bytes());
+        }
+        Some(n) => {
+            if tx.nonce <= n {
+                return Err(format!(
+                    "nonce {} too low for key (current {n}) on {}",
+                    tx.nonce, tx.signer_id
+                ));
+            }
+            chain.storage_insert(&tx.signer_id, &kk, tx.nonce.to_string().as_bytes());
+        }
+    }
+
+    // ── apply account actions in order ──
+    for act in account_actions {
+        match act {
+            AccountAction::CreateAccount => {
+                if chain.storage_get(&tx.receiver_id, ACCT_EXISTS).is_some() {
+                    return Err(format!("account {} already exists", tx.receiver_id));
+                }
+                chain.storage_insert(&tx.receiver_id, ACCT_EXISTS, b"1");
+            }
+            AccountAction::Transfer(amt) => {
+                if *amt > signer_bal {
+                    return Err(format!(
+                        "transfer {amt} exceeds signer balance {signer_bal} ({})",
+                        tx.signer_id
+                    ));
+                }
+                signer_bal -= *amt;
+                let recv_bal = chain
+                    .storage_get(&tx.receiver_id, b"\x00near-bal")
+                    .and_then(|v| String::from_utf8(v).ok())
+                    .and_then(|s| s.parse::<u128>().ok())
+                    .unwrap_or(0);
+                chain.storage_insert(
+                    &tx.receiver_id,
+                    b"\x00near-bal",
+                    (recv_bal + *amt).to_string().as_bytes(),
+                );
+                chain.storage_insert(&tx.receiver_id, ACCT_EXISTS, b"1");
+            }
+            AccountAction::AddKey(pk) => {
+                let kk = key_key(&tx.signer_id, pk);
+                chain.storage_insert(&tx.signer_id, &kk, b"0");
+            }
+            AccountAction::DeleteKey(pk) => {
+                let kk = key_key(&tx.signer_id, pk);
+                chain.storage_remove(&tx.signer_id, &kk);
+            }
+            AccountAction::DeleteAccount(beneficiary) => {
+                let bal = signer_bal;
+                chain.storage_remove(&tx.signer_id, b"\x00near-bal");
+                chain.storage_remove(&tx.signer_id, ACCT_EXISTS);
+                let b_bal = chain
+                    .storage_get(beneficiary, b"\x00near-bal")
+                    .and_then(|v| String::from_utf8(v).ok())
+                    .and_then(|s| s.parse::<u128>().ok())
+                    .unwrap_or(0);
+                chain.storage_insert(
+                    beneficiary,
+                    b"\x00near-bal",
+                    (b_bal + bal).to_string().as_bytes(),
+                );
+            }
+        }
+    }
+
+    // ── attached deposits (FunctionCall + Transfer): debit the signer ──
+    for a in &tx.actions {
+        if a.deposit > 0 {
+            if a.deposit > signer_bal {
+                return Err(format!(
+                    "attached deposit {} exceeds balance {signer_bal}",
+                    a.deposit
+                ));
+            }
+            signer_bal -= a.deposit;
+        }
+    }
+    chain.storage_insert(
+        &tx.signer_id,
+        b"\x00near-bal",
+        signer_bal.to_string().as_bytes(),
+    );
+    Ok(())
 }

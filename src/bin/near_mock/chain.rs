@@ -314,6 +314,19 @@ impl MockChain {
         let full = crate::state::prefixed_key(account, key);
         self.state.lock().unwrap().storage.get(&full).cloned()
     }
+
+    /// Write one storage key under an account's partition (server-side
+    /// account semantics — NOT a host-func; bypasses gas accounting).
+    pub fn storage_insert(&self, account: &str, key: &[u8], val: &[u8]) {
+        let full = crate::state::prefixed_key(account, key);
+        self.state.lock().unwrap().storage.insert(full, val.to_vec());
+    }
+
+    /// Remove one storage key under an account's partition.
+    pub fn storage_remove(&self, account: &str, key: &[u8]) {
+        let full = crate::state::prefixed_key(account, key);
+        self.state.lock().unwrap().storage.remove(&full);
+    }
 }
 
 /// Fluent call configuration (`MockChain::call` / `::view`).
