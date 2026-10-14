@@ -1,6 +1,6 @@
 # Accrual mount — wiring the proven fee ledger into clmm_pool_v4
 
-Status: V4 ASSEMBLY MOUNTED + GREEN (make accrual-mount-v4: 21/21). The
+Status: REVERSAL PINS GREEN (make accrual-mount-v4: 29/29). The
 PS accumulator (H1-H4) is wired into the REAL clmm_pool_v4 paths —
 generator-concat (`contracts/accrual-mount/gen_accrual_v4.py`) reads the
 lib fragments VERBATIM, applies 5 anchor-checked transforms (one-shot
@@ -13,7 +13,24 @@ the emitted lisp — scenario numbers are single-sourced from it and
 pinned bit-for-bit on-chain (G=11066201769818359 after two waves;
 claims 1799/2399/1799; withdraw paid 1,203,598 A incl. claimed credit +
 owed, and 4,816,941 B on real token legs; solvency 5997<=5999).
-Fixture fix along the way: escrow-ft ft_transfer now reads NEP-141
+Reversal legs now pinned ON the real pool (scenario runs the fail legs
+FIRST, against an empty pool token float, so the payout promises
+actually trap): H1 fail-swap restores G/F/AB/PB/slots bit-exactly
+(post-reversal claim pays 0); pay_b fail leg restores SHT/SH/AB/PB +
+ck:=kc, bal:=bc. Late-LP skim pinned (lp3 joins mid-stream, entry CK =
+current G, wave-2 claim = 0 while early LPs claim 1799/2399); solvency
+Σowed 5997 <= fees 5999 fail-closed. Two mount bugs found & fixed by
+these pins: (1) acm-grow rode `near/store-bytes`' "" return into the
+reversal args — pay_out couldn't un-grow G (phantom +wave rippled into
+every later pin); grow now returns the increment explicitly. (2) pay_b
+fail leg credited AB with tot_a (out_a+bc+owed) though withdraw only
+debited out_a — "a" now carries out_a. Known residuals (stock-pool
+design, inherited from v1, not mount bugs, flagged for Jean): share
+pricing is donation-attackable (first-depositor inflation: donate
+tokens directly to the pool, next depositor mints ~0 shares); the
+final promise leg always strands on failure (topological — no
+callback after the last transfer). Fixture fix
+along the way: escrow-ft ft_transfer now reads NEP-141
 `receiver_id` (was `to` only — pool payouts credited "" before); legacy
 field kept as fallback, ft-probe/ft-refund still green. Harness leg
 (make accrual-mount: 12/12) preserved.

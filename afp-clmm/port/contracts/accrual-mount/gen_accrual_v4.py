@@ -130,8 +130,9 @@ class Pool:
         return "0"
 
     # -- v4 swap wrapper (H1) --
-    def swap_a(self, sender, amt, min_dy):
+    def swap_a(self, sender, amt, min_dy, fail_b=False):
         f0 = self.F
+        g0 = self.G
         s0 = list(self.s)
         self.pool_swap(amt)
         dy, rem = self.DY, self.REM
@@ -142,6 +143,15 @@ class Pool:
         self.AB = self.add(self.AB, self.sub(amt, rem))
         self.PB = self.sub(self.PB, dy)
         inc = self.grow(f1)                         # H1
+        if fail_b:
+            # pool B token float empty -> payout promise traps -> pay-out
+            # fail leg: slots + F + G + AB + PB restored, refund = amt.
+            self.s = s0; self.F = f0
+            self.AB = self.sub(self.AB, self.sub(amt, rem))
+            self.PB = self.add(self.PB, dy)
+            self.G = self.sub(self.G, inc)
+            assert self.G == g0, "H1 reversal: G not restored bit-exact"
+            return {"refund": amt, "dy_trapped": dy, "inc_reversed": inc}
         # transport truth: swap A arrives via direct ft_on_transfer (no real
         # token leg); the B payout IS a real promise leg.
         self.floatB = self.sub(self.floatB, dy)
@@ -154,12 +164,13 @@ class Pool:
         return self.settle(lp)
 
     # -- withdraw4 (H3 settle pre-burn, H4 owed rides A leg) --
-    def withdraw(self, lp, sh):
+    def withdraw(self, lp, sh, fail_a=False):
         assert int(self.SH.get(lp, "0")) >= int(sh), "insufficient shares"
         kc = self.CK.get(lp, "0")
         bc = self.BAL.get(lp, "0")
         owed = self.settle(lp)                      # H3 pre-burn
         ab, pb, sht = self.AB, self.PB, self.SHT
+        o0_list = list(self.s)
         out_a = self.muldiv(sh, ab, sht)
         out_b = self.muldiv(sh, pb, sht)
         tot_a = self.add(out_a, self.add(bc, owed))  # H4: out_a + bc + owed
@@ -177,6 +188,29 @@ class Pool:
         self.floatB = self.sub(self.floatB, out_b)
         self.tk["A"][lp] = self.add(self.tk["A"].get(lp, "0"), tot_a)
         self.tk["B"][lp] = self.add(self.tk["B"].get(lp, "0"), out_b)
+        if fail_a:
+            # pool A token float empty -> A payout promise traps -> pay_b
+            # fail leg: SHT/SH/AB/PB/slots restored + ck:=kc, bal:=bc.
+            self.SHT = sht          # direct restore (was already reduced)
+            if left == "0":
+                self.SH[lp] = sh
+            else:
+                self.SH[lp] = self.add(left, sh)
+            self.AB = ab            # fail leg adds back exactly out_a
+            self.PB = pb            # fail leg adds back exactly out_b
+            # slots were scaled by PB/pb; pay_b adds back x_i = o_i - scaled,
+            # net effect slots return to o_i exactly (string adds, no division).
+            self.s = list(o0_list)
+            self.CK[lp] = kc
+            self.BAL[lp] = bc
+            # trapped transfer never moved tokens: undo float/tk deltas
+            self.floatA = self.add(self.floatA, tot_a)
+            self.floatB = self.add(self.floatB, out_b)
+            self.tk["A"][lp] = self.sub(self.tk["A"][lp], tot_a)
+            self.tk["B"][lp] = self.sub(self.tk["B"][lp], out_b)
+            assert self.SH[lp] == sh and self.SHT == sht
+            return {"status": "wd-failed", "owed": owed, "tot_a": tot_a,
+                    "kc": kc, "bc": bc}
         self.BAL[lp] = "0"                          # realized credit paid out
         return {"out_a": out_a, "owed": owed, "tot_a": tot_a,
                 "out_b": out_b, "kc": kc, "bc": bc}
@@ -214,8 +248,14 @@ ACCRUAL_DEFS = '''
 
 ;; H1: grow the aggregate by a fee wave (non-refund branch only)
 (define (acm-grow f)
-  (near/store-bytes "G"
-    (li-add (acm-get "G") (u128-muldiv f TWO64 (acm-get "SHT")))))
+  ;; returns the increment: store-bytes itself returns "" -- a value that
+  ;; rides the reversal args MUST be a real string (H1 exactness).
+  (if (str= (bz "SHT") "0")
+      "0"
+      (let ((inc (u128-muldiv f TWO64 (bz "SHT"))))
+        (begin
+          (near/store-bytes "G" (li-add (acm-get "G") inc))
+          inc))))
 
 ;; explicit claim: settle into BAL (payout rides the withdraw A leg)
 (define (acm-claim)
@@ -315,7 +355,7 @@ PAY_SECTION = '''(define (pay-out)
                         (slot-set 2 (u128-muldiv o2 (bz "PB") pb))
                         (slot-set 3 (u128-muldiv o3 (bz "PB") pb))
                         (slot-set 4 (u128-muldiv o4 (bz "PB") pb))
-                        (let ((args (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set "{}" "r" who) "b" out-b) "w" who) "s" sh) "a" (li-add out-a (li-add bc owed))) "g" "1") "x0" (li-sub o0 (slot-get 0))) "x1" (li-sub o1 (slot-get 1))) "x2" (li-sub o2 (slot-get 2))) "x3" (li-sub o3 (slot-get 3))) "x4" (li-sub o4 (slot-get 4))) "kc" kc) "bc" bc)))
+                        (let ((args (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set "{}" "r" who) "b" out-b) "w" who) "s" sh) "a" out-a) "g" "1") "x0" (li-sub o0 (slot-get 0))) "x1" (li-sub o1 (slot-get 1))) "x2" (li-sub o2 (slot-get 2))) "x3" (li-sub o3 (slot-get 3))) "x4" (li-sub o4 (slot-get 4))) "kc" kc) "bc" bc)))
                           (if (str= tot-a "0")
                               (let ((p (near/promise_batch_create (near/load-bytes "TOKB"))))
                                 (begin
@@ -420,8 +460,9 @@ def build_source():
 # ------------------------------------------------------------- scenario
 def build_scenario(p):
     st = []
-    LP1, LP2, TR, ADMIN = ("lp1.accrual.test.near", "lp2.accrual.test.near",
-                           "trader.accrual.test.near", "admin.accrual.test.near")
+    LP1, LP2, LP3, TR, ADMIN = (
+        "lp1.accrual.test.near", "lp2.accrual.test.near", "lp3.accrual.test.near",
+        "trader.accrual.test.near", "admin.accrual.test.near")
     POOL, TKA, TKB = ("pool.accrual.test.near", "tka.accrual.test.near",
                       "tkb.accrual.test.near")
 
@@ -450,18 +491,35 @@ def build_scenario(p):
            **{"as": TKA, "predecessor": TKA})
         p.swap_a(tr, amt, "1")
 
-    # -- setup: init + pool token floats (payout promises must clear) --
+    # -- setup: init ONLY (no floats yet: reversal pins run against an
+    #    empty pool token float, so payout promises trap and the fail legs
+    #    of pay_out / pay_b actually fire) --
     tx("init", "ok", args={"toka": TKA, "tokb": TKB}, **{"as": ADMIN})
-    tx("mint", "10000000", contract=TKB, args={"to": POOL, "amount": "10000000"},
-       **{"as": ADMIN})
-    tx("mint", "10000000", contract=TKA, args={"to": POOL, "amount": "10000000"},
-       **{"as": ADMIN})
-    p.floatA = "10000000"; p.floatB = "10000000"
 
     # -- deposits (H2) --
     deposit(LP1, "6000000")
     deposit(LP2, "4000000")
-    tx("accrual_state", f"PB:{p.PB} SH:{p.SH[LP2]}", args={"lp": LP2})
+    tx("accrual_state",
+       f"G:0 F:0 SHT:{p.SHT} AB:0 PB:{p.PB} SH:4000000 CK:0 BAL:0",
+       args={"lp": LP2})
+
+    # -- REVERSAL PIN 1 (H1 fail leg): swap with pool B float = 0.
+    #    Swap executes, dy > 0, B payout promise TRAPS, pay-out fail leg
+    #    restores slots + F + G + AB + PB and refunds the full amount. --
+    fx = p.swap_a(TR, "1000000", "1", fail_b=True)
+    tx("ft_on_transfer", "1000000",
+       args={"sender_id": TR, "amount": "1000000", "msg": "swap:1"},
+       **{"as": TKA, "predecessor": TKA})
+    view("accrual_state",
+         f"G:{p.G} F:{p.F} SHT:{p.SHT} AB:{p.AB} PB:{p.PB} "
+         f"SH:6000000 CK:0 BAL:0", {"lp": LP1})
+    assert p.G == "0" and p.F == "0" and p.AB == "0", "H1 reversal state"
+    tx("claim", "0", **{"as": LP1})  # post-reversal claim pays nothing
+
+    # -- floats minted AFTER the reversal pins (payouts clear from here) --
+    tx("mint", "10000000", contract=TKB, args={"to": POOL, "amount": "10000000"},
+       **{"as": ADMIN})
+    p.floatB = "10000000"
 
     # -- swap 1 (H1): G grows by f1*2^64//SHT --
     swap(TR, "1000000")
@@ -471,23 +529,44 @@ def build_scenario(p):
     tx("claim", c1, **{"as": LP1})
     view("accrual_state", f"CK:{p.CK[LP1]} BAL:{p.BAL[LP1]}", {"lp": LP1})
 
-    # -- swap 2, remaining claims --
+    # -- late LP3 joins mid-stream (skim pin): entry checkpoint = current G --
+    deposit(LP3, "10")
+    view("accrual_state", f"SH:{p.SH[LP3]} CK:{p.CK[LP3]}", {"lp": LP3})
+    assert p.CK[LP3] == p.G, "LP3 entry checkpoint must be current G"
+
+    # -- swap 2, remaining claims (LP3's claim = skim only) --
     swap(TR, "1000000")
     c2 = p.claim(LP2)
     tx("claim", c2, **{"as": LP2})
     c1b = p.claim(LP1)
     tx("claim", c1b, **{"as": LP1})
+    c3 = p.claim(LP3)
+    tx("claim", c3, **{"as": LP3})
+    assert int(c3) * 1000000 < int(c1), "SKIM: late LP must not share wave 1"
     view("accrual_state",
-         f"SH:{p.SH[LP2]} CK:{p.CK[LP2]} BAL:{p.BAL[LP2]}", {"lp": LP2})
+         f"SH:4000000 CK:{p.CK[LP2]} BAL:{p.BAL[LP2]}", {"lp": LP2})
 
-    total_owed = int(p.BAL[LP1]) + int(p.BAL[LP2])
+    total_owed = int(p.BAL[LP1]) + int(p.BAL[LP2]) + int(p.BAL[LP3])
     total_fees = int(p.F)
-    assert total_owed <= total_fees, f"SOLVENCY: {total_owed} > {total_fees}"
-    print(f"mirror: F={p.F} G={p.G} owed1={c1}+{c1b} owed2={c2} "
+    assert 0 < total_owed <= total_fees, f"SOLVENCY: {total_owed} > {total_fees}"
+    print(f"mirror: F={p.F} G={p.G} owed1={c1}+{c1b} owed2={c2} owed3={c3} "
           f"solvency {total_owed}<={total_fees}")
 
-    # -- withdraw LP1 (H3+H4): owed rides the A payout leg --
-    w = p.withdraw(LP1, p.SH[LP1])
+    # -- REVERSAL PIN 2 (H3+H4 fail leg): withdraw with pool A float = 0.
+    #    tot_a = out_a + bc + owed > 0 -> A payout promise TRAPS -> pay_b
+    #    fail leg restores SHT/SH/AB/PB/slots + ck:=kc, bal:=bc. --
+    wf = p.withdraw(LP1, "6000000", fail_a=True)
+    tx("withdraw", "wd-failed", args={"sh": "6000000"}, **{"as": LP1})
+    view("accrual_state",
+         f"SHT:{p.SHT} AB:{p.AB} PB:{p.PB} SH:6000000 "
+         f"CK:{p.CK[LP1]} BAL:{p.BAL[LP1]}", {"lp": LP1})
+    assert p.SH[LP1] == "6000000" and p.CK[LP1] == wf["kc"]
+
+    # -- float A minted after the reversal pin; real withdraw (H3+H4) --
+    tx("mint", "10000000", contract=TKA, args={"to": POOL, "amount": "10000000"},
+       **{"as": ADMIN})
+    p.floatA = "10000000"
+    w = p.withdraw(LP1, "6000000")
     assert int(w["tot_a"]) == int(w["out_a"]) + int(w["bc"]) + int(w["owed"])
     tx("withdraw", None, args={"sh": "6000000"}, **{"as": LP1})
     view("accrual_state",

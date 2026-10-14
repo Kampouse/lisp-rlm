@@ -281,8 +281,14 @@
 
 ;; H1: grow the aggregate by a fee wave (non-refund branch only)
 (define (acm-grow f)
-  (near/store-bytes "G"
-    (li-add (acm-get "G") (u128-muldiv f TWO64 (acm-get "SHT")))))
+  ;; returns the increment: store-bytes itself returns "" -- a value that
+  ;; rides the reversal args MUST be a real string (H1 exactness).
+  (if (str= (bz "SHT") "0")
+      "0"
+      (let ((inc (u128-muldiv f TWO64 (bz "SHT"))))
+        (begin
+          (near/store-bytes "G" (li-add (acm-get "G") inc))
+          inc))))
 
 ;; explicit claim: settle into BAL (payout rides the withdraw A leg)
 (define (acm-claim)
@@ -451,7 +457,7 @@
                         (slot-set 2 (u128-muldiv o2 (bz "PB") pb))
                         (slot-set 3 (u128-muldiv o3 (bz "PB") pb))
                         (slot-set 4 (u128-muldiv o4 (bz "PB") pb))
-                        (let ((args (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set "{}" "r" who) "b" out-b) "w" who) "s" sh) "a" (li-add out-a (li-add bc owed))) "g" "1") "x0" (li-sub o0 (slot-get 0))) "x1" (li-sub o1 (slot-get 1))) "x2" (li-sub o2 (slot-get 2))) "x3" (li-sub o3 (slot-get 3))) "x4" (li-sub o4 (slot-get 4))) "kc" kc) "bc" bc)))
+                        (let ((args (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set "{}" "r" who) "b" out-b) "w" who) "s" sh) "a" out-a) "g" "1") "x0" (li-sub o0 (slot-get 0))) "x1" (li-sub o1 (slot-get 1))) "x2" (li-sub o2 (slot-get 2))) "x3" (li-sub o3 (slot-get 3))) "x4" (li-sub o4 (slot-get 4))) "kc" kc) "bc" bc)))
                           (if (str= tot-a "0")
                               (let ((p (near/promise_batch_create (near/load-bytes "TOKB"))))
                                 (begin
