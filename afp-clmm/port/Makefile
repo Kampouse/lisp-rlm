@@ -22,6 +22,14 @@ escrow:           ## escrow leg: regenerate twins, compile, scenarios + mutation
 	cd scenarios/ts/lp-keyed && rm -f state.bin && $(NM) scenario s.json
 	python3 proof/mutate_escrow.py
 
+accrual:          ## accrual leg: regenerate twins, compile, fixture-wired scenarios
+	python3 generators/gen_accrual.py
+	python3 generators/gen_accrual_vectors.py
+	cd contracts/accrual/accrual && $(NC) build .
+	cd contracts/accrual/accrual/ts && $(NC) build .
+	cd scenarios/lisp/accrual-smoke && rm -f state.bin && $(NM) scenario s.json
+	cd scenarios/ts/accrual-ts && rm -f state.bin && $(NM) scenario s.json
+
 build-ts:         ## compile all TS twins (13 pool twins + escrow-ts)
 	python3 generators/build_ts.py
 

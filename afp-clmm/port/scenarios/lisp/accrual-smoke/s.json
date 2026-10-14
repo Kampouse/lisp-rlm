@@ -1,0 +1,183 @@
+{
+ "name": "clmm-accrual-smoke",
+ "manifest": "accrual.test.near=../../../contracts/accrual/accrual/target/accrual.wasm",
+ "steps": [
+  {
+   "method": "accrue_step",
+   "as": "trader.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "16777216",
+    "l": "2199023255552"
+   },
+   "contains": "a:bal:trader.test.near=2"
+  },
+  {
+   "method": "accrue_step",
+   "as": "trader.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "33554432",
+    "l": "2199023255552"
+   },
+   "contains": "a:bal:trader.test.near=4"
+  },
+  {
+   "method": "accrue_step",
+   "as": "trader.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "67108864",
+    "l": "4398046511104"
+   },
+   "contains": "a:bal:trader.test.near=12"
+  },
+  {
+   "method": "accrue_step",
+   "as": "trader.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "134217728",
+    "l": "274877906944"
+   },
+   "contains": "a:charged:trader.test.near=13"
+  },
+  {
+   "method": "accrue_step",
+   "as": "mallory.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "100",
+    "l": "274877906944"
+   },
+   "contains": "a:ck:mallory.test.near=100"
+  },
+  {
+   "method": "accrue_step",
+   "as": "fix1capone.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "4294967296",
+    "l": "1"
+   },
+   "contains": "a:bal:fix1capone.test.near=0"
+  },
+  {
+   "method": "accrue_step",
+   "as": "fix1capg.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "4294967296",
+    "l": "4294967296"
+   },
+   "contains": "a:bal:fix1capg.test.near=1"
+  },
+  {
+   "method": "accrue_step",
+   "as": "fix2capone.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "4294967301",
+    "l": "1"
+   },
+   "contains": "a:bal:fix2capone.test.near=0"
+  },
+  {
+   "method": "accrue_step",
+   "as": "fix2capg.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "4294967301",
+    "l": "4294967301"
+   },
+   "contains": "a:bal:fix2capg.test.near=1"
+  },
+  {
+   "method": "accrue_step",
+   "as": "fix3capone.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "18446744073709551623",
+    "l": "1"
+   },
+   "contains": "a:bal:fix3capone.test.near=1"
+  },
+  {
+   "method": "accrue_step",
+   "as": "fix3capg.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "18446744073709551623",
+    "l": "18446744073709551623"
+   },
+   "contains": "a:bal:fix3capg.test.near=18446744073709551630"
+  },
+  {
+   "method": "accrue_step",
+   "as": "fix4capone.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "18446744073709551625",
+    "l": "1"
+   },
+   "contains": "a:bal:fix4capone.test.near=1"
+  },
+  {
+   "method": "accrue_step",
+   "as": "fix4capg.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "18446744073709551625",
+    "l": "18446744073709551625"
+   },
+   "contains": "a:bal:fix4capg.test.near=18446744073709551634"
+  },
+  {
+   "method": "accrue_step",
+   "as": "fix5capone.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "12345",
+    "l": "1"
+   },
+   "contains": "a:bal:fix5capone.test.near=0"
+  },
+  {
+   "method": "accrue_step",
+   "as": "fix5capg.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "12345",
+    "l": "12345"
+   },
+   "contains": "a:bal:fix5capg.test.near=0"
+  },
+  {
+   "method": "accrue_step",
+   "as": "mallory.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "5",
+    "l": "274877906944"
+   },
+   "expect": "trap",
+   "trap_ok": "ERR_ORDER"
+  }
+ ]
+}
