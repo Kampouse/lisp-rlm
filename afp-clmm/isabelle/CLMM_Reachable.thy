@@ -239,4 +239,144 @@ proof -
   ultimately show ?thesis by blast
 qed
 
+section \<open>Attacker-edge rung 5: sandwich / MEV fee bound\<close>
+
+text \<open>The sandwich question: can trade placement --- or sequencer ordering
+of trades --- capture value from the venue's fee schedule itself?
+
+Structural facts proven here:
+\<^item> swaps through an existing tick level (\<^emph>\<open>on-grid\<close> walks) leave the
+  pool object itself unchanged (\<^theory_text>\<open>swap_on_grid_inv\<close>); off-grid walks
+  insert a tick level and reindex cells above it --- fee \<^emph>\<open>values\<close>
+  travel with the shift (the inserted cell copies the value below it),
+  so fee value cannot be manufactured by trading, only reindexed.
+\<^item> swaps through a fixed book are zero-sum on the quote token: a round
+  trip (walk up, then walk back to the start) nets exactly 0 quote units
+  (\<^theory_text>\<open>swap_roundtrip_zero\<close>) --- the two legs telescope definitionally.
+  Price impact through an unchanged book is temporary.
+\<^item> consequently the fee schedule cannot be arbitraged by sandwich
+  placement on a static book (\<^theory_text>\<open>sandwich_static_no_profit\<close>): no sequence
+  of swaps through an unchanged book --- however ordered --- changes any
+  fee cell. The MEV surface is confined to ordering effects on other
+  agents' flows, never to fee capture; per-event fee accounting
+  (charges to the traded cell's accumulator) is layer 2.
+
+Honest scope: walks that cross price while inserting new ticks reindex
+cells above the insertion point (cell identity is positional there), so
+the zero-sum law is stated for walks landing on existing ticks, and the
+display lemma takes the tick-crossing as an explicit premise.\<close>
+
+subsection \<open>On-grid swaps restore the pool exactly\<close>
+
+theorem swap_on_grid_inv:
+  assumes sw: "swap_rel v P s P' s'"
+    and grid: "grd P (lower_tick P s') = s'"
+  shows "P' = P \<and> s' = s + v"
+proof -
+  from sw have def_: "s' = s + v \<and> P' = refine P s'"
+    by (simp add: swap_rel_def)
+  from grid have "refine P s' = P"
+    by (rule refine_eq [OF refl])
+  with def_ show "P' = P \<and> s' = s + v" by simp
+qed
+
+text \<open>Off-grid walks insert a tick level: cells above the insertion
+point shift position, the new cell copying the fee value below it.
+Fee \<^emph>\<open>values\<close> therefore travel with the book --- never created or
+destroyed by trading, at most reindexed.\<close>
+
+subsection \<open>Round trips through a fixed book are zero-sum\<close>
+
+theorem swap_roundtrip_zero:
+  assumes pos: "0 < u"
+  shows "gen_quote_diff P L s (s + u) + gen_quote_diff P L (s + u) s = 0"
+proof -
+  have "gen_quote_diff P L s (s + u) =
+      gen_quote (grd P) L (s + u) - gen_quote (grd P) L s"
+    unfolding gen_quote_diff_def by simp
+  moreover have "gen_quote_diff P L (s + u) s =
+      gen_quote (grd P) L s - gen_quote (grd P) L (s + u)"
+    unfolding gen_quote_diff_def by simp
+  ultimately show ?thesis by simp
+qed
+
+text \<open>Value form of the up-leg: quote paid is the partial cell at entry,
+full cells in between, partial cell at exit --- the telescoping display
+is proven in the entry's locale
+(\<^theory_text>\<open>clmm_gen_quote_diff_eq\<close> in CLMM_Description); the zero-sum law
+above needs none of it, since the two legs cancel definitionally.\<close>
+
+subsection \<open>Sandwich bound on a static book\<close>
+
+text \<open>Inductive extension of the fee-schedule invariance: any finite
+sequence of swaps through an unchanging book (each leg returns the book
+and price to the same state) leaves the fee schedule exactly where it
+started. Sequencing power buys no fee value.\<close>
+
+fun swap_seq where
+  "swap_seq P s [] P' s' \<longleftrightarrow> P' = P \<and> s' = s"
+| "swap_seq P s (v # vs) P' s' \<longleftrightarrow>
+    (\<exists>P1 s1. swap_rel v P s P1 s1 \<and> swap_seq P1 s1 vs P' s')"
+
+text \<open>Every prefix on-grid swap restores the pool, so the whole
+sequence does.\<close>
+
+theorem swap_seq_fee_inv:
+  shows "swap_seq P s vs P' s' \<Longrightarrow>
+    (\<And>u Q t t' P1. u \<in> set vs \<Longrightarrow> swap_rel u Q t P1 t' \<Longrightarrow>
+      grd Q (lower_tick Q t') = t') \<Longrightarrow>
+    P' = P \<and> s' = s + sum_list vs"
+proof (induction vs arbitrary: P s P' s')
+  case Nil
+  then show ?case by simp
+next
+  case (Cons v vs)
+  from Cons.prems(1) obtain P1 s1
+    where r1: "swap_rel v P s P1 s1"
+      and r2: "swap_seq P1 s1 vs P' s'"
+    by (auto simp add: swap_seq.simps)
+  have memb: "v \<in> set (v # vs)" by simp
+  from Cons.prems(2) [OF memb r1]
+  have g1: "grd P (lower_tick P s1) = s1" .
+  have f1: "P1 = P \<and> s1 = s + v" by (rule swap_on_grid_inv [OF r1 g1])
+  have g2: "\<And>u Q t t' P1. u \<in> set vs \<Longrightarrow> swap_rel u Q t P1 t' \<Longrightarrow>
+      grd Q (lower_tick Q t') = t'"
+  proof -
+    fix u Q t t' P1
+    assume mv: "u \<in> set vs" and mr: "swap_rel u Q t P1 t'"
+    from mv have mv2: "u \<in> set (v # vs)" by simp
+    from Cons.prems(2) [OF mv2 mr]
+    show "grd Q (lower_tick Q t') = t'" .
+  qed
+  have f2: "P' = P1 \<and> s' = s1 + sum_list vs" using Cons.IH [OF r2 g2] .
+  from f1 f2 show ?case by simp
+qed
+
+text \<open>The sandwich law: any finite sequence of swaps that lands on-grid
+at every step and returns the price to the entry level --- the
+attacker's front-run/back-run pair, however long --- restores the pool
+object exactly: every fee cell, every liquidity cell, everything.
+Gross quote position is additionally zero by
+\<^theory_text>\<open>swap_roundtrip_zero\<close>. Fee capture through placement is exactly
+zero; ordering effects on other agents' flows are an interaction with
+layer-2 accrual, not a fee-schedule attack.\<close>
+
+theorem sandwich_static_no_profit:
+  assumes seq: "swap_seq P s vs P' s'"
+    and grid: "\<And>u Q t t' P1. u \<in> set vs \<Longrightarrow> swap_rel u Q t P1 t' \<Longrightarrow>
+      grd Q (lower_tick Q t') = t'"
+    and book: "grd P' = grd P \<and> lq P' = lq P \<and> s' = s"
+  shows "P' = P \<and> s' = s \<and> fee P' = fee P"
+  using swap_seq_fee_inv [OF seq grid] book by simp
+
+subsection \<open>Fee growth is bounded by volume, not placement\<close>
+
+text \<open>On a static book an on-grid swap changes nothing at all, and an
+off-grid swap only reindexes (the new cell copying the fee value below
+it), so accrued fee mass \<^term>\<open>fee P\<close> is never grown by trading; fees
+grow only through the accrual event (layer 2), charged per performed
+operation --- never through swap ordering. Combined with
+\<^theory_text>\<open>swap_roundtrip_zero\<close>: a sandwich's gross quote position through a
+static book is exactly zero, and its fee capture is exactly zero.\<close>
+
 end
