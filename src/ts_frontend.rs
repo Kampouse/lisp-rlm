@@ -8497,6 +8497,10 @@ fn map_builtin_call(name: &str) -> String {
         "toStr" | "toString" => "to-string",
         "jsonGet" => "json-get",
         "jsonGetStr" => "json-get-str",
+        // escaped-JSON read (2026-10-14): promiseResult(0) delivers the exec
+        // output as a JSON-ESCAPED string (`\"key\":\"value\"`) — the plain
+        // scanner misses every key. jsonGetStrEsc unescapes then scans.
+        "jsonGetStrEsc" => "json-get-str-esc?",
         // bare 2-arg record read (jsonGetU128("k", poolJson)) — hardened
         // parse, emits near/json_get_u128; the seal rides the hardened read
         // (clmm pool-record reads, 2026-10-12)

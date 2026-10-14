@@ -142,7 +142,19 @@ impl WasmEmitter {
     }
 
     pub(crate) fn ensure_json_get_func(&mut self) -> u32 {
-        if let Some(idx) = self.funcs.iter().position(|f| f.name == "__json_get") {
+        self.build_json_get_func(false)
+    }
+
+    /// Variant matching keys at ANY object depth ≥ 1 (2026-10-14): for
+    /// jsonGetStrEsc, where a full unescape turns an embedded JSON-in-JSON
+    /// body into real nested braces — keys legitimately sit below depth 1.
+    pub(crate) fn ensure_json_get_func_any(&mut self) -> u32 {
+        self.build_json_get_func(true)
+    }
+
+    fn build_json_get_func(&mut self, any_depth: bool) -> u32 {
+        let fname = if any_depth { "__json_get_any" } else { "__json_get" };
+        if let Some(idx) = self.funcs.iter().position(|f| f.name == fname) {
             return idx as u32;
         }
         let ma8 = wasm_encoder::MemArg {
@@ -276,8 +288,14 @@ impl WasmEmitter {
         ins.push(Instruction::LocalSet(depth));
         close!();
         ins.push(Instruction::LocalGet(depth));
-        ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Ne);
+        if any_depth {
+            // any-depth mode: skip only when OUTSIDE every object (depth 0)
+            ins.push(Instruction::I32Const(0));
+            ins.push(Instruction::I32Eq);
+        } else {
+            ins.push(Instruction::I32Const(1));
+            ins.push(Instruction::I32Ne);
+        }
         open_if!();
         ins.push(Instruction::LocalGet(scan_i));
         ins.push(Instruction::I32Const(1));
@@ -843,7 +861,7 @@ impl WasmEmitter {
         ins.push(Instruction::I64Const(0));
         ins.push(Instruction::Return);
         self.funcs.push(FuncDef {
-            name: "__json_get".to_string(),
+            name: fname.to_string(),
             param_count: 2,
             local_count: 13,
             instrs: ins,
@@ -2390,7 +2408,34 @@ impl WasmEmitter {
         buf: i64,
         buf_len_setup: &mut Vec<Instruction<'static>>,
     ) -> Result<Vec<Instruction<'static>>, String> {
-        let func_idx = self.ensure_json_get_func();
+        self.json_get_from_buf_mode(key, value_type, buf, buf_len_setup, false)
+    }
+
+    /// any_depth variant: matches keys at any object level ≥ 1 — for
+    /// jsonGetStrEsc where the unescape exposes nested JSON-in-JSON keys.
+    pub(crate) fn json_get_from_buf_any(
+        &mut self,
+        key: &str,
+        value_type: &str,
+        buf: i64,
+        buf_len_setup: &mut Vec<Instruction<'static>>,
+    ) -> Result<Vec<Instruction<'static>>, String> {
+        self.json_get_from_buf_mode(key, value_type, buf, buf_len_setup, true)
+    }
+
+    fn json_get_from_buf_mode(
+        &mut self,
+        key: &str,
+        value_type: &str,
+        buf: i64,
+        buf_len_setup: &mut Vec<Instruction<'static>>,
+        any_depth: bool,
+    ) -> Result<Vec<Instruction<'static>>, String> {
+        let func_idx = if any_depth {
+            self.ensure_json_get_func_any()
+        } else {
+            self.ensure_json_get_func()
+        };
         // Parse path: "choices[0].message.content" -> segments
         // Each segment is either Key("name") or Index(N)
         let arr_func_idx = self.ensure_json_array_index_func();

@@ -591,6 +591,388 @@ impl WasmEmitter {
                     _ => Err("json-get-str key must be a string literal".into()),
                 }
             }
+            "json-get-str-esc" | "json-get-str-esc?" => {
+                // (2026-10-14) jsonGetStrEsc(key, escapedJson) — the
+                // promiseResult(0) shape: a JSON string delivered in its
+                // JSON-ESCAPED form (`\"key\":\"value\"`), where the plain
+                // scanner misses every key (its pattern is `"key"` with
+                // REAL quotes). Emission: copy the escaped text into
+                // JSON_SCAN_BUF (same setup as json-get-str?), then an
+                // IN-PLACE unescape pass (\" → ", \\ → \, \/ → /, \n → LF,
+                // \t → TAB, \r → CR, \b, \f; \uXXXX → ASCII low byte —
+                // non-ASCII BMP collapses, documented limitation), then the
+                // standard json_get_from_buf scan on the now-clean buffer.
+                // In-place is safe: unescaped output is never longer than
+                // the input. The write cursor becomes the scan length.
+                let nil_on_miss = op.contains("?");
+                if a.len() < 2 {
+                    return Err(
+                        "json-get-str-esc requires two arguments: (json-get-str-esc \"key\" escaped-json)".into(),
+                    );
+                }
+                match &a[0] {
+                    LispVal::Str(key) => {
+                        let buf_expr = self.expr(&a[1])?;
+                        let tmp = self.local_idx("__jge_tmp");
+                        let mut setup = Vec::new();
+                        setup.extend(buf_expr.clone());
+                        setup.push(Instruction::I64Const(3));
+                        setup.push(Instruction::I64ShrU);
+                        setup.push(Instruction::LocalSet(tmp));
+                        let target_buf = JSON_SCAN_BUF;
+                        let src_ptr_l = self.local_idx("__jge_sp");
+                        let copy_i = self.local_idx("__jge_ci");
+                        let ma8 = wasm_encoder::MemArg {
+                            offset: 0,
+                            align: 0,
+                            memory_index: 0,
+                        };
+                        setup.push(Instruction::LocalGet(tmp));
+                        setup.push(Instruction::I64Const(0xFFFFFFFF));
+                        setup.push(Instruction::I64And);
+                        setup.push(Instruction::LocalSet(src_ptr_l));
+                        let mut len_setup = Vec::new();
+                        len_setup.push(Instruction::LocalGet(tmp));
+                        len_setup.push(Instruction::I64Const(32));
+                        len_setup.push(Instruction::I64ShrU);
+                        // plain copy into JSON_SCAN_BUF
+                        setup.push(Instruction::I64Const(0));
+                        setup.push(Instruction::LocalSet(copy_i));
+                        setup.push(Instruction::Block(BlockType::Empty));
+                        setup.push(Instruction::Loop(BlockType::Empty));
+                        setup.push(Instruction::LocalGet(copy_i));
+                        len_setup.iter().for_each(|i| setup.push(i.clone()));
+                        setup.push(Instruction::I64GeU);
+                        setup.push(Instruction::BrIf(1));
+                        setup.push(Instruction::I64Const(target_buf));
+                        setup.push(Instruction::LocalGet(copy_i));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::I32WrapI64);
+                        setup.push(Instruction::LocalGet(src_ptr_l));
+                        setup.push(Instruction::LocalGet(copy_i));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::I32WrapI64);
+                        setup.push(Instruction::I32Load8U(ma8.clone()));
+                        setup.push(Instruction::I32Store8(ma8.clone()));
+                        setup.push(Instruction::LocalGet(copy_i));
+                        setup.push(Instruction::I64Const(1));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::LocalSet(copy_i));
+                        setup.push(Instruction::Br(0));
+                        setup.push(Instruction::End);
+                        setup.push(Instruction::End);
+                        // ── in-place unescape pass ──
+                        // r = read cursor, w = write cursor, both start 0.
+                        // loop: c = buf[r]; if c == '\\': d = buf[r+1];
+                        //   map d (or \u + 2 hex) → out; r += step; else
+                        //   buf[w++] = c; r++. Ends at r == len.
+                        // Then len = w.
+                        let r = self.local_idx("__jge_r");
+                        let w = self.local_idx("__jge_w");
+                        let c = self.local_idx("__jge_c");
+                        let d = self.local_idx("__jge_d");
+                        setup.push(Instruction::I64Const(0));
+                        setup.push(Instruction::LocalSet(r));
+                        setup.push(Instruction::I64Const(0));
+                        setup.push(Instruction::LocalSet(w));
+                        setup.push(Instruction::Block(BlockType::Empty));
+                        setup.push(Instruction::Loop(BlockType::Empty));
+                        // while r < len
+                        setup.push(Instruction::LocalGet(r));
+                        len_setup.iter().for_each(|i| setup.push(i.clone()));
+                        setup.push(Instruction::I64GeU);
+                        setup.push(Instruction::BrIf(1));
+                        setup.push(Instruction::I64Const(target_buf));
+                        setup.push(Instruction::LocalGet(r));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::I32WrapI64);
+                        setup.push(Instruction::I32Load8U(ma8.clone()));
+                        setup.push(Instruction::I64ExtendI32U);
+                        setup.push(Instruction::LocalSet(c));
+                        // if c == '\\'
+                        setup.push(Instruction::LocalGet(c));
+                        setup.push(Instruction::I64Const(0x5C));
+                        setup.push(Instruction::I64Eq);
+                        setup.push(Instruction::If(BlockType::Empty));
+                        // d = buf[r+1] (escaped text is well-formed at this
+                        // position by construction; a trailing bare '\' at
+                        // end-of-buffer would read the NUL sentry — maps to
+                        // a harmless byte, loop exits next iteration)
+                        setup.push(Instruction::I64Const(target_buf));
+                        setup.push(Instruction::LocalGet(r));
+                        setup.push(Instruction::I64Const(1));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::I32WrapI64);
+                        setup.push(Instruction::I32Load8U(ma8.clone()));
+                        setup.push(Instruction::I64ExtendI32U);
+                        setup.push(Instruction::LocalSet(d));
+                        // r += 2 (default; \u overrides below)
+                        setup.push(Instruction::LocalGet(r));
+                        setup.push(Instruction::I64Const(2));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::LocalSet(r));
+                        // dispatch on d — each arm writes buf[w++] and falls
+                        // through to the loop tail. \uXXXX handled first:
+                        // if d == 'u', parse 4 hex → byte (low 8 bits).
+                        setup.push(Instruction::LocalGet(d));
+                        setup.push(Instruction::I64Const(0x75)); // 'u'
+                        setup.push(Instruction::I64Eq);
+                        setup.push(Instruction::If(BlockType::Empty));
+                        // \u: h = hex4(buf[r..r+4]) — read 4 bytes, fold
+                        let h = self.local_idx("__jge_h");
+                        let k = self.local_idx("__jge_k");
+                        setup.push(Instruction::I64Const(0));
+                        setup.push(Instruction::LocalSet(h));
+                        setup.push(Instruction::I64Const(0));
+                        setup.push(Instruction::LocalSet(k));
+                        setup.push(Instruction::Block(BlockType::Empty));
+                        setup.push(Instruction::Loop(BlockType::Empty));
+                        setup.push(Instruction::LocalGet(k));
+                        setup.push(Instruction::I64Const(4));
+                        setup.push(Instruction::I64GeU);
+                        setup.push(Instruction::BrIf(1));
+                        setup.push(Instruction::LocalGet(h));
+                        setup.push(Instruction::I64Const(4));
+                        setup.push(Instruction::I64Mul);
+                        setup.push(Instruction::LocalSet(h));
+                        // n = buf[r+k] → hex digit value
+                        setup.push(Instruction::I64Const(target_buf));
+                        setup.push(Instruction::LocalGet(r));
+                        setup.push(Instruction::LocalGet(k));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::I32WrapI64);
+                        setup.push(Instruction::I32Load8U(ma8.clone()));
+                        setup.push(Instruction::I64ExtendI32U);
+                        setup.push(Instruction::LocalSet(c));
+                        // '0'..'9' → -'0'; 'a'..'f' → -'a'+10; 'A'..'F' → -'A'+10
+                        setup.push(Instruction::LocalGet(c));
+                        setup.push(Instruction::I64Const(0x30));
+                        setup.push(Instruction::I64GeU);
+                        setup.push(Instruction::LocalGet(c));
+                        setup.push(Instruction::I64Const(0x39));
+                        setup.push(Instruction::I64LeU);
+                        setup.push(Instruction::I32And);
+                        setup.push(Instruction::If(BlockType::Result(ValType::I64)));
+                        setup.push(Instruction::LocalGet(c));
+                        setup.push(Instruction::I64Const(0x30));
+                        setup.push(Instruction::I64Sub);
+                        setup.push(Instruction::Else);
+                        setup.push(Instruction::LocalGet(c));
+                        setup.push(Instruction::I64Const(0x61));
+                        setup.push(Instruction::I64GeU);
+                        setup.push(Instruction::LocalGet(c));
+                        setup.push(Instruction::I64Const(0x66));
+                        setup.push(Instruction::I64LeU);
+                        setup.push(Instruction::I32And);
+                        setup.push(Instruction::If(BlockType::Result(ValType::I64)));
+                        setup.push(Instruction::LocalGet(c));
+                        setup.push(Instruction::I64Const(0x57)); // -'a'+10 = -87
+                        setup.push(Instruction::I64Sub);
+                        setup.push(Instruction::Else);
+                        setup.push(Instruction::LocalGet(c));
+                        setup.push(Instruction::I64Const(0x37)); // -'A'+10 = -55
+                        setup.push(Instruction::I64Sub);
+                        setup.push(Instruction::End);
+                        setup.push(Instruction::End);
+                        setup.push(Instruction::LocalSet(c));
+                        setup.push(Instruction::LocalGet(h));
+                        setup.push(Instruction::LocalGet(c));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::LocalSet(h));
+                        setup.push(Instruction::LocalGet(k));
+                        setup.push(Instruction::I64Const(1));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::LocalSet(k));
+                        setup.push(Instruction::Br(0));
+                        setup.push(Instruction::End);
+                        setup.push(Instruction::End);
+                        // r += 4 (hex consumed); write low byte
+                        setup.push(Instruction::LocalGet(r));
+                        setup.push(Instruction::I64Const(4));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::LocalSet(r));
+                        setup.push(Instruction::I64Const(target_buf));
+                        setup.push(Instruction::LocalGet(w));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::I32WrapI64);
+                        setup.push(Instruction::LocalGet(h));
+                        setup.push(Instruction::I64Const(0xFF));
+                        setup.push(Instruction::I64And);
+                        setup.push(Instruction::I64Store8(ma8.clone()));
+                        setup.push(Instruction::LocalGet(w));
+                        setup.push(Instruction::I64Const(1));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::LocalSet(w));
+                        setup.push(Instruction::Else);
+                        // simple escapes: " \ / b f n r t
+                        setup.push(Instruction::LocalGet(d));
+                        setup.push(Instruction::I64Const(0x22));
+                        setup.push(Instruction::I64Eq);
+                        setup.push(Instruction::If(BlockType::Result(ValType::I64)));
+                        setup.push(Instruction::I64Const(0x22));
+                        setup.push(Instruction::Else);
+                        setup.push(Instruction::LocalGet(d));
+                        setup.push(Instruction::I64Const(0x5C));
+                        setup.push(Instruction::I64Eq);
+                        setup.push(Instruction::If(BlockType::Result(ValType::I64)));
+                        setup.push(Instruction::I64Const(0x5C));
+                        setup.push(Instruction::Else);
+                        setup.push(Instruction::LocalGet(d));
+                        setup.push(Instruction::I64Const(0x2F));
+                        setup.push(Instruction::I64Eq);
+                        setup.push(Instruction::If(BlockType::Result(ValType::I64)));
+                        setup.push(Instruction::I64Const(0x2F));
+                        setup.push(Instruction::Else);
+                        setup.push(Instruction::LocalGet(d));
+                        setup.push(Instruction::I64Const(0x6E)); // n
+                        setup.push(Instruction::I64Eq);
+                        setup.push(Instruction::If(BlockType::Result(ValType::I64)));
+                        setup.push(Instruction::I64Const(0x0A));
+                        setup.push(Instruction::Else);
+                        setup.push(Instruction::LocalGet(d));
+                        setup.push(Instruction::I64Const(0x74)); // t
+                        setup.push(Instruction::I64Eq);
+                        setup.push(Instruction::If(BlockType::Result(ValType::I64)));
+                        setup.push(Instruction::I64Const(0x09));
+                        setup.push(Instruction::Else);
+                        setup.push(Instruction::LocalGet(d));
+                        setup.push(Instruction::I64Const(0x72)); // r
+                        setup.push(Instruction::I64Eq);
+                        setup.push(Instruction::If(BlockType::Result(ValType::I64)));
+                        setup.push(Instruction::I64Const(0x0D));
+                        setup.push(Instruction::Else);
+                        setup.push(Instruction::LocalGet(d));
+                        setup.push(Instruction::I64Const(0x62)); // b
+                        setup.push(Instruction::I64Eq);
+                        setup.push(Instruction::If(BlockType::Result(ValType::I64)));
+                        setup.push(Instruction::I64Const(0x08));
+                        setup.push(Instruction::Else);
+                        setup.push(Instruction::LocalGet(d));
+                        setup.push(Instruction::I64Const(0x66)); // f
+                        setup.push(Instruction::I64Eq);
+                        setup.push(Instruction::If(BlockType::Result(ValType::I64)));
+                        setup.push(Instruction::I64Const(0x0C));
+                        setup.push(Instruction::Else);
+                        // unknown escape: keep the escaped char as-is
+                        setup.push(Instruction::LocalGet(d));
+                        setup.push(Instruction::End);
+                        setup.push(Instruction::End);
+                        setup.push(Instruction::End);
+                        setup.push(Instruction::End);
+                        setup.push(Instruction::End);
+                        setup.push(Instruction::End);
+                        setup.push(Instruction::End);
+                        setup.push(Instruction::End); // 8th: close the 'f' If
+                        // buf[w++] = mapped
+                        setup.push(Instruction::LocalSet(d)); // d now holds mapped byte
+                        setup.push(Instruction::I64Const(target_buf));
+                        setup.push(Instruction::LocalGet(w));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::I32WrapI64);
+                        setup.push(Instruction::LocalGet(d));
+                        setup.push(Instruction::I64Store8(ma8.clone()));
+                        setup.push(Instruction::LocalGet(w));
+                        setup.push(Instruction::I64Const(1));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::LocalSet(w));
+                        setup.push(Instruction::End); // close if-escape
+                        // plain path: buf[w++] = c; r+=1 — the escape branch
+                        // already advanced r by 2 (or +6 for \u), so the +1
+                        // lives ONLY in this else arm.
+                        setup.push(Instruction::Else);
+                        setup.push(Instruction::I64Const(target_buf));
+                        setup.push(Instruction::LocalGet(w));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::I32WrapI64);
+                        setup.push(Instruction::LocalGet(c));
+                        setup.push(Instruction::I64Store8(ma8.clone()));
+                        setup.push(Instruction::LocalGet(w));
+                        setup.push(Instruction::I64Const(1));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::LocalSet(w));
+                        setup.push(Instruction::LocalGet(r));
+                        setup.push(Instruction::I64Const(1));
+                        setup.push(Instruction::I64Add);
+                        setup.push(Instruction::LocalSet(r));
+                        setup.push(Instruction::End);
+                        setup.push(Instruction::Br(0));
+                        setup.push(Instruction::End);
+                        setup.push(Instruction::End);
+                        // scan length = write cursor w
+                        let mut len_for_jg = Vec::new();
+                        len_for_jg.push(Instruction::LocalGet(w));
+                        let mut v = self.json_get_from_buf_any(
+                            key, "str", target_buf, &mut len_for_jg,
+                        )?;
+                        // ── result handling: identical tail to json-get-str? ──
+                        let jgs_tmp2 = self.local_idx("jgs_packed2");
+                        let jgs_len = self.local_idx_i32("jgs_len2");
+                        let jgs_ptr = self.local_idx_i32("jgs_ptr2");
+                        v.push(Instruction::LocalSet(jgs_tmp2));
+                        if nil_on_miss {
+                            v.push(Instruction::LocalGet(jgs_tmp2));
+                            v.push(Instruction::I64Eqz);
+                            v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                            v.push(Instruction::I64Const(TAG_NIL));
+                            v.push(Instruction::Else);
+                        }
+                        v.push(Instruction::LocalGet(jgs_tmp2));
+                        v.push(Instruction::I64Const(32));
+                        v.push(Instruction::I64ShrU);
+                        v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::LocalSet(jgs_len));
+                        v.push(Instruction::LocalGet(jgs_tmp2));
+                        v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::LocalSet(jgs_ptr));
+                        let jgs_heap2 = self.local_idx("jgs_heap2");
+                        let jgs_aligned2 = self.local_idx_i32("jgs_aligned2");
+                        let rhp2: i32 = 56;
+                        let ma82 = wasm_encoder::MemArg {
+                            offset: 0,
+                            align: 3,
+                            memory_index: 0,
+                        };
+                        v.push(Instruction::LocalGet(jgs_len));
+                        v.push(Instruction::I32Const(7));
+                        v.push(Instruction::I32Add);
+                        v.push(Instruction::I32Const(-8));
+                        v.push(Instruction::I32And);
+                        v.push(Instruction::LocalSet(jgs_aligned2));
+                        v.push(Instruction::I32Const(rhp2));
+                        v.push(Instruction::I64Load(ma82.clone()));
+                        v.push(Instruction::LocalSet(jgs_heap2));
+                        v.push(Instruction::I32Const(rhp2));
+                        v.push(Instruction::LocalGet(jgs_heap2));
+                        v.push(Instruction::LocalGet(jgs_aligned2));
+                        v.push(Instruction::I64ExtendI32U);
+                        v.push(Instruction::I64Add);
+                        v.push(Instruction::I64Store(ma82));
+                        v.push(Instruction::LocalGet(jgs_heap2));
+                        v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::LocalGet(jgs_ptr));
+                        v.push(Instruction::LocalGet(jgs_len));
+                        v.push(Instruction::MemoryCopy {
+                            src_mem: 0,
+                            dst_mem: 0,
+                        });
+                        v.push(Instruction::LocalGet(jgs_len));
+                        v.push(Instruction::I64ExtendI32U);
+                        v.push(Instruction::I64Const(32));
+                        v.push(Instruction::I64Shl);
+                        v.push(Instruction::LocalGet(jgs_heap2));
+                        v.push(Instruction::I64Or);
+                        v.extend(self.emit_tag_str());
+                        if nil_on_miss {
+                            v.push(Instruction::End);
+                        }
+                        v.splice(0..0, setup.iter().cloned());
+                        Ok(v)
+                    }
+                    _ => Err("json-get-str-esc key must be a string literal".into()),
+                }
+            }
             "json-get-float" => {
                 if a.is_empty() {
                     return Err("json-get-float requires a string key argument".into());
