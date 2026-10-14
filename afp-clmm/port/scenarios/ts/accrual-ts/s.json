@@ -169,6 +169,116 @@
   },
   {
    "method": "accrueStep",
+   "as": "fix1capone.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "4294967296",
+    "l": "1"
+   },
+   "contains": "a:bal:fix1capone.test.near=0"
+  },
+  {
+   "method": "accrueStep",
+   "as": "fix1capg.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "4294967296",
+    "l": "4294967296"
+   },
+   "contains": "a:bal:fix1capg.test.near=1"
+  },
+  {
+   "method": "accrueStep",
+   "as": "fix2capone.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "4294967301",
+    "l": "1"
+   },
+   "contains": "a:bal:fix2capone.test.near=0"
+  },
+  {
+   "method": "accrueStep",
+   "as": "fix2capg.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "4294967301",
+    "l": "4294967301"
+   },
+   "contains": "a:bal:fix2capg.test.near=1"
+  },
+  {
+   "method": "accrueStep",
+   "as": "fix3capone.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "18446744073709551623",
+    "l": "1"
+   },
+   "contains": "a:bal:fix3capone.test.near=1"
+  },
+  {
+   "method": "accrueStep",
+   "as": "fix3capg.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "18446744073709551623",
+    "l": "18446744073709551623"
+   },
+   "contains": "a:bal:fix3capg.test.near=18446744073709551630"
+  },
+  {
+   "method": "accrueStep",
+   "as": "fix4capone.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "18446744073709551625",
+    "l": "1"
+   },
+   "contains": "a:bal:fix4capone.test.near=1"
+  },
+  {
+   "method": "accrueStep",
+   "as": "fix4capg.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "18446744073709551625",
+    "l": "18446744073709551625"
+   },
+   "contains": "a:bal:fix4capg.test.near=18446744073709551634"
+  },
+  {
+   "method": "accrueStep",
+   "as": "fix5capone.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "12345",
+    "l": "1"
+   },
+   "contains": "a:bal:fix5capone.test.near=0"
+  },
+  {
+   "method": "accrueStep",
+   "as": "fix5capg.test.near",
+   "contract": "accrual.test.near",
+   "attach": "0",
+   "args": {
+    "g": "12345",
+    "l": "12345"
+   },
+   "contains": "a:bal:fix5capg.test.near=0"
+  },
+  {
+   "method": "accrueStep",
    "as": "mallory.test.near",
    "contract": "accrual.test.near",
    "attach": "0",
