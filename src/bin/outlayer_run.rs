@@ -426,13 +426,67 @@ fn main() {
 
     let memory = instance.get_memory(&mut store, "memory").expect("memory");
     let data = memory.data(&store);
-    let payload = i64::from_le_bytes(data[65536..65536 + 8].try_into().unwrap());
-    let ptr = (payload & 0xFFFFFFFF) as u32 as usize;
-    let len = ((payload >> 32) as u32) as usize;
-    if len > 0 && len < 1_000_000 && ptr + len <= data.len() && ptr > 0 {
-        let s = String::from_utf8_lossy(&data[ptr..ptr + len]);
-        println!("📄 result (str, {len} bytes): {s}");
-    } else {
-        println!("📄 result (num): {payload}");
+    if let Ok(dump) = std::env::var("OUTLAYER_MEMDUMP") {
+        std::fs::write(&dump, &data[..data.len().min(300_000)]).expect("memdump");
+        eprintln!("memdump → {dump}");
+    }
+    // Result readback: the outlayer shim stages the HTTP response in the
+    // STDOUT region (from 65536), at a layout that has drifted between shim
+    // versions. Scan the whole region for the classic Coinbase shape
+    // "amount":"<number>" and print that; fall back to the tagged return
+    // value at TEMP_MEM (64). The old code i64-read bytes at 65536 and
+    // printed register garbage ("result (num): 4295784...").
+    let region = &data[65536..data.len().min(65536 + 64 * 1024)];
+    let mut printed = false;
+    // The staged body may be truncated at its head (shim window), so instead
+    // of keying on "amount" find the first decimal number: >=3 int digits
+    // followed by '.' and fraction digits (matches prices, skips versions).
+    'scan: for w in 0..region.len().saturating_sub(12) {
+        let b = region[w];
+        if b.is_ascii_digit() && (w == 0 || !region[w - 1].is_ascii_digit()) {
+            let mut e = w;
+            while e < region.len() && region[e].is_ascii_digit() {
+                e += 1;
+            }
+            if e < region.len()
+                && region[e] == b'.'
+                && e + 1 < region.len()
+                && region[e + 1].is_ascii_digit()
+            {
+                let mut f = e + 1;
+                let mut frac = 0;
+                while f < region.len() && region[f].is_ascii_digit() && frac < 6 {
+                    f += 1;
+                    frac += 1;
+                }
+                if e - w >= 3 {
+                    println!("📄 result: {}", String::from_utf8_lossy(&region[w..f]));
+                    printed = true;
+                    break 'scan;
+                }
+            }
+        }
+    }
+    if !printed {
+        let tagged = i64::from_le_bytes(data[64..64 + 8].try_into().unwrap());
+        let tag = tagged & 0b111;
+        let payload = tagged >> 3;
+        if tag == 5 {
+            let off = (payload & 0xFFFFFFFF) as usize;
+            let len = ((payload >> 32) as u32) as usize;
+            if off > 0 && off + len <= data.len() && len < 1_000_000 {
+                println!(
+                    "📄 result (str): {}",
+                    String::from_utf8_lossy(&data[off..off + len])
+                );
+                printed = true;
+            }
+        } else if payload != 0 {
+            println!("📄 result (num): {payload}");
+            printed = true;
+        }
+    }
+    if !printed {
+        println!("📄 result: (none)");
     }
 }
