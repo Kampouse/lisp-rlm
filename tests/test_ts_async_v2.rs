@@ -392,6 +392,37 @@ export function f(): void {
 }
 
 #[test]
+fn v2_money_seal_accepts_u128_member_arithmetic() {
+    let _l = lock();
+
+    // The seal (u128_arith_call) must recognize BOTH spellings —
+    // free-fn u128Div(a,b) and member u128.div(a,b) lower to the same
+    // builtin. Found via the TWAP TS twin: `const fee: Yocto =
+    // u128.div(...)` was rejected as "not provable" while the identical
+    // free-fn form passed — the seal depended on spelling choice.
+    let member = r#"
+type Yocto = string;
+export function f(): void {
+  const out = near.jsonGetStr("out") ?? "0";
+  const fee: Yocto = u128.div(u128.mul(out, "100"), "10000");
+  const net1: Yocto = u128.sub(out, fee);
+  near.transferU128("carol.v2.test.near", net1);
+}
+"#;
+    ts_to_lisp_source(member).unwrap();
+
+    let free = r#"
+type Yocto = string;
+export function f(): void {
+  const out = near.jsonGetStr("out") ?? "0";
+  const fee: Yocto = u128Div(u128Mul(out, "100"), "10000");
+  near.transferU128("carol.v2.test.near", fee);
+}
+"#;
+    ts_to_lisp_source(free).unwrap();
+}
+
+#[test]
 fn v2_money_taint_raw_arithmetic_on_amounts_is_compile_error() {
     let _l = lock(); // compile-only, but keep the family serialized anyway
 

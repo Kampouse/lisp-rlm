@@ -44,6 +44,7 @@ pub mod json;
 pub mod lambda;
 pub mod limb_locals;
 pub mod name_map;
+pub mod param_map;
 use call_u128_str::U128Helpers;
 pub mod call_bitwise;
 pub mod call_defi;
@@ -518,6 +519,19 @@ const INPUT_CACHE_BUF: i64 = 40960;
 /// (was INPUT_BUF — fine when every getter re-read the input, fatal with
 /// caching: one jsonGet destroyed the cached input for all later getters)
 const JSON_SCAN_BUF: i64 = 57344;
+/// 64KiB @ 81920 — staging buffer for promise_result payloads (host 34
+/// read_register target). TEMP_MEM (64) was fatal here: read_register writes
+/// the FULL register bytes at the guest-chosen pointer with no bound, so any
+/// payload >192 bytes crossed into the data section (literals start at 256)
+/// and silently corrupted early literals — observed 2026-10-14 (kernel2 x402):
+/// a ~230B 1Click quote flattened into promise_result(0) overwrote the "job:"
+/// literal at 296, so every later "job:"+jobId key concat hashed garbage and
+/// setJobStatus's storageGet("job:…") read a record that didn't exist
+/// (status stuck at quote_phase). 81920..147456 sits in the fixed-zone hole
+/// (JSON_SCAN overflow zone ends ~73728; heap starts at 200000). Payloads
+/// >64KiB would still overflow — same 16KB-style cap as every other fixed
+/// staging buffer; promise payloads in practice are KB-scale.
+pub(crate) const PAYLOAD_BUF: i64 = 81920;
 
 // ── Borsh schema types (compile-time only) ──
 #[derive(Clone, Debug)]
@@ -2073,7 +2087,7 @@ mod json_auto_test {
 
     #[test]
     fn test_json_get_auto_int() {
-        let src = r#"(define (run) (near/json_get_int "price")) (export "run" run true)"#;
+        let src = r#"(define (run) (default (near/json_get_int "price") 0)) (export "run" run true)"#;
         let wat = compile_near_to_wat(src).expect("wat");
         assert!(wat.contains("call"), "should emit host calls");
         eprintln!("INT WAT:\n{}", wat);
@@ -2081,7 +2095,7 @@ mod json_auto_test {
 
     #[test]
     fn test_json_get_auto_compiles() {
-        let src = r#"(define (run) (json/get "price")) (export "run" run true)"#;
+        let src = r#"(define (run) (default (json/get "price") 0)) (export "run" run true)"#;
         let result = compile_near(src);
         assert!(result.is_ok(), "json/get should compile: {:?}", result);
         let wasm = result.unwrap();
@@ -2090,19 +2104,20 @@ mod json_auto_test {
 
     #[test]
     fn test_json_get_auto_str() {
-        let src = r#"(define (run) (json/get "name")) (export "run" run true)"#;
+        let src = r#"(define (run) (default (json/get "name") "")) (export "run" run true)"#;
         let result = compile_near(src);
         assert!(result.is_ok(), "json/get str should compile: {:?}", result);
     }
 
     #[test]
     fn test_json_get_auto_missing_key() {
-        // Should still compile — key not found returns 0 at runtime
+        // Bare read is now a compile error (money-safety gate): missing keys
+        // return nil, not 0 — callers must declare an explicit fallback.
         let src = r#"(define (run) (json/get "nonexistent")) (export "run" run true)"#;
         let result = compile_near(src);
         assert!(
-            result.is_ok(),
-            "json/get missing key should compile: {:?}",
+            result.is_err(),
+            "bare json/get should be rejected: {:?}",
             result
         );
     }

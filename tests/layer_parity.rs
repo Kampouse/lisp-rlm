@@ -40,7 +40,10 @@ const SPECIAL_FORMS: &[&str] = &[
 
 /// Scanner over-captures: string literals that match the arm regex but are
 /// not ops (schema field name, outlayer context keys). Documented, not ops.
-const SCAN_NOISE: &[&str] = &["name", "predecessor", "signer", "predecessor_id", "signer_id"];
+const SCAN_NOISE: &[&str] = &[
+    "name", "predecessor", "signer", "predecessor_id", "signer_id",
+    ":u128", // json-get type-tag literal in call_json.rs, not a builtin name
+];
 
 /// Interp-layer names with NO wasm emitter arm (direction: present in
 /// registry/typing/bytecode/dispatch, absent from wasm_emit). Families:
@@ -363,6 +366,8 @@ const INTERP_ONLY: &[(&str, &str)] = &[
 ];
 
 const WASM_ONLY: &[(&str, &str)] = &[
+    ("json-get-str-esc", "jsonGetStrEsc: unescape+scan over JSON-escaped buffers (wasm memory, 2026-10-14)"),
+    ("json-get-str-esc?", "nil-on-miss jsonGetStrEsc (wasm memory, 2026-10-14)"),
     ("abort", "wasm test-harness assertion"),
     ("ai-chat", "wasm-run host import (harness only)"),
     ("arr_find", "array-in-linear-memory family (wasm layout)"),

@@ -329,7 +329,7 @@ pub(crate) fn build_env_linker(
                     apply_staking_delta(&mut st, &acct, (klen + vlen) as i64 - old_raw_len as i64);
                     drop(st);
                     charge_gas(&mut caller, trie)?;
-                    let mut st = s6.lock().unwrap();
+                    let st = s6.lock().unwrap();
                     if rid != u64::MAX {
                         if let Some(old) = old {
                             drop(st);
@@ -582,7 +582,7 @@ pub(crate) fn build_env_linker(
         "panic_utf8",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 2], vec![]),
-        move |mut caller, args, _| {
+        move |caller, args, _| {
             let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
             let msg = if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                 let data = mem.data(&caller);
@@ -928,7 +928,7 @@ pub(crate) fn build_env_linker(
         "keccak512",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 3], vec![]),
-        move |mut caller, args, _| {
+        move |caller, args, _| {
             use tiny_keccak::Hasher;
             let (len, ptr, rid) = (
                 args[0].unwrap_i64() as usize,
@@ -954,7 +954,7 @@ pub(crate) fn build_env_linker(
         "ripemd160",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 3], vec![]),
-        move |mut caller, args, _| {
+        move |caller, args, _| {
             use ripemd::{Digest as RipemdDigest, Ripemd160};
             let (len, ptr, rid) = (
                 args[0].unwrap_i64() as usize,
@@ -1885,7 +1885,7 @@ pub(crate) fn build_env_linker(
                 if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
                     let md = mem.data(&caller);
                     if pp + pl <= md.len() {
-                        let prefix = md[pp..pp + pl].to_vec();
+                        let _prefix = md[pp..pp + pl].to_vec();
                         let acct = exec_ctx_or_default().contract;
                         let ns = prefixed_key(&acct, b"");
                         let (id, cost) = {
@@ -2099,7 +2099,7 @@ pub(crate) fn build_env_linker(
         "promise_batch_action_stake",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 4], vec![]),
-        move |mut caller, args, _| {
+        move |caller, args, _| {
             let (idx, amt_ptr, pk_len, pk_ptr) = (
                 args[0].unwrap_i64() as usize,
                 args[1].unwrap_i64() as usize,
@@ -2136,7 +2136,7 @@ pub(crate) fn build_env_linker(
         "promise_batch_action_add_key_with_full_access",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 4], vec![]),
-        move |mut caller, args, _| {
+        move |caller, args, _| {
             let (idx, pk_len, pk_ptr, _nonce) = (
                 args[0].unwrap_i64() as usize,
                 args[1].unwrap_i64() as usize,
@@ -2172,7 +2172,7 @@ pub(crate) fn build_env_linker(
         "promise_batch_action_add_key_with_function_call",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 9], vec![]),
-        move |mut caller, args, _| {
+        move |caller, args, _| {
             let (idx, pk_len, pk_ptr, _nonce, _allow_ptr, _rcv_len, _rcv_ptr, _mns_len, _mns_ptr) = (
                 args[0].unwrap_i64() as usize,
                 args[1].unwrap_i64() as usize,
@@ -2213,7 +2213,7 @@ pub(crate) fn build_env_linker(
         "promise_batch_action_delete_key",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 3], vec![]),
-        move |mut caller, args, _| {
+        move |caller, args, _| {
             let (idx, pk_len, pk_ptr) = (
                 args[0].unwrap_i64() as usize,
                 args[1].unwrap_i64() as usize,
@@ -2243,7 +2243,7 @@ pub(crate) fn build_env_linker(
         "promise_batch_action_delete_account",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 3], vec![]),
-        move |mut caller, args, _| {
+        move |caller, args, _| {
             let (idx, ben_len, ben_ptr) = (
                 args[0].unwrap_i64() as usize,
                 args[1].unwrap_i64() as usize,
@@ -2309,7 +2309,7 @@ pub(crate) fn build_env_linker(
         "promise_batch_action_transfer_to_gas_key",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 4], vec![]),
-        move |mut caller, args, _| {
+        move |caller, args, _| {
             let (idx, key_len, key_ptr, amt_ptr) = (
                 args[0].unwrap_i64() as usize,
                 args[1].unwrap_i64() as usize,
@@ -2354,7 +2354,7 @@ pub(crate) fn build_env_linker(
         "promise_batch_action_add_gas_key_with_full_access",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 4], vec![]),
-        move |mut caller, args, _| {
+        move |caller, args, _| {
             let (idx, pk_len, pk_ptr, _nonce) = (
                 args[0].unwrap_i64() as usize,
                 args[1].unwrap_i64() as usize,
@@ -2390,7 +2390,7 @@ pub(crate) fn build_env_linker(
         "promise_batch_action_add_gas_key_with_function_call",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 9], vec![]),
-        move |mut caller, args, _| {
+        move |caller, args, _| {
             let idx = args[0].unwrap_i64() as usize;
             let pk_len = args[1].unwrap_i64() as usize;
             let pk_ptr = args[2].unwrap_i64() as usize;
@@ -2440,7 +2440,7 @@ pub(crate) fn build_env_linker(
         "promise_batch_action_deploy_global_contract",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 3], vec![]),
-        move |mut caller, args, _| {
+        move |caller, args, _| {
             let (idx, len, ptr) = (
                 args[0].unwrap_i64() as usize,
                 args[1].unwrap_i64() as usize,
@@ -2516,7 +2516,7 @@ pub(crate) fn build_env_linker(
         "promise_batch_action_use_global_contract",
         &mut *store,
         FuncType::new(engine, vec![ValType::I64; 3], vec![]),
-        move |mut caller, args, _| {
+        move |caller, args, _| {
             let (idx, len, ptr) = (
                 args[0].unwrap_i64() as usize,
                 args[1].unwrap_i64() as usize,
@@ -2637,7 +2637,10 @@ pub(crate) fn build_env_linker(
         };
         // Build all trap funcs through the closure first — its &mut *store
         // borrow must end before linker.define borrows store immutably.
-        let (f_pc, f_pt, f_pa, f_pbc, f_pbt, f_prc, f_pr, f_pret, f_pafc, f_pyc, f_pyr, f_pbat) = (
+        // Defensive pyr must keep the near-sdk I32 ABI (contract imports
+        // (i64x4)->i32; an I64 return breaks instantiation).
+        // Build AFTER all trap0 closures' &mut *store borrows have ended.
+        let (f_pc, f_pt, f_pa, f_pbc, f_pbt, f_prc, f_pr, f_pret, f_pafc, f_pyc, f_pbat) = (
             trap0("promise_create", 8, true),
             trap0("promise_then", 9, true),
             trap0("promise_and", 2, true),
@@ -2648,8 +2651,17 @@ pub(crate) fn build_env_linker(
             trap0("promise_return", 1, false),
             trap0("promise_batch_action_function_call", 7, false),
             trap0("promise_yield_create", 7, true),
-            trap0("promise_yield_resume", 4, true),
             trap0("promise_batch_action_transfer", 2, false),
+        );
+        let f_pyr_def = host_fn(
+            "promise_yield_resume",
+            &mut *store,
+            FuncType::new(engine, vec![ValType::I64; 4], vec![ValType::I32]),
+            move |_, _, _| {
+                Err(wasmtime::Error::msg(
+                    "CannotClaimPromise: promise_yield_resume called with no execution state — run via a near-mock driver (cross/run/state), never bare",
+                ))
+            },
         );
         linker.define(&*store, "env", "promise_create", f_pc)?;
         linker.define(&*store, "env", "promise_then", f_pt)?;
@@ -2661,7 +2673,7 @@ pub(crate) fn build_env_linker(
         linker.define(&*store, "env", "promise_return", f_pret)?;
         linker.define(&*store, "env", "promise_batch_action_function_call", f_pafc)?;
         linker.define(&*store, "env", "promise_yield_create", f_pyc)?;
-        linker.define(&*store, "env", "promise_yield_resume", f_pyr)?;
+        linker.define(&*store, "env", "promise_yield_resume", f_pyr_def)?;
         linker.define(&*store, "env", "promise_batch_action_transfer", f_pbat)?;
     }
 

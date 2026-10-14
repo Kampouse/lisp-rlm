@@ -1,0 +1,39 @@
+{
+ "name": "clmm-ft-refund-ts",
+ "manifest": "ft.clmm.test.near=/Users/jean/dev/lisp-rlm/afp-clmm/port/contracts/escrow/ft/ts/target/ft-ts.wasm",
+ "steps": [
+  {
+   "method": "mint",
+   "as": "trader.test.near",
+   "contract": "ft.clmm.test.near",
+   "attach": "0",
+   "args": {
+    "to": "trader.test.near",
+    "amount": "5000"
+   },
+   "contains": "s:bal:trader.test.near=5000"
+  },
+  {
+   "method": "ft_transfer_call",
+   "as": "trader.test.near",
+   "contract": "ft.clmm.test.near",
+   "attach": "0",
+   "args": {
+    "receiver_id": "ft.clmm.test.near",
+    "amount": "700",
+    "msg": "x"
+   },
+   "args_contains": "pending"
+  },
+  {
+   "method": "ft_balance_of",
+   "as": "trader.test.near",
+   "contract": "ft.clmm.test.near",
+   "view": true,
+   "args": {
+    "account": "trader.test.near"
+   },
+   "contains": "s:bal:trader.test.near=5000"
+  }
+ ]
+}

@@ -110,6 +110,7 @@ pub struct ChainBuilder {
     contracts: Vec<(String, Vec<u8>)>, // (account, wasm bytes)
     storage: std::collections::HashMap<Vec<u8>, Vec<u8>>,
     state_path: Option<String>,
+    allow_new_state: bool,
     signer: String,
     now: Option<i64>,
     /// Fork-mode: page code + state lazily from an archival RPC at a pinned
@@ -126,6 +127,7 @@ impl Default for ChainBuilder {
             contracts: Vec::new(),
             storage: Default::default(),
             state_path: None,
+            allow_new_state: false,
             signer: "caller.test.near".into(),
             now: None,
             fork: None,
@@ -159,6 +161,14 @@ impl ChainBuilder {
 
     /// Start from a previously saved state file (`MockChain::save`,
     /// `near-mock state dump`, or `near-mock snapshot`). Missing file = fresh.
+    /// Explicit opt-in to start from empty storage when the state file
+    /// doesn't exist yet (serve's `--state` creates-on-first-use; other
+    /// callers get the refuse-to-boot guard instead).
+    pub fn state_create_new(mut self) -> Self {
+        self.allow_new_state = true;
+        self
+    }
+
     pub fn state_path(mut self, path: &str) -> Self {
         self.state_path = Some(path.into());
         self
@@ -210,10 +220,28 @@ impl ChainBuilder {
         }
 
         let storage: std::collections::HashMap<Vec<u8>, Vec<u8>> = match &self.state_path {
-            Some(p) => std::fs::read(p)
-                .ok()
-                .and_then(|d| bincode::deserialize(&d).ok())
-                .unwrap_or_default(),
+            Some(p) => {
+                let bytes =
+                    std::fs::read(p).ok().and_then(|d| bincode::deserialize(&d).ok());
+                match bytes {
+                    Some(storage) => storage,
+                    None if self.storage.is_empty() && !self.allow_new_state => {
+                        // An explicit state file that is missing or corrupt:
+                        // refusing to boot beats silently starting an empty
+                        // genesis (a fresh-looking chain that's actually
+                        // missing pinned jobs/credits caused a wasted debug
+                        // session). Tests with no prior state should touch an
+                        // empty file or pass storage explicitly.
+                        return Err(format!(
+                            "state_path '{p}': file missing or not a valid \
+                             near-mock state — refusing to start on empty \
+                             genesis"
+                        )
+                        .into());
+                    }
+                    None => self.storage,
+                }
+            }
             None => self.storage,
         };
 
@@ -227,6 +255,7 @@ impl ChainBuilder {
         Ok(MockChain {
             state,
             state_path: self.state_path,
+            allow_new_state: self.allow_new_state,
             signer: self.signer,
         })
     }
@@ -236,6 +265,7 @@ impl ChainBuilder {
 pub struct MockChain {
     state: Arc<Mutex<crate::state::MockState>>,
     state_path: Option<String>,
+    allow_new_state: bool,
     signer: String,
 }
 
@@ -250,6 +280,7 @@ impl MockChain {
         Ok(MockChain {
             state,
             state_path: None,
+            allow_new_state: false,
             signer: "caller.test.near".into(),
         })
     }
@@ -313,6 +344,19 @@ impl MockChain {
     pub fn storage_get(&self, account: &str, key: &[u8]) -> Option<Vec<u8>> {
         let full = crate::state::prefixed_key(account, key);
         self.state.lock().unwrap().storage.get(&full).cloned()
+    }
+
+    /// Write one storage key under an account's partition (server-side
+    /// account semantics — NOT a host-func; bypasses gas accounting).
+    pub fn storage_insert(&self, account: &str, key: &[u8], val: &[u8]) {
+        let full = crate::state::prefixed_key(account, key);
+        self.state.lock().unwrap().storage.insert(full, val.to_vec());
+    }
+
+    /// Remove one storage key under an account's partition.
+    pub fn storage_remove(&self, account: &str, key: &[u8]) {
+        let full = crate::state::prefixed_key(account, key);
+        self.state.lock().unwrap().storage.remove(&full);
     }
 }
 

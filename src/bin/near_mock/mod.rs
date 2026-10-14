@@ -22,6 +22,7 @@ mod schnorr;
 mod state;
 
 pub mod chain;
+mod serve;
 pub use chain::{CallBuilder, CallOutcome, ChainBuilder, MockChain};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -38,8 +39,7 @@ pub(crate) use hosts::{build_env_linker, host_fn};
 // Lifted to the lib (src/instrument.rs): browser compiler + near-mock now
 // share ONE meter, so JS and CLI can never disagree on gas.
 pub(crate) use lisp_rlm_wasm::instrument::{
-    instrument, InstrumentError, LINEAR_OP_BASE_COST, LINEAR_OP_UNIT_COST, MAX_STACK_HEIGHT,
-    REGULAR_OP_COST, REMAINING_GAS_EXPORT,
+    instrument, REMAINING_GAS_EXPORT,
 };
 
 /// Function-call action fee (execution side, protocol-86): burned by the
@@ -257,6 +257,12 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = &pos[1];
     let contract_acct = &pos[2];
     let method = &pos[3];
+    // A missing args-json is almost always a caller mistake (the default {}
+    // silently produced empty input in the json_get_arr_repro case). Warn
+    // loudly but proceed — {} is still the correct default for argless calls.
+    if pos.len() < 5 {
+        eprintln!("⚠️  no args-json positional; defaulting to {{}} (empty input). Pass the args JSON explicitly if the method expects input.");
+    }
     let args_json = pos
         .get(4)
         .filter(|s| !s.starts_with('-'))
@@ -306,7 +312,9 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         // the empty state, else the stale pre-wipe map resurrects on the
         // next load. Fresh-state read-only calls still skip the write.
         let had_state_file = std::path::Path::new(state_path).exists();
-        if !st.storage.is_empty() || had_state_file {
+        // Failed tx must not persist partial writes — a stale-wasm failure
+        // would poison state.bin and every later run loads it as pre-state.
+        if outcome.ok && (!st.storage.is_empty() || had_state_file) {
             let mut keys: Vec<(&Vec<u8>, &Vec<u8>)> = st.storage.iter().collect();
             keys.sort();
             println!("💾 Saved {} keys", keys.len());
@@ -482,6 +490,7 @@ pub(crate) fn fresh_tx_state() {
     }
     PROMISE_DAG.with(|d| d.borrow_mut().clear());
     EXECUTED_PROMISES.with(|e| e.borrow_mut().clear());
+    CONSUMED_PROMISES.with(|c| c.borrow_mut().clear());
     PROMISE_RESULTS.with(|r| *r.borrow_mut() = Vec::new());
     PENDING_RETURN.with(|p| *p.borrow_mut() = None);
     LOG_LINES.with(|l| l.borrow_mut().clear());
@@ -725,7 +734,13 @@ pub(crate) fn execute_tx(
                     d.borrow()
                         .iter()
                         .enumerate()
-                        .find(|(i, _)| !EXECUTED_PROMISES.with(|e| e.borrow().contains(i)))
+                        .find(|(i, _)| {
+                            !EXECUTED_PROMISES.with(|e| e.borrow().contains(i))
+                                && !crate::promises::is_yield_join(*i)
+                                && !PROMISE_DAG.with(|d| {
+                                    crate::promises::deps_own_open_yield(&d.borrow()[*i].deps)
+                                })
+                        })
                         .map(|(i, _)| i)
                 });
                 let Some(idx) = next else { break };
@@ -875,6 +890,27 @@ fn exec_ctx_or_default() -> ExecCtx {
 thread_local! {
     static EXECUTED_PROMISES: std::cell::RefCell<std::collections::HashSet<usize>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+// promise single-use (2026-10-08): consuming ops mark their base handle here;
+// a second consuming call on the same handle TRAPS. NEAR-faithful: nearcore
+// promise_then takes the promise by value - a reuse is a guest bug that on
+// mainnet silently double-fires every registered callback (double-pay).
+// Cleared wherever the DAG is (every EXECUTED_PROMISES clear site).
+thread_local! {
+    static CONSUMED_PROMISES: std::cell::RefCell<std::collections::HashSet<usize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+fn consume_promise(idx: usize, op: &str) -> Result<(), wasmtime::Error> {
+    let dupe = CONSUMED_PROMISES.with(|c| !c.borrow_mut().insert(idx));
+    if dupe {
+        Err(wasmtime::Error::msg(format!(
+            "promise {idx} already consumed: {op} on an already-consumed handle (promises are move-only, single-use)"
+        )))
+    } else {
+        Ok(())
+    }
 }
 
 impl Default for RunCfg {
@@ -1230,6 +1266,7 @@ fn build_promise_hosts(
         FuncType::new(engine, vec![ValType::I64; 3], vec![ValType::I64]),
         move |mut caller, args, results| {
             let idx = args[0].unwrap_i64() as usize;
+            consume_promise(idx, "promise_batch_then")?;
             let acct = mem_read_str_checked(
                 &mut caller,
                 args[1].unwrap_i64(),
@@ -1370,7 +1407,15 @@ fn build_promise_hosts(
             let st = STATE_ARC.with(|s| s.borrow().clone());
             if let Some(st) = st {
                 let mut st = st.lock().unwrap();
-                st.registers.insert(reg, did.into_bytes());
+                // Real nearcore: data_id in the register is a 32-byte CryptoHash
+                // (near-sdk reads it back with CryptoHash::try_from — a string
+                // like "yd:2" panics "Invalid data_id"). Derive a deterministic
+                // 32-byte id and keep a hash→idx map for binary resume lookups.
+                use sha2::Digest;
+                let mut h = sha2::Sha256::new();
+                h.update(did.as_bytes());
+                let hash: [u8; 32] = h.finalize().into();
+                st.registers.insert(reg, hash.to_vec());
                 // persist: \x00yield:<idx> = account \x1f method \x1f creator \x1f args_json
                 let spec = format!(
                     "{}\x1f{}\x1f{}\x1f{}",
@@ -1378,6 +1423,19 @@ fn build_promise_hosts(
                 );
                 let key = format!("\x00yield:{}", idx);
                 st.storage.insert(key.into_bytes(), spec.into_bytes());
+                let hex: String = hash.iter().map(|b| format!("{:02X}", b)).collect();
+                let hkey = format!("\x00ydhash:{}", hex);
+                st.storage
+                    .insert(hkey.into_bytes(), idx.to_string().into_bytes());
+            }
+            crate::promises::yield_owner_add(idx);
+            if let Some(ob) = crate::promises::yield_owner_of(idx) {
+                if let Some(st) = STATE_ARC.with(|s| s.borrow().clone()) {
+                    st.lock().unwrap().storage.insert(
+                        format!("\x00yowner:{}", idx).into_bytes(),
+                        ob.to_string().into_bytes(),
+                    );
+                }
             }
             results[0] = Val::I64(idx as i64);
             Ok(())
@@ -1390,7 +1448,10 @@ fn build_promise_hosts(
     let pyr = host_fn(
         "promise_yield_resume",
         &mut *store,
-        FuncType::new(engine, vec![ValType::I64; 4], vec![ValType::I64]),
+        // near-sdk yield ABI returns I32 (1/0 resumed flag); I64 here broke
+        // linking of modern contracts (omni.bridge.near): 'incompatible
+        // import type for env::promise_yield_resume' (2026-10-04).
+        FuncType::new(engine, vec![ValType::I64; 4], vec![ValType::I32]),
         move |mut caller, args, results| {
             // ABI: (data_id_len, data_id_ptr, payload_len, payload_ptr) — the
             // emitter passes the data_id as a STRING ("yd:<idx>" or "<idx>")
@@ -1406,10 +1467,43 @@ fn build_promise_hosts(
                 args[3].unwrap_i64(),
                 "promise-host",
             )?;
-            let idx: usize = data_id
-                .trim_start_matches("yd:")
-                .parse()
-                .unwrap_or(usize::MAX);
+            // data_id arrives either as the legacy "yd:<idx>" string or as the
+            // RAW 32-BYTE CryptoHash the contract read from register 37. Binary
+            // ids cannot go through the UTF-8 lossy string read (bytes ≥ 0x80
+            // collapse to U+FFFD replacement chars), so read guest memory raw
+            // and map through the \x00ydhash:<HEX> index from create time.
+            let raw_id: Vec<u8> = {
+                let (len, ptr) = (args[0].unwrap_i64() as usize, args[1].unwrap_i64() as usize);
+                caller
+                    .get_export("memory")
+                    .and_then(|e| e.into_memory())
+                    .and_then(|m| {
+                        let md = m.data(&caller);
+                        if ptr + len <= md.len() {
+                            Some(md[ptr..ptr + len].to_vec())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default()
+            };
+            let idx: usize = match std::str::from_utf8(&raw_id) {
+                Ok(s) => match s.strip_prefix("yd:") {
+                    Some(n) => n.parse().unwrap_or(usize::MAX),
+                    None => usize::MAX,
+                },
+                Err(_) if raw_id.len() == 32 => {
+                    let hex: String = raw_id.iter().map(|b| format!("{:02X}", b)).collect();
+                    let st = STATE_ARC.with(|s| s.borrow().clone());
+                    let hkey = format!("\x00ydhash:{}", hex).into_bytes();
+                    st.as_ref()
+                        .and_then(|st| st.lock().unwrap().storage.get(&hkey).cloned())
+                        .and_then(|v| String::from_utf8_lossy(&v).parse().ok())
+                        .unwrap_or(usize::MAX)
+                }
+                _ => usize::MAX,
+            };
+            mtrace!("  ⏵ yield_resume data_id({}B) → idx {}", raw_id.len(), idx);
             let dag = PROMISE_DAG.with(|d| d.borrow().clone());
             let batch = match dag.get(idx) {
                 Some(b) if b.is_yield => b.clone(),
@@ -1439,18 +1533,24 @@ fn build_promise_hosts(
                                 }
                             } else {
                                 mtrace!("  ⚠ yield_resume: bad persisted spec at {}", idx);
-                                results[0] = Val::I64(0);
+                                results[0] = Val::I32(0);
                                 return Ok(());
                             }
                         }
                         None => {
                             mtrace!("  ⚠ yield_resume: idx {} is not a yield promise", idx);
-                            results[0] = Val::I64(0);
+                            results[0] = Val::I32(0);
                             return Ok(());
                         }
                     }
                 }
             };
+            mtrace!(
+                "  ⏵ yield_resume idx-resolution: data_id({}B)={:02x?} payload={}",
+                data_id.len(),
+                data_id.as_bytes(),
+                payload
+            );
             mtrace!("  ⏵ yield_resume({}) payload={}", idx, payload);
             let (method, args_json, _) = match batch.actions.first() {
                 Some(PAction::FnCall {
@@ -1458,13 +1558,14 @@ fn build_promise_hosts(
                 }) => (method.clone(), args.clone(), gas),
                 _ => {
                     mtrace!("  ⚠ yield_resume: no callback action on idx {}", idx);
-                    results[0] = Val::I64(0);
+                    results[0] = Val::I32(0);
                     return Ok(());
                 }
             };
             // Re-run the callback with the payload as the Successful result
+            let payload_bytes = payload.clone().into_bytes();
             let saved = PROMISE_RESULTS.with(|r| {
-                std::mem::replace(&mut *r.borrow_mut(), vec![Some(payload.into_bytes())])
+                std::mem::replace(&mut *r.borrow_mut(), vec![Some(payload_bytes)])
             });
             let ret = sub_execute(&batch.account, &method, &args_json, &batch.creator, 0);
             PROMISE_RESULTS.with(|r| *r.borrow_mut() = saved);
@@ -1478,6 +1579,128 @@ fn build_promise_hosts(
                         .remove(format!("\x00yield:{}", idx).as_bytes());
                 }
             }
+            // Real-chain join delivery: any promise_then batch registered on
+            // this yield fires NOW with the resume payload as its dep result.
+            // Also re-fires cross-account joins whose dep receipt created the
+            // yield (the outlayer pattern): their flush-time run was inert
+            // (empty payload), the real chain delivers the callback exactly
+            // here, once, with resolved data.
+            let mut joins: Vec<usize> = PROMISE_DAG.with(|d| {
+                d.borrow()
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, b)| b.deps.contains(&idx) && crate::promises::is_yield_join(*j))
+                    .map(|(j, _)| j)
+                    .collect()
+            });
+            let mut owner = crate::promises::yield_owner_of(idx);
+            if owner.is_none() {
+                if let Some(st) = STATE_ARC.with(|s| s.borrow().clone()) {
+                    let key = format!("\x00yowner:{}", idx).into_bytes();
+                    owner = st
+                        .lock()
+                        .unwrap()
+                        .storage
+                        .get(&key)
+                        .and_then(|v| String::from_utf8_lossy(v).parse().ok());
+                }
+            }
+            if let Some(ob) = owner {
+                joins.extend(crate::promises::joins_on_batch(ob));
+                joins.extend(crate::promises::joins_for_owner_batch(ob));
+            }
+            joins.sort_unstable();
+            joins.dedup();
+            for j in joins {
+                crate::promises::yield_joins_take(j);
+                EXECUTED_PROMISES.with(|e| {
+                    e.borrow_mut().insert(j);
+                });
+                match execute_promise(j) {
+                    Ok(_) => {}
+                    Err(_) => mtrace!("  ⚠ yield join {} failed", j),
+                }
+            }
+            // Cross-process join delivery: promise_then details were persisted
+            // at registration (\x00yjoin:<idx>) because the resolve process has
+            // no DAG. Deliver each pending join with the resume payload as its
+            // dep result — real-chain join-receipt semantics.
+            {
+                let pending: Vec<(usize, String, String, String)> = {
+                    let st = STATE_ARC.with(|s| s.borrow().clone());
+                    match st {
+                        Some(st) => {
+                            let st = st.lock().unwrap();
+                            let mut v = Vec::new();
+                            for (k, val) in st.storage.iter() {
+                                if let Some(rest) = k.strip_prefix(b"\x00yjoin:".as_slice()) {
+                                    if let Ok(jidx) =
+                                        std::str::from_utf8(rest).map(|s| s.parse::<usize>())
+                                    {
+                                        if let Ok(jidx) = jidx {
+                                            if let Ok(det) =
+                                                serde_json::from_slice::<serde_json::Value>(val)
+                                            {
+                                                v.push((
+                                                    jidx,
+                                                    det["account"]
+                                                        .as_str()
+                                                        .unwrap_or_default()
+                                                        .to_string(),
+                                                    det["method"]
+                                                        .as_str()
+                                                        .unwrap_or_default()
+                                                        .to_string(),
+                                                    det["args"]
+                                                        .as_str()
+                                                        .unwrap_or_default()
+                                                        .to_string(),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            v.sort_by_key(|(i, _, _, _)| *i);
+                            v
+                        }
+                        None => Vec::new(),
+                    }
+                };
+                for (jidx, jacct, jmethod, jargs) in pending {
+                    // consume the marker first (one-shot, like the real chain)
+                    crate::promises::yield_joins_persist_take(jidx);
+                    crate::promises::yield_joins_take(jidx);
+                    mtrace!("  ⛓ join receipt {} → {}.{} (payload-delivered)", jidx, jacct, jmethod);
+                    // The join callback reads its dep result (the resolved
+                    // payload) via promise_result(0) — same as nearcore. The
+                    // outlayer wraps execution results in an envelope
+                    // {"success":..,"output":{"Text":..}}; the kernel's join
+                    // reads the FLATTENED final value (the quote text), matching
+                    // the live-chain promise_return flattening.
+                    let join_result = serde_json::from_str::<serde_json::Value>(&payload)
+                        .ok()
+                        .and_then(|v| {
+                            v["output"]["Text"].as_str().map(|s| s.to_string())
+                        })
+                        .unwrap_or_else(|| payload.clone());
+                    let saved = PROMISE_RESULTS.with(|r| {
+                        std::mem::replace(
+                            &mut *r.borrow_mut(),
+                            vec![Some(join_result.into_bytes())],
+                        )
+                    });
+                    let ret = sub_execute(&jacct, &jmethod, jargs.as_bytes(), &jacct, 0);
+                    PROMISE_RESULTS.with(|r| *r.borrow_mut() = saved);
+                    match ret {
+                        Ok(Some(b)) if !b.is_empty() => {
+                            mtrace!("  ⛓ join {} returned {}B", jidx, b.len())
+                        }
+                        Ok(_) => {}
+                        Err(_) => mtrace!("  ⚠ join {} trapped", jidx),
+                    }
+                }
+            }
             match ret {
                 Ok(Some(bytes)) => {
                     let s = String::from_utf8_lossy(&bytes);
@@ -1488,7 +1711,7 @@ fn build_promise_hosts(
                 Ok(None) => mtrace!("  ⚠ yield callback trapped"),
                 Err(e) => mtrace!("  ⚠ yield callback error: {}", e),
             }
-            results[0] = Val::I64(1);
+            results[0] = Val::I32(1);
             Ok(())
         },
     );
@@ -1550,6 +1773,7 @@ fn build_promise_hosts(
         FuncType::new(engine, vec![ValType::I64; 9], vec![ValType::I64]),
         move |mut caller, args, results| {
             let idx = args[0].unwrap_i64() as usize;
+            consume_promise(idx, "promise_then")?;
             let acct = mem_read_str_checked(
                 &mut caller,
                 args[1].unwrap_i64(),
@@ -1581,6 +1805,9 @@ fn build_promise_hosts(
                 }
                 u128::from_le_bytes(buf)
             };
+            let join_acct = acct.clone();
+            let join_method = method.clone();
+            let join_args = args_json.clone();
             let new_idx = dag_push(
                 vec![idx],
                 acct,
@@ -1591,6 +1818,39 @@ fn build_promise_hosts(
                     dep,
                 }],
             );
+            // Real-chain join semantics: a .then on a cross-contract promise
+            // may depend on a yield created inside that promise's execution
+            // (outlayer request_execution promise_returns a yield). Such joins
+            // must not fire from the flush drain with an empty dep result;
+            // they re-fire with the payload when the yield resolves. We can't
+            // know at registration whether the dep will yield, so register
+            // every cross-account join here and decide at resume/drain time.
+            {
+                let dep_cross = PROMISE_DAG.with(|d| {
+                    d.borrow()
+                        .get(idx)
+                        .map(|b| b.account != join_acct)
+                        .unwrap_or(false)
+                });
+                if dep_cross {
+                    crate::promises::yield_joins_add(new_idx);
+                    // Persist the join's dispatch details: the resolve process
+                    // has no DAG, so it must be able to deliver the callback
+                    // (real-chain join receipt) without the creating process.
+                    if let Some(st) = STATE_ARC.with(|s| s.borrow().clone()) {
+                        let det = serde_json::json!({
+                            "account": join_acct,
+                            "method": join_method,
+                            "args": join_args,
+                            "dep": idx,
+                        });
+                        st.lock().unwrap().storage.insert(
+                            format!("\x00yjoin:{}", new_idx).into_bytes(),
+                            serde_json::to_vec(&det).unwrap_or_default(),
+                        );
+                    }
+                }
+            }
             results[0] = Val::I64(new_idx as i64);
             Ok(())
         },
@@ -1616,6 +1876,9 @@ fn build_promise_hosts(
                         deps.push(u64::from_le_bytes(md[off..off + 8].try_into().unwrap()) as usize);
                     }
                 }
+            }
+            for d in &deps {
+                consume_promise(*d, "promise_and")?;
             }
             results[0] = Val::I64(dag_push(deps, String::new(), vec![]) as i64);
             Ok(())
@@ -1678,6 +1941,7 @@ fn build_promise_hosts(
         FuncType::new(engine, vec![ValType::I64], vec![]),
         |mut caller, args, _| {
             crate::hosts::charge_gas(&mut caller, crate::PROMISE_RETURN_GAS)?;
+            consume_promise(args[0].unwrap_i64() as usize, "promise_return")?;
             PENDING_RETURN.with(|p| *p.borrow_mut() = Some(args[0].unwrap_i64() as usize));
             mtrace!("  → promise_return({})", args[0].unwrap_i64());
             Ok(())
@@ -1690,6 +1954,37 @@ fn exec_ctx_view(state: &std::sync::Arc<Mutex<MockState>>) -> bool {
     EXEC_CTX
         .with(|c| c.borrow().as_ref().map(|x| x.view))
         .unwrap_or_else(|| state.lock().unwrap().view)
+}
+
+/// Stale-wasm guard (2026-10-10): near-compile writes `<wasm>.stamp`
+/// {src, sha256} recording the source it compiled. If that source's CURRENT
+/// hash differs, the wasm predates a source edit — warn loudly but run
+/// anyway (wasm gets copied to machines without the source; a missing stamp
+/// is normal for hand-written wasm; never block the run).
+fn check_stale_wasm(wasm_path: &str) {
+    let stamp_path = format!("{}.stamp", wasm_path);
+    let Ok(raw) = std::fs::read_to_string(&stamp_path) else {
+        return; // no stamp → nothing to compare
+    };
+    let Ok(stamp) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return; // corrupt stamp → ignore
+    };
+    let (Some(src), Some(want)) = (stamp["src"].as_str(), stamp["sha256"].as_str()) else {
+        return;
+    };
+    let Ok(cur) = std::fs::read_to_string(src) else {
+        return; // source not on this machine → can't judge
+    };
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(cur.as_bytes());
+    let got: String = h.finalize().iter().map(|b| format!("{:02x}", b)).collect();
+    if got != want {
+        eprintln!(
+            "⚠️  STALE WASM: {} was built from {}, but that source has changed since (sha mismatch) — results reflect the OLD build. Rebuild: near-compile build",
+            wasm_path, src
+        );
+    }
 }
 
 /// Shared bootstrap for `cross` and `scenario`: load a multi-contract
@@ -1710,6 +2005,7 @@ pub(crate) fn init_sandbox(
                 "cannot read contract `{path}`: {e} (scenario default expects contract.wasm beside the scenario file; override with \"manifest\")"
             )
         })?;
+        check_stale_wasm(path);
         eprintln!("📦 {} → {}", acct, path);
         modules.insert(acct.to_string(), compile_module(&engine, &bytes)?);
     }
@@ -1993,7 +2289,7 @@ pub(crate) fn expand_fuzz_steps(
         .and_then(|s| s.as_u64())
         .unwrap_or(200)
         .min(5000);
-    let mut ops: Vec<String> = f
+    let ops: Vec<String> = f
         .get("ops")
         .and_then(|o| o.as_array())
         .map(|a| {
@@ -2178,7 +2474,7 @@ pub(crate) fn run_scenario_opts(
     // steps appended AFTER the literal steps — the executor loop is
     // untouched (ops become ordinary method steps; --update-pins and
     // assertions work on them like any other step).
-    let mut fuzz_count = 0usize;
+    let fuzz_count;
     let mut owned_steps: Vec<serde_json::Value> = steps.to_vec();
     match expand_fuzz_steps(&spec) {
         Ok(gen) => {
@@ -2554,6 +2850,7 @@ pub(crate) fn run_scenario_opts(
             state.lock().unwrap().storage = pre_call;
             PROMISE_DAG.with(|d| d.borrow_mut().clear());
             EXECUTED_PROMISES.with(|e| e.borrow_mut().clear());
+            CONSUMED_PROMISES.with(|c| c.borrow_mut().clear());
         }
 
         // chaos semantics: expect:"trap" means the entry MUST have reverted
@@ -2608,7 +2905,13 @@ pub(crate) fn run_scenario_opts(
                     d.borrow()
                         .iter()
                         .enumerate()
-                        .find(|(i, _)| !EXECUTED_PROMISES.with(|e| e.borrow().contains(i)))
+                        .find(|(i, _)| {
+                            !EXECUTED_PROMISES.with(|e| e.borrow().contains(i))
+                                && !crate::promises::is_yield_join(*i)
+                                && !PROMISE_DAG.with(|d| {
+                                    crate::promises::deps_own_open_yield(&d.borrow()[*i].deps)
+                                })
+                        })
                         .map(|(i, _)| i)
                 });
                 let Some(idx) = next else { break };
@@ -2620,6 +2923,7 @@ pub(crate) fn run_scenario_opts(
         }
         PROMISE_DAG.with(|d| d.borrow_mut().clear());
         EXECUTED_PROMISES.with(|e| e.borrow_mut().clear());
+        CONSUMED_PROMISES.with(|c| c.borrow_mut().clear());
         // Execute-once memo is PER-DAG scope (see fresh_tx_state): receipt
         // indices restart at 0 every step, so a memo entry surviving from the
         // PREVIOUS step aliases THIS step's receipts — replaying stale results
@@ -2756,7 +3060,13 @@ pub(crate) fn run_scenario_opts(
     // persist final state (single write at end of scenario)
     let st = state.lock().unwrap();
     let encoded = bincode::serialize(&st.storage)?;
-    std::fs::write(&state_path, encoded)?;
+    // Only persist on a fully-green run — a failing scenario's partial state
+    // would poison the next run's pre-state (stale-wasm cascade).
+    if fail == 0 {
+        std::fs::write(&state_path, encoded)?;
+    } else {
+        println!("  (state not saved — {} failing step(s))", fail);
+    }
     // state-budget check (#8): assert_state_under kills runaway storage
     // growth (the TOO_LARGE_CONTRACT_STATE death: >~200KB view_state makes
     // the live contract unobservabale — 431KB went unnoticed for 14 days).
@@ -2892,6 +3202,7 @@ pub(crate) fn settle_receipts() -> Result<SettleReport, Box<dyn std::error::Erro
     // then re-insert the batches with remapped dep indices.
     PROMISE_DAG.with(|d| d.borrow_mut().clear());
     EXECUTED_PROMISES.with(|e| e.borrow_mut().clear());
+    CONSUMED_PROMISES.with(|c| c.borrow_mut().clear());
     PROMISE_OUTCOMES.with(|o| o.borrow_mut().clear());
     crate::promises::receipt_traps_reset();
     LOG_LINES.with(|l| l.borrow_mut().clear());
@@ -4094,7 +4405,7 @@ fn run_replay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         .from(predecessor.clone())
         .attach(deposit)
         .fire()?;
-    if let Some(f) = &state_file {
+    if let Some(_f) = &state_file {
         crate::fork_sync_absents_to_storage(&state_arc_tls().unwrap());
         chain.save().ok();
     }
@@ -4186,6 +4497,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // self-contained binary, same pattern as near-compile 0.1.2.
     if args.get(1).map(|s| s.as_str()) == Some("fork") {
         return run_fork(&args);
+    }
+    // `serve <state.bin> <manifest>` — NEAR-RPC + neardata + coordinator
+    // server so the real outlayer worker runs against the mock unmodified.
+    if args.get(1).map(|s| s.as_str()) == Some("serve") {
+        return crate::serve::run_serve(&args);
     }
     if args.get(1).map(|s| s.as_str()) == Some("replay") {
         return run_replay(&args);
@@ -4450,6 +4766,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let wasm_bytes = std::fs::read(wasm_path)?;
+    check_stale_wasm(wasm_path);
     println!("📦 {} ({} bytes)", wasm_path, wasm_bytes.len());
 
     // (stack headroom rationale: 2026-08-29 — default ~8MB exhausts around 900
@@ -4703,7 +5020,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     d.borrow()
                         .iter()
                         .enumerate()
-                        .find(|(i, _)| !EXECUTED_PROMISES.with(|e| e.borrow().contains(i)))
+                        .find(|(i, _)| {
+                            !EXECUTED_PROMISES.with(|e| e.borrow().contains(i))
+                                && !crate::promises::is_yield_join(*i)
+                                && !PROMISE_DAG.with(|d| {
+                                    crate::promises::deps_own_open_yield(&d.borrow()[*i].deps)
+                                })
+                        })
                         .map(|(i, _)| i)
                 });
                 let Some(idx) = next else { break };

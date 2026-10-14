@@ -1,0 +1,6 @@
+node_modules/
+target/
+state_*.bin
+circuit.sym
+circuit.zkey
+package-lock.json

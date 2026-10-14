@@ -577,13 +577,18 @@ impl WasmEmitter {
                 v.push(Instruction::I64Eq);
                 v.push(Instruction::If(BlockType::Result(ValType::I64)));
                 v.push(Instruction::I64Const(0));
-                v.push(Instruction::I64Const(TEMP_MEM));
-                v.push(Self::host_call(0)); // read_register(0, TEMP_MEM)
+                // Stage at PAYLOAD_BUF, NOT TEMP_MEM: read_register writes the
+                // FULL register at this pointer with no bound — TEMP_MEM (64)
+                // let any payload >192B spill into the data section (literals
+                // start at 256) and corrupt early literals like "job:" (the
+                // kernel2 x402 quote_phase bug, 2026-10-14).
+                v.push(Instruction::I64Const(crate::wasm_emit::PAYLOAD_BUF));
+                v.push(Self::host_call(0)); // read_register(0, PAYLOAD_BUF)
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(1)); // register_len(0)
                 v.push(Instruction::I64Const(32));
                 v.push(Instruction::I64Shl);
-                v.push(Instruction::I64Const(TEMP_MEM as i64));
+                v.push(Instruction::I64Const(crate::wasm_emit::PAYLOAD_BUF));
                 v.push(Instruction::I64Or);
                 v.extend(self.emit_tag_str());
                 // BUG #16 (2026-09-01, portfolio aggregator): the tagged str
@@ -766,7 +771,7 @@ impl WasmEmitter {
                         "near/promise_batch_action_create_account: need 1 args (idx)".into(),
                     );
                 }
-                let idx = self.expr(&a[0])?;
+                let _idx = self.expr(&a[0])?;
                 let mut v = Vec::new();
                 v.extend(self.expr(&a[0])?);
                 v.extend(self.emit_untag()); // idx

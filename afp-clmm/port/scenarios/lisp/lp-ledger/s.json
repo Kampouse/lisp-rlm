@@ -1,0 +1,152 @@
+{
+ "name": "clmm-lp-ledger",
+ "manifest": "escrow.clmm.test.near=../../../contracts/escrow/escrow/target/escrow.wasm",
+ "steps": [
+  {
+   "method": "deposit",
+   "as": "alice",
+   "contract": "escrow.clmm.test.near",
+   "attach": "1000",
+   "args": {},
+   "contains": "e:bal:alice=1000"
+  },
+  {
+   "method": "deposit",
+   "as": "bob",
+   "contract": "escrow.clmm.test.near",
+   "attach": "500",
+   "args": {},
+   "contains": "e:bal:bob=500"
+  },
+  {
+   "method": "swap_in",
+   "as": "alice",
+   "contract": "escrow.clmm.test.near",
+   "attach": "0",
+   "args": {
+    "amount": "400"
+   },
+   "contains": "e:reserve=400"
+  },
+  {
+   "method": "lp_open",
+   "as": "alice",
+   "contract": "escrow.clmm.test.near",
+   "attach": "0",
+   "args": {
+    "amount": "300"
+   },
+   "contains": "e:shares:alice=300"
+  },
+  {
+   "method": "lp_open",
+   "as": "bob",
+   "contract": "escrow.clmm.test.near",
+   "attach": "0",
+   "args": {
+    "amount": "33"
+   },
+   "contains": "e:shares:bob=33"
+  },
+  {
+   "method": "get_lp_pool",
+   "as": "alice",
+   "contract": "escrow.clmm.test.near",
+   "view": true,
+   "args": {},
+   "contains": "e:lp_pool=333"
+  },
+  {
+   "method": "get_supply",
+   "as": "alice",
+   "contract": "escrow.clmm.test.near",
+   "view": true,
+   "args": {},
+   "contains": "e:supply=333"
+  },
+  {
+   "method": "lp_remove",
+   "as": "bob",
+   "contract": "escrow.clmm.test.near",
+   "attach": "0",
+   "args": {
+    "amount": "13"
+   },
+   "contains": "e:lp_pool=320"
+  },
+  {
+   "method": "get_supply",
+   "as": "alice",
+   "contract": "escrow.clmm.test.near",
+   "view": true,
+   "args": {},
+   "contains": "e:supply=320"
+  },
+  {
+   "method": "get_shares_of",
+   "as": "alice",
+   "contract": "escrow.clmm.test.near",
+   "view": true,
+   "args": {
+    "account": "bob"
+   },
+   "contains": "e:shares:bob=20"
+  },
+  {
+   "method": "get_outflow",
+   "as": "alice",
+   "contract": "escrow.clmm.test.near",
+   "view": true,
+   "args": {},
+   "contains": "e:out=13"
+  },
+  {
+   "method": "swap_out",
+   "as": "alice",
+   "contract": "escrow.clmm.test.near",
+   "attach": "0",
+   "args": {
+    "amount": "100"
+   },
+   "contains": "e:reserve=620"
+  },
+  {
+   "method": "swap_out",
+   "as": "alice",
+   "contract": "escrow.clmm.test.near",
+   "attach": "0",
+   "args": {
+    "amount": "350"
+   },
+   "expect": "trap"
+  },
+  {
+   "method": "get_reserve",
+   "as": "alice",
+   "contract": "escrow.clmm.test.near",
+   "view": true,
+   "args": {},
+   "contains": "e:reserve=620"
+  },
+  {
+   "method": "get_balance_of",
+   "as": "alice",
+   "contract": "escrow.clmm.test.near",
+   "view": true,
+   "args": {
+    "account": "alice"
+   },
+   "contains": "e:bal:alice=400"
+  },
+  {
+   "method": "get_balance_of",
+   "as": "alice",
+   "contract": "escrow.clmm.test.near",
+   "view": true,
+   "args": {
+    "account": "bob"
+   },
+   "contains": "e:bal:bob=467"
+  }
+ ]
+}

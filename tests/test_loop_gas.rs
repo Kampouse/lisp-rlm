@@ -49,8 +49,9 @@ export function demote(): string {
   return s + "!";
 }
 export function eqNil(): string {
-  const v = near.jsonGetInt("nope");
-  if (v == near.jsonGetInt("nope2")) { return "eq"; }
+  // armed for the bare-read gate — ?? null preserves the nil==nil pin
+  const v = near.jsonGetInt("nope") ?? null;
+  if (v == (near.jsonGetInt("nope2") ?? null)) { return "eq"; }
   return "ne";
 }
 // input-cache (2026-09-14): getters share ONE input read per tx; the

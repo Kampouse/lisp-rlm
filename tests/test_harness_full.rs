@@ -2,10 +2,9 @@
 //! Verifies all agent loop functions: scoring, ranking, lifecycle, budget, scheduler, persistence
 
 use lisp_rlm_wasm::*;
-use std::sync::Mutex;
 
-// Serialize tests to avoid runtime/state conflicts between parallel runs
-static TEST_LOCK: Mutex<()> = Mutex::new(());
+mod common;
+use common::runtime_lock;
 
 fn eval(code: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
     let exprs = parse_all(code).unwrap();
@@ -24,21 +23,24 @@ fn eval_ok(code: &str, env: &mut Env, state: &mut EvalState) -> LispVal {
     result
 }
 
-fn fresh() -> (Env, EvalState) {
-    let _lock = TEST_LOCK.lock().unwrap();
+fn fresh() -> (common::StateLock, Env, EvalState) {
+    // Guard held for the WHOLE test body: fresh() returns it, tests bind it
+    // as `let (_lock, ..)`. No sibling thread or process can nuke
+    // runtime/state until the lock drops at test end.
+    let lock = runtime_lock();
     let _ = std::fs::remove_dir_all("runtime/state");
     let mut env = Env::new();
     let mut state = EvalState::new();
     eval("(load-file \"runtime/harness.lisp\")", &mut env, &mut state);
     eval("(boot)", &mut env, &mut state);
-    (env, state)
+    (lock, env, state)
 }
 
 // === Scoring ===
 
 #[test]
 fn test_score_intention_zero_cost() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     let score = eval(
         r#"(get-default (score-intention (dict "cost" 0 "deadline" nil "last-acted" nil)) "score" 0)"#,
         &mut env,
@@ -54,7 +56,7 @@ fn test_score_intention_zero_cost() {
 
 #[test]
 fn test_score_intention_high_cost() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     let score = eval(
         r#"(get-default (score-intention (dict "cost" 1000 "deadline" nil "last-acted" nil)) "score" 0)"#,
         &mut env,
@@ -70,7 +72,7 @@ fn test_score_intention_high_cost() {
 
 #[test]
 fn test_urgency_overdue() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     // Set deadline in the past (1 hour ago = now - 3600000ms)
     let u = eval(
         r#"(urgency (dict "deadline" (- (now) 3600000) "last-acted" nil))"#,
@@ -85,7 +87,7 @@ fn test_urgency_overdue() {
 
 #[test]
 fn test_cost_efficiency_zero_cost() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     let e = eval(r#"(cost-efficiency (dict "cost" 0))"#, &mut env, &mut state);
     match e {
         LispVal::Float(f) => assert!((f - 1.0).abs() < 0.01, "expected 1.0, got {}", f),
@@ -97,7 +99,7 @@ fn test_cost_efficiency_zero_cost() {
 
 #[test]
 fn test_find_best_picks_highest_score() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (define items (list
@@ -115,7 +117,7 @@ fn test_find_best_picks_highest_score() {
 
 #[test]
 fn test_find_best_single_item() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (define items (list (dict "id" "only" "score" 0.5)))
@@ -130,7 +132,7 @@ fn test_find_best_single_item() {
 
 #[test]
 fn test_rank_intentions_orders_by_score() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (register-intention (dict "id" "low" "cost" 100 "type" "perpetual" "deadline" nil "last-acted" nil))
@@ -154,7 +156,7 @@ fn test_rank_intentions_orders_by_score() {
 
 #[test]
 fn test_rank_intentions_empty() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     // No intentions registered — should return empty list
     eval("(set! *intentions* (list))", &mut env, &mut state);
     let result = eval("(rank-intentions *intentions*)", &mut env, &mut state);
@@ -165,7 +167,7 @@ fn test_rank_intentions_empty() {
 
 #[test]
 fn test_handle_result_perpetual_updates_last_acted() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (register-intention (dict "id" "p1" "type" "perpetual" "cost" 0 "deadline" nil "last-acted" nil))
@@ -193,7 +195,7 @@ fn test_handle_result_perpetual_updates_last_acted() {
 
 #[test]
 fn test_handle_result_one_shot_removes() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (register-intention (dict "id" "os1" "type" "one-shot" "cost" 1))
@@ -208,7 +210,7 @@ fn test_handle_result_one_shot_removes() {
 
 #[test]
 fn test_handle_result_recurring_updates_last_run() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (register-intention (dict "id" "r1" "type" "recurring" "cost" 5 "deadline" nil "last-acted" nil))
@@ -235,7 +237,7 @@ fn test_handle_result_recurring_updates_last_run() {
 
 #[test]
 fn test_handle_result_completable_updates_last_acted() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (register-intention (dict "id" "c1" "type" "completable" "cost" 3 "deadline" nil "last-acted" nil))
@@ -262,7 +264,7 @@ fn test_handle_result_completable_updates_last_acted() {
 
 #[test]
 fn test_one_shot_only_removes_itself() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (register-intention (dict "id" "keep" "type" "perpetual" "cost" 0 "deadline" nil "last-acted" nil))
@@ -293,14 +295,14 @@ fn test_one_shot_only_removes_itself() {
 
 #[test]
 fn test_budget_remaining_default() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     let result = eval("(budget-remaining?)", &mut env, &mut state);
     assert_eq!(result, LispVal::Bool(true));
 }
 
 #[test]
 fn test_budget_exhausted() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (set! *budget* (dict "daily-limit" 10 "used" 0))
@@ -319,7 +321,7 @@ fn test_budget_exhausted() {
 
 #[test]
 fn test_budget_spend_tracks_usage() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (set! *budget* (dict "daily-limit" 100 "used" 0))
@@ -335,7 +337,7 @@ fn test_budget_spend_tracks_usage() {
 
 #[test]
 fn test_scheduler_respects_budget() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (register-intention (dict "id" "t1" "type" "one-shot" "action" (lambda () 42) "cost" 5))
@@ -357,7 +359,7 @@ fn test_scheduler_respects_budget() {
 
 #[test]
 fn test_scheduler_picks_highest_priority() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (register-intention (dict "id" "cheap" "type" "one-shot" "action" (lambda () 'cheap-ran) "cost" 0))
@@ -379,7 +381,7 @@ fn test_scheduler_picks_highest_priority() {
 
 #[test]
 fn test_scheduler_empty_intentions() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     // Should not crash on empty intentions
     let result = eval("(scheduler-run)", &mut env, &mut state);
     assert!(matches!(result, LispVal::Nil | LispVal::List(_)));
@@ -387,17 +389,16 @@ fn test_scheduler_empty_intentions() {
 
 #[test]
 fn test_tick_returns_60() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     let sleep = eval("(tick)", &mut env, &mut state);
     assert_eq!(sleep, LispVal::Num(60));
-    let _ = std::fs::remove_dir_all("runtime/state");
 }
 
 // === Persistence ===
 
 #[test]
 fn test_checkpoint_saves_all_state() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (register-intention (dict "id" "p1" "type" "perpetual" "cost" 5))
@@ -418,13 +419,11 @@ fn test_checkpoint_saves_all_state() {
         "budget should contain 'used': {}",
         budget_str
     );
-
-    let _ = std::fs::remove_dir_all("runtime/state");
 }
 
 #[test]
 fn test_restore_loads_intentions() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (register-intention (dict "id" "p1" "type" "perpetual" "cost" 5))
@@ -440,15 +439,13 @@ fn test_restore_loads_intentions() {
     eval("(restore-state)", &mut env, &mut state);
     let count = eval("(len *intentions*)", &mut env, &mut state);
     assert_eq!(count, LispVal::Num(1));
-
-    let _ = std::fs::remove_dir_all("runtime/state");
 }
 
 // === Apply Updates ===
 
 #[test]
 fn test_apply_updates_single_field() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (define d (dict "id" "test" "val" 1))
@@ -467,7 +464,7 @@ fn test_apply_updates_single_field() {
 
 #[test]
 fn test_apply_updates_multiple_fields() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (define d (dict "id" "test"))
@@ -486,7 +483,7 @@ fn test_apply_updates_multiple_fields() {
 
 #[test]
 fn test_update_intention_by_id() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (register-intention (dict "id" "a" "type" "perpetual" "cost" 0 "deadline" nil "last-acted" nil))
@@ -514,7 +511,7 @@ fn test_update_intention_by_id() {
 
 #[test]
 fn test_execute_action_handles_missing_action() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (register-intention (dict "id" "no-action" "type" "perpetual" "cost" 0))
@@ -529,7 +526,7 @@ fn test_execute_action_handles_missing_action() {
 
 #[test]
 fn test_execute_action_handles_failing_action() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
     eval(
         r#"
         (register-intention (dict "id" "fail" "type" "perpetual" "cost" 0
@@ -552,7 +549,7 @@ fn test_execute_action_handles_failing_action() {
 
 #[test]
 fn test_full_cycle_register_tick_checkpoint_restore() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
 
     // Register perpetual intention
     eval(
@@ -586,13 +583,11 @@ fn test_full_cycle_register_tick_checkpoint_restore() {
     // Checkpoint and verify
     eval("(checkpoint)", &mut env, &mut state);
     assert!(std::path::Path::new("runtime/state/intentions.json").exists());
-
-    let _ = std::fs::remove_dir_all("runtime/state");
 }
 
 #[test]
 fn test_multiple_ticks_update_state() {
-    let (mut env, mut state) = fresh();
+    let (_lock, mut env, mut state) = fresh();
 
     eval(
         r#"(register-intention (dict "id" "recurring" "type" "recurring" "cost" 0 "deadline" nil "last-acted" nil))"#,
@@ -631,6 +626,4 @@ fn test_multiple_ticks_update_state() {
         ),
         "second run should have timestamp"
     );
-
-    let _ = std::fs::remove_dir_all("runtime/state");
 }

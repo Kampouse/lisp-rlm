@@ -5116,7 +5116,7 @@ pub fn eval_near_builtin_match(name: &str) -> bool {
         // ── near/* iteration ──
         | "near/iter_prefix" | "near/iter_range" | "near/iter_next"
         // ── near/* JSON helpers ──
-        | "near/json_get_int" | "near/json_get_str"
+        | "near/json_get_int" | "near/json_get_str" | "near/json_get_str_opt"
         | "near/json_return_int" | "near/json_return_str"
         // ── Mock contract registry ──
         | "near-register" | "near-register-source" | "near-contracts"
@@ -5556,7 +5556,7 @@ fn eval_near_builtin(
             state.near_promises.push(LispVal::Map(m));
 
             // If base promise has a result and target is registered, execute immediately
-            let base_result = state
+            let _base_result = state
                 .near_promise_results
                 .get(base_idx as usize)
                 .cloned()
@@ -6051,6 +6051,7 @@ fn eval_near_builtin(
         // ═══════════════════════════════════════════════════════════════
         "near/json_get_int" => Some(Ok(LispVal::Num(0))),
         "near/json_get_str" => Some(Ok(LispVal::Str(String::new()))),
+        "near/json_get_str_opt" => Some(Ok(LispVal::Nil)),
         "near/json_return_int" => Some(Ok(LispVal::Num(0))),
         "near/json_return_str" => Some(Ok(LispVal::Num(0))),
 
@@ -6277,7 +6278,13 @@ pub fn eval_builtin(
             if (prod >> 64) >= c as u128 {
                 return Err("muldiv: overflow — result does not fit in 64 bits".into());
             }
-            Ok(LispVal::Num((prod / c as u128) as u64 as i64))
+            let q = (prod / c as u128) as u64;
+            // tagged-value range parity with wasm ([-2^60, 2^60)) — the
+            // wasm tag shift would silently wrap past 2^60 (2026-10-09)
+            if q >= (1u64 << 60) {
+                return Err("muldiv: result exceeds tagged range [-2^60, 2^60)".into());
+            }
+            Ok(LispVal::Num(q as i64))
         }
         "isqrt" => {
             // (isqrt n) → floor(sqrt(n)) over the u64 bit pattern
@@ -6297,7 +6304,7 @@ pub fn eval_builtin(
             while r
                 .checked_add(1)
                 .and_then(|r1| r1.checked_mul(r1).map(|sq| (r1, sq)))
-                .map(|(r1, sq)| sq <= n)
+                .map(|(_r1, sq)| sq <= n)
                 .unwrap_or(false)
             {
                 r += 1;
@@ -6674,8 +6681,16 @@ pub fn eval_builtin(
                 },
                 "u128/to-i64" => {
                     let v = parse_u128_arg(name, args.get(0))?;
-                    if v > i64::MAX as u128 {
-                        return Err(format!("u128/to-i64: value {} exceeds i64::MAX", v));
+                    // Aligned with wasm tagged-Num payload limit (2^60 - 1,
+                    // 2026-10-11): previously the interpreter accepted up to
+                    // i64::MAX while the wasm emitter trapped above 2^60-1 —
+                    // a test/pass, wasm/trap divergence. Both now enforce the
+                    // same boundary; the compiler rejects statically.
+                    if v > 0x0FFF_FFFF_FFFF_FFFF {
+                        return Err(format!(
+                            "u128/to-i64: value {} exceeds tagged-Num limit 2^60-1; keep u128-domain values in u128 ops",
+                            v
+                        ));
                     }
                     Ok(LispVal::Num(v as i64))
                 }

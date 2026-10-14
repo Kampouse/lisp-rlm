@@ -59,16 +59,26 @@ fn compiles_and_runs(name: &str, call: &str) {
 
 #[test]
 fn sweep_input_reads() {
-    compiles_and_runs("json_get_str", r#"(near/json_get_str "g")"#);
-    compiles_and_runs("json_get_int", r#"(near/json_get_int "n")"#);
-    compiles_and_runs("json_get_arr", r#"(near/json_get_arr "a")"#);
+    // money-safety gate: every param read needs an explicit fallback
+    compiles_and_runs(
+        "json_get_str",
+        r#"(default (near/json_get_str "g") "")"#,
+    );
+    compiles_and_runs(
+        "json_get_int",
+        r#"(default (near/json_get_int "n") 0)"#,
+    );
+    compiles_and_runs(
+        "json_get_arr",
+        r#"(default (near/json_get_arr "a") nil)"#,
+    );
 }
 
 #[test]
 fn sweep_json_builders() {
     compiles_and_runs("json-set", r#"(json-set "{}" "k" "v")"#);
-    compiles_and_runs("json-get auto", r#"(json/get "k")"#);
-    compiles_and_runs("json-get-str", r#"(json-get-str "k" "{}")"#);
+    compiles_and_runs("json-get auto", r#"(default (json/get "k") "")"#);
+    compiles_and_runs("json-get-str", r#"(default (json-get-str "k" "{}") "")"#);
     compiles_and_runs("json-quote", r#"(json-quote "hi")"#);
     compiles_and_runs("json-return", r#"(json-return "{}")"#);
 }
@@ -114,23 +124,25 @@ fn log_of(call: &str, input: &str) -> String {
 
 #[test]
 fn matrix_json_get_str() {
+    // money-safety gate: bare reads are build errors — wrap in (default … fb);
+    // fallback on miss, value on hit
     assert_eq!(
-        log_of(r#"(near/json_get_str "g")"#, r#"{"g":"hi"}"#),
+        log_of(r#"(default (near/json_get_str "g") "fb")"#, r#"{"g":"hi"}"#),
         "LOG: hi"
     );
-    // miss → nil (d.ts `string | null`; bare use is visible)
-    assert_eq!(log_of(r#"(near/json_get_str "g")"#, "{}"), "LOG: nil");
+    // miss → fallback
+    assert_eq!(log_of(r#"(default (near/json_get_str "g") "fb")"#, "{}"), "LOG: fb");
     assert_eq!(
-        log_of(r#"(near/json_get_str "g")"#, r#"{"x":1}"#),
-        "LOG: nil"
+        log_of(r#"(default (near/json_get_str "g") "fb")"#, r#"{"x":1}"#),
+        "LOG: fb"
     );
     // pretty-printed JSON (whitespace after colon) must still hit
     assert_eq!(
-        log_of(r#"(near/json_get_str "g")"#, r#"{ "g" : "hi" }"#),
+        log_of(r#"(default (near/json_get_str "g") "fb")"#, r#"{ "g" : "hi" }"#),
         "LOG: hi"
     );
     // empty input
-    assert_eq!(log_of(r#"(near/json_get_str "g")"#, ""), "LOG: nil");
+    assert_eq!(log_of(r#"(default (near/json_get_str "g") "fb")"#, ""), "LOG: fb");
 }
 
 #[test]
@@ -148,22 +160,25 @@ fn matrix_json_get_str_nullish() {
 #[test]
 fn matrix_json_get_int() {
     assert_eq!(
-        log_of(r#"(near/json_get_int "n")"#, r#"{"n":42}"#),
+        log_of(r#"(default (near/json_get_int "n") 0)"#, r#"{"n":42}"#),
         "LOG: 42"
     );
     assert_eq!(
-        log_of(r#"(near/json_get_int "n")"#, r#"{"n":-42}"#),
+        log_of(r#"(default (near/json_get_int "n") 0)"#, r#"{"n":-42}"#),
         "LOG: -42"
     );
-    assert_eq!(log_of(r#"(near/json_get_int "n")"#, "{}"), "LOG: nil");
+    assert_eq!(log_of(r#"(default (near/json_get_int "n") 0)"#, "{}"), "LOG: 0");
     // bare-token value ({"by": 5} — no quotes around 5) must parse
-    assert_eq!(log_of(r#"(near/json_get_int "n")"#, r#"{"n":5}"#), "LOG: 5");
-    // hit-then-miss in one function: local reuse must not leak the hit
-    let src = r#"(define (main) (begin (near/log_num (near/json_get_int "a")) (near/log (to-string (near/json_get_int "b")))))"#;
+    assert_eq!(
+        log_of(r#"(default (near/json_get_int "n") 0)"#, r#"{"n":5}"#),
+        "LOG: 5"
+    );
+    // hit-then-miss in one function: hit must not leak into the miss's fallback
+    let src = r#"(define (main) (begin (near/log_num (default (near/json_get_int "a") 0)) (near/log (to-string (default (near/json_get_int "b") 7)))))"#;
     let out = near_mock(src, "main", r#"{"a":5}"#);
     assert!(
-        out.contains("LOG: 5") && out.contains("LOG: nil"),
-        "hit-then-miss must not leak: {out}"
+        out.contains("LOG: 5") && out.contains("LOG: 7"),
+        "hit must not leak into later fallback: {out}"
     );
 }
 
@@ -183,16 +198,16 @@ fn matrix_json_get_int_nullish() {
 fn matrix_prefix_and_collision_keys() {
     // "g" must not match inside "gg" or "g2"
     assert_eq!(
-        log_of(r#"(near/json_get_str "g")"#, r#"{"gg":"v"}"#),
-        "LOG: nil"
+        log_of(r#"(default (near/json_get_str "g") "fb")"#, r#"{"gg":"v"}"#),
+        "LOG: fb"
     );
     assert_eq!(
-        log_of(r#"(near/json_get_str "g")"#, r#"{"a":1,"g2":2}"#),
-        "LOG: nil"
+        log_of(r#"(default (near/json_get_str "g") "fb")"#, r#"{"a":1,"g2":2}"#),
+        "LOG: fb"
     );
     // key later in the object
     assert_eq!(
-        log_of(r#"(near/json_get_str "g")"#, r#"{"a":1,"g":"late"}"#),
+        log_of(r#"(default (near/json_get_str "g") "fb")"#, r#"{"a":1,"g":"late"}"#),
         "LOG: late"
     );
 }
@@ -212,4 +227,18 @@ fn matrix_ts_percent_js_semantics() {
         let out = near_mock(&src, "main", "{}");
         assert!(out.contains(expect), "{call} must give {expect}: {out}");
     }
+}
+
+// ── Typed json-get (:u128) — opaque U128 money type ─────────────────────────
+
+#[test]
+fn sweep_json_get_u128_typed_compiles_and_runs() {
+    compiles_and_runs(
+        "json-get :u128 (two-arg)",
+        r#"(json-get :u128 "{\"amount\": \"340282366920938463463374607431768211455\"}" "amount")"#,
+    );
+    compiles_and_runs(
+        "json-get :u128 (small value)",
+        r#"(json-get :u128 "{\"n\": 42}" "n")"#,
+    );
 }

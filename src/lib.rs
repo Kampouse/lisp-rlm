@@ -48,6 +48,7 @@ pub mod tagged_value;
 pub mod ts_frontend;
 pub mod types;
 pub mod typing;
+pub mod u128_inline;
 pub mod verifier;
 pub mod wasi;
 pub mod wasm_emit;

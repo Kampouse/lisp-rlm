@@ -182,12 +182,15 @@ fn flash_loan_honest_then_stiff_rollback() {
         "stiff settle aborted fail-closed: {s}"
     );
 
-    // 4. receipt-local truth: the transfer-out receipt COMMITTED (pool
-    //    short: 1005-600=405); the stiff callback never wrote its marker;
-    //    the settle's fee write reverted with it. Why pools whitelist.
+    // 4. receipt-local truth (retired in part 2026-10-12): the pool-short
+    //    405 pin relied on persist-every-tx; near-mock now persists
+    //    state.bin ONLY on success (c8e24cb4), so the aborted stiff tx
+    //    leaves no on-disk trace — the committed transfer receipt is no
+    //    longer observable from the state file. The policy itself is
+    //    pinned instead: state still shows the honest loan (1005).
     assert!(
-        bal(st).contains("405"),
-        "pool is short (transfer receipt committed): {}",
+        bal(st).contains("1005"),
+        "aborted stiff tx left state untouched (persist-on-success): {}",
         bal(st)
     );
     let lb2 = run(

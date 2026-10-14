@@ -859,8 +859,12 @@ impl WasmEmitter {
                 v.push(Instruction::I64Add);
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
-                // Bind to param
+                // Bind to param — parse-cache memo for the param name is
+                // loop-variant (rebound every iteration): clear it, or the
+                // first u128 read memoizes element 0's limbs for the whole
+                // loop (2026-10-10, filter/map/reduce param staleness).
                 v.push(Instruction::LocalSet(p_idx));
+                self.emit_parse_cache_invalidate(&mut v, &param_name);
                 // Evaluate body
                 v.extend(self.expr(&body)?);
                 v.push(Instruction::LocalSet(res_tmp));
@@ -958,9 +962,11 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(elem_tmp));
-                // Bind param, eval predicate
+                // Bind param — clear the loop-variant parse-cache memo
+                // (same staleness class as map, 2026-10-10).
                 v.push(Instruction::LocalGet(elem_tmp));
                 v.push(Instruction::LocalSet(p_idx));
+                self.emit_parse_cache_invalidate(&mut v, &param_name);
                 v.extend(self.expr(&body)?);
                 // Check truthy: untag, then compare raw value != 0
                 v.extend(self.emit_untag());
@@ -1052,14 +1058,17 @@ impl WasmEmitter {
                 v.push(Instruction::I64Sub);
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new
+                // NEAR mode MUST runtime-bump too: a static per-call-site
+                // buffer is re-written on every recursive activation of the
+                // site, so a sibling arg evaluated after this cdr (e.g.
+                // (f (cdr gs) (cdr ls) (car gs)) — arg3 reads gs, which IS
+                // frame 0's siteA buffer) sees clobbered elements. Found
+                // 2026-10-12 via the accrual port (innermost fold term
+                // silently 0): frames share the literal address; first use
+                // wins, later uses corrupt. p2/wasi always did this right.
                 let alloc_size = (1 + 64) * 8;
-                if self.p2_mode || self.wasi_mode {
-                    v.extend(self.heap_bump_runtime(alloc_size, "__cdr_alloc"));
-                    v.push(Instruction::LocalGet(self.local_idx("__cdr_alloc")));
-                } else {
-                    let new_heap = self.heap_bump(alloc_size);
-                    v.push(Instruction::I64Const(new_heap as i64));
-                }
+                v.extend(self.heap_bump_runtime(alloc_size, "__cdr_alloc"));
+                v.push(Instruction::LocalGet(self.local_idx("__cdr_alloc")));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store new_count
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1159,13 +1168,11 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new: count + 1 elements
                 let alloc_size = (1 + 64) * 8;
-                if self.p2_mode || self.wasi_mode {
-                    v.extend(self.heap_bump_runtime(alloc_size, "__cons_alloc"));
-                    v.push(Instruction::LocalGet(self.local_idx("__cons_alloc")));
-                } else {
-                    let new_heap = self.heap_bump(alloc_size);
-                    v.push(Instruction::I64Const(new_heap as i64));
-                }
+                // Runtime-bump in ALL modes: a static per-call-site buffer is
+                // re-written by every recursive activation of this site (see
+                // the "cdr" comment above; found 2026-10-12, fixed 0ccdc06c).
+                v.extend(self.heap_bump_runtime(alloc_size, "__cons_alloc"));
+                v.push(Instruction::LocalGet(self.local_idx("__cons_alloc")));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store new_count = old_count + 1
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1372,13 +1379,9 @@ impl WasmEmitter {
                 v.extend(self.emit_untag());
                 v.push(Instruction::LocalSet(end_tmp));
                 let alloc_size = (1 + 64) * 8;
-                if self.p2_mode || self.wasi_mode {
-                    v.extend(self.heap_bump_runtime(alloc_size, "__rng_alloc"));
-                    v.push(Instruction::LocalGet(self.local_idx("__rng_alloc")));
-                } else {
-                    let new_heap = self.heap_bump(alloc_size);
-                    v.push(Instruction::I64Const(new_heap as i64));
-                }
+                // Runtime-bump in ALL modes — see "cdr" (0ccdc06c).
+                v.extend(self.heap_bump_runtime(alloc_size, "__rng_alloc"));
+                v.push(Instruction::LocalGet(self.local_idx("__rng_alloc")));
                 v.push(Instruction::LocalSet(new_ptr));
                 // count = 0
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1459,13 +1462,9 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(n_tmp));
                 // Alloc new
                 let alloc_size = (1 + 64) * 8;
-                if self.p2_mode || self.wasi_mode {
-                    v.extend(self.heap_bump_runtime(alloc_size, "__rev_alloc"));
-                    v.push(Instruction::LocalGet(self.local_idx("__rev_alloc")));
-                } else {
-                    let new_heap = self.heap_bump(alloc_size);
-                    v.push(Instruction::I64Const(new_heap as i64));
-                }
+                // Runtime-bump in ALL modes — see "cdr" (0ccdc06c).
+                v.extend(self.heap_bump_runtime(alloc_size, "__rev_alloc"));
+                v.push(Instruction::LocalGet(self.local_idx("__rev_alloc")));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store count
                 v.push(Instruction::LocalGet(new_ptr));
@@ -1567,6 +1566,11 @@ impl WasmEmitter {
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma));
                 v.push(Instruction::LocalSet(elem_local));
+                // Bind elem — clear loop-variant parse-cache memos for BOTH
+                // lambda params (acc is rebound after the body; elem here),
+                // same staleness class as map/filter (2026-10-10).
+                self.emit_parse_cache_invalidate(&mut v, &elem_name);
+                self.emit_parse_cache_invalidate(&mut v, &acc_name);
                 // Eval body with acc and elem bound
                 v.extend(self.expr(&body)?);
                 v.push(Instruction::LocalSet(acc_local));
@@ -1647,13 +1651,9 @@ impl WasmEmitter {
                 v.push(Instruction::LocalSet(n2_tmp));
                 // Alloc new
                 let alloc_size = (1 + 64) * 8;
-                if self.p2_mode || self.wasi_mode {
-                    v.extend(self.heap_bump_runtime(alloc_size, "__ap_alloc"));
-                    v.push(Instruction::LocalGet(self.local_idx("__ap_alloc")));
-                } else {
-                    let new_heap = self.heap_bump(alloc_size);
-                    v.push(Instruction::I64Const(new_heap as i64));
-                }
+                // Runtime-bump in ALL modes — see "cdr" (0ccdc06c).
+                v.extend(self.heap_bump_runtime(alloc_size, "__ap_alloc"));
+                v.push(Instruction::LocalGet(self.local_idx("__ap_alloc")));
                 v.push(Instruction::LocalSet(new_ptr));
                 // Store total count
                 v.push(Instruction::LocalGet(new_ptr));

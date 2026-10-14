@@ -191,7 +191,18 @@ impl WasmEmitter {
             Instruction::Br(0),
             Instruction::End, // loop
             Instruction::End, // block
-            // ===== Step 4: Tag and return =====
+            // ===== Step 4: Representable-range guard + tag =====
+            // Tagged values span [-2^60, 2^60); an unsigned quotient ≥ 2^60
+            // would wrap silently under the tag shift (silent on-chain
+            // corruption). Hard-error instead — same class as the literal
+            // range guard. (2026-10-09: clmm differential caught this:
+            // muldiv(4294967296000, 4294967296, 4294) returned garbage.)
+            Instruction::LocalGet(q),
+            Instruction::I64Const(1 << 60),
+            Instruction::I64GeU,
+            Instruction::If(BlockType::Empty),
+            Instruction::Unreachable,
+            Instruction::End,
             Instruction::LocalGet(q),
             Instruction::I64Const(TAG_BITS),
             Instruction::I64Shl,

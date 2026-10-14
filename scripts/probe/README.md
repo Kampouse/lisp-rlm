@@ -3,7 +3,7 @@
 > **2026-09-29: signing lives at the Rust layer now.** `(schnorr-sign sk msg aux)`
 > in any target (NEAR + P2 components) produces byte-exact BIP-340 signatures
 > from the 71KB stitched lib — no kernel, no splicers, no two-run A/B split.
-> See `tests_p2/test_schnorr_sign_p2.lisp` and GAPS.md (2026-09-29 entries).
+> See `tests_p2/test_schnorr_sign_p2.lisp` and docs/GAPS.md (2026-09-29 entries).
 > This directory is kept as historical evidence of the pure-Lisp approach.
 
 ## Files

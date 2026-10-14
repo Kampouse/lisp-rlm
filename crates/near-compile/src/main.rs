@@ -3,6 +3,36 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+// ── WASM SOURCE STAMP (2026-10-10) ──
+// Every emitted wasm gets `<wasm>.stamp` = {"src", "sha256"} recording the
+// ORIGINAL (pre-lowering) source it was built from. near-mock reads the
+// stamp and warns when the source hash has moved — the stale-artifact trap
+// where a failed rebuild leaves an OLD wasm and every later near-mock run
+// quietly tests dead code (cost: 3 phantom red scenario suites).
+fn write_wasm_stamp(out_path: &Path, src_path: &Path, original_source: &str) {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(original_source.as_bytes());
+    let hex: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
+    let stamp = serde_json::json!({
+        "src": src_path
+            .canonicalize()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| src_path.display().to_string()),
+        "sha256": hex,
+    });
+    let stamp_path = PathBuf::from(format!("{}.stamp", out_path.display()));
+    if let Err(e) = std::fs::write(
+        &stamp_path,
+        serde_json::to_string_pretty(&stamp).unwrap_or_default(),
+    ) {
+        eprintln!("⚠️  stamp write failed ({}): {}", stamp_path.display(), e);
+    }
+}
+
 // ── PROJECT CONFIG ──
 
 #[derive(Debug, Clone)]
@@ -442,6 +472,7 @@ fn do_build(project_dir: &str) -> Result<(ProjectConfig, Vec<u8>), String> {
         fs::create_dir_all(parent).map_err(|e| format!("create output dir: {}", e))?;
     }
     fs::write(&out_path, &wasm_bytes).map_err(|e| format!("write {}: {}", config.output, e))?;
+    write_wasm_stamp(&out_path, &src_path, &source);
 
     Ok((config, wasm_bytes))
 }
@@ -576,6 +607,7 @@ fn do_build_target_with_config(
         fs::create_dir_all(parent).map_err(|e| format!("create output dir: {}", e))?;
     }
     fs::write(&out_path, &wasm_bytes).map_err(|e| format!("write {}: {}", config.output, e))?;
+    write_wasm_stamp(&out_path, &src_path, &source);
 
     // Post-build steps (only for NEAR target)
     if target == "near" {
@@ -2470,6 +2502,9 @@ fn run_compile(args: &[String]) {
     }
     let src_path = &positional[0];
     let src = fs::read_to_string(src_path).expect("read input");
+    // Original (pre-TS-lowering) text — the stamp must hash what the USER
+    // edits, not the lowered lisp.
+    let original_src = src.clone();
 
     // TS frontend: lower TypeScript source to lisp before the normal pipeline.
     // Keep the ident-offset map (drained by take_ident_offsets after the
@@ -2607,6 +2642,7 @@ fn run_compile(args: &[String]) {
 
     let out = resolve_output_path(&cli_output, positional.get(1).map(String::as_str), src_path);
     fs::write(&out, &wasm_bytes).expect("write WASM");
+    write_wasm_stamp(Path::new(&out), Path::new(src_path), &original_src);
     println!("✅ {} ({} bytes) — validated", out, wasm_bytes.len());
 }
 

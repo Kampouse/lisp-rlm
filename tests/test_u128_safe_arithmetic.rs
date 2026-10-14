@@ -49,6 +49,21 @@ fn u128_mul_normal_interp() {
 
 /// Compile and run via near-mock. Returns (exit_code, stdout, stderr).
 fn run_near_mock(lisp: &str) -> (i32, String, String) {
+    // Pipeline parity guard (2026-10-08, corpus-wide): the library's
+    // source-path and exprs-path entries must agree byte-for-byte on this
+    // fixture (the CLI compile below uses the same source path). Fixtures
+    // that legitimately FAIL compilation (this file pins address-arg
+    // hard-errors) skip the guard — parity is only defined on success.
+    if let Ok(__w1) = lisp_rlm_wasm::compile_near(lisp) {
+        let __exprs = lisp_rlm_wasm::parse_all(lisp)
+            .unwrap_or_else(|e| panic!("parse_all failed: {}", e));
+        let __w2 = lisp_rlm_wasm::compile_near_from_exprs(&__exprs)
+            .unwrap_or_else(|e| panic!("compile_near_from_exprs failed: {}", e));
+        assert_eq!(
+            __w1, __w2,
+            "pipeline divergence: source-path and exprs-path wasm differ"
+        );
+    }
     use std::io::Write;
     use std::process::{Command, Stdio};
 

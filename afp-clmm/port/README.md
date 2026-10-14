@@ -1,0 +1,236 @@
+# CLMM port — the AFP entry, proved in WASM
+
+Machine-checked Isabelle/HOL model of Uniswap-v3-style concentrated
+liquidity (pool-combination theorem + split optimality), ported to
+lisp-rlm contracts and differentially tested against the model's own
+numbers.
+
+```
+cd port
+make prove    # pool-join + fee-join: 9/9 · n-pool: 5/5 · TS twins: 14/14 — exit 0 only if ALL GREEN
+make escrow   # escrow leg: regenerate → compile → 6 scenarios (51 asserts) → mutation gate 4/4
+```
+
+## Layout (6 entries, that's all)
+
+| path | what it is |
+|------|------------|
+| `contracts/` | the contracts, grouped by leg — each dir: `src/main.lisp` + `ts/main.ts` + `near.json` (+ `README.md` where hand-written) |
+| `scenarios/` | `lisp/` + `ts/` — scenario manifests named after what they exercise (`inside` = interior entry, `opt-*` = optimality pins, `npool-*` = leg-4 shapes, `escrow-*`/`ft-*` = the escrow leg) |
+| `proof/` | the oracle harness: `prove.py`, `run_scen.py`, `run_scen_ts.py`, `pins.json`/`pins3.json` (expected values), `PROOF.md` (status table), `mutate_escrow.py` (mutation gate) |
+| `generators/` | `gen.py`/`gen3.py`/`gen_ts.py` — pool constants, contracts are GENERATED; `gen_escrow.py` — escrow twins from the `.thy` op table; `build_ts.py` compiles the TS twins |
+| `paths.py` | the one file that knows where everything is |
+| `Makefile` | `prove` / `escrow` / `build-ts` / `regenerate` / `clean` |
+
+## The 13 contracts
+
+| dir | pool | leg | what it pins |
+|-----|------|-----|--------------|
+| `contracts/pool-join/pool-a/` | pa | 2 | baseline: grid [1,2,4]e9, fee 0.3% |
+| `contracts/pool-join/pool-b/` | pb | 2 | partner on a DIFFERENT grid [1,3,4]e9 — makes refinement real work |
+| `contracts/pool-join/pool-b-ref/` | pbref | 2 | curve-preserving refine @2e9 — the slippage-invariance twin (pins finer_quote_slippage) |
+| `contracts/pool-join/pool-e/` | pe | 2 | one coarse cell [1,4]e9 — the fragmentation case |
+| `contracts/pool-join/join-3l/`, `join-3r/` | j3l, j3r | 2 | N-way join both association orders — defragmentation pinned (assoc exact; join3 ≡ equalized legs ±2; alone loses 34–72%) |
+| `contracts/pool-join/join-ab/` | pd | 2 | `pool_join(refine a, refine b)` — swapping the joined pool ≡ swapping a+b (the theorem) |
+| `contracts/pool-join/split-ab/` | splt | 2 | no (a,b) split beats the equalized one (optimality) |
+| `contracts/fee-join/pool-c/` | pc | 3 | same grid as a, fee 0.5% — the fee contrast |
+| `contracts/fee-join/fee-join-ac/` | pj | 3 | `pool_fee_join(a, c)` — heterogeneous fees |
+| `contracts/n-pool/pool-n1/`, `pool-n2/` | n1, n2 | 4 | members of the N=3 composition (our generalization, not in the AFP entry) |
+| `contracts/n-pool/split-3/` | splt3 | 4 | equal-ending-price optimum across a+n1+n2 |
+
+Legs: **2** = pairwise combination (AFP theorem) · **3** = heterogeneous
+fees · **4** = N-pool composition (generalization).
+
+## The escrow leg (`make escrow`)
+
+The platform layer under the pools, ported from
+`afp-clmm/escrow/CLMM_Escrow.thy` (strict Isabelle: `reachable_conservation`
+— after every reachable step `Σ e:bal:* + e:reserve = e:in − e:out`, no
+hypotheses). One generator (`generators/gen_escrow.py`) emits BOTH twins
+from a single op table transcribed 1:1 from the theory's `apply_op` —
+every export mirrors exactly one `.thy` constructor (twin-lockstep law).
+
+| dir | what it pins |
+|-----|--------------|
+| `contracts/escrow/escrow/` | Deposit / Withdraw / SwapIn / SwapOut / LpOpen / LpRemove ledger — conservation executed on wasm (`escrow-ledger`), LP share lifecycle with ratio minting + floor redemption (`lp-ledger`), NEP-141 two-hop credit (`ft-probe`), TS twin byte-lockstep (`ts/escrow-probe`, `ts/lp-ts`) |
+| `contracts/escrow/ft/` | static NEP-141 probe fixture (not a product) — mint / `ft_transfer_call` / resolve; its own failed-receipt run (`ft-refund`) proves the bounce refunds exactly |
+
+Laws worth knowing before editing:
+
+- `withdraw`/`swap_in`/`swap_out` take `a` as a **ledger argument**
+  (mirrors the theory). Only `deposit` consumes an attached balance —
+  attaching on the others would add untracked value and break
+  `reachable_conservation`. This is pinned by the mutation gate
+  (`proof/mutate_escrow.py`: four known-BAD mutants, each must FAIL
+  the scenarios, then the original must re-verify green).
+- `swap_out` touches only `reserve − lp_pool`: the LP slice is
+  protected from swap flow (theory guard `a <= reserve - lp_pool`).
+- LP payouts floor: `v = s·pool/T` never rounds up, so dust stays
+  pooled and redemption can never overpay (pinned by mutant T4).
+- `"e:..."` storage keys are wire format — never rename.
+- Guards (`0 < a`, `a <= bal[u]`, `a <= reserve`) ARE the semantics of
+  "operation succeeded"; a failed guard aborts with state unchanged.
+
+NEAR account ids are historical wire format (`pa.clmm.test.near`,
+`splt.clmm.test.near`, …) — baked into scenario asserts, don't rename.
+Each contract dir has its own README with grid/liquidity/fee specifics.
+
+## The map — how the contracts interact
+
+```
+── pool-join ── the core AFP theorem: two grids, one swap ──────────────
+
+    pool-a [1,2,4]e9 φ=0.3%        pool-b [1,3,4]e9 φ=0.3%
+       │                            │
+       │ refine @2e9                │ slice @2e9
+       │ (keep A strictly >2e9)     │ (B's [1,3] cell CUT at 2e9,
+       │                            │  L carried across — AFP wedge)
+       └───────────► join-ab ◄──────┘
+                 [1,2,3,4]e9 — per-cell liq = a-density + b-density
+                     ▲
+   trader swaps y ───┤        split-ab walks the same join-ab:
+                     │        routes y1 → pool-a and y−y1 → pool-b
+                 split-ab
+                     │
+   PINNED: swap(join-ab) ≡ swap(a,y1) + swap(b,y−y1)   [scen: exact,
+   offgrid, cross, inside]   and the OPTIMAL y1 is the split where both
+   legs end at the same price p*               [scen: opt-exact/cross/offgrid]
+
+── fee-join ── same grid, different fees ───────────────────────────────
+
+    pool-a [1,2,4]e9 φ=0.3%        pool-c [1,2,4]e9 φ=0.5%
+       │                            │
+       └───────────► fee-join-ac ◄──┘
+                 gross books add EXACTLY: QBK = QA + QC (integer, no
+                 rounding); only the blended per-cell fee Fhat is rounded
+                 (fee-scale nested floors, exported via get-fee)
+                     ▲
+   trader swaps y ───┤
+                     │
+   PINNED: swap(fee-join-ac) vs swap(a) + swap(c) legs, interior entry
+   included                                     [scen: join, inside-join]
+
+── n-pool ── OUR generalization: three pools, one optimum ──────────────
+
+    pool-a [1,2,4]e9 φ=0.3%   pool-n1 (same grid)   pool-n2 (same grid)
+       │                        │                     │
+       └────────────┬───────────┴─────────────────────┘
+                    ▼
+                split-3 — binary-searches the ending price p* that
+                equalizes ALL THREE pools: Σ qgross_k(p*) = y
+                    │
+                legs y_k = min(cap_k, qgross_k(p*)) → each pool
+
+   PINNED: every budget regime (all-3 / two-pool collapse / boundary)
+   [scen: npool-star/two/over/under] + the counterexample: all-in on
+   n2 (least liquidity) nets LESS than the composed optimum [scen: opt-n]
+```
+
+Trader = any scenario step; every arrow above is exercised byte-exactly
+against oracle pins (`make prove`).
+
+## When to use what
+
+| Your situation | Reach for | Why (and what proves it) |
+|---|---|---|
+| Two pools, **same fee, different grids**, want one swap | `join-ab` construction (`pool_comb`) | joined curve ≡ walking both legs — one walk, no leg overhead *(exact/offgrid/cross)* |
+| Same, but want the **best split** between two pools | `split-ab` | equalize the ending price p* — provably optimal split *(opt-exact/cross/offgrid)* |
+| Two pools, **same grid, different fees** | `fee-join-ac` construction | gross books add EXACTLY; only the blended Fhat costs you — join when blending < two-leg routing overhead *(join/inside-join)* |
+| **3+ pools**, same grid & fee | `split-3` | equal-ending-price optimum scales to N — and all-in on one pool is provably worse *(npool-\*, opt-n)* |
+| Pool **already swapped into** (mid-interval) | interior entry (`start` param) | refine never changes a pool — resuming from any point is exact *(inside/inside-join)* |
+| Need **inverse**: y that reaches price p | binary search on the grid (see `split-3`'s p\* loop) | the `quote_reach` pattern — bounded loop over the grid |
+| **Selling** base back for quote | `swap-b` on any pool (base in, quote out, price descends) | the `base_swap` direction — fee via the base book B, quote out exact *(bswap-exact/offgrid/cross)* |
+| **N pools, one curve** — defragment the venue | `j3l`/`j3r` construction (joins compose; associativity byte-exact) | summed capacity; each pool alone strictly loses *(assoc/join3/frag)* |
+
+Rule of thumb: **compose** (fewer walks) when fees match — theorem-guaranteed
+free. **Route** (split across pools) when grids or fees differ — equalize the
+ending price and you're optimal. Never all-in one pool of a set.
+
+## The deployer's case — why a venue would ship each one
+
+The table above is the trader/router lens. A platform deployer makes
+architecture decisions — and each construction is the verified answer to one:
+
+| Construction | The deployer decision it answers | Why the theorem pays |
+|---|---|---|
+| `refine` (the @2e9 cut in `join-ab`) | tick-spacing migration / re-gridding a live pool | re-grid WITHOUT pausing or migrating LP positions — swaps provably identical after *(pinned: inside)* |
+| `pool-join` (`join-ab`) | aggregating liquidity across pools behind one quote | same-fee aggregation is EXACT — present one unified curve, zero hidden cost *(exact/offgrid/cross)* |
+| `split-ab` | shipping an on-chain router with best execution | optimal split computable on-chain: bounded-gas binary search, no oracle *(opt-\*)* |
+| `fee-join` (`fee-join-ac`) | unifying different fee tiers (0.3% vs 0.5%) | gross quotes exact across tiers; only the blended fee is rounded — and it's exported, so accounting stays auditable *(join/inside-join + get-fee)* |
+| `split-3` | venue-wide aggregation: N pools, one swap | equal-ending-price optimum scales to N — your aggregate venue provably beats single-pool execution *(npool-\*, opt-n)* |
+| interior entry (`start`) | quoting pools mid-life | a pool IS its state — quote any pool from its current point, no history replay, no checkpoints *(inside/inside-join)* |
+| `quote_reach` pattern | peg defense / limit fills / TWAP bands | exact y to move price to a target — bounded loop, integer-exact *(inside split-3's p\* search)* |
+
+And the meta-answer for shipping the whole kit: every construct here runs in
+**integer u128 math with direction-correct rounding** — the AFP entry is exact
+over reals; this port is the same guarantees expressed deployably, with each
+`= in the paper` pinned as a `≤/≥ pair` in wasm and checked byte-exact in CI.
+
+## Reading order (first visit)
+
+1. `../README.md` — 6-line orientation for `afp-clmm/`
+2. `../theory/` — the verbatim AFP entry: `CLMM_Description.thy` (the
+   math), `NOTES.md` (model → port mapping)
+3. `generators/gen.py` — every constant, once
+4. any contract's `README.md` → its `src/main.lisp` (headers carry the math)
+5. `proof/run_scen.py` / `proof/run_scen_ts.py` — how it's tested;
+   `proof/PROOF.md` — the stage × scenario × status table
+
+## Proving it yourself
+
+| command | does |
+|---------|------|
+| `make prove` | every pool stage, ALL GREEN or exit 1 |
+| `make escrow` | escrow leg: regenerate → compile both twins → 6 scenarios → mutation gate (exit 0 only all green) |
+| `make regenerate` | rewrite contracts from `generators/` — result is byte-identical to what's committed |
+| `make build-ts` | compile all TS twins (13 pool twins + escrow-ts) |
+| `make clean` | remove build artifacts + scenario `state.bin` (see pitfall below) |
+
+Needs `near-compile` + `near-mock` on PATH or at
+`~/dev/lisp-rlm/target/release/` (build:
+`cargo build --release -p near-compile -p lisp-rlm-wasm`), Python ≥ 3.9.
+Testnet wasms of the same contracts: `twap-c.lisp-demo2-1788293746.testnet`,
+`twap-pool-ts.lisp-demo2-1788293746.testnet`.
+
+## Pitfalls (each one cost a red)
+
+1. **`state.bin` compounds additive ledgers.** `near-mock scenario`
+   loads `state.bin` if present and writes it at the end. Splitters
+   credit `paid:<who>` additively, so an ad-hoc rerun without cleanup
+   inflates the assert (×2, ×3, …). Symptom: `paid:trader=K×expected`
+   while pure-function steps still pass exactly. Fix:
+
+   ```
+   rm scenarios/lisp/*/state.bin   # or just: make clean
+   ```
+
+   `prove.py` disinfects before each leg-4 run; the Rust harness
+   zeroes state itself; only bare CLI reruns need the manual `rm`.
+2. **TS: `u128.mulDiv` does not exist** — the 3-arg muldiv is the free
+   fn `u128MulDiv(a, b, d)`; the frontend hard-errors at compile with
+   the fix spelled out.
+   Namespace is closed: add/sub/mul/div/mod/lt/gt/eq/fromI64/toI64/isZero.
+3. **TS: unroll interlocking loop state.** Loop-carried mutation across
+   2+ `let`s is where reassignment bugs live — the generator unrolls
+   binary search into unique-named `const` stages
+   (`_bsearch_stages()`): same shape as the lisp `let*` chain, and
+   immune by construction.
+4. **TS dialect quickies:** u128 predicates are real bools; storage
+   reads need `?? "0"`; exports use underscores (`get_paid`); the
+   scenario `manifest` is one comma-separated string
+   (`acct=path,acct=path`), relative to the scenario dir.
+5. **Don't edit generated files.** Contracts come from `generators/` —
+   edit there, run `make regenerate`; the committed tree stays
+   byte-identical to generator output.
+6. **Stale toolchain binaries lie.** A `near-compile` built before a
+   host-fn addition (e.g. `u128MulDiv`, `promise_create` typing) rejects
+   valid contracts with confusing type errors — and may compile others
+   with dead code. `make escrow` and `build_ts.py` resolve the binary
+   as `target/release` (repo-source) FIRST, PATH second; rebuild with
+   `cargo build --release -p near-compile` and
+   `cargo build --release --bin compile --bin near-mock` after pulling
+   (near-compile is its own package; compile/near-mock are bins of
+   `lisp-rlm-wasm`). Symptom of the stale case:
+   13 legacy twins failing `u128MulDiv` at once, or `int ≠ str` on a
+   promise call that the fresh binary accepts.
+

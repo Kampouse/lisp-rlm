@@ -1,0 +1,64 @@
+{
+ "steps": [
+  {
+   "method": "initialize",
+   "args": "{\"sp\":\"3221225472\",\"tick\":0,\"t0\":\"token0.test.near\",\"t1\":\"token1.test.near\"}",
+   "as": "alice.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "initialize",
+   "args": "{\"sp\":\"3221225472\",\"tick\":0,\"t0\":\"x\",\"t1\":\"y\"}",
+   "as": "alice.test.near",
+   "expect": "trap"
+  },
+  {
+   "method": "ft_on_transfer",
+   "args": "{\"sender_id\":\"alice.test.near\",\"amount\":\"1000000\",\"msg\":\"mint:100:200\"}",
+   "expect": "0",
+   "as": "token0.test.near"
+  },
+  {
+   "method": "position",
+   "args": "0",
+   "view": true,
+   "expect": "alice"
+  },
+  {
+   "method": "ft_on_transfer",
+   "args": "{\"sender_id\":\"bob.test.near\",\"amount\":\"500000\",\"msg\":\"mint:0:300\"}",
+   "expect": "1",
+   "as": "token1.test.near"
+  },
+  {
+   "method": "getLiq",
+   "view": true
+  },
+  {
+   "method": "ft_on_transfer",
+   "args": "{\"sender_id\":\"bob.test.near\",\"amount\":\"200000\",\"msg\":\"swap1\"}",
+   "as": "token1.test.near"
+  },
+  {
+   "method": "getPrice",
+   "view": true
+  },
+  {
+   "method": "removePosition",
+   "args": "0",
+   "as": "alice.test.near"
+  },
+  {
+   "method": "position",
+   "args": "0",
+   "view": true,
+   "expect": " "
+  },
+  {
+   "method": "removePosition",
+   "args": "0",
+   "as": "alice.test.near",
+   "expect": "trap"
+  }
+ ]
+}

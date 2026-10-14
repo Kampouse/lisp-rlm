@@ -142,7 +142,19 @@ impl WasmEmitter {
     }
 
     pub(crate) fn ensure_json_get_func(&mut self) -> u32 {
-        if let Some(idx) = self.funcs.iter().position(|f| f.name == "__json_get") {
+        self.build_json_get_func(false)
+    }
+
+    /// Variant matching keys at ANY object depth ≥ 1 (2026-10-14): for
+    /// jsonGetStrEsc, where a full unescape turns an embedded JSON-in-JSON
+    /// body into real nested braces — keys legitimately sit below depth 1.
+    pub(crate) fn ensure_json_get_func_any(&mut self) -> u32 {
+        self.build_json_get_func(true)
+    }
+
+    fn build_json_get_func(&mut self, any_depth: bool) -> u32 {
+        let fname = if any_depth { "__json_get_any" } else { "__json_get" };
+        if let Some(idx) = self.funcs.iter().position(|f| f.name == fname) {
             return idx as u32;
         }
         let ma8 = wasm_encoder::MemArg {
@@ -240,6 +252,16 @@ impl WasmEmitter {
         ins.push(Instruction::LocalGet(json_len));
         ins.push(Instruction::I32GtS);
         open_if!();
+        // Bounds exit == definitive MISS. temp must be forced to 0 here:
+        // it doubles as byte-scratch inside the loop, and when the final
+        // iteration skipped the compare (depth != 1 — nested objects,
+        // string-valued spans), it still held a raw buffer byte. The
+        // not-found gate below then misread that byte as "match found"
+        // and the value extractor ran from end-of-buffer, returning tail
+        // garbage (e.g. key "nope" over {"server":{"port":"XYZ"}} →
+        // `YZ"`). 2026-10-09, differential probes r2/r6.
+        ins.push(Instruction::I32Const(0));
+        ins.push(Instruction::LocalSet(temp));
         br_to!(scan_block);
         close!();
         ins.push(Instruction::LocalGet(json_ptr));
@@ -266,8 +288,14 @@ impl WasmEmitter {
         ins.push(Instruction::LocalSet(depth));
         close!();
         ins.push(Instruction::LocalGet(depth));
-        ins.push(Instruction::I32Const(1));
-        ins.push(Instruction::I32Ne);
+        if any_depth {
+            // any-depth mode: skip only when OUTSIDE every object (depth 0)
+            ins.push(Instruction::I32Const(0));
+            ins.push(Instruction::I32Eq);
+        } else {
+            ins.push(Instruction::I32Const(1));
+            ins.push(Instruction::I32Ne);
+        }
         open_if!();
         ins.push(Instruction::LocalGet(scan_i));
         ins.push(Instruction::I32Const(1));
@@ -833,7 +861,7 @@ impl WasmEmitter {
         ins.push(Instruction::I64Const(0));
         ins.push(Instruction::Return);
         self.funcs.push(FuncDef {
-            name: "__json_get".to_string(),
+            name: fname.to_string(),
             param_count: 2,
             local_count: 13,
             instrs: ins,
@@ -2380,7 +2408,34 @@ impl WasmEmitter {
         buf: i64,
         buf_len_setup: &mut Vec<Instruction<'static>>,
     ) -> Result<Vec<Instruction<'static>>, String> {
-        let func_idx = self.ensure_json_get_func();
+        self.json_get_from_buf_mode(key, value_type, buf, buf_len_setup, false)
+    }
+
+    /// any_depth variant: matches keys at any object level ≥ 1 — for
+    /// jsonGetStrEsc where the unescape exposes nested JSON-in-JSON keys.
+    pub(crate) fn json_get_from_buf_any(
+        &mut self,
+        key: &str,
+        value_type: &str,
+        buf: i64,
+        buf_len_setup: &mut Vec<Instruction<'static>>,
+    ) -> Result<Vec<Instruction<'static>>, String> {
+        self.json_get_from_buf_mode(key, value_type, buf, buf_len_setup, true)
+    }
+
+    fn json_get_from_buf_mode(
+        &mut self,
+        key: &str,
+        value_type: &str,
+        buf: i64,
+        buf_len_setup: &mut Vec<Instruction<'static>>,
+        any_depth: bool,
+    ) -> Result<Vec<Instruction<'static>>, String> {
+        let func_idx = if any_depth {
+            self.ensure_json_get_func_any()
+        } else {
+            self.ensure_json_get_func()
+        };
         // Parse path: "choices[0].message.content" -> segments
         // Each segment is either Key("name") or Index(N)
         let arr_func_idx = self.ensure_json_array_index_func();
@@ -2762,7 +2817,7 @@ impl WasmEmitter {
         let scratch = self.heap_bump((8 * MAXELEM) as u32) as i32;
 
         let mut v = Vec::new();
-        let mut skip_ws = |v: &mut Vec<Instruction<'static>>| {
+        let skip_ws = |v: &mut Vec<Instruction<'static>>| {
             v.push(Instruction::Block(BlockType::Empty));
             v.push(Instruction::Loop(BlockType::Empty));
             v.push(Instruction::LocalGet(pos));
@@ -3904,6 +3959,25 @@ impl WasmEmitter {
         key: &str,
         offset_expr: Vec<Instruction<'static>>,
     ) -> Result<Vec<Instruction<'static>>, String> {
+        self.json_get_u128_from(key, offset_expr, INPUT_CACHE_BUF, None)
+    }
+
+    /// Scan `scan_buf` for `"key": <decimal>` and store the 128-bit value at
+    /// offset_expr. `ilen_expr` = None: scan_buf is INPUT_CACHE_BUF, filled by
+    /// the cached host input read (legacy near/json_get_u128 path). Some(e):
+    /// scan_buf already holds the bytes and e yields the scanned length
+    /// (callers stage the tagged json string's `len>>32` themselves — the
+    /// dst address in offset_expr is NOT the length source).
+    /// The destination is zeroed BEFORE the scan (2026-10-12): a miss must
+    /// yield 0, never stale bits from a previous scan (typed json-get
+    /// surfaced exactly that via the shared scratch).
+    pub(crate) fn json_get_u128_from(
+        &mut self,
+        key: &str,
+        offset_expr: Vec<Instruction<'static>>,
+        scan_buf: i64,
+        ilen_expr: Option<Vec<Instruction<'static>>>,
+    ) -> Result<Vec<Instruction<'static>>, String> {
         self.need_host(7);
         self.need_host(0);
         self.need_host(1);
@@ -3915,7 +3989,6 @@ impl WasmEmitter {
         let pat_off = self.alloc_data(&pattern);
         let pat_len = pattern.len() as i64;
         let pos = self.local_idx("__ju_pos");
-        let ilen = self.local_idx("__ju_ilen");
         let mi = self.local_idx("__ju_mi");
         let jj = self.local_idx("__ju_j");
         let lo = self.local_idx("__ju_lo");
@@ -3930,21 +4003,51 @@ impl WasmEmitter {
             align: 0,
             memory_index: 0,
         };
-        let ib = INPUT_CACHE_BUF; // cached input (2026-09-14)
+        let ib = scan_buf;
         let mut v = offset_expr;
 
         // Store offset to a temp local
         let off_local = self.local_idx("__ju_offset");
         v.push(Instruction::LocalSet(off_local));
 
-        // Cached input read; ilen is i64 here — wrap up from the i32 local
-        {
-            let ilen32 = self.local_idx_i32("__ju_ilen32");
-            self.emit_input_read_cached(ilen32, &mut v);
-            v.push(Instruction::LocalGet(ilen32));
-            v.push(Instruction::I64ExtendI32U);
-            v.push(Instruction::LocalSet(ilen));
+        // ilen: length of the scanned region. None: cached host input read
+        // (i64 wrapped up from the i32 local). Some(e): caller-provided
+        // length expression (the copied json string's len>>32).
+        let ilen = self.local_idx("__ju_ilen");
+        match ilen_expr {
+            None => {
+                let ilen32 = self.local_idx_i32("__ju_ilen32");
+                self.emit_input_read_cached(ilen32, &mut v);
+                v.push(Instruction::LocalGet(ilen32));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::LocalSet(ilen));
+            }
+            Some(e) => {
+                v.extend(e);
+                v.push(Instruction::LocalSet(ilen));
+            }
         }
+
+        // Zero the destination before scanning — miss ⇒ 0, never stale
+        // memory (2026-10-12).
+        v.push(Instruction::LocalGet(off_local));
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64Store(wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        }));
+        v.push(Instruction::LocalGet(off_local));
+        v.push(Instruction::I64Const(8));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::I32WrapI64);
+        v.push(Instruction::I64Const(0));
+        v.push(Instruction::I64Store(wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        }));
 
         // pos = 0, depth = 0
         v.push(Instruction::I64Const(0));
@@ -3962,6 +4065,14 @@ impl WasmEmitter {
         v.push(Instruction::I64GtS);
         v.push(Instruction::If(BlockType::Empty));
         // Miss-gate fix (2026-08-31, same as json_get_str): pin pos=ilen.
+        // EXIT CONTRACT (2026-10-12): this `br 2` exits the whole form and
+        // SKIPS the destination stores below — the exit must still yield
+        // exactly one value (the dst address) to keep the legacy
+        // near/json_get_u128 contract "returns dst addr" intact on BOTH
+        // paths. The dst was zero-filled pre-scan, so the address IS the
+        // "miss ⇒ 0" value. Typed callers Drop it and read the slot; legacy
+        // callers get the same tagged address as before.
+        v.push(Instruction::LocalGet(off_local));
         v.push(Instruction::LocalGet(ilen));
         v.push(Instruction::LocalSet(pos));
         v.push(Instruction::Br(2));

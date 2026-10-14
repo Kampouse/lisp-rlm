@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Differential scenarios, leg 2: different grids + refine/slice + fees.
+
+Contracts: pa (grid 1/2/4e9), pb (grid 1/3/4e9), pd (= pool_join(refine pa,
+refine pb) on 1/2/3/4e9), splt (equalized optimal split -> legs).
+Imports gen.py directly for the model (single source of truth) and reads
+pins.json for every numeric pin — nothing re-typed.
+
+Order matters: direct comparison swaps FIRST, split LAST (the splitter's
+callbacks settle around subsequent receipts). Asserts use storage ground
+truth (paid:/left: keys), not logs.
+"""
+import os
+import json, os, shutil, subprocess as sp, sys
+
+import os
+import sys as _sys, os as _os; _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(HERE)), "generators"))
+import os
+import gen
+
+NM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "target", "release", "near-mock")
+BASE = HERE
+ACCTS = ("pa", "pb", "pd", "splt", "pc", "pj", "pbref", "pe", "j3l", "j3r")
+import os
+import paths
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(HERE)), "generators"))
+_SCEN_BASE = paths.scen_lisp("_")  # any name: only the dir prefix matters for relpath
+MANIFEST = ",".join(f"{a}.clmm.test.near={os.path.relpath(paths.lisp_wasm(a), _SCEN_BASE)}" for a in ACCTS)  # relative to cwd=scenarios/lisp/<name>
+TR = "trader.test.near"
+SPLT = "splt.clmm.test.near"
+
+PINS = json.load(open(os.path.join(BASE, "pins.json")))
+BASE_P, INSIDE, OPT, JN = PINS["base"], PINS["inside"], PINS["opt"], PINS["join"]
+
+def step_swap(contract, y, contains, start=None):
+    args = {"min_out": "0"}
+    if start is not None:
+        args["start"] = str(start)
+    return {"method": "swap", "as": TR, "contract": f"{contract}.clmm.test.near",
+            "attach": str(y), "args": args, "contains": contains}
+
+def steps_base(tag):
+    b = BASE_P[tag]; y = b["y"]
+    return [
+        step_swap("pd", y, f"paid:{TR}={b['comb']}"),
+        step_swap("pa", y, f"paid:{TR}={gen.swap(gen.GA, gen.LA, gen.QA, gen.GA[0], y)[0]}"),
+        {"method": "split", "as": TR, "contract": SPLT, "attach": str(y), "args": {}},
+        {"method": "get-paid", "as": TR, "contract": SPLT, "view": True,
+         "args": {}, "contains": f"paid:{TR}={b['sum']}"},
+        {"method": "get-paid", "as": TR, "contract": "pb.clmm.test.near",
+         "view": True, "args": {},
+         "contains": f"left:{SPLT}={b['leftB']}"},
+    ]
+
+def steps_inside():
+    sqp = PINS["inside_sqp"]
+    return [
+        step_swap("pd", gen.INSIDE_Y, f"paid:{TR}={INSIDE['pd']['out']}", start=sqp),
+        step_swap("pa", gen.INSIDE_Y, f"paid:{TR}={INSIDE['pa']['out']}", start=sqp),
+        step_swap("pb", gen.INSIDE_Y, f"paid:{TR}={INSIDE['pb']['out']}", start=sqp),
+    ]
+
+def steps_opt(tag):
+    s, pa_paid, pb_paid = [], 0, 0
+    for alt in OPT[tag]["alts"]:
+        y2, y = alt["y2"], BASE_P[tag]["y"]
+        pa_paid += alt["outA"]; pb_paid += alt["outB"]
+        s.append(step_swap("pa", y2, f"paid:{TR}={pa_paid}"))
+        s.append(step_swap("pb", y - y2, f"paid:{TR}={pb_paid}"))
+    return s
+
+def run(name, steps_list):
+    d = paths.scen_lisp(name)
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    sc = {"name": f"clmm-{name}", "manifest": MANIFEST, "steps": steps_list}
+    with open(os.path.join(d, "s.json"), "w") as f:
+        json.dump(sc, f, indent=1)
+    r = sp.run([NM, "scenario", "s.json"], cwd=d, capture_output=True, text=True, timeout=120)
+    out = r.stdout + r.stderr
+    ok = r.returncode == 0 and "panicked" not in out and "❌" not in out
+    print(f"== {name}: exit={r.returncode} ok={ok}")
+    return ok, out
+
+def steps_bswap(tag):
+    b = PINS["bswap"][tag]
+    return [{"method": "swap-b", "as": TR, "contract": "pa.clmm.test.near",
+             "attach": str(b["x"]), "args": {},
+             "contains": f"paidb:{TR}={b['out']}"}]
+
+def steps_slip():
+    p = PINS["slip"]
+    return [
+        step_swap("pb", p["y"], f"paid:{TR}={p['outpb']}"),
+        step_swap("pbref", p["y"], f"paid:{TR}={p['outpbref']}"),
+    ]
+
+def steps_assoc():
+    a = PINS["assoc"]
+    return [
+        {"method": "swap", "as": TR, "contract": "j3l.clmm.test.near",
+         "attach": str(a["y"]), "args": {}, "contains": f"paid:{TR}={a['out']}"},
+        {"method": "swap", "as": TR, "contract": "j3r.clmm.test.near",
+         "attach": str(a["y"]), "args": {}, "contains": f"paid:{TR}={a['out']}"},
+    ]
+
+def steps_join3():
+    j = PINS["join3"]
+    return [
+        step_swap("j3l", j["y"], f"paid:{TR}={j['out']}"),
+        step_swap("pa", j["yA"], f"paid:{TR}={j['outA']}"),
+        step_swap("pb", j["yB"], f"paid:{TR}={j['outB']}"),
+        step_swap("pe", j["yE"], f"paid:{TR}={j['outE']}"),
+    ]
+
+def steps_frag():
+    f = PINS["frag"]
+    return [
+        step_swap("pa", f["y"], f"paid:{TR}={f['aloneA']}"),
+        step_swap("pb", f["y"], f"paid:{TR}={f['aloneB']}"),
+        step_swap("pe", f["y"], f"paid:{TR}={f['aloneE']}"),
+    ]
+
+def steps_join():
+    """pool_fee_join decomposition: joined vs legs direct, union-fee export,
+    then an alt split (oracle asserts legs <= joined)."""
+    y = JN["Y"]
+    outA_d = gen.swap(gen.GA, gen.LA, gen.QA, gen.GA[0], y)[0]
+    outC_d = gen.swap(gen.GA, gen.LC, gen.QC, gen.GA[0], y)[0]
+    a = JN["alt"]
+    altA = gen.swap(gen.GA, gen.LA, gen.QA, gen.GA[0], a["y1"])[0]
+    altC = gen.swap(gen.GA, gen.LC, gen.QC, gen.GA[0], y - a["y1"])[0]
+    return [
+        step_swap("pj", y, f"paid:{TR}={JN['out']}"),
+        step_swap("pa", y, f"paid:{TR}={outA_d}"),
+        step_swap("pc", y, f"paid:{TR}={outC_d}"),
+        {"method": "get-fee", "as": TR, "contract": "pj.clmm.test.near",
+         "view": True, "args": {}, "contains": str(JN["Fh"][0])},
+        step_swap("pa", a["y1"], f"paid:{TR}={outA_d + altA}"),
+        step_swap("pc", y - a["y1"], f"paid:{TR}={outC_d + altC}"),
+    ]
+
+def steps_inside_join():
+    """Interior entry on the heterogeneous join (pj honors \"start\")."""
+    sqp = PINS["inside_sqp"]
+    y = gen.INSIDE_Y
+    return [
+        step_swap("pj", y, f"paid:{TR}={gen.swap(gen.GA, JN['LK'], JN['QBK'], sqp, y)[0]}", start=sqp),
+        step_swap("pa", y, f"paid:{TR}={gen.swap(gen.GA, gen.LA, gen.QA, sqp, y)[0]}", start=sqp),
+        step_swap("pc", y, f"paid:{TR}={gen.swap(gen.GA, gen.LC, gen.QC, sqp, y)[0]}", start=sqp),
+    ]
+
+results = {}
+for tag in ("exact", "offgrid", "cross"):
+    results[tag] = run(tag, steps_base(tag))
+results["inside"] = run("inside", steps_inside())
+for tag in ("exact", "offgrid", "cross"):
+    results[f"bswap-{tag}"] = run(f"bswap-{tag}", steps_bswap(tag))
+results["slip"] = run("slip", steps_slip())
+results["assoc"] = run("assoc", steps_assoc())
+results["join3"] = run("join3", steps_join3())
+results["frag"] = run("frag", steps_frag())
+results["join"] = run("join", steps_join())
+results["inside-join"] = run("inside-join", steps_inside_join())
+for tag in ("exact", "offgrid", "cross"):
+    results[f"opt-{tag}"] = run(f"opt-{tag}", steps_opt(tag))
+
+print()
+allok = True
+for name, (ok, out) in results.items():
+    allok &= ok
+    print(f"──── {name} {'GREEN' if ok else 'RED'}")
+    if ok:
+        for line in out.splitlines():
+            if "✓ contains" in line:
+                print("  " + line.strip()[:96])
+    else:
+        print(out[-1500:])
+print("\nALL-SCENARIOS", "GREEN" if allok else "RED")
+sys.exit(0 if allok else 1)

@@ -1045,6 +1045,18 @@ mod near_mock {
     fn run_near_mock(src: &str, method: &str, args: &str, deposit: Option<&str>) -> String {
         let wasm = lisp_rlm_wasm::compile_near(src)
             .unwrap_or_else(|e| panic!("compile_near failed: {}", e));
+        // Pipeline parity guard (2026-10-08, corpus-wide): the exprs-only
+        // entrypoint must emit BYTE-IDENTICAL wasm for the same source —
+        // a divergence here is the emitter split that once shipped two
+        // different contracts from one fixture.
+        let __exprs = lisp_rlm_wasm::parse_all(src)
+            .unwrap_or_else(|e| panic!("parse_all failed: {}", e));
+        let __wasm2 = lisp_rlm_wasm::compile_near_from_exprs(&__exprs)
+            .unwrap_or_else(|e| panic!("compile_near_from_exprs failed: {}", e));
+        assert_eq!(
+            wasm, __wasm2,
+            "pipeline divergence: source-path and exprs-path wasm differ"
+        );
         // Per-test unique wasm + state paths: tests run in PARALLEL and used
         // to share /tmp/nm_test.wasm + /tmp/near-mock-state.bin, racing each
         // other (module A's _run executing module B's code). The skip-on-missing

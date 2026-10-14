@@ -1,0 +1,2431 @@
+Packed Pre-Constructed PVSS for Randomness
+Generation and E-Voting
+Karim Baghery1 , Eleftheria Makri2 , and Dheeraj Kumar Suryakari2
+1
+COSIC, KU Leuven, Leuven, Belgium
+LIACS, Leiden University, Leiden, Netherlands
+karim.baghery@kuleuven.be, e.makri@liacs.leidenuniv.nl,
+d.k.suryakari@liacs.leidenuniv.nl
+May 31, 2026
+2
+
+Abstract. Pre-constructed Publicly Verifiable Secret Sharing (PPVSS)
+extends conventional Publicly Verifiable Secret Sharing (PVSS) by requiring the dealer to publish a commitment or encryption of the shared
+secret, enabling more efficient and versatile constructions for a variety of
+cryptographic protocols. In this paper, we further enhance this paradigm
+by introducing Packed Pre-constructed PVSS (3PVSS), which allows a
+dealer to encode multiple secrets within a single polynomial while maintaining the pre-constructability property. We present two constructions
+of 3PVSS schemes. In the first construction, the dealer publishes a single
+commitment to all shared secrets, providing a compact representation
+that is particularly suitable for applications requiring efficient communication. In the second construction, the dealer publishes individual commitments to each secret, enabling greater flexibility in applications that
+require independent verification of multiple shared values. Both schemes
+preserve the key advantages of PPVSS, including the optimistic reconstruction approach enabled by pre-constructability. We demonstrate that
+these two variants naturally support different applications. Using the first
+3PVSS construction, we revisit the ALBATROSS randomness generation protocol proposed by Cascudo and David (ASIACRYPT 2020) and
+present a more efficient variant with reduced computation and communication costs. As an application of the second construction, we extend
+the universally verifiable e-voting protocol recently proposed by Baghery,
+Knapen, Nicolas, and Rahimi (ACNS 2025) to support multi-candidate
+elections, while preserving universal verifiability. Our results show that
+the resulting protocols outperform their original counterparts in terms
+of efficiency.
+Keywords: Publicly Verifiable Secret Sharing · Pre-Constructed PVSS
+· E-voting · Randomness Generation · Packed Secret Sharing.
+
+1
+
+Introduction
+
+Secret sharing is a fundamental cryptographic technique that allows an entity,
+called the dealer to securely distribute a secret s among a set of n parties, such
+
+2
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+
+that only authorized subsets of these n parties can reconstruct the secret. Unauthorized subsets of the parties learn nothing about the secret. Shamir secret
+sharing [24] is one of the first secret sharing schemes (appeared concurrently
+with Blakley’s scheme [6] in 1979), and one of the most widely used constructions. Secret sharing serves as a core building block in numerous cryptographic
+protocols designed to eliminate reliance on a single trusted entity, including applications in multiparty computation and threshold cryptography.
+Classical secret sharing schemes (e.g., Shamir secret sharing [24]) on their
+own offer passive security. This means that privacy is guaranteed against an adversary who passively corrupts any subset of parties smaller than the authorized
+subsets. In this context, passively refers to trying to learn as much information
+as possible about the secret, without deviating from the protocol specification.
+As such, attacks against the integrity of the shares are not considered. A malicious dealer/party is allowed to deviate from the protocol specification in an
+arbitrary manner, for instance by distributing/providing incorrect values during
+the secret sharing/reconstruction phase. Such adversaries can be thwarted by
+Verifiable Secret Sharing (VSS) schemes [1, 3, 4, 7, 13, 15, 22, 25]. VSS allows the
+parties to verify the consistency of the shares provided by the dealer/parties during the sharing/reconstruction phase, and if a corrupted dealer/party attempts
+to provide inconsistent shares, this behavior is detected. Publicly Verifiable Secret Sharing (PVSS) [4, 8–10, 18–21, 23] goes a step further than VSS, allowing
+anyone, including external observers who do not participate in the protocol, to
+verify that the shared values are consistent. This is particularly useful in application scenarios where public auditability and minimal interaction are necessary,
+such as e-voting systems, auctions, privacy-preserving finance, distributed randomness generation, and privacy-preserving federated learning.
+The notion of Pre-constructed PVSS, where the dealer is required to additionally commit to the shared (reconstructed) secret, was recently introduced
+by Baghery, Knapen, Nicolas, and Rahimi [5]. As observed in [5], this notion
+not only improves the efficiency of existing PVSS-based applications, but also
+offers greater versatility than standard PVSS. Baghery et al. [5] further show
+that the PVSS by Schoenmakers [23], as well as its pairing-based variant by Heidarvand and Villar [20] are a special case of Pre-constructed PVSS. However,
+their cost, notably the quadratic in the number of parties cost of Schoenmakers’
+PPVSS, in terms of exponentiations required during verification, gives rise to
+new, more efficient schemes. Several follow-up works [4, 8, 9, 11] have improved
+the efficiency of the original PVSS by Schoenmakers [23], albeit at the cost of
+losing the re-constructability property.
+Packed secret sharing schemes [15,17] improve the efficiency of Shamir secret
+sharing by encoding ℓ secrets into one single polynomial. This can be achieved,
+without increasing the share size. However, given that for a t-degree polynomial
+at most t + 1 secrets can be securely encoded, to achieve packing of ℓ secrets the
+degree of the polynomial should be increased to t+ℓ and the corruption threshold
+should be decreased such that n ≥ 2t + ℓ in the synchronous communication
+model. As a result, an inherent tradeoff between privacy and robustness arises in
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+3
+
+packed schemes, concretely offering t-privacy and (t+ℓ)-reconstruction. Building
+on this idea, packed variants of VSS and PVSS [2, 9] extend their standard
+counterparts to the packed setting. In these schemes, a dealer can distribute
+multiple secrets simultaneously while allowing parties, or even the public in the
+case of PVSS, to verify the correctness of the distributed or broadcasted shares.
+This significantly improves the amortized efficiency of PVSS and VSS protocols
+when multiple secrets need to be shared.
+Our Contribution. Our contributions are summarized as follows.
+Packed Pre-Constructed PVSS (3PVSS). We first extend the notion of PreConstructed PVSS introduced by Baghery et al. [5] to the packed setting, resulting in a new primitive that we call Packed Pre-constructed PVSS (3PVSS).
+We then present two practical 3PVSS constructions based on the PPVSS scheme
+ΛRO of Baghery et al. [5], which is built in the Random Oracle (RO) model. Both
+constructions allow a dealer to share ℓ secrets simultaneously in a publicly verifiable manner while also publishing well-formed commitments to the ℓ shared
+(pre-constructed) secrets. In the first scheme, denoted Λindv
+RO , the dealer publishes ℓ individual commitments corresponding to the ℓ shared (pre-constructed)
+secrets and proves the well-formedness of these commitments together with the
+encrypted shares. In the second scheme, denoted Λsingle
+RO , the dealer publishes a
+single commitment to all ℓ secrets and proves its well-formedness along with the
+encrypted shares. Naturally, Λsingle
+achieves lower communication complexity
+RO
+since only a single commitment is broadcast for all secrets. However, we show
+that both variants offer different advantages and may be preferable in different applications. While our schemes are presented in the RO model, the techniques we develop appear sufficiently general to extend to pairing-based PPVSS
+schemes [5] constructed in the plain model.
+A Universally Verifiable Multi-Candidate E-Voting Protocol. Schoenmakers [23]
+showed how his (P)PVSS scheme can be used to build a universally verifiable
+e-voting protocol for binary elections without requiring a trusted third party.
+However, in his protocol the verification cost per voter is O(nt), where (n, t) are
+the parameters in the (P)PVSS scheme. More recently, Baghery et al. [5] used
+their PPVSS scheme ΛRO to reduce this verification cost to O(n). As our third
+contribution, we use our 3PVSS scheme Λindv
+RO to design a new variant of the
+e-voting protocol of Baghery et al. [5] that supports multi-candidate elections.
+We show that the resulting protocol not only supports elections with multiple
+candidates but also improves efficiency compared to the original scheme.
+More Efficient ALBATROSS Random Beacon. ALBATROSS [9] is an efficient
+distributed randomness generation protocol that uses an ℓ-packed PVSS scheme
+to generate ℓ2 random values. As our second contribution, we revisit the ALBATROSS protocol by replacing its underlying packed PVSS with our proposed
+3PVSS construction Λsingle
+RO . This results in a new variant of the protocol that
+achieves improved performance in terms of both computational and communication costs.
+
+4
+
+2
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+
+Preliminaries
+
+Notation. We let λ denote a security parameter. A function is called negligible
+in X, written negl(X), if for any constant c, there exists some X0 , such that
+f (X) < X −c for X > X0 . A function that is negligible in the security parameter λ is simply called negligible. We use the assignment operator ← to denote
+uniform sampling from a set Ξ, e.g. x ← Ξ. We write ZN := Z/N Z and ZN [X]t
+for polynomials of degree t in the variable X and with coefficients in ZN . For
+n ∈ N, we write [n] = {1, . . . , n}. Finally all logarithms are in base 2.
+2.1
+
+Packed Shamir Secret Sharing
+
+(n, t, ℓ)-Packed Shamir secret sharing ( [17], [24]) scheme is a generalization of
+(n, t)-Shamir’s secret sharing scheme [24] where a dealer embeds multiple secrets
+in a single polynomial. Concretely, if the dealer wants to secret share ℓ secrets,
+they will embed those secrets in a single t + ℓ − 1 degree secret polynomial with
+coefficients in a field, which is secret shared amongst n parties such that any
+t + ℓ parties can reconstruct back the polynomial and thereby obtain the secrets.
+The scheme is summarized in the Figure 1.
+
+Packed Shamir Secret Sharing
+Given ℓ secrets to share amongst n parties, where at most t of them can be
+(passively) corrupt, the (n, t, ℓ)-Packed Shamir secret sharing scheme description
+is as follows:
+Sharing Algorithm:
+- Dealer constructs the secret polynomial f ∈ Zq [X]t+l−1 via the lagrange
+interpolation by choosing t + ℓ elements in Zq where ℓ of them are secrets,
+{si }ℓ−1
+i=0 , with f (−i) = si for all i and remaining t are chosen uniformly at
+random in Zq .
+- Each party Pi receives their share f (i) from the Dealer for each i ∈
+{1, . . . , n}
+Reconstruction Algorithm:
+- Any Q set containing at least t+ℓ parties can use the lagrange interpolation
+to compute {si }ℓ−1
+i=0 as follows:
+
+
+X
+Y −m − j
+
+sm =
+f (i) 
+, m ∈ {0, . . . , ℓ − 1}
+i−j
+i∈Q
+j∈Q,j̸=i
+
+- The secrets {si }ℓ−1
+i=0 are outputted as the result.
+
+Fig. 1: Packed Shamir Secret Sharing
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+5
+
+Prover: Given the statement (g, h, a, b) ∈ G and the witness value x ∈ Zq , proceed
+as follows and output a proof π.
+1. Sample r ←$ Zq uniformly at random; and set c1 = g r and c2 = hr .
+2. Set d ← H(a, b, c1 , c2 ), where H is a random oracle.
+3. Set z = r + d · x mod q; and Return π := (d, z)
+Verifier: Given zthe statement (g, h, a, b) ∈ G and the proof π = (d, z), checks if
+z
+d = H(a, b, ag d , hbd ) and outputs true or false.
+
+Fig. 2: Chaum-Pedersen NIZK proof of knowledge for DLEQ [12].
+Though packed Shamir secret sharing is useful over naive approach to secret
+share multiple secrets, it comes with a cost of sacrificing the corruption tolerance
+of the scheme. More precisely, it requires n ≥ 2t + ℓ, i.e., if one were to secret
+share more secrets for a fixed n number of shareholders then the corruption
+tolerance t of the scheme will decrease.
+2.2
+
+NIZK Proof for DL Equality
+
+Let G be a group with hard DL, and g, h be two group elements, where g is
+the group generator. Let a prover aim to convince a verifier that for the public
+statement g, h, a, b, he knows a witness x which holds in the following relation,
+RDLEQ = {(g, h, a, b), x | a = g x ∧ b = hx }.
+
+(1)
+
+This relation is known as DL EQuality (DLEQ). In [12], Chaum and Pedersen
+introduced an efficient NIZK proof of knowledge for DLEQ, as summarized in
+Fig. 2. This protocol is widely use in various cryptographic protocols, including
+threshold decryption, e-voting systems, PVSS and PPVSS schemes, etc.
+2.3
+
+NIZK Proof of Binary Vote
+
+In the ballot casting phase of the e-voting protocol proposed by Schoenmakers [23], a voter V casts a binary vote v ∈ {0, 1} by running the sharing phase
+for the (P)PVSS scheme, using a random secret s ∈ Zq , and computing the value
+U = Gs+v . In addition, the voter generates a proof πU to show that v ∈ {0, 1}
+without revealing any information on v. The proof πU refers to the commitment
+C0 = g s , which is published as part of the (P)PVSS transcript, and proves that:
+logG U = logg C0 ∨ logG U = 1 + logg C0 .
+The proof πU is constructed using the technique of [14], and its protocol can be
+summarized as follows:
+1. The prover sets av = g w and bv = Gw for random w ∈R Zq . The prover
+d
+also sets a1−v = g r1−v C0 1−v and b1−v = Gr1−v (U/G1−v )d1−v , for random
+r1−v , d1−v ∈R Zq . The prover sends a0 , b0 , a1 , b1 in this order to the verifier.
+
+6
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+
+2. The verifier sends a random challenge c ∈R Zq to the prover.
+3. The prover sets dv = c − d1−v (mod q) and rv = w − sdv (mod q), and sends
+d0 , r0 , d1 , r1 in this order to the verifier.
+4. The verifier checks that c = d0 + d1 (mod q) and that
+a0 = g r0 C0d0 ,
+
+b0 = Gr0 U d0 ,
+
+a1 = g r1 C0d1 ,
+
+and
+
+b1 = Gr1
+
+
+U d1
+.
+G
+
+The protocol is proven to satisfy completeness, special soundness and honest verifier zero-knowledge; hence, its non-interactive version achieves ZK and
+releases no information on v in the random oracle model.
+2.4
+
+NIZK Proof for PDL Problem
+
+Polynomial Discrete Problem. In [4], Baghery generalize Discrete Logarithm
+(DL) relation over polynomials and introduce the Polynomial Discrete Logarithm
+(PDL) relation denoted as RP DL , which is defined as follows,
+RP DL = {(g, xi , Fi ), f (X) | Fi = g f (xi ) for i = 1, 2, . . . , n}.
+Here, f (X) ∈ Zq [X]t is a (at most) degree t ≤ n − 1 witness polynomial with
+coefficients from Zq , and {xi }ni=1 are n distinct elements from Zq . The RP DL
+relation is based on the PDL problem, defined as follows, which is shown to be
+reducible to the DL problem [4].
+Definition 1 (Polynomial Discrete Logarithm Problem [4]). Let G be
+a finite cyclic group of order q generated by g. Given F1 , . . . , Fn from G and
+distinct elements x1 , . . . , xn from Zq , find a polynomial f (X) ∈ Zq [X]t of (at
+most) degree t, where 0 ≤ t ≤ n − 1, such that Fi = g f (xi ) for all i = 1, . . . , n.
+In other words, an algorithm A has advantage ϵ in solving PDL in G if
+Pr[A(x1 , . . . , xn , g, g f (x1 ) , . . . , g f (xn ) ) = f (X)] ≥ ϵ
+where f (X) ∈ Zq [X]t is (at most) a degree-t polynomial with 0 ≤ t ≤ n − 1, and
+the probability is over the random choice of generator g ∈ G∗ and the distinct
+choice of x1 , . . . , xn in Zq .
+Baghery [4] also presented a Non-Interactive Zero-Knowledge (NIZK) Proofof-Knowledge (PoK) scheme πP DL , that allows a prover to prove knowledge of
+a witness for RP DL relation.
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+7
+
+πP DL
+Let g be a group generator sampled in the setup phase,
+[(g, x1 , . . . , xn , F1 , . . . , Fn ), f (X)] ∈ RP DL and H be a random oracle (RO).
+Prover
+- Samples r ∈R Zq [X]t uniformly at random and sets Γi = g r(xi ) for 1 ≤ i ≤
+n.
+- Sets d ← H(F1 , . . . , Fn , Γ1 , . . . , Γn ), where H is an agreed upon Random
+Oracle (RO).
+- Sets z(X) ≡ r(X) + df (X) (mod q) and returns the proof(/transcript) π :=
+(d, z(X)).
+Verifier
+- First checks if z is at most a t degree polynomial in Zq [X]t . If so, they
+proceed with the next step.
+z(x1 )
+z(n)
+- Checks if d ← H(F1 , . . . , Fn , g F d , . . . , g F d ).
+n
+1
+- If first two steps are correct then they output true, otherwise false.
+
+Fig. 3: A NIZK PoK for Polynomial DL based on Schoenmakers’ PVSS
+
+3
+
+Packed Pre-Constructed PVSS
+
+For Guaranteed Output Delivery (GOD), several distributed applications rely on
+techniques based on VSS. For example, the randomness beacon ALBATROSS [9]
+employs PVSS schemes. These secret sharing schemes allow a dealer to prove
+the validity of encrypted shares to anyone using ZK proofs, without revealing
+any information about the secret or the shares themselves. However, when the
+dealer later reveals the secret, verifying its correctness typically requires simulating the secret-sharing phase of the (P)VSS protocol, which is inefficient. This
+inefficiency arises because the dealer initially publishes only encrypted shares,
+and the accompanying ZK proof guarantees consistency of the shares with some
+secret, without revealing any information about the secret itself. In 2025, PreConstructed PVSS (PPVSS) was introduced in [5]. This primitive extends PVSS
+with additional functionality and provides a novel and significantly more efficient
+approach for secret reconstruction when the dealer is available. This setting is
+common in distributed protocols built on VSS, such as DKG protocols and randomness beacons. In essence, the new reconstruction approach enables much
+more efficient verification of the revealed secret.
+The goal of this section is to extend the notion of PPVSS to the packed
+setting, which we refer to as Packed Pre-constructed PVSS (3PVSS). Conceptually, 3PVSS can be viewed as a PPVSS construction built on top of packed
+secret sharing schemes. While packed secret sharing is known to sacrifice some
+robustness, it has been shown in [9] that packing can nevertheless be leveraged to
+design more efficient randomness beacon protocols. In this paper, we show that
+
+8
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+
+3PVSS not only improves the efficiency of such applications in many settings,
+but can also enable new applications.
+3.1
+
+Definitions
+
+We begin by naturally extending the definition of PPVSS from [5] to the packed
+setting. In this variant, the dealer publishes commitments to the shared secrets
+and publicly proves the well-formedness of the commitment(s) together with the
+encrypted shares. At the level of the definition, we do not specify the particular
+commitment mechanism used by the dealer. Later in this section, we present
+two concrete 3PVSS constructions: in the first, the dealer commits to all packed
+secrets using a single group element, while in the second the dealer publishes
+individual commitments for each secret.
+Definition 2 (3PVSS). A 3PVSS scheme should have four algorithms, namely,
+Initial, Share, Verify and Reconstruction whose descriptions are as follows:
+- Initial (1λ ) → ({P Ki , SKi }ni=1 , h0 ): When given 1λ , each party Pi for 1 ≤
+i ≤ n registers their public key P Ki in a public ledger and withholds the
+corresponding secret key SKi . Also, all parties and the dealer D agree on a
+vector ⃗h0 of commitment keys to commit to ℓ secrets.
+- Share (n, t, ⃗s, {P Ki }ni=1 , ⃗h0 ) → (⃗y0 , {yi }ni=1 , π3P V SS ): It secret shares ⃗s,
+a vector of secrets of length ℓ, to obtain their shares {fi }ni=1 . For 1 ≤
+i ≤ n, uses the public key P Ki to encrypt fi and obtain the encrypted
+share yi . Now, it uses the commitment keys in ⃗h0 to commit to the secrets in ⃗s to obtain a vector of committed secrets, ⃗y0 . Then, it generates
+a NIZK proof π3P V SS to prove that ⃗y0 consists valid secrets’ commitments
+and {yi }ni=1 has valid encryptions of their corresponding shares. Finally, it
+returns (⃗y0 , {yi }ni=1 , π3P V SS ).
+- Verify (n, t, ⃗h0 , ⃗y0 , {P Ki , yi }ni=1 , π3P V SS ) → true/false: This algorithm checks
+if π3P V SS is valid for {⃗y0 , y1 . . . , yn } and then returns true, otherwise false.
+- Reconstruct: There are two approaches as follows:
+- (Optimistic) Reconstructionopt ({⃗h0 , ⃗s, ⃗y0 }) → (⃗s or f alse): Given the
+inputs (⃗h0 , ⃗s, ⃗y0 ) a party checks if ⃗y0 is a valid commitment of ⃗s. If so,
+it returns ⃗s; otherwise it returns f alse.
+- (Pessimistic) Reconstructionpes ({yi , SKi }i∈Q,|Q|=t+ℓ ] → (⃗s or f alse):
+Given any t + ℓ encrypted shares along with corresponding secret keys, it
+outputs the secret ⃗s or f alse. This can be done in two phases as follows:
+- Decryption of the shares, each party Pi ∈ Q decrypts yi to obtain
+fi using its SKi . Then it generates a NIZK proof πiDec which proves
+that fi is the correct decryption of yi . Now, Pi publishes (fi , πiDec ).
+- Share pooling, a verifier (not necessarily from the shareholders)
+checks if proof πiDec is correct for each Pi ∈ Q. If any check fails,
+then it returns f alse; otherwise it applies a reconstruction procedure
+to the set of valid shares, {fi }i∈Q,|Q|=t+ℓ , and returns secret(s) ⃗s.
+A 3PVSS is said to be secure:
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+9
+
+- Correctness: If the parties follow the protocol, then the Verify algorithm
+returns true and the Reconstruct algorithm returns ⃗s irrespective of which
+approach.
+For any integer
+
+ n ≥ t + ℓ with t > 0, a 3PVSS is said to be correct
+n
+⃗
+for {P Ki , SKi }i=1 , h0 ← Initial(1λ ) when it satisfies the following
+ 
+
+(⃗y0 , {yi }ni=1 , π3P V SS ) ← Share n, t, ⃗s, {P Ki }ni=1 , h0 :
+= 1,
+Pr
+true ← Verify(n, t, ⃗h0 , ⃗y0 , {P Ki , yi }ni=1 , π3P V SS )
+ 
+
+(⃗y0 , {yi }ni=0 , π3P V SS ) ← Share n, t, ⃗s, {P Ki }ni=1 , ⃗h0 ,
+W
+ = 1.
+Pr 
+⃗s′ ← Reconstructionopt (⃗h0 , ⃗s, ⃗y0 )
+′
+pes
+′
+⃗s ← Reconstruction ({yi , SKi }i∈Q,|Q|=t+ℓ ) : ⃗s = ⃗s
+- Verifiability: If Verify returns true, then (Optimistic) Reconstructopt and/or
+(Pessimistic) Reconstructpes output being ⃗s is the actual secret vector of
+whom the shares are encrypted. Moreover, with high probability, {yi }ni=1
+are valid encryptions of the shares of same secrets in the vector and ⃗y0 is a
+valid vector of commitment(s) of those secrets. More formally, given λ, for
+any integers n ≥ 2t + ℓ and t > 0, a 3PVSS is said to be verifiable if for
+{P Ki , SKi }ni=1 , ⃗h0 ← Initial(1λ ) any PPT adversary A, we have:
+
+
+
+(⃗y0 , {yi }ni=1 , π3P V SS ) ← A n, t, {P Ki }ni=1 , ⃗h0 ,
+ true ← V erif y(n, t, ⃗h0 , ⃗y0 , {P Ki , yi }n , π3P V SS ) : 
+i=1
+
+Pr 
+∃⃗s, ∀Q ∈ [n], ⃗s ← Reconstructionopt ({⃗h , ⃗s, ⃗y }) W ≥ 1 − negl(λ),
+0
+0
+⃗s ← Reconstructionpes ({yi , SKi }i∈Q )
+where Q is the set of honest parties and |Q| ≥ t + ℓ.
+- IND1-Secrecy (Indistinguishability of Secrets): Before reconstruction
+phase, any amount of public information along with secret keys of at most t
+parties will give absolutely no information about the secrets ⃗s. More formally,
+for integers n > 1 and t + ℓ ≤ n, the 3PVSS is said to satisfy IND1-Secrecy
+if for any PPT adversary A corrupting at most t parties has negligible
+advantage in the following game played against a challenger.
+- The challenger runs Initial(1λ ) of 3PVSS to obtain {P Ki , SKi }ni=1 , ⃗h0
+and sends all public information along with secret information of all
+corrupted parties to A.
+- The challenger chooses two vectors of secrets, ⃗s0 and ⃗s1 at random in the
+space of secrets. Furthermore, it chooses b ∈ {0, 1} uniformly at random
+and runs Share(n, t, ⃗s0 , {P Ki }ni=1 , ⃗h0 ) algorithm of the 3PVSS scheme
+and obtains (⃗y0 , {yi }ni=1 , π3P V SS ). Finally, it sends all public information
+generated in Share phase together with ⃗sb .
+- A guesses a bit b′ ∈ {0, 1}.
+The advantage of A is defined to be |P r[b′ = b] − 21 |.
+3.2
+
+A Packed Pre-Constructed PVSS with Individual Commitments
+
+In this section, we present our first practical 3PVSS scheme, denoted Λindv
+RO .
+This construction extends the PPVSS scheme ΛRO [5], which itself builds on the
+
+10
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+Packed Pre-Constructed PVSS Scheme Λindv
+RO
+Initial: All parties {Pi }n
+i=1 and dealer D agree on the prime field Zq , a group (G, ×) of order q
+with a generator g, random oracle H. Also, each party Pi registers their public key P Ki in the
+public ledger and all agree on a commitment key, h0 ∈ G.
+⃗
+Share: Given (n, t, ⃗s, {P Ki }n
+y0 , {yi }n
+i=1 , h0 ), D acts as follows and returns (⃗
+i=1 , π3P V SS ):
+- Dealer D samples a t + ℓ − 1-degree polynomial f ∈ Zq [X] uniformly at random and sets
+{g fj : fj = f (j)}0j=−(ℓ−1) as the set of all secrets, where ⃗s := (f−(ℓ−1) , . . . , f−1 , f0 ).
+- For each 1 ≤ i ≤ n, D uses P Ki and fi = f (i) and computes encrypted values yi = P Kifi .
+f
+D also computes the commitments to secrets {g fj }0j=−(ℓ−1) as {yj = h0j }0j=−(ℓ−1) .
+- D uses the PDL proof scheme [4] for i ∈ (−(ℓ − 1), . . . , n) to generate π3P V SS as follows:
+- Samples a t + ℓ − 1-degree polynomial r ∈ Zq [X] uniformly at random and computes
+r(j)
+r(i)
+{cj = h0 }0j=−(ℓ−1) and ci = P Ki
+for 1 ≤ i ≤ n.
+- Using the random oracle H, d = H(y−(ℓ−1) . . . , yn , c−(ℓ−1) , . . . , cn ) is computed.
+- Sets z(X) = r(X) + df (X), hence π3P V SS = (d, z(X)) is obtained.
+- D broadcasts y⃗0 := (y−(ℓ−1) , . . . , y0 ), encrypted shares {yi }n
+i=1 , and π3P V SS := (d, z(X)).
+Verify: Given (n, t, ⃗h0 , ⃗
+y0 , {P Ki , yi }n
+i=1 , π3P V SS ), the verifier acts as follows:
+- Checks if z(X) is a (at most) t + ℓ − 1-degree polynomial or not.
+z(−(ℓ−1))
+
+- Checks if d = H(y−(ℓ−1) , . . . , yn ,
+
+h0
+
+d
+y−(ℓ−1)
+
+z(1)
+
+z(0)
+
+,...,
+
+h0
+
+d
+y0
+
+,
+
+P K1
+
+d
+y1
+
+z(n)
+
+, . . . , P Kynd
+
+).
+
+n
+
+- Outputs true if both of the above checks are satisfied, otherwise false.
+Reconstruct: Reconstruction of the secrets {g fj }0j=−(ℓ−1) can be done by two approaches:
+- Optimistic: First D publishes {fj }0j=−(ℓ−1) . Then given g, h0 , {yj }0j=−(ℓ−1) parties check if
+f
+
+{yj = h0j }0j=−(ℓ−1) and returns {g fj }0j=−(ℓ−1) if all checks pass, if not they return false.
+- Pessimistic: Any qualified set Q, where |Q| ≥ t + ℓ, of parties act as follows:
+- Each party Pi ∈ Q decrypts yi using SKi corresponding to P Ki and obtains g fi and then
+publishes it along with a DLEQ proof πDLEQ to prove the correctness of decryption.
+- If Q consists at least t+ℓ honest parties, they can use Lagrange interpolation to compute
+the secrets {g fj }0j=−(ℓ−1) as follows:
+g fj =
+
+Q
+
+i∈Q (g
+
+fi
+
+)
+
+Q
+
+k∈Q,k̸=i
+
+−k−j
+i−j
+
+=g
+
+P
+
+i∈Q fi
+
+Q
+
+k∈Q,k̸=i
+
+−k−j
+i−j
+
+.
+
+Fig. 4: Λindv
+RO : An efficient 3PVSS protocol with individual commitments
+PVSS schemes proposed in [4, 9]. In Λindv
+RO , given the public keys of the parties,
+a vector of secrets ⃗s of length ℓ, and a commitment key ⃗h0 := h0 ∈ G, the
+dealer shares the secrets using packed Shamir secret sharing and encrypts the
+resulting shares under the parties’ public keys. In addition, the dealer computes
+ℓ individual DL commitments to the ℓ shared secrets. The dealer then generates
+and broadcasts a NIZK proof π3P V SS demonstrating the well-formedness of both
+the encrypted shares and the committed secrets. The full description of Λindv
+RO is
+given in Figure 4, and its security is established in the following theorem.
+Theorem 1. Assuming Polynomial Discrete Logarithm (PDL) and Decisional
+Diffie-Hellman (DDH) are computationally hard, Λindv
+RO is a secure 3PVSS scheme
+against any static computationally bounded adversary, corrupting up to t out of
+n parties, whenever n ≥ 2t + ℓ with ℓ ≥ 1 being the total number of secrets.
+Proof. This directly follows from the proof of ΛRO in [5] as we mainly make use
+of πP DL and πDLEQ . For the sake of completeness, we give the proof as follows:
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+11
+
+- Correctness: Assume the dealer D and parties {Pi }ni=1 follow the protocol.
+Given a setup from initial phase of the protocol for an input 1λ we have
+(y−ℓ+1 , . . . , yn , (d, z(X))) from the sharing phase of the Λindv
+RO where yj =
+fj
+fi
+h0 for −ℓ + 1 ≤ j ≤ 0 and yi = P Ki for 1 ≤ i ≤ n, d is an output
+from the random oracle H for the input (y−ℓ+1 , . . . , yn , c−ℓ+1 , . . . , cn ) and
+z(X) = r(x) + df (X) is a t + ℓ − 1-degree polynomial such that f (X) is the
+secret polynomial, r(X) is the polynomial (also secret to D) chosen uniformly
+r(j)
+r(i)
+at random, cj = h0 for −ℓ + 1 ≤ j ≤ 0 and ci = P Ki for 1 ≤ i ≤ n.
+Now with (y−ℓ+1 . . . , yn , (d, z(X))), a verifier checks that the following part
+of the verification phase evaluates to d when additionally given with the
+commitment key of a target entity for the secrets and n public keys for the
+shares:
+z(1)
+
+z(0)
+
+H(y−ℓ+1 . . . , yn ,
+
+P K1
+h
+h0 z(−ℓ+1)
+, . . . , 0d ,
+d
+y−ℓ+1
+y0
+y1d
+r(−ℓ+1)
+
+=H(y−ℓ+1 , . . . , yn , h0
+
+r(0)
+
+, . . . , h0
+
+r(1)
+
+, P K1
+
+z(n)
+
+,...,
+
+P Kn
+ynd
+
+)
+
+, . . . , P Knr(n) ).
+
+Moreover, the reconstruction phase always yields same secrets {g fj }0j=−ℓ+1 in
+both the approaches. Explicitly, it is clear in the optimistic phase that yields
+f
+{g fj }0j=−ℓ+1 after one checks {yj = h0j } for −ℓ + 1 ≤ j ≤ n, when given
+(g, h0 , {yj , fj }0j=−ℓ+1 ). The Pessimistic case also yields {g fj }0j=−ℓ+1 which
+inherently is the reconstruction step from the PVSS ΠS [1]. In essence, we
+just proved that if the dealer and parties follow the protocol, then verification
+step returns true and the Reconstruction phase returns the actual secrets.
+- Verifiability: We need to show that if verify algorithm returns true then
+for 1 ≤ i ≤ n, yi is a valid encryption of i’th share of the secrets {g fj }0j=−ℓ+1
+which is intended to party Pi for 1 ≤ i ≤ n and for −ℓ + 1 ≤ j ≤ 0, yj
+is the valid commitment of the secret g fj and reconstruct algorithm returns
+{g fj }0j=−ℓ+1 irrespective of the approach with high probability. The trick
+to do that is to leverage the special soundness property of underlying proof
+system.
+Assuming verification phase outputs true, consider two acceptable transcripts (c−ℓ+1 , . . . , cn , d, z(X)), (c−ℓ+1 , . . . , cn , d′ , z ′ (X)) of the interactive version of the NIZK argument for PDL problem output by the dealer during
+the sharing phase as follows.
+z ′ (j)
+
+z(j)
+
+= cj yjd , h0
+
+z(i)
+
+= ci yid , P Ki
+
+h0
+P Ki
+
+′
+
+= cj yjd , for − ℓ + 1 ≤ j ≤ 0;
+
+z ′ (i)
+
+′
+
+= ci yid , for 1 ≤ i ≤ n.
+
+this implies,
+′
+z(j)−z ′ (j)
+h0
+= yjd−d
+′
+
+z(i)−z (i)
+
+P Ki
+
+′
+
+z(j)−z ′ (j)
+d−d′
+
+⇐⇒ h0
+
+= yj , for − ℓ + 1 ≤ j ≤ 0;
+
+z(i)−z ′ (i)
+d−d′
+
+= yid−d ⇐⇒ P Ki
+
+= yi , for 1 ≤ i ≤ n.
+
+12
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+
+Now if all n + ℓ checks pass then it means that the given commitments
+of secrets and encryptions of their shares are valid with high probability.
+Moreover, any set Q of t + ℓ honest parties can decrypt the encryptions
+of their shares to reconstruct secrets via pessimistic approach(because n ≥
+2t + ℓ), then the following is obtained,
+g
+
+z(i)−z ′ (i)
+d−d′
+
+= Fi for i ∈ Q, |Q| = t + ℓ.
+
+After the DLEQ proofs πDLEQ are checked, as with high probability z(X), z ′ (X)
+are exactly t + ℓ − 1 degree polynomial, an extractor having access to the two
+′
+(i)
+}i∈Q ,
+acceptable transcripts can construct the secrets from {fi = z(i)−z
+d−d′
+which are exponents of ℓ evaluations of the t + ℓ − 1-degree polynomial
+′
+(X)
+f (X) = z(X)−z
+. This implies that pessimistic approach yields the sed−d′
+crets {g fj }0j=−ℓ+1 with high probability.
+Similarly, the optimistic approach also yields the actual secrets {g fj }0j=−ℓ+1
+with high probability as a consequence of special soundness of the NIZK
+argument for PDL problem deployed in our 3PVSS.
+- IND1-Secrecy: We will prove that our scheme will not leak any information
+about the secrets to any static computationally bounded adversary A who
+corrupts at most t parties and has access to their secret keys, all public
+information except the secret key of target entity, i.e., SK0 , assuming the
+DDH assumption is true.
+′
+′
+In a nutshell, let s0 = (g f−ℓ+1 , . . . , g f0 ) and s1 = (g f−ℓ+1 , . . . , g f0 ) be the tuples of secrets in Zq chosen at random by the IND1-Secrecy challenger. The
+challenger runs the setup phase of our 3PVSS scheme Λindv
+RO to obtain the
+h0 for committing to the secrets and the public keys {P Ki }ni=1 to encrypt
+the shares meant for shareholders Pi for 1 ≤ i ≤ n. The challenger runs
+share
+share(n, t + ℓ − 1, s0 , {P Ki }ni=1 , h0 ) and obtains (y−ℓ+1 , . . . , yn , π3P
+V SS ) as
+the committed secrets and encrypted shares, and obtains the proof of correctness of the sharing phase. The challenger chooses b ∈ {0, 1} uniformly
+share
+at random and sends sb , (y−ℓ+1 , . . . , yn , π3P
+V SS ) along with the public information generated in the sharing phase to A. Without loss of generality,
+let fi = fi′ for −ℓ + 1 ≤ i ≤ −1, i.e., A is trying to distinguish between two
+tuples of secrets where they may differ only in last position.
+By contradiction, assume A can break the IND1-Secrecy property of our
+scheme. Then we will show that there exists an adversary B who can break
+the DDH assumption using A as a subroutine. Also, without loss of generality
+assume A corrupts first t shareholders, i.e., corrupts P1 , . . . , Pt so it knows
+their secret keys.
+Let B be an adversary who is given a DDH instance (h, hα , hβ , hγ ), where
+α, β, γ ∈ Zq with α and β being non-zero. Now B using A simulates the
+IND1 game A as follows:
+- B sets g = hα .
+- For t+1 ≤ i ≤ n, B selects ui ∈ Zq (implicitly defines si = uαi ) uniformly
+at random and sends P Ki = hui to A.
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+13
+
+- B selects u0 ∈ Zq uniformly at random and sets h0 = hu0 as the commitment key for the secrets.
+- For 1 ≤ i ≤ t, A selects SKi ∈ Zq uniformly at random and sends
+P Ki = g SKi to B (challenger in the perspective of A).
+- For 1 ≤ i ≤ t and −ℓ + 1 ≤ j ≤ −1, B selects fi , fj ∈ Zq uniformly at
+f
+random, sets vi = hfi ,vj = hfj and yi = P Kifi , yj = hj j . Finally, for
+i = 0, B sets v0 = hβ and y0 = v0u0 , i.e., internally she assumes f0 = β
+but note that she does not know f0 explicitly.
+- For t + 1 ≤ i ≤ n, B generates vi = hp(i) via lagrange interpolation in
+the exponent, where p ∈ Zq [X]t+ℓ−1 which is determined by the t + ℓ
+evaluations, namely, p(0) = f0 = β, p(i) = fi for −ℓ + 1 ≤ i ≤ −1 and
+1 ≤ i ≤ t. After obtaining vi , B sets yi = viui for t + 1 ≤ i ≤ n.
+- Now that B has h0 , P K1 , . . . , P Kn , y−ℓ+1 , . . . , yn , as a simulator she samples a random t + ℓ − 1 degree polynomial z ′ (X) and sets c′j =
+PK
+
+z ′ (j)
+
+h0
+yjd
+
+for
+
+z ′ (i)
+
+−ℓ + 1 ≤ j ≤ 0 and c′i = yid for 1 ≤ i ≤ n, when the challenge value
+i
+d in the interactive version of the proof scheme is given.
+- B sets hγ as the last element in sb .
+- Finally, B sends {y−ℓ+1 , . . . , yn , c′−ℓ+1 , . . . , c′n , d, z ′ (X)} along with sb
+and public information to A, simulating the role of a IND1-Secrecy challenger.
+- A outputs the bit b′ as its guess for b. If b′ = 0 then B guesses γ = α.β,
+otherwise γ is guessed to be a random element in Zq .
+⊔
+⊓
+We discuss the performance of the new 3PVSS scheme Λindv
+RO later in this seccan
+be
+viewed
+as
+a
+generalization
+of the PPVSS
+tion. It is worth noting that Λindv
+RO
+scheme ΛRO proposed in [5]. In particular, their construction corresponds to the
+special case of Λindv
+RO when ℓ = 1. Because of this relationship, we believe that
+all applications discussed in [5] can directly benefit from our proposed protocol.
+3.3
+
+A Packed Pre-Constructed PVSS with Single Commitment
+
+In this section, we present our second practical 3PVSS construction Λsingle
+in
+RO
+which the dealer commits to all shared secrets using a single commitment. To
+this end, we first introduce a new NIZK argument of knowledge for a specific
+language that will be useful for our 3PVSS construction. We then use a variant
+of this argument as a subroutine to build the protocol.
+As in the first 3PVSS scheme Λindv
+s
+RO , the dealer shares a vector of secrets ⃗
+of length ℓ using packed Shamir secret sharing and encrypts the resulting shares
+under the parties’ public keys. However, instead of publishing ℓ individual commitments, the dealer computes a single commitment that binds all ℓ secrets
+simultaneously. The dealer then generates and broadcasts a NIZK proof π3P V SS
+demonstrating the well-formedness of both the encrypted shares and the committed secrets. This design significantly reduces the communication overhead
+
+14
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+
+of the protocol. In particular, since only a single commitment is broadcast, the
+communication complexity decreases from O(n+ℓ) in Λindv
+RO to O(n). As a result,
+this construction can outperform the previous 3PVSS scheme in scenarios where
+communication efficiency is critical. Nevertheless, the scheme with individual
+commitments retains certain advantages in certain applications, as we illustrate
+in the following section.
+A NIZK Argument of Knowledge for Λsingle
+. Consider the set {gj }0j=−ℓ+1
+RO
+containing ℓ distinct generators of the prime order q cyclic group G different from
+g with g also being a generator of G, where ℓ < φ(q) and φ(q) is the total number
+of distinct generators of the cyclic group G. Consider the following relation for
+some polynomial f ∈ Zq [X]t+ℓ−1 with 2t + ℓ ≤ n:
+RmP DL = {(g−ℓ+1 , . . . , g0 , g, x−ℓ+1 , . . . , xn , F0 , . . . , Fn ), f (X) :
+Q0
+f (x )
+F0 = j=−ℓ+1 gj j , Fi = g f (xi ) , 1 ≤ i ≤ n},
+
+(2)
+
+where all xi ’s are distinct in Zq . The RmP DL is based on modified -PDL (inspired
+from the PDL in [4]) which is defined in the following.
+Definition 3 (modified Polynomial Discrete Logarithm Problem). Let
+{gj : gj ̸= g}0j=−ℓ+1 be a set of random distinct generators for the prime order q cyclic group G generated by g. Given F0 , . . . , Fn and distinct elements
+x−ℓ+1 , . . . , xn in Zq , find a polynomial f ∈ Zq [X] with degree at most t + ℓ − 1,
+Q0
+f (x )
+where F0 = j=−ℓ+1 gj j and Fi = g f (xi ) for 1 ≤ i ≤ n with 2t + ℓ ≤ n.
+In other words, an algorithm A is said to have an advantage ϵ in solving
+modified-PDL if
+P r[A(x−ℓ+1 , . . . , xn , g, g−ℓ+1 , . . . , g0 ,
+
+f (xj ) f (x1 )
+,g
+, . . . , g f (xn ) )] ≥ ϵ,
+j=−ℓ+1 gj
+
+Q0
+
+where f ∈ Zq [X] is at most a t + ℓ − 1 degree polynomial with 2t + ℓ ≤ n and
+the probability is over distinct generators g, g−ℓ+1 , . . . , g0 of G chosen at random
+and distinct x−ℓ+1 , . . . , xn elements in Zq .
+
+On Hardness of modified-PDL Problem. It is intuitive to observe that, similarly to the original PDL problem [4], the modified -PDL problem reduces to
+the Discrete Logarithm (DL) problem. For completeness, we include a proof in
+Appendix A. Now consider the language of RmP DL as follows:
+DL
+LmP
+g−ℓ+1 ,...,g0 = {(g, x−ℓ+1 , . . . , xn , F0 , . . . , Fn ) :∃f ∈ Zq [X]t+ℓ−1 ,
+
+[(g−ℓ+1 , . . . , g0 , g, x−ℓ+1 , . . . , xn ,F0 , . . . , Fn ), f (X)] ∈ RmP DL }.
+AoK
+We now present an efficient NIZK Argument of Knowledge (AoK) πmP
+DL
+for the aforementioned relation RmP DL in the Figure 5.
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+15
+
+AoK
+Non-Interactive Zero-Knowledge Argument πmP
+DL
+DL
+Let (g, x−ℓ+1 , . . . , xn , F0 , . . . , Fn ) ∈ LmP
+g−ℓ+1 ,...,g0 with its corresponding witness
+DL
+being f ∈ Zq [X]≤t+ℓ−1 where LmP
+g−ℓ+1 ,...,g0 is the language defined by the relation RmP DL and H be a random oracle (RO).
+
+Prover: Given the witness f (X), samples r(X) ∈R Zq [X]t+ℓ−1 uniformly at
+Q
+r(x )
+random and sets Γ0 = 0j=−ℓ+1 gj j and Γi = g r(xi ) for 1 ≤ i ≤ n. Then,
+sets d ← H(F0 , . . . , Fn , Γ0 , . . . , Γn ), where H is the random oracle. Finally, sets
+z(X) ≡ r(X) + df (X) (mod q) and returns π := (d, z(X)).
+Verifier: Given the public statement and the proof π, first checks if z(X) is a
+(at most) t + ℓ − 1 degree polynomial in Zq [X]. If so, it checks if
+Q0
+z(xj )
+g z(x1 )
+g z(xn )
+j=−ℓ+1 gj
+d ← H(F0 , . . . , Fn ,
+,
+,...,
+).
+d
+d
+Fnd
+F0
+F1
+If first two steps are correct then they output true, otherwise false.
+
+Fig. 5: An Efficient NIZK AoK for the modified -PDL
+Theorem 2 (A NIZK Argurement of Knowledge for RmP DL ). ConmP DL
+DL
+sider (g, x−ℓ+1 , . . . , xn , F0 , . . . , Fn ) ∈ LmP
+g−ℓ+1 ,...,g0 , where Lg−ℓ+1 ,...,g0 is the language defined by the relation RmP DL , with its corresponding witness being f ∈
+Zq [X]≤t+ℓ−1 . Assuming modified-PDL is computationally hard, for 2t + ℓ ≤ n,
+AoK
+the protocol πmP
+DL is a NIZK AoK for RmP DL in the RO model.
+Proof. The corresponding proof is similar to the proof of theorem given in [1].
+Formally, we will prove the security of the interactive setting (i.e., without RO
+being used) and then using Fiat-Shamir transform it can be extended for the
+non-interactive setting in the RO model.
+- Correctness: If both prover and verifier are honest, then for 1 ≤ i ≤ n we
+have
+g z(xi ) = g r(xi )+df (xi )
+= g r(xi ) (g f (xi ) )d
+= Γi Fid ,
+
+(3)
+
+and
+0
+Y
+j=−ℓ+1
+
+z(xj )
+
+gj
+
+0
+Y
+
+=
+
+r(xj )+df (xj )
+
+gj
+
+j=−ℓ+1
+
+=(
+
+0
+Y
+
+j=−ℓ+1
+
+= Γ0 F0d .
+
+r(xj )
+
+gj
+
+)(
+
+0
+Y
+
+f (xj ) d
+
+gj
+
+)
+
+j=−ℓ+1
+
+(4)
+
+16
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+
+The aforementioned equations imply that verification returns true and honest verifier accepts the honest prover.
+- Special Soundness: Let (Γ0 , . . . , Γn , d, z(X)), (Γ0 , . . . , Γn , d′ , z ′ (X)) be two
+acceptable transcripts where response polynomials will differ as a consequence of different challenge values. For 1 ≤ i ≤ n we have the following
+from equation 3:
+′
+
+′
+
+g z(xi ) = Γi Fid , g z (xi ) = Γi Fid ;
+which implies
+′
+
+′
+
+g z(xi )−z (xi ) = Fid−d ⇐⇒ g
+
+z(xi )−z ′ (xi )
+d−d′
+
+= Fi ,
+
+(5)
+
+[if and only if because d − d′ is always invertible in modulo prime q whenever
+d ̸= d′ (mod q)]. Similarly, we have the following from equation 4:
+0
+Y
+
+z(xj )
+
+gj
+
+= Γ0 F0d ,
+
+j=−ℓ+1
+
+0
+Y
+
+z ′ (xj )
+
+′
+
+gj
+
+= Γ0 F0d ;
+
+0
+Y
+
+z(xj )−z ′ (xj )
+d−d′
+
+j=−ℓ+1
+
+implying
+0
+Y
+
+′
+z(x )−z ′ (xj )
+gj j
+= F0d−d
+
+⇐⇒
+
+j=−ℓ+1
+
+gj
+
+= F0 .
+
+(6)
+
+j=−ℓ+1
+
+As we have n ≥ 2t + ℓ, information from equation 5 is enough for an extractor to extract a unique witness polynomial f in the exponent for the given
+)−z ′ (xi )
+statement in Rmod−P DL as it implies that fi = z(xid−d
+for 1 ≤ i ≤ n.
+′
+More explicitly, as z(X) is a t+ℓ−1 degree polynomial with high probability
+in Zq [X], an extractor E can construct the unique t+ℓ−1-degree polynomial
+f ∈ Zq [X] (in the exponent), being the desired witness (resp. solution) for a
+given statement in Rmod−P DL relation (resp. modified -PDL problem), from
+any t + ℓ evaluation points in {fi }ni=1 whenever n ≥ 2t + ℓ.
+- Honest Verifier Zero Knowledge (HVZK): Given the statement
+DL
+(g, x−ℓ+1 , . . . , xn , F0 , . . . , Fn ) ∈ Lmod−P
+g−ℓ+1 ,...,g0 and a challenge value d, a simulator S can choose a polynomial z ′ ∈ Zq [X]t+ℓ−1 uniformly at random
+Q0
+
+g
+
+z ′ (xj )
+
+g
+
+z ′ (xi )
+
+j
+and sets Γ0′ = j=−ℓ+1
+and Γi′ = iF d for 1 ≤ i ≤ n. Now, S reF0d
+i
+′
+′
+′
+turns (Γ0 , . . . , Γn , z (X)) as the simulated proof. As z(X) is a random degree
+t + ℓ − 1-polynomial in Zq [X] and z ′ (X) is chosen uniformly at random, the
+simulated proof of S is indistinguishable from the real one.
+
+As the interactive scheme is public coin, satisfies completeness, (computational)
+Special Soundness and (computational) HVZK, then in the random oracle (RO)
+model, using Fiat-Shamir transform [16], it can be turned into a NIZK Argument
+of Knowledge for Rmod−P DL (defined in equation 2).
+⊔
+⊓
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+17
+
+Packed Pre-Constructed PVSS Scheme Λsingle
+RO
+Initial: All parties {Pi }n
+i=1 and dealer D agree on the prime field Zq , a group (G, ×) of order q
+with a generator g, random oracle H. Also, each party Pi registers their public key P Ki in the
+public ledger and all agree on a set of commitment keys, {hj }0j=−ℓ+1 .
+0
+n
+Share: Given (n, t, ⃗s, {P Ki }n
+i=1 , {hj }j=−ℓ+1 ), D returns (y0 , {yi }i=1 , π3P V SS ) as follows:
+- Dealer D samples a t + ℓ − 1-degree polynomial f ∈ Zq [X] uniformly at random and sets
+{g fj : fj = f (j)}0j=−(ℓ−1) as the set of all secrets, where ⃗s := (f−(ℓ−1) , . . . , f−1 , f0 ).
+- For each 1 ≤ i ≤ n, D uses P Ki and fi = f (i) and computes encrypted values yi = P Kifi .
+Q
+f
+D also computes the commitments to secrets {g fj }0j=−(ℓ−1) as y0 = 0j=−ℓ+1 hj j .
+- D uses the modified-PDL proof scheme from Fig. 5 and generate π3P V SS as follows:
+- Samples a t + ℓ − 1-degree polynomial r ∈ Zq [X] uniformly at random and computes
+Q
+r(j)
+r(i)
+c0 = 0j=−ℓ+1 hj and ci = P Ki
+for 1 ≤ i ≤ n.
+- Using H, d = H(y0 , . . . , yn , c0 , . . . , cn ) is computed.
+- Sets z(X) = r(X) + df (X), hence π3P V SS = (d, z(X)) is obtained.
+- D broadcasts commitment y0 , encrypted shares {yi }n
+i=0 and the proof π3P V SS = (d, z(X)).
+
+Verify: Given (n, t, {hj }0j=−ℓ+1 , y0 , {P Ki , yi }n
+i=1 , π3P V SS ), the verifier acts as follows:
+- Checks if z(X) is a (at most) t + ℓ − 1-degree polynomial or not.
+Q0
+
+h
+
+z(j)
+
+PK
+
+z(1)
+
+z(n)
+
+j
+, y1d , . . . , P Kynd ).
+- Checks if d = H(y0 , y1 , . . . , yn , j=−ℓ+1
+d
+y0
+n
+1
+- Outputs true if both of the above checks are satisfied, otherwise false.
+
+Reconstruct: Reconstruction of the secrets {g fj }0j=−(ℓ−1) can be done by two approaches:
+- Optimistic: First D publishes {fj }0j=−(ℓ−1) . Then given g, {hj }0j=−ℓ+1 , y0 parties check if
+Q
+f
+y0 = 0j=−ℓ+1 hj j and returns {g fj }0j=−(ℓ−1) if all checks pass, if not they return false.
+- Pessimistic: Any qualified set Q, where |Q| ≥ t + ℓ, of parties act as follows:
+- Each party Pi ∈ Q decrypts yi using SKi corresponding to P Ki and obtains g fi and then
+publishes it along with a DLEQ proof πDLEQ to prove the correctness of decryption.
+- If Q consists at least t+ℓ honest parties, they can use Lagrange interpolation to compute
+the secrets {g fj }0j=−(ℓ−1) as follows:
+g fj =
+
+Q
+
+i∈Q (g
+
+fi
+
+)
+
+Q
+
+k∈Q,k̸=i
+
+−k−j
+i−j
+
+=g
+
+P
+
+i∈Q fi
+
+Q
+
+k∈Q,k̸=i
+
+−k−j
+i−j
+
+.
+
+Fig. 6: Λsingle
+RO : An efficient 3PVSS scheme with a single commitment
+3PVSS Scheme. Next, we present description of
+Construction of Λsingle
+RO
+Λsingle
+in
+Figure
+4
+which
+uses
+the NIZK AoK presented in Fig. 5 as a subroutine.
+RO
+We prove the security of new 3PVSS scheme in the following theorem.
+Theorem 3. Assuming mPDL problem and Decisional Diffie-Hellman (DDH)
+are computationally hard, Λsingle
+is a secure 3PVSS scheme against any static
+RO
+computationally bounded adversary. corrupting up to t out of n parties, whenever
+n ≥ 2t + ℓ with ℓ ≥ 1 being the total number of secrets.
+Proof. We prove the Correctness, Verifiability and IND1-Secrecy properties.
+- Correctness: Assume the dealer D and parties {Pi }ni=1 follow the protocol. We show that verification returns true and reconstruction of secrets in
+both approaches will return the intended secrets. Given a setup from initial phase of the protocol for an input 1λ we have (y0 , y1 , . . . , yn , (d, z(X)))
+Q0
+f
+from the sharing phase of the Λsingle
+where y0 = j=−ℓ+1 h0j , yi = P Kifi
+RO
+
+18
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+
+for 1 ≤ i ≤ n, d is an output from the random oracle H for the input
+(y0 , . . . , yn , c0 , . . . , cn ) and z(X) = r(x)+df (X) is a t+ℓ−degree polynomial
+such that f (X) is a secret polynomial, r(X) is the polynomial (also secret
+Q0
+r(j)
+r(i)
+to D) chosen uniformly at random, c0 = j=−ℓ+1 h0 and ci = P Ki for
+1 ≤ i ≤ n.
+Now with (y0 , y1 , . . . , yn , (d, z(X))), a verifier does the following computation
+for verification using ℓ commitment (/encryption) keys:
+Q0
+z(j)
+z(1)
+z(n)
+P K1
+P Kn
+j=−ℓ+1 hj
+,
+,
+.
+.
+.
+,
+)
+H(y0 , y1 , . . . , yn ,
+ynd
+y0d
+y1d
+r(j)+df (j)
+
+0
+Y
+
+=H(y0 , y1 , . . . , yn ,
+
+hj
+
+df (j)
+
+0
+Y
+
+P K1
+
+r(j)
+
+hj
+
+r(n)+df (n)
+
+,...,
+
+df (1)
+
+hj
+
+j=−ℓ+1
+
+=H(y0 , y1 , . . . , yn ,
+
+r(1)+df (1)
+
+,
+
+P Kn
+
+P K1
+r(1)
+
+, P K1
+
+df (n)
+
+)
+
+hn
+
+, . . . , P Knr(n) ).
+
+j=−ℓ+1
+
+We show that the reconstruction phase always yields {g fj }0j=−ℓ+1 in both
+the approaches. Explicitly, it is clear in the optimistic phase that yields
+Q0
+f
+{g fj }0j=−ℓ+1 after one checks y0 = j=−ℓ+1 h0j when given
+0
+(g, h0 , y0 , {fj }j=−ℓ+1 ). The Pessimistic case also yields {g fj }0j=−ℓ+1 which
+inherently is the reconstruction step from the PVSS ΠS [1]. In essence, we
+just proved that if the dealer and parties follow the protocol, then verification
+step returns true and the Reconstruction phase returns the actual secrets.
+- Verifiability: We will show that if verification algorithm returns true then
+with high probability yi is a valid encryption of i’th share of the secrets
+{g fj }0j=−ℓ+1 which is intended to party Pi for 1 ≤ i ≤ n, y0 is the commitment of ℓ secrets and reconstruct algorithm returns {g fj }0j=−ℓ+1 irrespective
+of the two approaches.
+Assuming the verification algorithm returns true, consider two acceptable
+transcripts (c0 , . . . , cn , (d, z(X))) and (c0 , . . . , cn , (d′ , z ′ (X))) of the interactive version of πshare with d ̸= d′ . Then we have the following from the
+verification step of πshare :
+0
+Y
+
+z(j)
+
+hj
+
+0
+Y
+
+= c0 y0d ,
+
+j=−ℓ+1
+
+z(j)
+
+hj
+
+= c0 y0d ,
+
+j=−ℓ+1
+
+which implies
+0
+Y
+
+z(j)−z ′ (j)
+
+hj
+
+j=−ℓ+1
+
+0
+Y
+
+′
+
+= y0d−d ,
+
+z(j)−z ′ (j)
+′
+
+hj d−d
+
+j=−ℓ+1
+
+Also for 1 ≤ i ≤ n we have the following:
+z(i)
+
+P Ki
+
+z ′ (i)
+
+= ci yid , P Ki
+
+′
+
+= ci yid ,
+
+= y0 .
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+19
+
+as a consequence we have,
+z(i)−z ′ (i)
+
+P Ki
+
+′
+
+z(i)−z ′ (i)
+d−d′
+
+= yid−d ⇐⇒ P Ki
+
+= yi .
+
+Now if all n + 1 checks pass then it means that the given commitment
+of secrets and encryptions of their shares are valid with high probability.
+Moreover, any set Q of t + ℓ honest parties can decrypt the encryptions
+of their shares to reconstruct secrets via pessimistic approach(because n ≥
+2t + ℓ), then the following is obtained,
+g
+
+z(i)−z ′ (i)
+d−d′
+
+= Fi for i ∈ Q, |Q| = t + ℓ.
+
+After the DLEQ proofs πDLEQ are checked, as with high probability z(X), z ′ (X)
+are exactly t + ℓ − 1 degree polynomial, an extractor having access to the two
+′
+(i)
+}i∈Q ,
+acceptable transcripts can construct the secrets from {fi = z(i)−z
+d−d′
+which are exponents of ℓ evaluations of the t + ℓ − 1-degree polynomial
+′
+(X)
+f (X) = z(X)−z
+. This implies that pessimistic approach yields the sed−d′
+fj 0
+crets {g }j=−ℓ+1 with high probability.
+Similarly, the optimistic approach also yields the actual secrets {g fj }0j=−ℓ+1
+with high probability as a consequence of special soundness of the NIZK
+argument for PDL problem deployed in our 3PVSS.
+- IND1-Secrecy: We will prove that our scheme will not leak any information
+about the secrets to any static computationally bounded adversary A who
+corrupts at most t out of n parties, assuming the DDH
+assumption is true.
+′
+′
+In a nutshell, let s0 = (g f−ℓ+1 , . . . , g f0 ) and s1 = (g f−ℓ+1 , . . . , g f0 ) be the tuples of secrets in Zq chosen at random by the IND1-Secrecy challenger. The
+challenger runs the setup phase of our 3PVSS scheme Λsingle
+to obtain the
+RO
+commitment keys {hj }0j=−ℓ+1 for committing to the secrets and the public
+keys {P Ki }ni=1 to encrypt the shares meant for shareholders Pi for 1 ≤ i ≤ n.
+The challenger runs share(n, t+ℓ−1, s0 , {hj }0j=−ℓ+1 , {P Ki }ni=1 ) and obtains
+share
+(y0 , . . . , yn , π3P
+V SS ) as the committed secrets and their encrypted shares,
+along with the proof of correctness of the sharing phase. The challenger
+share
+chooses b ∈ {0, 1} uniformly at random and sends sb , (y0 , . . . , yn , π3P
+V SS )
+along with the public information generated in the sharing phase to A. Without loss of generality, let fi = fi′ for −ℓ + 1 ≤ i ≤ −1, i.e., A is trying to
+distinguish between two tuples of secrets where they may differ only in last
+position.
+By contradiction, assume A can break the IND1-Secrecy property of our
+scheme. Then we will show that there exists an adversary B who can break
+the DDH assumption using A as a subroutine. Also, without loss of generality
+assume A corrupts first t shareholders, i.e., corrupts P1 , . . . , Pt so it knows
+their secret keys.
+Let B be an adversary who is given a DDH instance (h, hα , hβ , hγ ), where
+α, β, γ ∈ Zq with α and β being non-zero. Now B using A simulates the
+IND1 game A as follows:
+
+20
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+
+- B sets g = hα .
+- For t + 1 ≤ i ≤ n and −ℓ + 1 ≤ j ≤ 0, B selects ui , uj ∈ Zq (implicitly
+defines si = uαi ) uniformly at random and sends P Ki = hui , hj = huj to
+A.
+- For 1 ≤ i ≤ t, A selects SKi ∈ Zq uniformly at random and sends
+P Ki = g SKi to B (challenger in the perspective of A).
+- For 1 ≤ i ≤ t, B selects fi ∈ Zq uniformly at random, sets vi = hfi and
+yi = P Kifi .
+- For −ℓ + 1 ≤ j ≤ −1, B selects fj ∈ Zq uniformly at random, sets
+vj = hfj . Also, B sets v0 = hβ . Now that she has {vj , uj }0j=−ℓ+1 , she
+Q0
+u
+sets y0 = j=−ℓ+1 vj j . Observe that B assumes f0 = β but does not
+know it explicitly.
+- For t + 1 ≤ i ≤ n, B generates vi = hp(i) via lagrange interpolation in
+the exponent, where p ∈ Zq [X]t+ℓ−1 which is determined by the t + ℓ
+evaluations, namely, p(0) = f0 = β, p(i) = fi for −ℓ + 1 ≤ i ≤ −1 and
+1 ≤ i ≤ t. After obtaining vi , B sets yi = viui for t + 1 ≤ i ≤ n.
+- Now that B has {h−ℓ+1 , . . . , h0 , P K1 , . . . , P Kn , y0 , . . . , yn }, as a simulator she samples a random t + ℓ − 1 degree polynomial z ′ (X) and sets
+PK
+
+z ′ (i)
+
+Q0
+
+z ′ (j)
+
+h
+
+j
+for 1 ≤ i ≤ n and c′0 = j=−ℓ+1
+when the challenge
+c′i = yid
+y0d
+i
+value d in the interactive version of the proof scheme is given.
+- B sets hγ as the last element in sb .
+- Finally, B sends {y0 , . . . , yn , c′0 , . . . , c′n , d, z ′ (X)} along with sb and public
+information to A, simulating the role of a IND1-Secrecy challenger.
+- A outputs the bit b′ as its guess for b. If b′ = 0 then B guesses γ = α.β,
+otherwise γ is guessed to be a random element in Zq .
+⊔
+⊓
+
+3.4
+
+Efficiency of New 3PVSS Schemes
+
+single
+Heuristic cost comparisons of both 3PVSS schemes, Λindv
+RO and ΛRO , is given in
+Appendix B.1. Note that, the candidate 3PVSS schemes may not be comparable
+in terms of applications, we only made heuristic comparisons for completion.
+
+4
+
+Multi-Candidate E-Voting Protocol Based on Λindv
+RO
+
+In 1999, Schoenmakers [23] proposed a universally verifiable binary e-voting
+protocol based on (P)PVSS. In his construction, voters use a PPVSS scheme
+to submit encrypted votes together with proofs of validity, while a set of tallying authorities jointly reconstructs the final outcome. In this protocol, the
+verification phase requires O(mn2 ) exponentiations, where n and m denote the
+number of talliers and voters, respectively. Recently, Baghery et al. [5] revisited Schoenmakers’ protocol and improved its efficiency by introducing a more
+efficient PPVSS construction. They also observed that this application inherently requires a PPVSS scheme. Their approach reduces the verification cost to
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+21
+
+O(mn) exponentiations, significantly improving scalability for elections with a
+large number of talliers.
+However, both the original protocol [23] and its improved version [5] are designed for binary elections, where voters must choose between two candidates.
+Schoenmakers outlined a generic approach for extending such protocols to the
+ℓ-candidate setting by running the binary protocol ℓ times. Unfortunately, this
+approach increases both computation and communication costs by a factor of ℓ.
+In particular, for the current state-of-the-art protocol [5], the voters’ computation and communication costs become O(nℓ) exponentiations and O(nℓ) group
+elements, respectively, while the ballot verification cost grows to O(mnℓ) exponentiations. In large-scale elections with many talliers and candidates, these
+costs can become impractical. In this section, we show how our proposed 3PVSS
+protocol Λindv
+RO can be used to efficiently extend the binary e-voting protocol
+to the ℓ-candidate setting. Compared to Schoenmakers’ generic approach, our
+construction significantly reduces the computational and communication overhead. In particular, the voters’ computation and communication costs decrease
+to O(n + ℓ) exponentiations and O(n + ℓ) group elements, respectively, while
+An Efficient Universally Verifiable Multi-Candidate E-Voting Protocol
+Initialization: The talliers A1 , . . . , An run the initialization phase of Λindv
+RO and agree upon
+public keys {P Ki = GSKi }n
+i=1 , a single commitment key h0 , and public indexes for ℓ candidates.
+Ballot Casting: To vote v̄ ∈ {0, 1}ℓ , a voter does the following:
+- Samples s̄ ∈ Zℓq uniformly at random.
+- Using all the agreed upon public keys of talliers and the commitment key, they run Λindv
+RO to
+secret share s̄ and the associated (publicly verifiable) proof, π3P V SS , amongst the talliers.
+sj +vj
+- For j = −(ℓ − 1), . . . , 0: computes the value Uj = G
+and using the protocol given in
+App. 2.3 constructs a well-formedness proof πUj , showing that indeed vj ∈ {0, 1}, without
+s
+revealing any information on vj . The proof πUj refers to the value of yj = h0j which is
+published as part of π3P V SS in the 3PVSS Λindv
+sharing
+phase,
+and
+show
+that
+RO
+logG Uj = logh0 yj ∨ logG Uj = 1 + logh0 yj
+The ballots for voter V consists of the output of the 3PVSS sharing phase (which consists of
+encryption of shares and π3P V SS , the value {Uj }0j=−(ℓ−1) (which can be seen as an encryption
+of the ℓ votes), and proofs {πUj }0j=−(ℓ−1) (which proves the well-formedness of {Uj }0j=−(ℓ−1) ).
+Ballot Verification: Once voters submit their votes, the Bulletin board verifies the publicly
+verifiable proofs, π3P V SS and {πUj }0j=−(ℓ−1) , given by each voter.
+Tallying: Let V1 , . . . , Vm be the honest voters. The talliers do the following:
+- Each tallier
+Ai accumulates their shares obtained
+Q
+Pm from the accepted voters to compute
+∗
+¯
+Ȳi := m
+k=1 Yik , which is the secret share of
+k=1 sik (that’s to homomorphic property of
+the 3PVSS scheme).
+Pm
+∗
+∗
+k=1 s¯j ,
+- Then Ai , using Ȳi applies the reconstruction protocol of Λindv
+RO to obtain S̄ := Ḡ
+where Ḡ = (G, . . . , G).
+Pm
+Q
+k=1 s¯k +v¯k . Then, using S̄ ∗ and Ū ∗ , they
+- Using {Ūk }m
+compute Ū ∗ = m
+k=1 they
+k=1 Ūk = Ḡ
+Pm
+∗
+v
+¯
+Ū ∗
+compute V̄ = S̄ ∗ = Ḡ k=1 k .
+P
+- Given V̄ ∗ , they can compute the vector of V̄ = m
+k=1 v¯k . Let V̄ := (V−(ℓ−1) , . . . , V0 ).
+- Finally, the winner is determined by finding the index of max{Vj } for j = −(ℓ − 1), . . . , 0.
+
+Fig. 7: A multi-candidate e-voting protocol based on Λindv
+RO , for n ≥ 2t + ℓ.
+
+22
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+
+the ballot verification cost becomes O(m(n + ℓ)) exponentiations. This efficiency
+improvement comes at the cost of reduced robustness. Specifically, if ℓ denotes
+the number of candidates and t out of n election authorities may be corrupted,
+then the condition n ≥ 2t + ℓ must hold for the protocol to operate correctly.
+Our proposed ℓ-candidate e-voting protocol is described in Figure 7.
+4.1
+
+Security analysis
+
+The new multi-candidate e-voting protocol is based on the 3PVSS Λindv
+RO and
+a NIZK proof for binary vote, and thus its security directly follows from the
+0
+security of Λindv
+RO and {πUj }j=−(ℓ−1) . Moreover, double voting can easily checked
+in Ballot Verification phase as anonymity is not a requirement in our scheme.
+As a consequence of using 3PVSS, this e-voting protocol remains secure as long
+as the secret information about the commitment key, which is used to commit
+to the secrets, is unknown to the adversary.
+4.2
+
+Cost analysis
+
+The main variable in the e-voting scheme is the number of voters m, hence,
+that the download size of the talliers is linear in the number of voters, m. In
+tallying phase, the main computation cost bore by the talliers comes from the
+reconstruction of sum of the secrets in the exponents, which is 5(t + ℓ)Ex + tℓG,
+and multiplying their ciphers to obtain the shares of the sum of secrets, which
+additionally requires them to do mℓ MG . See Table 1 for the details.
+Table 1: Communication cost of m voters and download size of n talliers, G =
+group of order q and Zq = modular group of order q, where q is a large prime
+Voter Communication
+(n + 5ℓ)G + (t + 5ℓ + 1)Zq
+
+Tallier download size
+[m(n+5ℓ)+n+1]G+m(t+5ℓ+1)Zq
+
+Note that, the binary proof πŪ is run (see Appendix 2.3 and Section 2.1 in [5]
+for more details) for each component of Ū , where all components of Ū are independent of each other. Thus, the computation cost of πŪ is parallelizable. Also,
+the computation cost of multiplying two random group elements can be ignored
+as it is negligible compared to random group exponentiations. See Table 2.
+Table 2: Computation cost of voter and bulletin board to verify votes, where
+Ex =group exp., Pe =polynomial evaluation, MG = Multiplication in group G
+ZKP
+Λindv
+RO
+πŪ
+
+5
+
+Voter computation
+2(n + ℓ)[Ex + Px ]
+6ℓEx
+
+m Proofs Verification
+m(n + ℓ)[2Ex + Pe + MG ]
+8ℓmEx
+
+A Randomness Beacon alternative to ALBATROSS
+
+Randomness Beacon is required in applications like e-voting and anonymous
+messaging to provide fresh unbiased random values to all the parties. In 2020,
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+23
+
+Cascudo and David published ALBATROSS [9], the state-of-the art randomness
+beacon protocol based on Packed PVSS. In ALBATROSS each party reveals their
+secrets as part of the randomness beacon protocol, but to prove that the revealed
+secrets are valid they have to reveal the whole secret polynomial itself. Thus, if
+someone wants to verify the secrets’ validity then they have to simulate the whole
+sharing phase of the underlying PVSS protocol, this is a costly computation
+procedure incurring a cost of quadratic in the number of parties.
+In this Section, we present our randomness beacon protocol in Figures 8
+and 9. We also show that in many cases our construction is efficient than ALBATROSS. To put simply, we replace the building block being Packed PVSS
+with our 3PVSS Λsingle
+RO , which additionally gives a single commitment that represents all secret random values of the dealer. In Subsection 5.1, we discuss a
+bottleneck in ALBATROSS protocol, followed by our alternative construction
+for ALBATROSS. By the end of this section, we not only show that our protocol outperforms ALBATROSS in many cases but also acknowledge the case
+where we are not computationally efficient. The main highlight we show is that
+in terms of dealer communication, we outperform ALBATROSS in every case.
+5.1
+
+On the Bottleneck of ALBATROSS
+
+The main bottleneck of ALBATROSS is in its Reveal phase (description in Figure
+8 in Section 4.3 of [9]). More precisely, the goal of the Reveal phase is to reveal
+the secrets of whom the dealer has done the secret sharing. But in order to verify
+that those values are actual secrets, in ALBATROSS, a verifier has to simulate
+the whole sharing phase of the dealer with the values that were revealed. This is
+because, the underlying proof system of a general PVSS says that if the PVSS
+verification algorithm outputs true, then the encryptions of the secret shares
+correspond to some unique secret with high probability.
+Whereas, in the case of (P)PPVSS, if the verification algorithm outputs true
+then it means that the encryptions of the secret shares correspond to the unique
+secret(s) which was already committed by the dealer with high probability. So, the
+intuition is that if one uses a Pre-Constructed PVSS, that can commit to multiple
+secrets in a single polynomial, over the standard PVSS used in ALBATROSS (a
+Random Beacon protocol) then we show that the efficiency can be improved.
+5.2
+
+Security analysis
+
+The major changes in our protocol in contrast to ALBATROSS are the Commit
+and Reveal phases. As long as the randomizers used to commit (/secret keys
+to decrypt) secrets are not leaked then Commit phase is as secure such that it
+does not reveal anything about the secrets. This is because of the mathematical
+security guarantees achieved through the sharing phase of our 3PVSS, Λsingle
+RO .
+In ALBATROSS, the whole point of the Reveal phase is to open the secrets
+itself, but to verify that the secrets are valid for a given secret shares, one has
+to simulate the whole sharing phase of the respective dealer. As our 3PVSS,
+Λsingle
+RO , already proves that the commitment is a valid commitment of dealers’
+
+24
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+Randomness Beacon using 3PVSS, Λsingle
+RO
+Our protocol with 3PVSS is run between a set P of n parties P1 , . . . , Pn who have
+access to a public ledger where they can post information for later verification.
+It is assumed that the Setup phase of Λsingle
+is already done and the public keys
+RO
+pki of each party Pi along with {Pi }ℓi=1 being Commitment keys (or public keys
+of target people) to encrypt the ℓ secrets are already registered in the ledger. In
+addition, the parties have agreed on a Vandermonde (n − 2t) × (n − t)-matrix
+M = M (ω, n − 2t, n − t) with ω ∈ Z∗q .
+1. Commit: For 1 ≤ j ≤ n:
+- Shareholder Pj executes the Distribution phase of the PPPVSS as
+Dealer for ℓ = n − 2t secrets, publishing commitments (/encryptions)
+j
+j
+of secrets, y−(ℓ−1)
+, . . . , y−1
+, y0j , and encryptions of shares {yij }n
+i=1 along
+j
+with πproof
+, which is a NIZK AoK for proving the correctness of committed(/encrypted) secrets and encrypted secret shares on the public
+j
+
+s
+
+j
+
+ledger, also learning the secrets hs0 , ..., h −(ℓ−1) and their corresponding
+exponents sj0 , . . . , sj−(ℓ−1) .
+2. Reveal:
+j
+- Each shareholder checks the validity of the proof πproof
+, i.e., the verisingle
+fication phase of 3PVSS protocol ΛRO .
+- After a set C containing at least n − t shareholders publish their shares
+in the public ledger, Pj ∈ C reveals ℓ secrets.
+- Every party verifies the validity of secrets by reproducing the commitments using the commitment keys (/public keys of target people).
+- At this point, if every party in C has opened their secrets correctly, go
+to step 4’ in Figure 9. Otherwise, proceed to step 3 in Figure 9.
+
+Fig. 8: Commit and Reveal phase of the Randomness Beacon using 3PVSS
+secrets and their respective secret sharing is done correctly, it does not require
+to perform the whole simulation of the sharing phase of any dealer. Because the
+dealer has already committed to the secrets, he cannot cheat by revealing wrong
+secrets. Therefore, the Reveal phase of our protocol also is secure due to the
+security guarantees of Λsingle
+RO .
+5.3
+
+Computational Cost analysis
+
+The dealer has to do a bit more work in the case of our protocol in contrast to ALBATROSS, more explicitly, they have to compute ℓ more group exponentiations
+and polynomial evaluations. Moreover as a consequence, we decrease computational cost in the Reveal phase whenever ℓ < n(n−t−1)
+2(n−1) , roughly speaking, if the
+number of secrets are less than half of the honest parties then we always perform
+better in terms of computation when compared to the ALBATROSS.
+More precisely, in the reveal phase, we observe that our protocol gains at
+least 30% more efficiency for performing polynomial evaluations, and at least
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+25
+
+Randomness Beacon using 3PVSS, Λsingle
+(cont.)
+RO
+3. Recovery: Let Ca be the set containing at most t malicious shareholders(as
+Dealers) who did not open the exponents corresponding to their ℓ secrets,
+k −(ℓ−1)
+{hsi }i=0
+for each Pk ∈ Ca , in Reveal phase.
+- Every shareholder Pj should decrypt the secret share of each malicious
+shareholder(Dealer) in Ca , and give a DLEQ proof (reviewed in Appendix) which asserts that the decryption is performed correctly,i.e.,
+each shareholder should perform the pessimistic reconstruction phase
+of the 3PVSS Λsingle
+for every shareholder(Dealer) who has not reRO
+vealed the exponents corresponding to their secrets.
+4 Output: Let T be the (n−t)×ℓ matrix with rows indexed by the shareholda
+sa
+ers in C and where the row corresponding to Pa ∈ C is (hs0 , ..., h −(ℓ−1) ).
+- Each computes the ℓ × ℓ-matrix R = M ◦ T by applying FFTE to each
+column T (j) of T , resulting in column R(j) of R (since R(j) = M ◦ T (j)
+and M is Vandermonde) for j ∈ [0, ℓ − 1].
+- Shareholders output the ℓ2 elements of R as final randomness.
+4’ Alternative Output: if every party in C has opened her secrets correctly
+in step Reveal, then:
+- Shareholders compute R = M ◦ T in the following way:
+Let S be the (n − t) × ℓ matrix with rows indexed by the shareholders in
+C and where the row corresponding to Pa ∈ C is (sa0 , ..., sa−(ℓ−1) ). Then
+each party computes U = M ◦ S ∈ Zℓ×ℓ
+(using the standard FFT in Zq
+q
+to compute each column) and R = hU .
+- Shareholders output the ℓ2 elements of R as final randomness.
+
+Fig. 9: Recovery and Output phase of the Randomness Beacon using 3PVSS
+
+23% more efficiency for performing group exponentiations when compared to
+ALBATROSS in the robust case where the number of secrets ℓ is equal to one.
+See plots 10a and 10b for the performance analysis of polynomial evaluations and
+group exponentiations in the reveal phase of our protocol and ALBATROSS.
+5.4
+
+Communication Cost analysis
+
+Though the dealer has to communicate an extra group element compared to
+ALBATROSS in commit phase, as a consequence, for a fixed number of secrets,
+the dealers’ communication cost is constant in reveal phase as opposed to linear
+in number of corrupted parties in ALBATROSS.
+In the plots 11b and 11a, we show the communication cost of a dealer to bare
+in ALBATROSS and our protocol in both the commit and reveal phases.
+
+26
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+
+Table 3: Computational cost of dealer and shareholders, Ex =group exponentiation and Pe =polynomial evaluation in group G of order q, for q a large prime
+Protocol
+ALBATROSS
+Honest case
+
+3PVSS
+Honest case
+
+ALBATROSS
+Robust case
+
+3PVSS
+Robust case
+
+Output Commit(by Dealer) Reveal (by shareholder)
+size
+ℓ2
+(2n + ℓ)[Ex + Pe ]
+Share Verification (n − 1)n[2Ex + Pe ]
+Secret Verification (n − 1)(n + ℓ)[Ex + Pe ]
+ℓ2
+2(n + ℓ)[Ex + Pe ]
+Share Verification (n − 1)(n + ℓ)[2Ex + Pe ]
+Secret Verification (n − 1)ℓEx
+2
+ℓ
+(2n + ℓ)[Ex + Pe ]
+Share Verification (n − 1)n[2Ex + Pe ]
+Secret Verification (n − t − 1)(n + ℓ)[Ex + Pe ]
+ℓ2
+2(n + ℓ)[Ex + Pe ]
+Share Verification (n − 1)(n + ℓ)[2Ex + Pe ]
+Secret Verification (n − t − 1)ℓEx
+
+Recovery
+shareholder)
+
+(by
+
+-
+
+-
+
+[3 + 4(n − t)]tEx
+
+[3 + 4(n − t)]tEx
+
+Table 4: Communication cost of dealer and (each) shareholder, G =group of
+order q and Zq = modular group of order q, where q is a large prime
+Protocol
+ALBATROSS
+with PPPVSS
+
+Commit (by Dealer)
+nG + (t + ℓ)Zq
+(n + 1)G + (t + ℓ)Zq
+
+(a) Polynomial evaluations cost in reveal
+phase
+
+Reveal (by Dealer)
+(t + ℓ)Zq
+ℓZq
+
+Recovery (by shareholder)
+1G + 2Zq
+1G + 2Zq
+
+(b) Group exponentiations cost in reveal
+phase
+
+Fig. 10: Computation costs bore by each verifier in the reveal phase for the most
+robust case where ℓ = 1
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+(a) Communication cost of a dealer in reveal phase of ALBATROSS and our protocol
+
+27
+
+(b) Communication cost of a dealer in
+commit phase phase of ALBATROSS and
+our protocol
+
+Fig. 11: Comparing communication costs of each shareholder as the dealer in
+commit and reveal phases
+
+6
+
+Conclusion
+
+We introduced Packed Pre-constructed Publicly Verifiable Secret Sharing (3PVSS),
+a new primitive that combines the benefits of packed secret sharing with the preconstructability property of PPVSS. Our construction enables a dealer to distribute multiple secrets simultaneously while committing to the reconstructed
+values, thereby preserving the optimistic reconstruction approach and public
+verifiability that make PPVSS attractive for practical distributed protocols.
+We presented two practical 3PVSS constructions with complementary properties. The first construction, Λindv
+RO , publishes individual commitments to each
+secret, offering greater flexibility and enabling applications that require independent verification of shared values. The second construction, Λsingle
+RO , publishes a
+single commitment to all secrets, resulting in improved communication efficiency.
+Together, these constructions demonstrate that the 3PVSS paradigm can support different design goals depending on the requirements of the application.
+To illustrate the usefulness of our approach, we applied the two constructions to two important distributed protocols. Using Λsingle
+RO , we revisited the
+ALBATROSS randomness beacon protocol and obtained a more efficient variant with reduced computational and communication costs. Using Λindv
+RO , we extended a recently proposed universally verifiable e-voting protocol to support
+multi-candidate elections while maintaining efficiency and public verifiability.
+Overall, our results show that extending PPVSS to the packed setting provides a powerful tool for designing more efficient distributed cryptographic protocols. We believe that the 3PVSS paradigm can serve as a useful building block
+in a variety of applications beyond those considered in this work, including distributed key generation, threshold cryptography, and secure multi-party computation. Exploring further applications of 3PVSS and extending our constructions
+to other PPVSS frameworks remain interesting directions for future research.
+
+28
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+
+Acknowledgments
+We would like to thank Mahdi Rahimi for helpful discussions. This work was
+supported by the Flemish Government through the Cybersecurity Research Program with grant number VOEWICS02.
+
+References
+1. Shahla Atapoor, Karim Baghery, Daniele Cozzo, and Robi Pedersen. VSS from
+distributed ZK proofs and applications. In Jian Guo and Ron Steinfeld, editors,
+Advances in Cryptology – ASIACRYPT 2023, Part I, volume 14438 of Lecture
+Notes in Computer Science, pages 405–440, Guangzhou, China, December 4–8,
+2023. Springer, Singapore, Singapore.
+2. Shahla Atapoor, Karim Baghery, Georgio Nicolas, Robi Pedersen, and Jannik
+Spiessens. Batched and packed (publicly) verifiable secret sharing: A unified framework and applications. Cryptology ePrint Archive, Report 2025/2018, 2025.
+3. Michael Backes, Aniket Kate, and Arpita Patra. Computational verifiable secret
+sharing revisited. In Dong Hoon Lee and Xiaoyun Wang, editors, Advances in
+Cryptology – ASIACRYPT 2011, volume 7073 of Lecture Notes in Computer Science, pages 590–609, Seoul, South Korea, December 4–8, 2011. Springer Berlin
+Heidelberg, Germany.
+4. Karim Baghery. Π: A unified framework for computational verifiable secret sharing. In Tibor Jager and Jiaxin Pan, editors, PKC 2025: 28th International Conference on Theory and Practice of Public Key Cryptography, Part IV, volume 15677
+of Lecture Notes in Computer Science, pages 110–142, Røros, Norway, May 12–15,
+2025. Springer, Cham, Switzerland.
+5. Karim Baghery, Noah Knapen, Georgio Nicolas, and Mahdi Rahimi. Preconstructed publicly verifiable secret sharing and applications. In Marc Fischlin
+and Veelasha Moonsamy, editors, ACNS 2025: 23rd International Conference on
+Applied Cryptography and Network Security, Part I, volume 15825 of Lecture Notes
+in Computer Science, pages 89–119, Munich, Germany, June 23–26, 2025. Springer,
+Cham, Switzerland.
+6. George Robert Blakley. Safeguarding Cryptographic Keys. In 1979 International
+workshop on managing requirements knowledge, pages 313–318. IEEE Computer
+Society, 1979.
+7. Ignacio Cascudo, Daniele Cozzo, and Emanuele Giunta. Verifiable secret sharing
+from symmetric key cryptography with improved optimistic complexity. In KaiMin Chung and Yu Sasaki, editors, Advances in Cryptology – ASIACRYPT 2024,
+Part VII, volume 15490 of Lecture Notes in Computer Science, pages 100–128,
+Kolkata, India, December 9–13, 2024. Springer, Singapore, Singapore.
+8. Ignacio Cascudo and Bernardo David. SCRAPE: Scalable randomness attested
+by public entities. In Dieter Gollmann, Atsuko Miyaji, and Hiroaki Kikuchi, editors, ACNS 2017: 15th International Conference on Applied Cryptography and
+Network Security, volume 10355 of Lecture Notes in Computer Science, pages 537–
+556, Kanazawa, Japan, July 10–12, 2017. Springer, Cham, Switzerland.
+9. Ignacio Cascudo and Bernardo David.
+ALBATROSS: Publicly AttestabLe
+BATched Randomness based On Secret Sharing. In Shiho Moriai and Huaxiong
+Wang, editors, Advances in Cryptology – ASIACRYPT 2020, Part III, volume
+12493 of Lecture Notes in Computer Science, pages 311–341, Daejeon, South Korea, December 7–11, 2020. Springer, Cham, Switzerland.
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+29
+
+10. Ignacio Cascudo and Bernardo David. Publicly verifiable secret sharing over class
+groups and applications to DKG and YOSO. In Marc Joye and Gregor Leander,
+editors, Advances in Cryptology – EUROCRYPT 2024, Part V, volume 14655 of
+Lecture Notes in Computer Science, pages 216–248, Zurich, Switzerland, May 26–
+30, 2024. Springer, Cham, Switzerland.
+11. Ignacio Cascudo, Bernardo David, Lydia Garms, and Anders Konring. YOLO
+YOSO: Fast and simple encryption and secret sharing in the YOSO model.
+In Shweta Agrawal and Dongdai Lin, editors, Advances in Cryptology – ASIACRYPT 2022, Part I, volume 13791 of Lecture Notes in Computer Science, pages
+651–680, Taipei, Taiwan, December 5–9, 2022. Springer, Cham, Switzerland.
+12. David Chaum and Torben P. Pedersen. Wallet databases with observers. In
+Ernest F. Brickell, editor, Advances in Cryptology – CRYPTO’92, volume 740
+of Lecture Notes in Computer Science, pages 89–105, Santa Barbara, CA, USA,
+August 16–20, 1993. Springer Berlin Heidelberg, Germany.
+13. Benny Chor, Shafi Goldwasser, Silvio Micali, and Baruch Awerbuch. Verifiable
+Secret Sharing and Achieving Simultaneity in the Presence of Faults. In 26th
+Annual Symposium on Foundations of Computer Science (sfcs 1985), pages 383–
+395. IEEE, 1985.
+14. Ronald Cramer, Ivan Damgård, and Berry Schoenmakers. Proofs of partial knowledge and simplified design of witness hiding protocols. In Yvo Desmedt, editor,
+Advances in Cryptology – CRYPTO’94, volume 839 of Lecture Notes in Computer
+Science, pages 174–187, Santa Barbara, CA, USA, August 21–25, 1994. Springer
+Berlin Heidelberg, Germany.
+15. Paul Feldman. A practical scheme for non-interactive verifiable secret sharing. In
+28th Annual Symposium on Foundations of Computer Science, pages 427–437, Los
+Angeles, CA, USA, October 12–14, 1987. IEEE Computer Society Press.
+16. Amos Fiat and Adi Shamir. How to prove yourself: Practical solutions to identification and signature problems. In Conference on the theory and application of
+cryptographic techniques, pages 186–194. Springer, 1986.
+17. Matthew K. Franklin and Moti Yung. Communication complexity of secure computation (extended abstract). In 24th Annual ACM Symposium on Theory of
+Computing, pages 699–710, Victoria, BC, Canada, May 4–6, 1992. ACM Press.
+18. Craig Gentry, Shai Halevi, and Vadim Lyubashevsky. Practical non-interactive
+publicly verifiable secret sharing with thousands of parties. In Orr Dunkelman
+and Stefan Dziembowski, editors, Advances in Cryptology – EUROCRYPT 2022,
+Part I, volume 13275 of Lecture Notes in Computer Science, pages 458–487, Trondheim, Norway, May 30 – June 3, 2022. Springer, Cham, Switzerland.
+19. Jens Groth. Non-interactive distributed key generation and key resharing. Cryptology ePrint Archive, Report 2021/339, 2021.
+20. Somayeh Heidarvand and Jorge L Villar. Public Verifiability from Pairings in Secret
+Sharing Schemes. In International Workshop on Selected Areas in Cryptography,
+pages 294–308. Springer, 2008.
+21. Aniket Kate, Easwar Vivek Mangipudi, Pratyay Mukherjee, Hamza Saleem, and
+Sri Aravinda Krishnan Thyagarajan. Non-interactive VSS using class groups and
+application to DKG. In Bo Luo, Xiaojing Liao, Jun Xu, Engin Kirda, and David
+Lie, editors, ACM CCS 2024: 31st Conference on Computer and Communications
+Security, pages 4286–4300, Salt Lake City, UT, USA, October 14–18, 2024. ACM
+Press.
+22. Torben P. Pedersen. Non-interactive and information-theoretic secure verifiable
+secret sharing. In Joan Feigenbaum, editor, Advances in Cryptology – CRYPTO’91,
+
+30
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+
+volume 576 of Lecture Notes in Computer Science, pages 129–140, Santa Barbara,
+CA, USA, August 11–15, 1992. Springer Berlin Heidelberg, Germany.
+23. Berry Schoenmakers. A simple publicly verifiable secret sharing scheme and its
+application to electronic. In Michael J. Wiener, editor, Advances in Cryptology
+– CRYPTO’99, volume 1666 of Lecture Notes in Computer Science, pages 148–
+164, Santa Barbara, CA, USA, August 15–19, 1999. Springer Berlin Heidelberg,
+Germany.
+24. Adi Shamir. How to share a secret. Communications of the ACM, 22(11):612–613,
+1979.
+25. Avi Wigderson, MB Or, and S Goldwasser. Completeness Theorems for Noncryptographic Fault-Tolerant Distributed Computations. In Proceedings of the 20th
+Annual Symposium on the Theory of Computing (STOC88), pages 1–10, 1988.
+
+Appendix:
+A
+
+On Hardness of modified-PDL Problem
+
+In this section, we reduce the security of modified-PDL (given in Def. 3) to the
+standard DL assumption. We present the reduction for the representative case
+t = 1, ℓ = 2, and n ≥ 4, where the hidden polynomial has degree at most 2.
+The reduction embeds the DL challenge as one polynomial evaluation and then
+simulates the entire modified-PDL transcript for the adversary. In particular,
+the remaining group elements, including the aggregate term F0 , are generated by
+choosing sufficiently many polynomial evaluations at random and interpolating
+the rest in the exponent.
+Theorem 4 (DL-hardness of modified-PDL, case t = 1, ℓ = 2). Let G =
+⟨g⟩ be a cyclic group of prime order q. Suppose there exists a probabilistic polynomialtime algorithm A that solves the modified-PDL problem for parameters t = 1, ℓ =
+2 and n ≥ 4 with probability ϵ. Then there exists a probabilistic polynomial-time
+algorithm B that solves the discrete logarithm problem in G with the same probability ϵ, up to the negligible probability of sampling collisions.
+Proof. Let (g, h), where h = g a for a uniformly random unknown a ∈ Zq , be a
+DL challenge. We construct an algorithm B that uses A to recover a.
+For t = 1 and ℓ = 2, the modified-PDL polynomial has degree at most
+t + ℓ − 1 = 2. Algorithm B first samples distinct points
+x−1 , x0 , x1 , . . . , xn ∈ Zq ,
+with n ≥ 4. It also samples independently and uniformly random nonzero exponents
+α−1 , α0 ∈ Z⋆q
+such that g−1 := g α−1 and g0 := g α0 are distinct from each other and from g.
+This only fails with negligible probability, and conditioned on no collision, g−1
+and g0 are distributed as random distinct generators of G.
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+31
+
+Next, B embeds the unknown discrete logarithm a as the value of the hidden
+polynomial at x1 . To this end, it samples random values
+$
+
+y2 , y3 ←
+− Zq
+and implicitly defines the unique degree-at-most-two polynomial f ∈ Zq [X] satisfying
+f (x1 ) = a,
+f (x2 ) = y2 ,
+f (x3 ) = y3 .
+Although B does not know a, it can compute all required group elements by
+interpolation in the exponent. Let λ1 (X), λ2 (X), λ3 (X) be the Lagrange basis
+polynomials associated with the points x1 , x2 , x3 , namely
+λi (X) =
+
+Y
+k∈{1,2,3}
+k̸=i
+
+X − xk
+.
+xi − x k
+
+Then for every z ∈ Zq ,
+f (z) = aλ1 (z) + y2 λ2 (z) + y3 λ3 (z).
+Therefore, for every i ∈ {1, . . . , n}, algorithm B can set
+Fi := hλ1 (xi ) g y2 λ2 (xi )+y3 λ3 (xi ) .
+Indeed,
+λ (xi )
+
+Fi = (g a ) 1
+
+g y2 λ2 (xi )+y3 λ3 (xi ) = g f (xi ) .
+
+In particular, F1 = h = g a , F2 = g y2 , and F3 = g y3 . It remains to simulate the
+modified commitment term
+f (x
+
+) f (x0 )
+
+F0 = g−1 −1 g0
+
+.
+
+Using g−1 = g α−1 and g0 = g α0 , we have
+F0 = g α−1 f (x−1 )+α0 f (x0 ) .
+By interpolation,
+f (x−1 ) = aλ1 (x−1 ) + y2 λ2 (x−1 ) + y3 λ3 (x−1 ),
+and similarly
+f (x0 ) = aλ1 (x0 ) + y2 λ2 (x0 ) + y3 λ3 (x0 ).
+Hence
+F0 = g a(α−1 λ1 (x−1 )+α0 λ1 (x0 ))+y2 (α−1 λ2 (x−1 )+α0 λ2 (x0 ))+y3 (α−1 λ3 (x−1 )+α0 λ3 (x0 ))
+= hα−1 λ1 (x−1 )+α0 λ1 (x0 ) g y2 (α−1 λ2 (x−1 )+α0 λ2 (x0 ))+y3 (α−1 λ3 (x−1 )+α0 λ3 (x0 )) .
+
+32
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+
+Thus B can compute F0 without knowing a. Next, algorithm B gives A the
+modified-PDL instance
+(x−1 , x0 , x1 , . . . , xn , g, g−1 , g0 , F0 , F1 , . . . , Fn ) .
+By construction, this instance is distributed exactly as a genuine modified-PDL
+instance for a random degree-at-most-two polynomial f , except with negligible
+statistical distance due to the rejection of generator collisions.
+Suppose A succeeds and outputs a polynomial fˆ ∈ Zq [X] of degree at most
+2 satisfying
+fˆ(x
+
+) fˆ(x0 )
+
+F0 = g−1 −1 g0
+
+and
+
+ˆ
+
+Fi = g f (xi )
+
+for 1 ≤ i ≤ n.
+
+a
+
+Since F1 = h = g , we obtain
+ˆ
+
+g f (x1 ) = F1 = h = g a .
+As G has prime order q, this implies
+fˆ(x1 ) = a (mod q).
+Therefore, B outputs
+a := fˆ(x1 ).
+Thus, whenever A solves the modified-PDL instance, B solves the original DL
+challenge. Consequently,
+A
+AdvB
+DL ≥ AdvmPDL − negl(λ),
+
+where the negligible term accounts only for the probability of sampling collisions
+among the generators or evaluation points. This proves that modified-PDL is at
+least as hard as DL for t = 1, ℓ = 2 and n ≥ 4.
+⊔
+⊓
+
+B
+
+Efficiency Comparisons
+
+B.1
+
+Comparing Costs of 3PVSS Schemes
+
+In this Subsection, we analyze the computational and communication cost of
+single
+both our 3PVSS schemes Λindv
+RO and ΛRO . One can explicitly find the Table 5
+which summarizes these costs.
+In Figures 12a and 12b, one can find heuristics for dealer communication
+costs and proof verification costs of π3P V SS for fixed number of shareholders n
+but varying corruption threshold t and the number of secrets ℓ.
+On the communication cost Apart from downloading the public values from
+the initialization phase, the communication cost of Λsingle
+is independent of the
+RO
+number of secrets in contrast to Λindv
+,
+where
+the
+communication
+cost grows
+RO
+linearly with the number of secrets. This is the main advantage of using Λsingle
+RO
+over Λindv
+RO .
+In the graph, we fixed the number of parties, n = 10000, for which we varied
+ℓ with 1 ≤ t ≤ n−ℓ
+2 .
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+33
+
+single
+Table 5: Cost comparisons between Λindv
+RO and ΛRO . BC: Dealer’s Broadcast
+size, Dow: Download size by the verifier, Opt. Recon: Optimistic Reconstruction,
+Pes. Recon: Pessimistic Reconstruction. Ex : Group exponentiation, Pe : Polynomial evaluation, MG : multiplication in the cyclic group G of prime order q, Zq :
+modular prime group under addition.
+Scheme
+Λindv
+RO
+
+Λsingle
+RO
+
+Share
+Broadcast, Dow.
+Verification
+Opt. Recon Pes. Recon
+2(n + ℓ)[Ex + Pe ] BC: (n + ℓ)|G| + (t + ℓ + (n + ℓ)[2Ex + Pe + MG ] ℓEx
+5(t + ℓ)Ex + tℓMG
+1)|Zp |
+Dow: (2n + ℓ + 1)|G| +
+(t + ℓ + 1)|Zp |
+2(n+ℓ)[Ex +Pe ]+ BC: (n + 1)|G| + (t + ℓ + (2n+ℓ+1)Ex +(n+ℓ)Pe + ℓ(Ex + MG ) 5(t + ℓ)Ex + tℓMG
+2ℓMG
+1)|Zp |
+(n + ℓ + 1)MG
+Dow: (2n + ℓ + 1)|G| +
+(t + ℓ + 1)|Zp |
+
+(a) Dealer communication cost in y-axis
+for varying ℓ and threshold t
+
+(b) Verifier computation cost in y-axis for
+varying ℓ and threshold t
+
+Fig. 12: The x-axis represents the possible number of secrets ℓ when the total
+number of parties n is equal to 10000. The considered group is a cyclic elliptic
+curve over 256-bit prime field, that has order a 256-bit prime q
+
+On the computational cost As Λindv
+RO is a direct extension of ΛRO [5], the
+computational cost grows linearly with the number of secrets. And as Λsingle
+is
+RO
+a slightly different approach, we save number of exponentiations in verification
+by a constant factor of ℓ but it costs additional group multiplications in share,
+verification and optimistic reconstruction phases. As group exponentiations with
+random exponents are usually more expensive than group multiplications (to put
+that in the perspective, computing g x for a random x ∈ Zq can take O(log q)
+group multiplications). Hence, the realistic increase in cost of Λsingle
+due to
+RO
+additional group multiplications can be negligible.
+
+34
+
+B.2
+
+Karim Baghery, Eleftheria Makri, and Dheeraj Kumar Suryakari
+
+Randomness beacon detailed cost analysis
+
+Computational Complexity. One can notice that the major changes are in
+the commit and reveal phase of the protocol. Hence, in this Subsection we only
+talk about the performance analysis in those phases. See Table 3 for an overview.
+Also, we ignore the number of multiplications in the group G, i.e., MG , as it is
+negligible compared to the number of group exponentiations Ex with random
+exponents in practice.
+- In ALBATROSS, a dealer(as a part of commit) performs n(Ex + Pe ) to
+compute commitments and to give a proof, they require to additionally perform n(Ex + Pe ). Also, the dealer performs ℓ(Ex + Pe ) for computing secrets
+and keeping it to himself. In total dealer needs to do (2n + ℓ)[Ex + Pe ].
+- In Reveal, a verifier should compute 2nEx which internally requires
+additional nPe , i.e., in total it requires (n − 1)n(2Ex + Pe ) computations
+for each verifier.
+- In Robust case where t dealers do not open their polynomials, a
+verifier requires to verify n − t polynomials of honest dealers, i.e., for
+each honest dealer, a verifier performs nPe to evaluate secret share
+exponents and does nEx to get secret shares and cross checks them
+in the public ledger. Also, finally the verifier computes ℓPe to get
+secret exponents and get ℓ secrets by doing ℓEx . As there are n − t
+honest dealers, the verifier has to compute (n − t)(n + ℓ)(Ex + Pe ).
+- In Honest case, As everyone is honest, each verifier does (n−1)(n+
+ℓ)(Ex + Pe ).
+- Recovery phase only exists if some party does not open the polynomial leading to PVSS reconstruction phase, in the worst case there
+should be reconstruction for the secrets of t malicious parties. Given
+a malicious shareholder who has not opened the secret polynomial, each
+shareholder/re-constructor has to decrypt their share, which requires
+1Ex and should give a DLEQ proof that they have decrypted correctly,
+which additionally requires 2Ex ; Also the re-constructor should verify
+DLEQ proofs of correct share decryption from n − t honest shareholders
+requiring them to do 4(n − t)Ex . In total, each re-constructor requires
+[3 + 4(n − t)]tEx .
+- Using 3PVSS in randomness beacon protocol, a dealer(as a part of commit)
+requires to do (n + ℓ)[Ex + Pe ] and (ℓ − 1)MG to compute {yi }ni=0 . For
+generating the proof that yi ’s are valid encryptions of the secret shares and
+also y0 is a commitment of the ℓ secrets, the dealer should do (n + ℓ)[Ex + Pe ]
+which internally requires additional (ℓ − 1)MG . In total, a dealer has to do
+2 [(n + ℓ)[Ex + Pe ] + (ℓ − 1)MG ].
+- In Reveal, a verifier should do (n + ℓ)(2Ex + Pe ) and (ℓ − 1)MG for each
+proof. In total, a verifier has to do (n − 1)(n + ℓ)[2Ex + Pe ] + (n − 1)(ℓ −
+1)MG .
+- In Robust case with t malicious parties not opening the secret
+polynomials, a verifier should do ℓEx + (ℓ − 1)MG to verify each
+proof, so in total each verifier should do (n − t − 1)[lEx + (ℓ − 1)MG ].
+
+Packed Pre-Constructed PVSS for Randomness Generation and E-Voting
+
+35
+
+- In Honest case where everyone is honest, a verifier will do (n −
+1)ℓ(Ex + MG ).
+- The computational complexity of each re-constructor in Recovery phase
+is exactly same as in the case of ALBATROSS.
+Communication Complexity. See Table 4 for an overview.
+- In ALBATROSS, a dealer (as a part of commit) should send n group elements as commitments, t + ℓ elements in Z/qZ that defines the polynomial
+used in the ZKP and 1 extra element in Z/qZ from RO.
+- In Reveal, an honest dealer would broadcast t + ℓ coefficients in Z/qZ
+concerning the secret polynomial.
+- If some party has not revealed their polynomial, then in Recovery phase
+a re-constructor using PVSS reconstruction protocol should broadcast 1
+element in group which is being the decrypted secret, for the proof of
+correct decryption, they have to broadcast 3 more group elements along
+with a polynomial which requires t + ℓ coefficients in Z/qZ and 1 group
+element from RO.
+- Using 3PVSS in randomness beacon protocol, a dealer (as a part of commit)
+should send n + 1 group elements as commitments, t + ℓ elements in Z/qZ
+that defines the polynomial used in the ZKP and 1 extra element in Z/qZ
+from RO.
+- In Reveal, an honest dealer would broadcast ℓ elements in Zq concerning
+the exponents to construct the secret.
+- If some part has not revealed their secrets, then the communication cost
+of each re-constructor is exactly same as in the case of ALBATROSS.
+
+

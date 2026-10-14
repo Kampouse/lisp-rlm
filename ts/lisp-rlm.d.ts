@@ -119,6 +119,7 @@ declare const u128: {
 // Free-function u128 spellings (u128Add → u128/add etc). Args `any`:
 // they coerce both NUM (bigint literal / param) and STR decimal strings.
 declare function u128Add(a: any, b: any): string;
+declare function u128FromStr(v: string): string;
 declare function u128Sub(a: any, b: any): string;
 declare function u128Mul(a: any, b: any): string;
 declare function u128MulDiv(a: any, b: any, d: any): string;
@@ -130,6 +131,14 @@ declare function u128Lt(a: any, b: any): boolean;
 declare function u128Gt(a: any, b: any): boolean;
 declare function u128Eq(a: any, b: any): boolean;
 declare function u128IsZero(s: string): boolean;
+// conversions: NUM (blockHeight-style) → decimal str, and back to i64
+declare function u128FromNum(n: number): string;
+/** Numeric muldiv: floor(a*b/c) with 128-bit intermediate — Q32
+ *  fixed-point core op (untagged i64 args; auto-tagged literals). */
+declare function mulDiv(a: number, b: number, c: number): number;
+/** Integer square root (lisp isqrt) — Q32 tick→price conversion. */
+declare function intSqrt(n: number): number;
+declare function u128ToNum(s: string): number;
 
 // ── the `near` namespace (member passthrough, camelCase auto-snakifies) ─
 
@@ -142,6 +151,11 @@ declare const near: {
    *  field access (p = pool(); p.ra) — `string` would fight the
    *  runtime model in the editor. */
   storageGet(key: string): any;
+  /** Numeric storage (lisp near/store_num): tagged-i64 key, i64 value —
+   *  Q32 fixed-point CLMM math surface (2026-10-09). */
+  storeNum(key: number, value: number): void;
+  /** Numeric storage read (lisp near/load_num) → i64 (0 default). */
+  loadNum(key: number): number;
   storageHas(key: string): boolean;
   storageHasKey(key: string): boolean;
   storageRemove(key: string): void;
@@ -235,6 +249,14 @@ declare const near: {
    *  (Previously compiled but silently ignored the second arg — the
    *  literal/dynamic key was looked up in the tx input instead.) */
   jsonGetInt(key: string, json: string): number | null;
+  /** Read a u128 (string) value from the transaction input JSON.
+   *  Miss → null; found-but-not-a-u128 → null (?? fires).
+   *  PROVABLE u128 SOURCE: the result carries the money seal —
+   *  feeds Yocto sinks and u128 ops without re-annotation. */
+  jsonGetU128(key: string): Yocto | null;
+  /** 2-arg form: scan the GIVEN JSON string (not the tx input) —
+   *  mirrors jsonGetInt(key, json). Dot-paths supported. Miss → null. */
+  jsonGetU128(key: string, json: string): Yocto | null;
   jsonReturnStr(v: string): void;
   jsonReturnInt(v: number): void;
   /** Free-function parity as near.* members — all of these lower to the
@@ -481,6 +503,7 @@ interface JSON {
  *  it as `: Promise<Yocto>` is rejected. SINKS: transferU128's amount
  *  must be a provable u128 value — an unannotated string is rejected
  *  (`const s: Yocto = "5"` is the fix). Boundaries (greppable custody):
+ *  `near.jsonGetU128(...)` reads are provable u128 SOURCES (carry the seal).
  *  `jsonGet`/`jsonGetStr` reads and `storageGet(k) ?? "0"` ledger reads
  *  may feed sinks but carry NO arithmetic seal (the reader can't know
  *  the domain) — assert the money domain with the annotation:

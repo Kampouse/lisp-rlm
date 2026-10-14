@@ -4,25 +4,51 @@
 //! source text --existing parser/checker/emitters--> all backends (near wasm,
 //! bytecode, wasi) unchanged.
 //!
-//! M1 subset (deliberately small, differential-provable):
+//! M1+ subset (differential-provable; truth-up 2026-10-09 after F1–F3):
 //!   ✓ function declarations (exported or not) → define (+ export form)
 //!   ✓ const/let locals (single declarator, initializer required)
 //!   ✓ if / else (tail position: full expression; non-tail: side-effect begin)
-//!   ✓ return (tail position only)
+//!   ✓ ternary `c ? a : b`
+//!   ✓ early returns anywhere in a block (statement-level __fn_done
+//!     flag-guard protocol; in-loop exits via __wl_* flags)
 //!   ✓ numeric/string/boolean/null literals, template literals → (str ...)
+//!     (every interpolation auto-wrapped (to-string e))
 //!   ✓ binary ops: + - * / % < > <= >= == === != !== (numbers only)
-//!   ✓ && || (short-circuit, boolean-valued 0/1 — NOT JS value semantics)
-//!   ✓ ! - unary
+//!   ✓ compound assigns += -= *= /= %= (d47156b8): *= /= single-op,
+//!     %= JS truncated-mod with bind-once impure rhs; `**`/`**=` HARD ERROR
+//!     (no expt builtin in the NEAR set)
+//!   ✓ && || with JS VALUE semantics (431e1f3): a||b yields a-when-truthy
+//!     else b (and inverse for &&); truthy = not(false|nil|0). Left operand
+//!     bound once (span-mangled temp), short-circuit proven by
+//!     tests/test_ts_logical_values.rs
+//!   ✓ STRING truthiness (2026-10-10): `if (s)` / `while (s)` / ternary on
+//!     a stringy cond lower to (str-length s) so "" is falsy, non-empty
+//!     truthy (JS semantics); numeric truthiness untouched.
+//!     tests/test_str_truthiness.rs. Fix EXPOSED two latent backend bugs,
+//!     both fixed same day: while-arm bare-raw cond fast path had inverted
+//!     polarity (I64Eqz + shared I32Eqz double negation — loop exited while
+//!     truthy), and discard_normalize begin-wrapped the VALUE-position
+//!     while-exit gate into a constant 0 (loop never ran).
+//!   ✓ ?? coalesce: handle-prop paths dispatch on the fallback's literal
+//!     type (number fb → INT getter, string fb → STR getter)
+//!   ✓ ! - unary (! is tag-aware — 920e79f6)
 //!   ✓ calls: bare identifiers + member calls via builtin mapping
-//!   ✓ arrow fns (2026-08-30): expression/single-return bodies, as
-//!     callbacks; (2026-08-31) full block bodies via lower_block_tail
-//!     (begin/let/if sequencing, early returns)
-//!     .map/.filter/.reduce callbacks — inlined by resolve_lambda_1/2,
-//!     so the T4 closure-aliasing landmine never triggers
-//!   ✓ array pipeline chaining (2026-08-30): join/map/filter/reduce take
-//!     any receiver — xs.filter(f).map(g).join(s) stacks
-//!   ✗ classes, async, general closures (non-callback position),
-//!     destructuring, optional chaining, early returns, imports
+//!   ✓ arrow fns: expression bodies, single-return blocks, full blocks via
+//!     lower_block_tail (begin/let/if sequencing, early returns).
+//!     .map/.filter/.reduce callbacks — inlined by resolve_lambda_1/2.
+//!     SCOPED CLOSURES (F3, d2fd048f): local `const f = (…) => …` bound to
+//!     a real lambda, called directly by name, IMMUTABLE capture of
+//!     enclosing locals — probed on wasm + interp. Whole-function static
+//!     analysis (check_fn_closure_safety) HARD-ERRORS the probed wasm
+//!     landmines: T4 mutable capture, dispatch freeze (lambda-local used
+//!     in a pipeline callback), arrow-as-call-argument
+//!   ✓ async/await (V2, 8e1b098b): awaits anywhere, near.all fanout,
+//!     payable; continuation is an on-chain entry (exported async only)
+//!   ✓ money taint (5665edc4): raw + - * / % on Yocto/Amount-domain values
+//!     is a compile error — use the u128.* calls
+//!   ✓ destructuring: `const {..} = near.args<{..}>()` param unpack only
+//!   ✗ classes, general closures beyond the F3 shapes (passing/returning a
+//!     lambda-valued var), optional chaining, imports
 //!
 //! Truthiness: JS `if (x)` → `(if (!= x 0) ...)` — numeric truthiness by
 //! decree (the lisp's 0-truthy landsmine sidestepped explicitly). String
@@ -43,10 +69,10 @@ use oxc_syntax::operator::{BinaryOperator, LogicalOperator, UnaryOperator};
 
 // ── Public entry ──────────────────────────────────────────────────────────
 
-/// WASI/P2 lowering mode: exported `run` keeps REAL params (the P2 _start
-/// wrapper passes the stdin input as an argument) instead of the NEAR
-/// tx-input convention (params re-bound to near/json_get_str reads —
-/// a NEAR host op that doesn't exist on the OutLayer runtime).
+// WASI/P2 lowering mode: exported `run` keeps REAL params (the P2 _start
+// wrapper passes the stdin input as an argument) instead of the NEAR
+// tx-input convention (params re-bound to near/json_get_str reads —
+// a NEAR host op that doesn't exist on the OutLayer runtime).
 thread_local! {
     pub(crate) static TS_WASI_MODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -83,6 +109,8 @@ fn ts_to_lisp_source_inner(src: &str) -> Result<String, String> {
     LEDGER_NAMES.with(|s| s.borrow_mut().clear());
     MONEY_ALIASES.with(|s| s.borrow_mut().clear());
     USER_FNS.with(|m| m.borrow_mut().clear());
+    U128_PURE_FNS.with(|m| m.borrow_mut().clear());
+    MONEY_PARAM_FNS.with(|m| m.borrow_mut().clear());
     let exprs = parse_ts(src)?;
     let mut out = String::new();
     for e in &exprs {
@@ -157,11 +185,11 @@ thread_local! {
     /// is_number per key. Drives (1) read-time auto str->num on
     /// `param.numericProp`, (2) encode-time raw embedding of the param
     /// into object literals (its value already IS JSON text).
-    static OBJ_PARAM_PROPS: std::cell::RefCell<Vec<(String, Vec<(String, bool)>)>> =
+    static OBJ_PARAM_PROPS: std::cell::RefCell<Vec<(String, Vec<(String, bool, bool)>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// `type X = { ... }` aliases collected at statement level; resolved
     /// when a param is annotated with a named type. Compile-time only.
-    static TYPE_ALIASES: std::cell::RefCell<Vec<(String, Vec<(String, bool)>)>> =
+    static TYPE_ALIASES: std::cell::RefCell<Vec<(String, Vec<(String, bool, bool)>)>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// Object-shaped params by NAME (`params`, `ctx`…): their property
     /// reads lower against the CACHED-INPUT contract (near/json_get_str
@@ -183,6 +211,29 @@ thread_local! {
     /// (reduce/lambda/array…) compile as "TS" and game the checker.
     static USER_FNS: std::cell::RefCell<std::collections::HashSet<String>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
+    /// User-defined functions whose (non-async) body returns a u128-pure
+    /// expression (e.g. `function muldiv(a: bigint, b: bigint) { return
+    /// u128Mul(a, b) / c }`). A `let r = muldiv(...)` lowers to a plain
+    /// call — without this registry init_is_u128_pure saw only the native
+    /// u128/* forms, the local got a raw-i64 slot, and the tagged u128
+    /// value was smashed into it (silent i64 truncation of money math,
+    /// found in clmm 2026-10-11). Consulted by init_is_u128_pure at every
+    /// let/define slot-selection site.
+    static U128_PURE_FNS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    /// Module-level money consts with validated decimal literals
+    /// (`const Q32: U = "4294967296"`). Live for the whole program —
+    /// NOT cleared per-function.
+    static MONEY_CONSTS: std::cell::RefCell<Vec<String>> =
+        std::cell::RefCell::new(Vec::new());
+    /// Functions with money-annotated params, as (fn_name, [money_param_indices]).
+    /// Populated at the param scan (ann_is_money_alias hit); consulted by
+    /// check_money_sinks so a call site feeding an UNSEEDED string into a
+    /// `: Yocto`-param is a compile error — the call-side half of the seal
+    /// (2026-10-12). Without this, `probe("hello world")` passed even with
+    /// `probe(dx: Yocto)`: only transferU128 was a checked sink.
+    static MONEY_PARAM_FNS: std::cell::RefCell<Vec<(String, Vec<usize>)>> =
+        std::cell::RefCell::new(Vec::new());
     static CONST_FOLDS: std::cell::RefCell<Vec<(String, LispVal)>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// Top-level `const K = <n-literal>;` names — bigint-shaped identifiers
@@ -302,7 +353,25 @@ fn discard_normalize(v: &LispVal) -> LispVal {
                     return v.clone();
                 }
             }
-            // rewrite matching guard-wraps
+            // rewrite matching guard-wraps — EXCEPT in value position.
+            // The while-exit gate `(if (= __wl_brk 0) COND 0)` IS the loop
+            // cond: the `while` consumes the if's VALUE, so the statement
+            // discard `(begin COND 0)` turned every non-bool cond into a
+            // constant 0 (loop never ran). Bool-test conds escaped by shape
+            // (their false_e is a list, not Num 0); bare tests (`while (n)`,
+            // stringy `(str-length s)`) were destroyed. Value-position rule:
+            // a `while` form's cond (items[1]) is never normalized — its
+            // body still is. Found 2026-10-10 via the t5 truthiness probes
+            // (while(s) + break ran 0 iterations).
+            if items.len() >= 2 {
+                if let Some(LispVal::Sym(s)) = items.first() {
+                    if s == "while" {
+                        let mut out = vec![items[0].clone(), items[1].clone()];
+                        out.extend(items[2..].iter().cloned().map(|x| discard_normalize(&x)));
+                        return LispVal::List(out);
+                    }
+                }
+            }
             if items.len() == 4 {
                 let is_flag_test = matches!(
                     &items[0],
@@ -426,10 +495,10 @@ pub fn locate_form_error(
 /// cheatsheet COMPLETE EXAMPLE). Runtime defines loaded before eval.
 const RLM_RUNTIME_API: &[&str] = &["rlm_set", "rlm_get"];
 
-/// Definition sites (name, byte-offset) recorded during collect_user_fns —
-/// unlike IDENT_OFFSETS (first occurrence, often a call above the def in
-/// hoisted lowering order) these always land ON the definition for
-/// locate_form_error.
+// Definition sites (name, byte-offset) recorded during collect_user_fns —
+// unlike IDENT_OFFSETS (first occurrence, often a call above the def in
+// hoisted lowering order) these always land ON the definition for
+// locate_form_error.
 thread_local! {
     static FN_DEF_OFFSETS: std::cell::RefCell<Vec<(String, u32)>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -548,6 +617,31 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
     // still emit (define ...) forms in source order — those were never
     // forward-referenceable and stay that way; found compiling the PLONK
     // verifier, 2026-09-15.)
+    // Money-alias pre-registration (2026-10-12): `type U = Yocto` etc. must
+    // be known BEFORE the const pre-scan below, or a money-annotated
+    // decimal const (`const Q32: U = "4294967296"`) fails the ann check
+    // (MONEY_ALIASES still empty) and never joins the provable registry.
+    seed_u128_pure_fns(&p.body);
+    for stmt in &p.body {
+        if let Some(Declaration::TSTypeAliasDeclaration(a)) = stmt.as_declaration() {
+            let an = a.id.name.as_str();
+            let money = matches!(an, "Yocto" | "Amount" | "Money")
+                || match &a.type_annotation {
+                    oxc_ast::ast::TSType::TSTypeReference(r) => {
+                        matches!(&r.type_name,
+                            oxc_ast::ast::TSTypeName::IdentifierReference(id)
+                                if matches!(id.name.as_str(), "Yocto" | "Amount" | "Money")
+                                    || MONEY_ALIASES.with(|m| {
+                                        m.borrow().iter().any(|x| *x == id.name.as_str())
+                                    }))
+                }
+                _ => false,
+            };
+            if money {
+                MONEY_ALIASES.with(|m| m.borrow_mut().push(an.to_string()));
+            }
+        }
+    }
     for stmt in &p.body {
         if let Statement::VariableDeclaration(v) = stmt {
             for d in &v.declarations {
@@ -562,7 +656,18 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                     let mut is_bigint = false;
                     let literal = match init {
                         Expression::NumericLiteral(n) => Some(Num(n.value as i64)),
-                        Expression::StringLiteral(s) => Some(Str(s.value.as_str().to_string())),
+                        Expression::StringLiteral(s) => {
+                            // A money-annotated decimal-string const
+                            // (`const Q32: U = "4294967296"`) is a PROVABLE
+                            // u128 source: the literal is range-checked here
+                            // at registration (2026-10-12).
+                            if declarator_ann_is_money(d)
+                                && s.value.parse::<u128>().is_ok()
+                            {
+                                MONEY_CONSTS.with(|m| m.borrow_mut().push(name.clone()));
+                            }
+                            Some(Str(s.value.as_str().to_string()))
+                        }
                         Expression::BooleanLiteral(b) => Some(LispVal::Bool(b.value)),
                         Expression::BigIntLiteral(b) => {
                             is_bigint = true;
@@ -711,7 +816,7 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
             Statement::ForStatement(f) => {
                 out.push(lower_for_form(f, false)?);
             }
-            Statement::ForOfStatement(fo) => {
+            Statement::ForOfStatement(_fo) => {
                 // M1.5+ (2026-10-05): top-level for..of — reuse the
                 // function-body machinery (self-contained flag lets);
                 // Num(0) tail, view=false. The brain hit this exact gap
@@ -767,6 +872,23 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                         MONEY_ALIASES.with(|m| m.borrow_mut().push(an.to_string()));
                     }
                 }
+            }
+            // `interface X { ... }` (2026-10-12): same compile-time
+            // treatment as `type X = { ... }` — record shape in
+            // TYPE_ALIASES, emit nothing. Interfaces are reusable arg
+            // shapes shared across exported functions.
+            s if matches!(
+                s.as_declaration(),
+                Some(Declaration::TSInterfaceDeclaration(_))
+            ) => {
+                let iface = match s.as_declaration() {
+                    Some(Declaration::TSInterfaceDeclaration(i)) => i,
+                    _ => unreachable!(),
+                };
+                let props = literal_props(&iface.body.body);
+                TYPE_ALIASES.with(|m| {
+                    m.borrow_mut().push((iface.id.name.as_str().to_string(), props));
+                });
             }
             // Types-only imports from the near module family are ELIDED.
             // The ambient d.ts (ts/lisp-rlm.d.ts → Monaco addExtraLib)
@@ -855,7 +977,8 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
     MONEY_NAMES.with(|s| s.borrow_mut().clear());
     LEDGER_NAMES.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
-    for p in &f.params.items {
+    let mut money_param_idx: Vec<usize> = Vec::new();
+    for (idx, p) in f.params.items.iter().enumerate() {
         let n = binding_name(&p.pattern)?;
         let kind = if param_is_bigint(p) {
             4
@@ -879,6 +1002,7 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         }
         if ann_is_money_alias(p.type_annotation.as_deref()) {
             MONEY_NAMES.with(|s| s.borrow_mut().push(n.clone()));
+            money_param_idx.push(idx);
         }
         if kind == 0 {
             // See lower_function: string params skip the to-string
@@ -886,6 +1010,11 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
             mark_string_local(&n);
         }
         param_names.push((n.clone(), kind));
+    }
+    if !money_param_idx.is_empty() {
+        MONEY_PARAM_FNS.with(|m| {
+            m.borrow_mut().push((name.clone(), money_param_idx.clone()));
+        });
     }
 
     let body = f
@@ -1279,10 +1408,14 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         let bindings = param_names
             .iter()
             .map(|(n, kind)| {
-                let get = list(vec![Sym("near/json_get_str"), Str(n.clone())]);
+                let get = list(vec![Sym("default"), list(vec![Sym("near/json_get_str"), Str(n.clone())]), Str(String::from(""))]);
                 let v = match kind {
                     1 => list(vec![Sym("str->num"), get]),
-                    2 => list(vec![Sym("near/json_get_arr"), Str(n.clone())]),
+                    2 => list(vec![
+                        Sym("default"),
+                        list(vec![Sym("near/json_get_arr"), Str(n.clone())]),
+                        Sym("nil"),
+                    ]),
                     _ => get,
                 };
                 list(vec![Sym(n.clone()), v])
@@ -1467,7 +1600,7 @@ fn pattern_names(p: &oxc_ast::ast::BindingPattern<'_>) -> Result<Vec<String>, St
                     }
                 }
             }
-            if let Some(rest) = &ap.rest {
+            if let Some(_rest) = &ap.rest {
                 return Err(
                     "ts_frontend: rest elements unsupported in await bindings".into(),
                 );
@@ -1762,7 +1895,8 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
     LEDGER_NAMES.with(|s| s.borrow_mut().clear());
     INPUT_HANDLES.with(|s| s.borrow_mut().clear());
     let mut param_names: Vec<(String, u8)> = Vec::new();
-    for p in &f.params.items {
+    let mut money_param_idx: Vec<usize> = Vec::new();
+    for (idx, p) in f.params.items.iter().enumerate() {
         let n = binding_name(&p.pattern)?;
         let kind = if param_is_bigint(p) {
             4
@@ -1786,6 +1920,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
         }
         if ann_is_money_alias(p.type_annotation.as_deref()) {
             MONEY_NAMES.with(|s| s.borrow_mut().push(n.clone()));
+            money_param_idx.push(idx);
         }
         if kind == 0 {
             // String-typed params (unannotated defaults to str in this
@@ -1795,6 +1930,11 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
             mark_string_local(&n);
         }
         param_names.push((n.clone(), kind));
+    }
+    if !money_param_idx.is_empty() {
+        MONEY_PARAM_FNS.with(|m| {
+            m.borrow_mut().push((name.clone(), money_param_idx.clone()));
+        });
     }
 
     let body = f
@@ -1807,6 +1947,24 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
         return_ann_money(f),
     )?;
     check_money_sinks(&body.statements)?;
+
+    // u128-purity registry (clmm bug, 2026-10-11): if every return in this
+    // function is a u128-pure expression, record the name so init_is_u128_pure
+    // gives `let x = <this fn>(...)` a tagged u128 slot. Async fns are
+    // skipped — their results go through the await/bind machinery, which
+    // seeds shapes separately.
+    if !f.r#async {
+        let mut rets: Vec<&Expression<'_>> = Vec::new();
+        stmts_exprs(&body.statements, &mut rets);
+        let all_pure = !rets.is_empty()
+            && rets.iter().all(|e| {
+                matches!(e, Expression::AwaitExpression(_)) || expr_is_u128_value(e)
+            });
+        if all_pure {
+            U128_PURE_FNS
+                .with(|m| m.borrow_mut().insert(name.clone()));
+        }
+    }
 
     // forward-scan bigint lets (CPS lowering means let-site registration
     // runs after statements that reference the binding — see scan_bigint_lets)
@@ -1832,13 +1990,17 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
             let bindings = param_names
                 .iter()
                 .map(|(n, kind)| {
-                    let get = list(vec![Sym("near/json_get_str"), Str(n.clone())]);
+                    let get = list(vec![Sym("default"), list(vec![Sym("near/json_get_str"), Str(n.clone())]), Str(String::from(""))]);
                     let v = match kind {
                         1 => {
                             NUM_PARAM_NAMES.with(|s| s.borrow_mut().push(n.clone()));
                             list(vec![Sym("str->num"), get])
                         }
-                        2 => list(vec![Sym("near/json_get_arr"), Str(n.clone())]),
+                        2 => list(vec![
+                        Sym("default"),
+                        list(vec![Sym("near/json_get_arr"), Str(n.clone())]),
+                        Sym("nil"),
+                    ]),
                         _ => get,
                     };
                     list(vec![Sym(n.clone()), v])
@@ -1935,6 +2097,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
 
 /// A bare mid-function return: `return e;` as a statement at this level
 /// (nested ifs/loops handle their own exits via takeover / __wl guards).
+#[allow(dead_code)]
 fn stmts_have_bare_return(stmts: &[Statement<'_>]) -> bool {
     stmts.iter().any(|s| match s {
         Statement::ReturnStatement(_) => true,
@@ -1949,6 +2112,7 @@ fn stmts_have_bare_return(stmts: &[Statement<'_>]) -> bool {
 /// shadowed per level, so without the function flags the value vanishes
 /// (nested-return bug, 2026-09-11: `while(..){ while(..){ return 77; } }`
 /// returned the accumulator instead).
+#[allow(dead_code)]
 fn has_return_inside_loop(stmts: &[Statement<'_>]) -> bool {
     fn in_loop(s: &Statement<'_>) -> bool {
         match s {
@@ -3731,7 +3895,7 @@ fn lower_for(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<LispVal, String> {
 /// For → (has_exits, core). Core = (let ((v init)...) (while cond body))
 /// with flag-guarded cond when the body can exit; flags bound by caller.
 fn lower_for_parts(fr: &oxc_ast::ast::ForStatement<'_>) -> Result<(bool, LispVal), String> {
-    use oxc_ast::ast::{AssignmentOperator, ForStatementInit};
+    use oxc_ast::ast::ForStatementInit;
 
     // init: must be a let/const declaration
     let decl = match &fr.init {
@@ -4134,7 +4298,7 @@ fn effect_expr(e: &Expression<'_>) -> Result<LispVal, String> {
 fn lower_assign_form(asg: &oxc_ast::ast::AssignmentExpression<'_>) -> Result<LispVal, String> {
     use oxc_syntax::operator::AssignmentOperator;
     match &asg.left {
-        oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(id) => {
+        oxc_ast::ast::AssignmentTarget::AssignmentTargetIdentifier(_id) => {
             let (v, expr) = lower_assignment(asg)?;
             Ok(list(vec![Sym("set!"), Sym(v), expr]))
         }
@@ -4796,6 +4960,7 @@ fn lower_assignment(
     Ok((v, out))
 }
 
+#[allow(dead_code)]
 fn update_target_name(e: &Expression<'_>) -> Result<String, String> {
     match e {
         Expression::Identifier(id) => Ok(id.name.as_str().to_string()),
@@ -5198,10 +5363,20 @@ fn mark_string_local(n: &str) {
 fn init_is_u128_pure(init: &LispVal) -> bool {
     if let LispVal::List(items) = init {
         if let Some(LispVal::Sym(head)) = items.first() {
-            return matches!(
+            // Native u128 arithmetic lowers to the u128/* forms...
+            if matches!(
                 head.as_str(),
                 "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod"
-            ) && items.len() == 3;
+            ) && items.len() == 3 {
+                return true;
+            }
+            // ...and a call to a user fn whose own body returns a
+            // u128-pure expression must get the same slot treatment —
+            // otherwise the local gets a raw-i64 slot and the tagged
+            // u128 value is truncated on store (clmm bug, 2026-10-11).
+            if items.len() >= 1 && U128_PURE_FNS.with(|m| m.borrow().contains(head.as_str())) {
+                return true;
+            }
         }
     }
     false
@@ -5239,10 +5414,19 @@ fn expr_is_bigint(e: &Expression<'_>) -> bool {
         Expression::ParenthesizedExpression(pe) => expr_is_bigint(&pe.expression),
         Expression::CallExpression(c) => {
             if let Expression::Identifier(id) = &c.callee {
-                matches!(
-                    id.name.as_str(),
-                    "u128Add" | "u128Sub" | "u128Mul" | "u128Div" | "u128Mod" | "u128FromNum"
-                )
+                let n = id.name.as_str();
+                if matches!(
+                    n,
+                    "u128Add" | "u128Sub" | "u128Mul" | "u128MulDiv" | "u128Div" | "u128Mod" | "u128FromNum"
+                ) {
+                    return true;
+                }
+                // (2026-10-11) A call to a user fn registered as
+                // u128-pure (U128_PURE_FNS) yields a tagged u128 value,
+                // so `let r = muldiv(...)` must make `r` bigint-shaped —
+                // otherwise `r / 10n ** 18n` picked the generic `/` and
+                // type_check failed with "num ≠ str" (micro_v3).
+                U128_PURE_FNS.with(|m| m.borrow().contains(n))
             } else {
                 false
             }
@@ -5320,15 +5504,36 @@ fn money_arithmetic<'a, 'b>(
 }
 
 /// u128 free-function family that RETURNS a u128 decimal string (the
-/// comparison fns return boolean and are excluded).
+/// comparison fns return boolean and are excluded). Both spellings count —
+/// `u128Add(a, b)` and `u128.add(a, b)` lower to the same builtin, and the
+/// money seal must not depend on the author's spelling choice. Found via
+/// the TWAP TS twin: a `: Yocto` const initialized from member arithmetic
+/// was rejected as "not provable" while the identical free-fn form passed.
 fn u128_arith_call(c: &oxc_ast::ast::CallExpression<'_>) -> bool {
-    matches!(
-        &c.callee,
-        Expression::Identifier(id) if matches!(
+    match &c.callee {
+        Expression::Identifier(id) => matches!(
             id.name.as_str(),
             "u128Add" | "u128Sub" | "u128Mul" | "u128MulDiv" | "u128Div" | "u128Mod"
-        )
-    )
+                // u128FromNum: the number→money conversion (u128/from-i64,
+                // range-checked by the host) — its result is a sealed u128.
+                | "u128FromNum"
+                // u128FromStr: the hardened string→money door (u128/from_str
+                // traps on junk) — result is a sealed u128 (2026-10-12)
+                | "u128FromStr"
+                // bare 2-arg record read: jsonGetU128("k", poolJson) — the
+                // hardened-parse read is itself a provable u128 source
+                // (clmm pool records, 2026-10-12)
+                | "jsonGetU128"
+        ),
+        Expression::StaticMemberExpression(sm) => {
+            matches!(&sm.object, Expression::Identifier(obj) if obj.name == "u128")
+                && matches!(
+                    sm.property.name.as_str(),
+                    "add" | "sub" | "mul" | "mulDiv" | "div" | "mod"
+                )
+        }
+        _ => false,
+    }
 }
 
 /// STRICT: this expression's VALUE is a u128 decimal string — provable
@@ -5343,6 +5548,11 @@ fn expr_is_u128_value(e: &Expression<'_>) -> bool {
             MONEY_NAMES.with(|s| s.borrow().iter().any(|x| *x == n))
                 || BIGINT_NAMES.with(|s| s.borrow().iter().any(|x| *x == n))
                 || BIGINT_LOCALS.with(|s| s.borrow().iter().any(|x| *x == n))
+                // Module-level consts with validated bigint/money literal
+                // initializers (Q32 = "4294967296" etc.) — the literal was
+                // range-checked at registration, so the name is provable.
+                || BIGINT_CONSTS.with(|s| s.borrow().iter().any(|x| *x == n))
+                || MONEY_CONSTS.with(|s| s.borrow().iter().any(|x| *x == n))
         }
         Expression::AwaitExpression(a) => expr_is_u128_value(&a.argument),
         Expression::StringLiteral(s) => s.value.parse::<u128>().is_ok(),
@@ -5351,13 +5561,42 @@ fn expr_is_u128_value(e: &Expression<'_>) -> bool {
         }
         Expression::CallExpression(c) => {
             u128_arith_call(c)
+                // A user fn registered u128-pure (every return provable)
+                // yields a sealed value — e.g. the `seal(v)` conversion
+                // helper pattern (clmm, 2026-10-12).
+                || matches!(&c.callee, Expression::Identifier(id)
+                    if U128_PURE_FNS.with(|m| m.borrow().contains(id.name.as_str())))
                 || matches!(&c.callee, Expression::StaticMemberExpression(sm)
                     if matches!(&sm.object, Expression::Identifier(obj) if obj.name == "near")
                     && matches!(
                         sm.property.name.as_str(),
                         "attachedDeposit" | "attachedDepositU128"
                             | "accountBalance" | "loadU128" | "readU128"
+                            // jsonGetU128 is a PROVABLE u128 SOURCE (d.ts
+                            // 2026-10-12): hardened parser, writes a (lo,hi)
+                            // limb pair — the read itself validates the
+                            // payload, so the result carries the seal.
+                            | "jsonGetU128"
+                            // blockTimestamp: host-provided u128 (ns), never
+                            // user text (clmm TWAP, 2026-10-12)
+                            | "blockTimestamp"
                     ))
+        }
+        // (2026-10-11, micro_v3) `return u128Mul(a, b) / c` — arithmetic
+        // over u128 values stays in the u128 domain, so such a return
+        // counts as u128-pure for the U128_PURE_FNS registry. Without
+        // this the fn was never registered and `let r = f(...)` locals
+        // lost bigint shape (generic `/` → "num ≠ str" type error).
+        Expression::BinaryExpression(b) => {
+            matches!(
+                b.operator,
+                BinaryOperator::Addition
+                    | BinaryOperator::Subtraction
+                    | BinaryOperator::Multiplication
+                    | BinaryOperator::Division
+                    | BinaryOperator::Remainder
+            ) && expr_is_u128_value(&b.left)
+                && expr_is_u128_value(&b.right)
         }
         _ => false,
     }
@@ -5529,6 +5768,20 @@ fn register_await_names(stmts: &[Statement<'_>]) {
                     } else if d
                         .init
                         .as_ref()
+                        .is_some_and(|iv| is_json_get_u128_stamp(iv))
+                    {
+                        // jsonGetU128 custody stamp (2026-10-12): `let v =
+                        // near.jsonGetU128("k") ?? "0"` is money at BIRTH —
+                        // the read harden-parses, so unlike jsonGetStr this
+                        // carries the full SEAL, not just ledger tier.
+                        if let Ok(names) = pattern_names(&d.id) {
+                            for n in names {
+                                MONEY_NAMES.with(|s| s.borrow_mut().push(n));
+                            }
+                        }
+                    } else if d
+                        .init
+                        .as_ref()
                         .is_some_and(|iv| is_storage_read_fallback(iv))
                     {
                         // Ledger boundary (SEAL tier): `const bal =
@@ -5597,11 +5850,165 @@ fn register_await_names(stmts: &[Statement<'_>]) {
     }
 }
 
+/// jsonGetU128 custody stamp: `near.jsonGetU128("k") ?? fb` — the read
+/// harden-parses so the BOUND value is a provable u128 (unlike jsonGetStr,
+/// whose fallback form only stamps LEDGER tier). Used both for the
+/// decl-site MONEY_NAMES seeding and the call-site arg check.
+fn is_json_get_u128_stamp(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::ParenthesizedExpression(pe) => is_json_get_u128_stamp(&pe.expression),
+        Expression::LogicalExpression(l)
+            if l.operator == oxc_ast::ast::LogicalOperator::Coalesce =>
+        {
+            boundary_reader_name(&l.left) == Some("jsonGetU128")
+        }
+        Expression::CallExpression(c) => {
+            matches!(&c.callee, Expression::StaticMemberExpression(sm)
+                if matches!(&sm.object, Expression::Identifier(obj) if obj.name == "near")
+                && sm.property.name == "jsonGetU128")
+        }
+        _ => false,
+    }
+}
+
 /// Return CONTRACT: a function promising `Yocto`/`Amount` (or a Promise of
 /// one) must return a provable u128 value — await result, u128 arithmetic
 /// call, deposit/balance read, or a decimal string literal. Labeled strings
 /// (`"total:" + x`) are display text, not money: annotate `: Promise<string>`
 /// instead. This is the annotation made checkable.
+/// u128-purity PRE-PASS (2026-10-12): TS hoists function declarations, so a
+/// helper may be CALLED (and its result fed into a money param or a `: Yocto`
+/// return) before the per-fn registration at lowering time runs. This seed
+/// walks every function declaration up front and registers those whose
+/// returns are STRUCTURALLY u128-shaped: u128 arith calls, decimal string
+/// literals, jsonGetU128 reads, bare identifiers, or calls to other user fns.
+/// Deliberately permissive on identifier/user-call (per-fn state like
+/// MONEY_NAMES does not exist yet) — the authoritative check_return_contract
+/// still fires when each fn lowers, so an over-approximated seed can never
+/// let a junk-returning fn through: its own lowering aborts the compile.
+fn seed_u128_pure_fns(stmts: &[Statement<'_>]) {
+    // Forward pass in source order, then ONE more pass: a helper defined
+    // before its callee (pow32 above muldiv in test fixtures) misses the
+    // first sweep; the second sweep picks it up. Two passes cover any
+    // call DAG that a single pass plus one reorder round can satisfy —
+    // the per-fn check at lowering remains the authority.
+    seed_u128_pure_fns_pass(stmts);
+    seed_u128_pure_fns_pass(stmts);
+}
+
+fn seed_u128_pure_fns_pass(stmts: &[Statement<'_>]) {
+    for s in stmts {
+        let f = match s.as_declaration() {
+            Some(Declaration::FunctionDeclaration(f)) => f,
+            _ => continue,
+        };
+        if f.r#async {
+            continue;
+        }
+        let Some(body) = f.body.as_ref() else {
+            continue;
+        };
+        // Explicit `: number` / `: string` returns are NOT money — never
+        // seed them, even if the body looks shaped (a literal `50000` is a
+        // number in TS terms; seeding tickOff(): number made `tick +
+        // tickOff()` emit u128/add on ints — examples/clmm.ts, 2026-10-12).
+        if let Some(rt) = f.return_type.as_ref() {
+            if matches!(
+                &rt.type_annotation,
+                TSType::TSNumberKeyword(_) | TSType::TSStringKeyword(_) | TSType::TSBooleanKeyword(_)
+            ) {
+                continue;
+            }
+        }
+        let mut rets: Vec<&Expression<'_>> = Vec::new();
+        stmts_exprs(&body.statements, &mut rets);
+        let all_shaped = !rets.is_empty()
+            && rets.iter().all(|e| ret_structurally_u128(e));
+        if all_shaped {
+            if let Some(id) = &f.id {
+                U128_PURE_FNS
+                    .with(|m| m.borrow_mut().insert(id.name.as_str().to_string()));
+            }
+        }
+    }
+}
+
+/// Structural return shape for the seed pre-pass (see seed_u128_pure_fns).
+fn ret_structurally_u128(e: &Expression<'_>) -> bool {
+    match e {
+        Expression::ParenthesizedExpression(pe) => ret_structurally_u128(&pe.expression),
+        Expression::AwaitExpression(_) => true,
+        Expression::StringLiteral(sl) => sl.value.parse::<u128>().is_ok(),
+        Expression::Identifier(_) => true,
+        Expression::ConditionalExpression(c) => {
+            ret_structurally_u128(&c.consequent) && ret_structurally_u128(&c.alternate)
+        }
+        Expression::BinaryExpression(b) => {
+            // Arithmetic ops: both sides u128-shaped. Comparison/equality
+            // (while tests like `n > 0` ride in via stmts_exprs): any shape
+            // is fine — a test result is a bool, never a money value.
+            let arith = matches!(
+                b.operator,
+                oxc_ast::ast::BinaryOperator::Addition
+                    | oxc_ast::ast::BinaryOperator::Subtraction
+                    | oxc_ast::ast::BinaryOperator::Multiplication
+                    | oxc_ast::ast::BinaryOperator::Division
+                    | oxc_ast::ast::BinaryOperator::Remainder
+            );
+            if arith {
+                ret_structurally_u128(&b.left) && ret_structurally_u128(&b.right)
+            } else {
+                matches!(b.operator,
+                    oxc_ast::ast::BinaryOperator::GreaterThan
+                    | oxc_ast::ast::BinaryOperator::GreaterEqualThan
+                    | oxc_ast::ast::BinaryOperator::LessThan
+                    | oxc_ast::ast::BinaryOperator::LessEqualThan
+                    | oxc_ast::ast::BinaryOperator::Equality
+                    | oxc_ast::ast::BinaryOperator::Inequality
+                    | oxc_ast::ast::BinaryOperator::StrictEquality
+                    | oxc_ast::ast::BinaryOperator::StrictInequality)
+            }
+        }
+        Expression::CallExpression(c) => match &c.callee {
+            // u128-shaped callees only: the arith family, u128FromStr, the
+            // hardened record read, or a user fn ALREADY seeded by this
+            // forward pass (statements visited in source order). A blanket
+            // "any identifier" registered num()/s() (strToNum/to-string —
+            // int/str producers) as u128-pure and made TS `+` on their
+            // results emit u128/add → "str ≠ int" (clmm accCarry,
+            // 2026-10-12). NOT recursive on not-yet-seeded calls: those
+            // fail the seed (conservative), and the per-fn contract check
+            // at lowering is the authority that re-registers them.
+            Expression::Identifier(id) => {
+                let n = id.name.as_str();
+                matches!(
+                    n,
+                    "u128Add" | "u128Sub" | "u128Mul" | "u128MulDiv" | "u128Div"
+                        | "u128Mod" | "u128FromNum" | "u128FromStr" | "u128Lt" | "u128Gt"
+                        | "u128Eq" | "u128IsZero" | "jsonGetU128"
+                ) || U128_PURE_FNS.with(|m| m.borrow().contains(n))
+            }
+            Expression::StaticMemberExpression(sm) => {
+                matches!(&sm.object, Expression::Identifier(obj) if obj.name == "u128")
+                    || matches!(
+                        (&sm.object, sm.property.name.as_str()),
+                        // abort is a void trap statement, never a value
+                        (Expression::Identifier(o), "jsonGetU128" | "abort") if o.name == "near"
+                    )
+            }
+            _ => false,
+        },
+        // number-typed locals (`n / 2` on an exp counter) ride in via
+        // stmts_exprs too — a numeric literal never carries a money seal,
+        // and the per-fn contract check is the authority anyway
+        Expression::NumericLiteral(_) => true,
+        // stmts_exprs also collects expression statements — loop bodies are
+        // full of `r = muldiv(...)` assignments; judge by the RHS only.
+        Expression::AssignmentExpression(ae) => ret_structurally_u128(&ae.right),
+        _ => false,
+    }
+}
+
 fn check_return_contract(
     fname: &str,
     body_stmts: &[Statement<'_>],
@@ -5809,6 +6216,12 @@ fn boundary_reader_name<'a>(e: &Expression<'a>) -> Option<&'a str> {
                         if sm.property.name == "jsonGetStr" {
                             return Some("jsonGetStr");
                         }
+                        // jsonGetU128 is itself a PROVABLE u128 SOURCE (the
+                        // read harden-parses) — the ?? fallback form is the
+                        // canonical custody stamp (2026-10-12).
+                        if sm.property.name == "jsonGetU128" {
+                            return Some("jsonGetU128");
+                        }
                         if sm.property.name == "storageGet" {
                             return Some("storageGet");
                         }
@@ -5883,7 +6296,7 @@ fn is_boundary_stamp(e: &Expression<'_>) -> bool {
             match boundary_reader_name(&l.left) {
                 // param boundary: the read is the author's custody point —
                 // the fallback choice is theirs too (STORAGE_MIN etc.)
-                Some("jsonGet") | Some("jsonGetStr") => true,
+                Some("jsonGet") | Some("jsonGetStr") | Some("jsonGetU128") => true,
                 // ledger boundary: digit-parsable fallback declares a
                 // u128 key; `?? ""` is optional TEXT and does not stamp
                 Some("storageGet") => match &l.right {
@@ -5911,6 +6324,37 @@ fn check_money_sinks(stmts: &[Statement<'_>]) -> Result<(), String> {
     for_each_stmt_call(stmts, &mut |c| {
         if bad.borrow().is_some() {
             return;
+        }
+        // User-fn money params (2026-10-12): a call feeding an UNSEEDED
+        // argument into a `: Yocto`-annotated param is a sink violation —
+        // the call-side half of the seal. Previously only transferU128 was
+        // a checked sink, so `probe("hello world")` compiled even though
+        // probe(dx: Yocto) promised money.
+        if let Expression::Identifier(id) = &c.callee {
+            let fname = id.name.as_str();
+            let money_params: Option<Vec<usize>> = MONEY_PARAM_FNS
+                .with(|m| {
+                    m.borrow()
+                        .iter()
+                        .find(|(k, _)| k == fname)
+                        .map(|(_, idx)| idx.clone())
+                });
+            if let Some(idxs) = money_params {
+                for &i in &idxs {
+                    if let Some(arg) = c.arguments.get(i).and_then(|a| a.as_expression()) {
+                        let ok = expr_is_u128_value(arg)
+                            || is_boundary_stamp(arg)
+                            || is_ledger_read(arg);
+                        if !ok {
+                            *bad.borrow_mut() = Some(format!(
+                                "argument {i} of `{fname}(...)` must be a provable u128 value — the parameter is money-annotated (Yocto/Amount). Sources: near.jsonGetU128(...) ?? fallback, u128* op results, decimal string literals, or a `: Yocto`-annotated const"
+                            ));
+                            return;
+                        }
+                    }
+                }
+                return;
+            }
         }
         let Expression::StaticMemberExpression(sm) = &c.callee else {
             return;
@@ -6098,9 +6542,18 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                         if is_input_handle(id.name.as_str()) {
                             let dotted: Vec<&str> = path.iter().rev().map(|s| s.as_str()).collect();
                             if dotted.len() == 1 {
+                                // (default … nil) = the documented
+                                // nil-on-miss contract (see comment below),
+                                // armed for the bare-read money gate:
+                                // hit → value, miss → nil — byte-identical
+                                // observable behavior, `??` still fires.
                                 return Ok(list(vec![
-                                    Sym("near/json_get_str"),
-                                    Str(dotted.join(".")),
+                                    Sym("default"),
+                                    list(vec![
+                                        Sym("near/json_get_str"),
+                                        Str(dotted.join(".")),
+                                    ]),
+                                    Sym("nil"),
                                 ]));
                             }
                             // Nested handle path `o.a.b.c`: top key via the
@@ -6109,12 +6562,18 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                             // dot-path scanner. Buffer reads are ""-on-miss
                             // (legacy contract) — `??` on nested paths is
                             // rejected in the Coalesce arm below.
+                            // (default … "") satisfies the bare-read money
+                            // gate while preserving the ""-on-miss contract.
                             let top = dotted[0].to_string();
                             let rest = dotted[1..].join(".");
                             return Ok(list(vec![
-                                Sym("json-get-str"),
-                                Str(rest),
-                                list(vec![Sym("near/json_get_str"), Str(top)]),
+                                Sym("default"),
+                                list(vec![
+                                    Sym("json-get-str"),
+                                    Str(rest),
+                                    list(vec![Sym("near/json_get_str"), Str(top)]),
+                                ]),
+                                Str(String::from("")),
                             ]));
                         }
                         // Object-param property read (`params.to`): the
@@ -6132,7 +6591,13 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                             .with(|s| s.borrow().iter().any(|x| x == id.name.as_str()))
                         {
                             let dotted: Vec<&str> = path.iter().rev().map(|s| s.as_str()).collect();
-                            let get = if dotted.len() == 1 {
+                            // (default … "") satisfies the bare-read money
+                            // gate: required string props miss to "" (legacy
+                            // contract); numeric leaves keep the str->num
+                            // decode below ("" ≈ 0, the pre-gate behavior).
+                            // Optional arms bypass `get` entirely (_opt /
+                            // json_get_int nil-on-miss by design).
+                            let raw_get = if dotted.len() == 1 {
                                 list(vec![
                                     Sym("near/json_get_str"),
                                     Str(dotted.join(".")),
@@ -6146,23 +6611,36 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                     list(vec![Sym("near/json_get_str"), Str(top)]),
                                 ])
                             };
-                            let is_num_leaf = dotted.len() == 1
-                                && OBJ_PARAM_PROPS.with(|s| {
+                            let get = list(vec![Sym("default"), raw_get, Str(String::from(""))]);
+                            let leaf = if dotted.len() == 1 {
+                                OBJ_PARAM_PROPS.with(|s| {
                                     s.borrow()
                                         .iter()
-                                        .find(|(n, _)| n == id.name.as_str())
+                                        .find(|(n, ..)| n == id.name.as_str())
                                         .and_then(|(_, props)| {
                                             props
                                                 .iter()
-                                                .find(|(k, _)| k.as_str() == dotted[0])
-                                                .map(|(_, num)| *num)
+                                                .find(|(k, ..)| k.as_str() == dotted[0])
+                                                .map(|(_, num, opt)| (*num, *opt))
                                         })
                                 })
-                                .unwrap_or(false);
-                            return Ok(if is_num_leaf {
-                                list(vec![Sym("str->num"), get])
                             } else {
-                                get
+                                None
+                            };
+                            return Ok(match leaf {
+                                // (2026-10-12) numeric+optional: json_get_int
+                                // alone (nil-on-miss) — wrapping in str->num
+                                // garbage-parses a miss into 0 and kills `??`.
+                                Some((true, true)) => {
+                                    list(vec![Sym("near/json_get_int"), Str(dotted.join("."))])
+                                }
+                                Some((true, _)) => list(vec![Sym("str->num"), get]),
+                                // (2026-10-12) optional prop -> _opt form so the
+                                // params section can mark the key optional
+                                Some((false, true)) => {
+                                    list(vec![Sym("near/json_get_str_opt"), Str(dotted.join("."))])
+                                }
+                                _ => get,
                             });
                         }
                     }
@@ -6263,6 +6741,42 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     BinaryOperator::GreaterThan => Some("u128/gt"),
                     _ => None,
                 };
+                // (2026-10-11) `**` on bigint operands: money code writes
+                // 10n ** 18n constantly, and the generic arm's hard error
+                // made every such contract fail to compile. Lower
+                // `base ** N` (N a non-negative integer LITERAL) to a
+                // chain of u128/mul — exact, no new builtin. Non-literal
+                // or negative exponent stays a hard error (no silent
+                // u64 fallback).
+                if b.operator == BinaryOperator::Exponential {
+                    let exp = match &b.right {
+                        Expression::BigIntLiteral(bl) => {
+                            bl.value.to_string().parse::<u32>().ok()
+                        }
+                        Expression::NumericLiteral(nl) => {
+                            if nl.value.fract() == 0.0 && nl.value >= 0.0 {
+                                Some(nl.value as u32)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    let Some(exp) = exp else {
+                        return Err(
+                            "ts_frontend: bigint `**` requires a non-negative integer literal exponent (e.g. 10n ** 18n); computed exponents are not supported".into(),
+                        );
+                    };
+                    let base = lower_expr(&b.left)?;
+                    if exp == 0 {
+                        return Ok(list(vec![Sym("u128/from-num"), Num(1)]));
+                    }
+                    let mut acc = base.clone();
+                    for _ in 1..exp {
+                        acc = list(vec![Sym("u128/mul"), acc, base.clone()]);
+                    }
+                    return Ok(acc);
+                }
                 let l = lower_expr(&b.left)?;
                 let r = lower_expr(&b.right)?;
                 if let Some(uop) = uop {
@@ -6289,6 +6803,29 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                     }
                     BinaryOperator::Inequality | BinaryOperator::StrictInequality => {
                         return Ok(list(vec![Sym("not"), list(vec![Sym("u128/eq"), l, r])]))
+                    }
+                    // x << n on a u128-shaped value = x · 2^n in the money
+                    // domain (exact power of two, no overflow beyond u128/mul's
+                    // own trap). examples/clmm.ts uses `isqrt(...) << 16` for
+                    // the Q32.16 view (2026-10-12).
+                    BinaryOperator::ShiftLeft => {
+                        if let Some(exp) = match &b.right {
+                            Expression::NumericLiteral(nl) => {
+                                if nl.value.fract() == 0.0 && nl.value >= 0.0 && nl.value < 128.0 {
+                                    Some(nl.value as u32)
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        } {
+                            let factor = format!("{}", 1u128 << exp);
+                            return Ok(list(vec![Sym("u128/mul"), l, Str(factor)]));
+                        }
+                        return Err(
+                            "ts_frontend: `<<` on a u128 value needs a constant 0..127 shift count (lowered to u128/mul by 2^n)"
+                                .into(),
+                        );
                     }
                     _ => {
                         return Err(format!(
@@ -7029,8 +7566,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                             }
                             return Err("ts_frontend: push target must be a plain variable".into());
                         }
-                        _ => {} // push handled; pipeline members were matched above
-                        _ => {} // fall through to the generic path
+                        _ => {} // push/pipeline handled above; fall through
                     }
                 }
             }
@@ -7200,6 +7736,23 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 }
             }
             let head = callee_name(&c.callee)?;
+            // jsonArr(): Opt-typed since the Opt json/get migration
+            // (6720ab23) — arm with the sanctioned `?? []` shape so
+            // `.length` / indexing type as a plain list (miss → empty
+            // array). TS jsonArr exposes no nil state to the user.
+            if head == "near/json_get_arr" {
+                if c.arguments.len() != 1 {
+                    return Err("ts_frontend: near.jsonArr takes exactly (key)".into());
+                }
+                let a0 = c.arguments[0]
+                    .as_expression()
+                    .ok_or("ts_frontend: bad jsonArr key")?;
+                return Ok(list(vec![
+                    Sym("default"),
+                    list(vec![Sym("near/json_get_arr"), lower_expr(a0)?]),
+                    Sym("nil"),
+                ]));
+            }
             // blockTimestampNum() → RAW numeric ns (alias for the host op
             // — near/block_timestamp_num doesn't exist)
             // ── ergonomics-v2 builtins (2026-10-07) ─────────────────────
@@ -7274,7 +7827,36 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             } else {
                 head
             };
-            let head = map_builtin_call(&head);
+            let mut head = map_builtin_call(&head);
+            // (2026-10-11, micro_v3) Number(<bigint>) must convert the
+            // u128 value, not parse a string: if the head is str->num and
+            // the argument is bigint-shaped, emit u128/to-i64. Previously
+            // Number(r / 10n**18n) fed a tagged u128 limb value into the
+            // string parser and __h_u128_parse trapped.
+            if head == "str->num" && c.arguments.len() == 1
+                && c.arguments[0].as_expression().is_some_and(expr_is_bigint)
+            {
+                head = "u128/to-i64".to_string();
+                // (2026-10-12, tagged-Num parity) A bigint LITERAL above
+                // 2^60-1 can never round-trip the tagged-Num ABI — both
+                // backends trap at runtime. Reject at compile time instead,
+                // so CLMM-scale amounts fail the build, not on-chain.
+                if let Some(Expression::BigIntLiteral(b)) = c.arguments[0].as_expression() {
+                    let raw = b
+                        .raw
+                        .as_ref()
+                        .map(|s| s.as_str().trim_end_matches('n'))
+                        .unwrap_or_default();
+                    if let Ok(v) = raw.parse::<u128>() {
+                        if v > 0x0FFF_FFFF_FFFF_FFFF {
+                            return Err(format!(
+                                "Number({}n): literal {} exceeds tagged-Num limit 2^60-1 (~1.15e18); keep u128-domain values in u128 ops (u128MulDiv etc.), never Number() them",
+                                raw, v
+                            ));
+                        }
+                    }
+                }
+            }
             // strict surface: a BARE-IDENTIFIER callee whose RAW name
             // survives every mapping unchanged (raw == final head) and is
             // neither a user-defined function nor RLM runtime API is a
@@ -7493,31 +8075,46 @@ fn statically_bool(e: &Expression<'_>) -> bool {
 }
 
 fn to_bool(e: &Expression<'_>) -> Result<LispVal, String> {
-    let is_not = matches!(
-        e,
-        Expression::UnaryExpression(u) if matches!(u.operator, UnaryOperator::LogicalNot)
-    );
-    let _ = is_not;
     let already_bool = statically_bool(e);
     if already_bool {
-        lower_expr(e)
-    } else {
-        // Pass the value RAW to the (if …) — the lisp `if`/`while` emitters
-        // use tag-aware truthiness (emit_cond_branch: falsy = {Bool false,
-        // Nil, Num 0}), so any tagged value branches correctly.
-        //
-        // The old `(!= x 0)` wrapper did a NUMERIC compare: an identifier
-        // holding a BOOL was compared as bool≠num → always true, so
-        // `const take = r < 2; if (take)` in a loop took the then-arm every
-        // iteration (probeB: 60 instead of 24 — Poseidon's partial rounds
-        // hashed wrong from exactly this, 2026-09-11).
-        lower_expr(e)
+        return lower_expr(e);
     }
+    // STRING truthiness (2026-10-10): the lisp `if`/`while` emitters use
+    // tag-aware truthiness (falsy = {Bool false, Nil, Num 0}) — correct for
+    // numbers (0 → falsy, probed) but a tagged STRING is a non-zero i64
+    // (ptr+len packed), so `if (s)` took the then-arm for ANY s, including
+    // "" (probed both layers: literal, json-sourced, and "x"). JS says a
+    // non-empty string is truthy and "" is falsy — wrap stringy conds in
+    // (str-length …) so the existing NUMERIC truthiness (len ≠ 0) does the
+    // work. `!s` already computed real emptiness; `s && x` was already
+    // rejected by the checker (bool ≠ str). Stringiness oracle = the same
+    // one `+` dispatch and STRING_LOCALS seeding use (string-typed params
+    // and lets are registered by the forward scan; method calls consult
+    // member_fn_returns_non_string so depositGte() etc. are NOT wrapped).
+    let stringy = match e {
+        Expression::Identifier(id) => is_string_local(&id.name),
+        _ => expr_is_stringy(e) || expr_is_str_method_call(e),
+    };
+    if stringy {
+        let inner = lower_expr(e)?;
+        return Ok(list(vec![Sym("str-length"), inner]));
+    }
+    // Pass the value RAW to the (if …) — the lisp `if`/`while` emitters
+    // use tag-aware truthiness (emit_cond_branch: falsy = {Bool false,
+    // Nil, Num 0}), so any tagged value branches correctly.
+    //
+    // The old `(!= x 0)` wrapper did a NUMERIC compare: an identifier
+    // holding a BOOL was compared as bool≠num → always true, so
+    // `const take = r < 2; if (take)` in a loop took the then-arm every
+    // iteration (probeB: 60 instead of 24 — Poseidon's partial rounds
+    // hashed wrong from exactly this, 2026-09-11).
+    lower_expr(e)
 }
 
-/// Numeric truthiness by decree: `if (x)` → `(if (!= x 0) ...)`.
-/// Statically-boolean exprs (comparisons, && || !) pass through unwrapped —
-/// the checker types them bool and rejects (!= bool 0).
+/// Truthiness for `if`/`while`/ternary conds. Statically-boolean exprs
+/// (comparisons, && || !) pass through unwrapped — the checker types them
+/// bool and rejects (!= bool 0). Stringy exprs wrap in (str-length …) —
+/// see to_bool. Everything else passes raw (numeric/bool tag truthiness).
 fn truthy(e: &Expression<'_>) -> Result<LispVal, String> {
     to_bool(e)
 }
@@ -7541,6 +8138,52 @@ fn callee_name(e: &Expression<'_>) -> Result<String, String> {
                 _ => return Err("ts_frontend: nested member chains not in M1".into()),
             };
             note_ident(s.property.name.as_str(), s.property.span.start);
+            // The u128 namespace is CLOSED (d.ts: add/sub/mul/div/mod/lt/gt/
+            // eq/fromI64/toI64/isZero — these lower to real u128/* ops).
+            // Any OTHER member would silently lower to u128/<snake>, an op
+            // that doesn't exist, surfacing only as a missing-builtin error
+            // (or a silent 0) at runtime. Hard-error at lowering with the
+            // free-function suggestion (free spellings cover MORE ops:
+            // MulDiv, Le/Ge/Ne, FromNum/ToNum). Found 2026-10-10:
+            // u128.mulDiv in the AFP CLMM port lowered to u128/mul_div and
+            // failed cryptically.
+            if obj == "u128" {
+                let prop = s.property.name.as_str();
+                let is_real_ns_member = matches!(
+                    prop,
+                    "add"
+                        | "sub"
+                        | "mul"
+                        | "div"
+                        | "mod"
+                        | "lt"
+                        | "gt"
+                        | "eq"
+                        | "fromI64"
+                        | "toI64"
+                        | "isZero"
+                );
+                if !is_real_ns_member {
+                    let fix = match prop {
+                        "mulDiv" => "u128MulDiv(a, b, d)",
+                        "le" => "u128Le(a, b)",
+                        "ge" => "u128Ge(a, b)",
+                        "ne" => "u128Ne(a, b)",
+                        "fromNum" => "u128FromNum(n)",
+                        "toNum" => "u128ToNum(s)",
+                        _ => "",
+                    };
+                    return Err(if fix.is_empty() {
+                        format!(
+                            "ts_frontend: u128.{prop} does not exist — the u128 namespace is closed (add/sub/mul/div/mod/lt/gt/eq/fromI64/toI64/isZero); u128 arithmetic uses free functions like u128Add/u128MulDiv"
+                        )
+                    } else {
+                        format!(
+                            "ts_frontend: u128.{prop} does not exist — no such namespace member. Use the free function {fix}"
+                        )
+                    });
+                }
+            }
             let mapped = map_member_fn(&obj, s.property.name.as_str());
             // Typo hole: near.<member> lowers generically to near/<snake>,
             // so an unknown member compiles fine and traps at RUNTIME
@@ -7578,6 +8221,7 @@ pub const KNOWN_NEAR_MEMBERS: &[&str] = &[
     // input/args
     "jsonGetStr",
     "jsonGetInt",
+    "jsonGetU128",
     "jsonGetArr",
     "jsonArr",
     "jsonGet",
@@ -7607,6 +8251,9 @@ pub const KNOWN_NEAR_MEMBERS: &[&str] = &[
     "input",
     // storage
     "storageGet",
+    // numeric storage (tagged-i64 keys — Q32 CLMM math; 2026-10-09)
+    "storeNum",
+    "loadNum",
     "storageSet",
     "storageRemove",
     "storageHas",
@@ -7707,6 +8354,7 @@ fn known_near_member(p: &str) -> bool {
 /// same rule as KNOWN_NEAR_MEMBERS.
 pub const KNOWN_DB_MEMBERS: &[&str] = &["del", "has", "key", "keys", "put"];
 
+#[allow(dead_code)]
 fn known_db_member(p: &str) -> bool {
     KNOWN_DB_MEMBERS.contains(&p)
 }
@@ -7849,6 +8497,14 @@ fn map_builtin_call(name: &str) -> String {
         "toStr" | "toString" => "to-string",
         "jsonGet" => "json-get",
         "jsonGetStr" => "json-get-str",
+        // escaped-JSON read (2026-10-14): promiseResult(0) delivers the exec
+        // output as a JSON-ESCAPED string (`\"key\":\"value\"`) — the plain
+        // scanner misses every key. jsonGetStrEsc unescapes then scans.
+        "jsonGetStrEsc" => "json-get-str-esc?",
+        // bare 2-arg record read (jsonGetU128("k", poolJson)) — hardened
+        // parse, emits near/json_get_u128; the seal rides the hardened read
+        // (clmm pool-record reads, 2026-10-12)
+        "jsonGetU128" => "near/json_get_u128",
         "jsonExtract" => "json-extract-input",
         "strSplit" => "str-split",
         "strJoin" => "str-join",
@@ -7883,7 +8539,16 @@ fn map_builtin_call(name: &str) -> String {
         "u128Eq" => "u128/eq",
         "u128IsZero" => "u128/is-zero",
         "u128FromNum" => "u128/from-i64",
+        // explicit string→money conversion: harden-parses the decimal text,
+        // TRAPS on junk — the one sanctioned door from runtime text to a
+        // sealed u128 (clmm memo minOut/deadline, 2026-10-12)
+        "u128FromStr" => "u128/from_str",
         "u128ToNum" => "u128/to-i64",
+        // numeric intrinsics (Q32 CLMM surface, 2026-10-09): camelCase TS
+        // spellings mapping to the lisp builtins — raw==head would trip
+        // the lisp-passthrough gate, and that's the point.
+        "mulDiv" => "muldiv",
+        "intSqrt" => "isqrt",
         _ => return name.to_string(),
     }
     .to_string()
@@ -7919,7 +8584,7 @@ fn param_is_number(p: &FormalParameter<'_>) -> bool {
 /// literal type's properties (name, is_number). Returns None for every
 /// other annotation shape. Named type references (TypeReference) are
 /// deliberately rejected — see param_is_type_ref.
-fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool)>> {
+fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool, bool)>> {
     let a = p.type_annotation.as_ref()?;
     match &a.type_annotation {
         TSType::TSTypeLiteral(lit) => {
@@ -7937,7 +8602,8 @@ fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool)>> {
                     sig.type_annotation.as_ref().map(|t| &t.type_annotation),
                     Some(TSType::TSNumberKeyword(_))
                 );
-                props.push((key, is_num));
+                let optional = sig.optional;
+                props.push((key, is_num, optional));
             }
             if props.is_empty() {
                 None
@@ -7954,9 +8620,9 @@ fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool)>> {
             TYPE_ALIASES.with(|m| {
                 m.borrow()
                     .iter()
-                    .find(|(k, _)| *k == name)
+                    .find(|(k, ..)| *k == name)
                     .and_then(|(_, props)| {
-                        if props.first().map(|(k, _)| k == SCALAR_ALIAS_MARK).unwrap_or(false) {
+                        if props.first().map(|(k, ..)| k == SCALAR_ALIAS_MARK).unwrap_or(false) {
                             // scalar alias (`type Money = string`) — a plain
                             // param, not an object shape
                             None
@@ -7992,32 +8658,38 @@ fn param_is_type_ref(p: &FormalParameter<'_>) -> bool {
 /// used to register a dead object binding and corrupt the entry ABI).
 const SCALAR_ALIAS_MARK: &str = "\u{0}scalar";
 
+/// Property shape of a TS type-literal member list. Shared by
+/// `type X = { ... }` aliases and `interface X { ... }` declarations
+/// (2026-10-12) so both resolve identically via TYPE_ALIASES.
+fn literal_props(members: &[oxc_ast::ast::TSSignature<'_>]) -> Vec<(String, bool, bool)> {
+    let mut props = Vec::new();
+    for m in members {
+        if let oxc_ast::ast::TSSignature::TSPropertySignature(sig) = m {
+            if let oxc_ast::ast::PropertyKey::StaticIdentifier(id) = &sig.key {
+                let is_num = matches!(
+                    sig.type_annotation.as_ref().map(|t| &t.type_annotation),
+                    Some(oxc_ast::ast::TSType::TSNumberKeyword(_))
+                );
+                let optional = sig.optional;
+                props.push((id.name.as_str().to_string(), is_num, optional));
+            }
+        }
+    }
+    props
+}
+
 /// Shape of a `type X = { prop: string; num: number; ... }` alias.
-fn alias_props(a: &oxc_ast::ast::TSTypeAliasDeclaration<'_>) -> Vec<(String, bool)> {
+fn alias_props(a: &oxc_ast::ast::TSTypeAliasDeclaration<'_>) -> Vec<(String, bool, bool)> {
     match &a.type_annotation {
         // `type Money = string` (u128-decimal ABI hover docs, 2026-10-07):
         // SCALAR aliases record as marker ([] + is_scalar) so
         // param_object_props resolves the ref to None (plain str param)
         // instead of kind-3-empty (which used to register a dead
         // object-param binding and corrupt the entry ABI).
-        oxc_ast::ast::TSType::TSStringKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false)],
-        oxc_ast::ast::TSType::TSNumberKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false)],
-        oxc_ast::ast::TSType::TSBigIntKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false)],
-        oxc_ast::ast::TSType::TSTypeLiteral(lit) => {
-            let mut props = Vec::new();
-            for m in &lit.members {
-                if let oxc_ast::ast::TSSignature::TSPropertySignature(sig) = m {
-                    if let oxc_ast::ast::PropertyKey::StaticIdentifier(id) = &sig.key {
-                        let is_num = matches!(
-                            sig.type_annotation.as_ref().map(|t| &t.type_annotation),
-                            Some(oxc_ast::ast::TSType::TSNumberKeyword(_))
-                        );
-                        props.push((id.name.as_str().to_string(), is_num));
-                    }
-                }
-            }
-            props
-        }
+        oxc_ast::ast::TSType::TSStringKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false, false)],
+        oxc_ast::ast::TSType::TSNumberKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false, false)],
+        oxc_ast::ast::TSType::TSBigIntKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false, false)],
+        oxc_ast::ast::TSType::TSTypeLiteral(lit) => literal_props(&lit.members),
         _ => Vec::new(),
     }
 }
@@ -8025,7 +8697,7 @@ fn alias_props(a: &oxc_ast::ast::TSTypeAliasDeclaration<'_>) -> Vec<(String, boo
 /// Register an object param's shape for read-time numeric decoding and
 /// encode-time raw embedding (side-channel, cleared with NUM_PARAM_NAMES
 /// after body lowering).
-fn register_obj_param(name: &str, props: Vec<(String, bool)>) {
+fn register_obj_param(name: &str, props: Vec<(String, bool, bool)>) {
     OBJECT_PARAMS.with(|s| s.borrow_mut().push(name.to_string()));
     OBJ_PARAM_PROPS.with(|s| {
         s.borrow_mut().push((name.to_string(), props));
@@ -8039,6 +8711,22 @@ fn ts_ann_to_lisp(t: Option<&oxc_ast::ast::TSTypeAnnotation<'_>>) -> Option<&'st
     match &a.type_annotation {
         TSType::TSNumberKeyword(_) => Some("int"),
         TSType::TSStringKeyword(_) => Some("str"),
+        // Money aliases (type U = Yocto etc.) map to the lisp money domain:
+        // u128 decimal strings (checker: u128/add : str,str -> str). Without
+        // this, U-annotated fns emit no `::` sig and their results infer as
+        // int/generic — then (u128/add pos liq) dies with "str ≠ int"
+        // (clmm, 2026-10-12).
+        TSType::TSTypeReference(r) => {
+            let money = match &r.type_name {
+                oxc_ast::ast::TSTypeName::IdentifierReference(id) => {
+                    matches!(id.name.as_str(), "Yocto" | "Amount" | "Money")
+                        || MONEY_ALIASES
+                            .with(|m| m.borrow().iter().any(|x| *x == id.name.as_str()))
+                }
+                _ => false,
+            };
+            if money { Some("str") } else { None }
+        }
         // TS booleans are first-class Bool values (2026-09-30): literals
         // lower as Bool, comparisons/str-contains already type Bool, and
         // the checker's `=`/`!=` are total on mixed pairs — so
@@ -8182,12 +8870,14 @@ fn lower_args_destructuring(
 fn list(items: Vec<LispVal>) -> LispVal {
     LispVal::List(items)
 }
+#[allow(non_snake_case)]
 fn Sym(s: impl Into<String>) -> LispVal {
     LispVal::Sym(s.into())
 }
 fn Num(n: i64) -> LispVal {
     LispVal::Num(n)
 }
+#[allow(non_snake_case)]
 fn Str(s: impl Into<String>) -> LispVal {
     LispVal::Str(s.into())
 }

@@ -1520,7 +1520,7 @@ impl WasmEmitter {
                 }
                 self.need_host(17);
                 let key = self.expr(&a[0])?;
-                let ma = wasm_encoder::MemArg {
+                let _ma = wasm_encoder::MemArg {
                     offset: 0,
                     align: 3,
                     memory_index: 0,
@@ -1576,20 +1576,22 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0)); // register 0
                 v.push(Self::host_call(18));
                 v.push(Instruction::Drop);
-                // register_load(rid=0, ptr=STORAGE_U128_BUF) — host takes 2
-                // args (register_id, ptr) and returns NOTHING in the mock
-                // (no Drop: it would underflow an empty stack; real NEAR
-                // register_load returns a byte count the mock omits)
+                // register_load(rid=0, ptr=STORAGE_U128_BUF) — host 0 is
+                // read_register(register_id, ptr): returns NOTHING in both
+                // the mock and real NEAR. NO Drop after it (a Drop here
+                // underflows — found 2026-10-12 via q40 store/load probe).
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64Const(STORAGE_U128_BUF));
                 v.push(Self::host_call(0));
-                // fresh 41-byte buffer on the runtime heap; to_str(addr, buf)
-                // renders the decimal string there and returns a tagged str
-                v.extend(self.heap_bump_runtime(41, "__nl128_buf"));
-                v.extend(self.call_u128(
-                    "u128/to_str",
-                    &[LispVal::Num(STORAGE_U128_BUF), LispVal::Num(0)],
-                )?);
+                // Render the decimal string from the 16 bytes at
+                // STORAGE_U128_BUF via the shared 1-param helper (bumps its
+                // own scratch, returns a tagged str). (2026-10-12) The old
+                // tail passed literal 0 as the render buffer to the 2-param
+                // lisp-visible to_str — the helper wrote through address 0
+                // and the call trapped on every invocation.
+                v.push(Instruction::I64Const(STORAGE_U128_BUF));
+                let h = self.ensure_u128_str_helpers();
+                v.push(Self::call_user(h.to_str));
                 Ok(v)
             }
             _ => Err("__not_handled__".into()),

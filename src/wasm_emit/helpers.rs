@@ -843,8 +843,8 @@ impl WasmEmitter {
 
     pub(crate) fn emit_is_truthy(&mut self) -> Vec<Instruction<'static>> {
         let tmp = self.local_idx("__truthy_tmp");
-        let tag = self.local_idx("__truthy_tag");
-        let len = self.local_idx("__truthy_len");
+        let _tag = self.local_idx("__truthy_tag");
+        let _len = self.local_idx("__truthy_len");
         vec![
             Instruction::LocalSet(tmp), // save tagged val
             // Check val == 1 (Bool false)

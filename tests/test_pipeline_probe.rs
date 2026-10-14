@@ -9,6 +9,25 @@ use lisp_rlm_wasm::{parse_all, typing::type_check_program};
 use std::process::Command;
 
 #[test]
+fn exprs_path_rejects_double_consume_without_source() {
+    // The exprs-only pipeline (compile_near_from_exprs) has no source text;
+    // the promise single-use lint must STILL reject there (labels "line ?").
+    use lisp_rlm_wasm::parse_all;
+    let src = r#"(define (main)
+  (let* ((p (near/promise_batch_create "recv.test.near")))
+    (let* ((a (near/promise_then p (near/current_account_id) "cb1" "{}" "0" 10000000000000)))
+      (near/promise_then p (near/current_account_id) "cb2" "{}" "0" 10000000000000))))
+"#;
+    let exprs = parse_all(src).unwrap();
+    let err = lisp_rlm_wasm::wasm_emit::compile_near_from_exprs(&exprs)
+        .expect_err("double promise_then must be rejected on the exprs path");
+    assert!(
+        err.contains("consumed 2 times"),
+        "exprs-path error must name the double consumption, got: {err}"
+    );
+}
+
+#[test]
 fn pipeline_divergence_probe() {
     let src = std::fs::read_to_string("projects/launchpad/pool.ts").unwrap();
     let ir = ts_to_lisp_source(&src).unwrap();

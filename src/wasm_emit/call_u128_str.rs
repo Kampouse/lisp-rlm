@@ -1913,8 +1913,11 @@ impl WasmEmitter {
                 v.push(Instruction::Unreachable);
                 v.push(Instruction::End);
                 // tagged-Num payloads are 61-bit signed: values above 2^60-1
-                // cannot round-trip through the tagged ABI → hard error
-                // (interpreter accepts up to i64::MAX — documented deviation).
+                // cannot round-trip through the tagged ABI → hard error.
+                // (2026-10-12) Interpreter enforces the SAME boundary — the
+                // old test/pass / wasm/trap divergence is closed; the TS
+                // frontend additionally rejects literal overflows at
+                // compile time.
                 v.push(Instruction::I64Const(U128_A));
                 v.push(Instruction::I32WrapI64);
                 v.push(Instruction::I64Load(ma8()));
@@ -1930,7 +1933,12 @@ impl WasmEmitter {
                 v.extend(self.emit_tag_num());
                 Ok(v)
             }
-            "u128/is-zero" => {
+            "u128/is-zero" | "u128/is_zero" => {
+                // u128/is_zero aliased here (2026-10-11, twap_tick): the
+                // underscore spelling previously fell through call.rs to the
+                // LEGACY address-based call_u128, which loaded memory at the
+                // untagged tagged-string → guard read garbage → div-by-zero
+                // trap in dt=0 scenarios.
                 if a.len() != 1 {
                     return Err("u128/is-zero: need 1 arg".into());
                 }

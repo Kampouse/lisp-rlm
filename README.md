@@ -6,6 +6,32 @@ A Lisp dialect that compiles to tiny WASM — NEAR smart contracts, WASI off-cha
 
 **903 bytes vs near-sdk's 35KB** for equivalent contracts.
 
+## Repo map (grug guide)
+
+New here? The whole toolchain is: **you write TS or Lisp → `near-compile` → tiny WASM → `near-mock` runs it locally.** Everything else is detail.
+
+```
+src/               the compiler + runtime (Rust): TS/Lisp → WASM
+crates/
+  near-compile/    the CLI you install (cargo install near-compile)
+  browser-compiler/, web-app/   powers lisp-rlm.pages.dev
+docs/              design notes & status: GAPS, THREAT, PLAN, RUNTIME_GRAPH…
+docs/tasks/        per-task specs + progress (TASK-*.md)
+examples/          smallest working contracts — start reading HERE
+lib/               ready-to-use contracts (tokens, pools, CLMM)
+contracts/         standalone demo contracts (amm-loop)
+afp-clmm/          CLMM ported from a machine-checked Isabelle/HOL model;
+                   port/ has generators + scenario runners proving it
+tests/             cargo test — language + differential contract tests
+corpus/, fixtures/ sample contracts + pins used by tests
+scripts/           probing/dev tooling (not needed to use the language)
+deploy/            deploy manifests (burrow/, lisp-interp/, shims)
+```
+
+Want the language? → README below + `examples/`.
+Want the CLMM/Isabelle thing? → `afp-clmm/port/README.md`.
+Want compiler internals? → `src/` + `docs/RUNTIME_GRAPH.md`.
+
 ## Quick Start
 
 Install the CLI (published on crates.io — no repo clone needed):

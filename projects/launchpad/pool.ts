@@ -913,7 +913,7 @@ export function sell(): string {
   if (!u128IsZero(fee)) {
     accrueNearFee(token, fee);
   }
-  const toPad = near.jsonGetStr("to_pad") == "1";
+  const toPad = (near.jsonGetStr("to_pad") ?? "") == "1";
   const own = gkPk != "" ? (near.storageGet(ownKey(gkPk)) ?? "") : "";
   const rcpt = own != "" ? own : near.predecessorAccountId();
   if (toPad) {

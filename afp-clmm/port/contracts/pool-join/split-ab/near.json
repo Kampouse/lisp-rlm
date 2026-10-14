@@ -1,0 +1,7 @@
+{
+ "name": "splt",
+ "src": "src/main.lisp",
+ "account": "splt.clmm.test.near",
+ "network": "local",
+ "output": "target/split-ab.wasm"
+}

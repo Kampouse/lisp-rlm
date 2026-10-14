@@ -90,18 +90,15 @@ fn airdrop_transfers_and_receipt_semantics() {
         "resume aborted before recording"
     );
 
-    // overspend state: rita/raul balances present, rosa absent
-    let st = std::fs::read("/tmp/ad-t2.bin").unwrap();
-    let s = String::from_utf8_lossy(&st);
-    assert!(
-        s.contains("rita") && s.contains("raul"),
-        "committed siblings persisted"
-    );
-    assert!(!s.contains("rosa"), "failed receipt reverted");
-    assert!(
-        !s.contains("ad:total"),
-        "aborting callback reverted its writes"
-    );
+    // overspend state inspection (rita/raul committed, rosa reverted)
+    // retired 2026-10-12: near-mock persists state.bin ONLY on success
+    // (c8e24cb4 / 5a6a2e79 — failing runs were poisoning pre-state), so
+    // the aborted overspend intentionally leaves no state file behind.
+    // The sibling-commit and fail-closed receipt semantics are pinned by
+    // the OUTPUT asserts above: 2 transfers committed, the failed receipt
+    // surfaced, resume aborted fail-closed (no ad:total, no dropped:).
+    // (the old `!s.contains("ad:total")` state assert retired with them —
+    // the callback's writes live in the never-persisted aborted state).
 
     // 3. idempotent re-run on the success ledger: balances grow, not reset
     let again = run(

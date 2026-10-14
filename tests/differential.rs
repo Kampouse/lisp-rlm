@@ -176,6 +176,49 @@ fn fixtures() -> Vec<Fixture> {
             "(define (main) (let ((x 2)) (let ((x (+ x 10))) x)))",
         ),
         // ── lists / HOF ──
+        // FOUND (2026-10-12, accrual contract port): two sibling
+        // call-expressions as args of one primitive — the second-evaluated
+        // call's result reads as empty/zero. Non-recursive house style
+        // (let*-bound calls) never trips it; recursive folds do.
+        Fixture::new(
+            "calls/sibling-rec-args-add",
+            r#"(define (len2 xs) (if (nil? xs) 0 (+ 1 (len2 (cdr xs)))))
+                 (define (main)
+                   (+ (len2 (cdr (list "a" "b" "c")))
+                      (len2 (cdr (list "d" "e" "f")))))"#,
+        ),
+        Fixture::new(
+            "calls/sibling-rec-args-u128",
+            r#"(define (len2 xs) (if (nil? xs) 0 (+ 1 (len2 (cdr xs)))))
+                 (define (main)
+                   (u128/add (to-string (len2 (cdr (list "a" "b" "c"))))
+                             (to-string (len2 (cdr (list "d" "e" "f"))))))"#,
+        ),
+        Fixture::new(
+            "calls/sibling-rec-args-strcat",
+            r#"(define (tag xs) (str-cat "n" (to-string (len2 (cdr xs)))))
+                 (define (len2 xs) (if (nil? xs) 0 (+ 1 (len2 (cdr xs)))))
+                 (define (main)
+                   (str-cat (tag (list "a" "b" "c")) (tag (list "d" "e" "f"))))"#,
+        ),
+        // EXACT accruef skeleton (near-compile): two-list recursive fold,
+        // sibling BUILTIN-call args ((cdr gs) (cdr ls)) on the recursive
+        // user call. Interp must count 3.
+        Fixture::new(
+            "calls/sibling-fold-two-lists",
+            r#"(define (count gs ls)
+                 (if (nil? gs) "0"
+                     (u128/add "1" (count (cdr gs) (cdr ls)))))
+                 (define (main)
+                   (count (list "a" "b" "c") (list "x" "y" "z")))"#,
+        ),
+        // sibling builtin-call args (cdr, cdr, car) on one USER call
+        Fixture::new(
+            "calls/sibling-builtin-args-usercall",
+            r#"(define (pick a b c) c)
+                 (define (main)
+                   (pick (cdr (list "p" "q")) (cdr (list "r" "s")) (car (list "t" "u"))))"#,
+        ),
         Fixture::new(
             "lists/ops",
             "(define (main) (list (len (list 10 20 30 40)) (append (list 10 20) (list 30))))",
@@ -217,6 +260,112 @@ fn fixtures() -> Vec<Fixture> {
             "input/cond-dispatch",
             "(define (main)\n  (let ((op (str->num (near/input))))\n    (cond ((= op 1) (* 6 7)) ((= op 2) (- 0 1)) (else 0))))",
             "1",
+        ),
+        // NEAR-mode versions of the sibling-arg fold (compile_near pipeline
+        // is what contracts ship through): same skeletons, near typing env.
+        Fixture::near_with_input(
+            "near/fold-two-lists",
+            r#"(define (count gs ls)
+                 (if (nil? gs) "0"
+                     (u128/add "1" (count (cdr gs) (cdr ls)))))
+                 (define (main)
+                   (count (list "a" "b" "c") (list "x" "y" "z")))"#,
+            "",
+        ),
+        Fixture::near_with_input(
+            "near/sibling-builtin-args-usercall",
+            r#"(define (pick a b c) c)
+                 (define (main)
+                   (pick (cdr (list "p" "q")) (cdr (list "r" "s")) (car (list "t" "u"))))"#,
+            "",
+        ),
+        // ── user definitions shadowing builtin names (bugA, 2026-10-12) ──
+        // The interpreter spec: a user define shadows the builtin (user-first
+        // resolution). The checker had a hardcoded `len` arm and the emitter a
+        // 17-domain cascade BOTH bypassing user defines — `(len "abcd")`
+        // compiled to the builtin and returned 4 while the interpreter said 42.
+        Fixture::new(
+            "shadow/user-len-over-builtin",
+            r#"(define (len s) 42)
+                 (define (main) (len "abcd"))"#,
+        ),
+        Fixture::near_with_input(
+            "near/shadow-user-len-over-builtin",
+            r#"(define (len s) 42)
+                 (define (main) (len "abcd"))"#,
+            "",
+        ),
+        Fixture::near_with_input(
+            "near/shadow-len-str-return",
+            r#"(define (len s) "hi")
+                 (define (main) (len "x"))"#,
+            "",
+        ),
+        Fixture::near_with_input(
+            "near/sibling-user-call-args",
+            r#"(define (len2 xs) (if (nil? xs) 0 (+ 1 (len2 (cdr xs)))))
+                 (define (main)
+                   (+ (len2 (cdr (list "a" "b" "c")))
+                      (len2 (cdr (list "d" "e" "f")))))"#,
+            "",
+        ),
+        // REGRESSION (2026-10-12): NEAR-mode cdr/rest allocated its result
+        // copy at a STATIC per-call-site address — recursive activation of
+        // the site re-wrote the same buffer, so a sibling arg evaluated
+        // after the cdr (here arg3 reads (car gs), which IS frame 0's
+        // buffer) saw shifted elements: the ck arg read 28 (car of the
+        // cdr'd list) instead of 12. Innermost fold term silently 0.
+        // Fix: NEAR mode runtime-bumps like p2/wasi (call_list.rs). The
+        // car-after-cdr ordering is load-bearing — do not reorder args.
+        Fixture::near_with_input(
+            "near/rec-cdr-sibling-car-args",
+            r#"(define (df g l)
+                 (u128/muldiv g l "18446744073709551616"))
+               (define (f gs ls ck)
+                 (if (nil? gs) "0"
+                     (u128/add (df (to-string (- (str->num (car gs)) ck)) (car ls))
+                               (f (cdr gs) (cdr ls) (str->num (car gs))))))
+               (define (main)
+                 (f (list "8" "12" "28")
+                    (list "4611686018427387904" "4611686018427387904" "4611686018427387904")
+                    (str->num "0")))"#,
+            "",
+        ),
+        // morph toward the real accrual contract: str-split lists, 4-arg
+        // fold, str->num compare, nested (car ls) inside the last arg.
+        Fixture::new(
+            "calls/accrual-morph-1",
+            r#"(define (count gs ls ck)
+                 (if (nil? gs) "0"
+                     (if (< (str->num (car gs)) ck) "-1"
+                         (u128/add "1" (count (cdr gs) (cdr ls) (car gs)))))
+                 )
+                 (define (main)
+                   (let* ((gs (str-split "10,20,30" ","))
+                          (ls (str-split "2,2,2" ",")))
+                     (count gs ls 5)))"#,
+        ),
+        Fixture::new(
+            "calls/accrual-morph-2-nested",
+            r#"(define (count gs ls ck)
+                 (if (nil? gs) "0"
+                     (u128/add "1" (count (cdr gs) (cdr ls) (car gs) (str->num (car ls))))))
+                 (define (main)
+                   (let* ((gs (str-split "10,20,30" ","))
+                          (ls (str-split "2,2,2" ",")))
+                     (count gs ls 5 2)))"#,
+        ),
+        // EXACT probe-P2 shape: sibling calls consume LET-BOUND syms
+        // (str-split results), u128/add + to-string arithmetic. Probe
+        // contract returned 2; interp must say 4.
+        Fixture::new(
+            "calls/probe-p2-letbound",
+            r#"(define (len xs) (if (nil? xs) "0" (u128/add "1" (len (cdr xs)))))
+                 (define (main)
+                   (let* ((xs (str-split "a,b,c" ","))
+                          (ys (str-split "d,e,f" ",")))
+                     (u128/add (to-string (len (cdr xs)))
+                               (to-string (len (cdr ys))))))"#,
         ),
         // ── json-get (unified order 2026-10-07: (json-get <json> "key")) ──
         Fixture::new(
@@ -516,19 +665,11 @@ fn known_divergences() -> Vec<(&'static str, LispVal)> {
         // emit Call to the memoized fn) — counter never increments. Interp
         // mutates the env binding: 3.
         ("closures/counter", LispVal::Num(0)),
-        // wasm: recursion through a memoizable define reuses the FIRST call's
-        // result — (build 6) yields six 6s. Interp: (6 5 4 3 2 1).
-        (
-            "lists/cons-build",
-            LispVal::List(vec![
-                LispVal::Num(6),
-                LispVal::Num(6),
-                LispVal::Num(6),
-                LispVal::Num(6),
-                LispVal::Num(6),
-                LispVal::Num(6),
-            ]),
-        ),
+        // "lists/cons-build" was pinned here: the static per-site cons buffer
+        // aliased across recursive activations — every cell read the LAST
+        // activation's payload, so (build 6) yielded six 6s. The
+        // runtime-bump-in-all-modes audit (call_list.rs "cons") gives each
+        // activation its own cell; wasm now matches interp, pin retired.
     ]
 }
 

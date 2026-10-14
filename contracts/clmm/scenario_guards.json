@@ -1,0 +1,54 @@
+{
+ "steps": [
+  {
+   "method": "initialize",
+   "args": "{\"sp\":\"3221225472\",\"tick\":0,\"t0\":\"token0.test.near\",\"t1\":\"token1.test.near\"}",
+   "as": "alice.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "ft_on_transfer",
+   "args": "{\"sender_id\":\"alice.test.near\",\"amount\":\"1000000000\",\"msg\":\"mint:100:200\"}",
+   "predecessor": "token0.test.near",
+   "expect": "0"
+  },
+  {
+   "method": "ft_on_transfer",
+   "args": "{\"sender_id\":\"bob.test.near\",\"amount\":\"1000000000\",\"msg\":\"mint:0:300\"}",
+   "predecessor": "token1.test.near",
+   "expect": "1"
+  },
+  {
+   "method": "ft_on_transfer",
+   "args": "{\"sender_id\":\"bob.test.near\",\"amount\":\"1000000\",\"msg\":\"swap0:999999999999:1\"}",
+   "predecessor": "token0.test.near",
+   "expect": "trap"
+  },
+  {
+   "method": "ft_on_transfer",
+   "args": "{\"sender_id\":\"bob.test.near\",\"amount\":\"1000000\",\"msg\":\"swap1:1:999999999999999\"}",
+   "predecessor": "token1.test.near"
+  },
+  {
+   "method": "ft_on_transfer",
+   "args": "{\"sender_id\":\"bob.test.near\",\"amount\":\"1000000\",\"msg\":\"swap0:999999999999999:999999999999999\"}",
+   "predecessor": "token0.test.near",
+   "expect": "trap"
+  },
+  {
+   "method": "ft_on_transfer",
+   "args": "{\"sender_id\":\"bob.test.near\",\"amount\":\"1000000\",\"msg\":\"swap0:0:999999999999999\"}",
+   "predecessor": "token0.test.near"
+  },
+  {
+   "method": "ft_on_transfer",
+   "args": "{\"sender_id\":\"bob.test.near\",\"amount\":\"1000000\",\"msg\":\"swap0\"}",
+   "predecessor": "token0.test.near",
+   "expect": "trap"
+  },
+  {
+   "method": "getPrice",
+   "view": true
+  }
+ ]
+}

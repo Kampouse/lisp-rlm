@@ -28,7 +28,7 @@
 
 (define (on_price)
   (begin
-    (let ((tag (near/json_get_str "tag"))
+    (let ((tag (default (near/json_get_str "tag") nil))
           ;; promise_result is fail-closed (Aug 2026): "" when the callee
           ;; errored, never nil — no (default ...) unwrap needed. (An explicit
           ;; int → str checker entry, 57ecaca 2026-09-27, now rejects the

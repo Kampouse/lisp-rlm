@@ -175,6 +175,12 @@ const KNOWN_NEAR_FUNCS: &[&str] = &[
     // JSON convenience builtins
     "json_get_int",
     "json_get_str",
+    "json_get_str_opt",
+    // Typed u128 input read (2026-10-12, money seal SOURCE — hardened
+    // parser, writes a (lo,hi) limb pair; checker: types.rs json-get-u128
+    // arrow). Missing here made near/json_get_u128 fail the scope check
+    // ("undefined variable") even though the emitter implements it.
+    "json_get_u128",
     "json_return_int",
     "json_return_str",
 ];
@@ -215,6 +221,7 @@ pub enum TcCon {
     Tuple(Vec<TcType>),
     Opt(Box<TcType>), // T | nil — storage reads and other maybe-missing values
     Ptr,              // raw WASM pointer — distinct from tagged Num
+    U128,             // money-safe 128-bit unsigned (near/json_get_u128, lo/hi pair)
     Any,              // escape hatch
 }
 
@@ -230,6 +237,11 @@ pub struct Scheme {
 #[derive(Clone, Debug)]
 pub struct TcEnv {
     bindings: HashMap<String, Scheme>,
+    /// Names introduced by user `(define ...)` forms — these SHADOW builtins
+    /// (interpreter spec, bugA 2026-10-12): a hardcoded builtin arm in
+    /// `infer_application` must defer to the env scheme when the name is
+    /// user-owned, or `(define (len s) "hi")` gets typed as `len : any → int`.
+    pub user_defined: std::collections::HashSet<String>,
     /// When true, any `near/*` symbol is accepted as `'any → 'any → ... → 'any`.
     /// This avoids having to enumerate every host function while still catching
     /// undefined user variables.
@@ -246,6 +258,7 @@ impl TcEnv {
     pub fn new() -> Self {
         TcEnv {
             bindings: HashMap::new(),
+            user_defined: std::collections::HashSet::new(),
             near_wildcard: false,
             pure_mode: false,
             storage_schema: HashMap::new(),
@@ -254,6 +267,16 @@ impl TcEnv {
 
     pub fn insert(&mut self, name: String, scheme: Scheme) {
         self.bindings.insert(name, scheme);
+    }
+
+    /// Mark `name` as user-introduced (define param/body pass or pure block).
+    /// Idempotent; see `user_defined` for why this set exists.
+    pub fn mark_user_defined(&mut self, name: &str) {
+        self.user_defined.insert(name.to_string());
+    }
+
+    pub fn is_user_defined(&self, name: &str) -> bool {
+        self.user_defined.contains(name)
     }
 
     pub fn get(&self, name: &str) -> Option<&Scheme> {
@@ -862,12 +885,14 @@ impl TcEnv {
             ),
         );
         // json-extract: (str, str, str, ...) → array  — extracts multiple values at once
-        // json/get: (str) → num  — single-key shorthand from input (NEAR)
+        // json/get: (str) → opt num — single-key shorthand from input (NEAR).
+        // Typed Opt so (default (json/get "k") fb) unifies; bare reads are
+        // rejected by the money-safety gate in the checker anyway.
         env.insert_mono(
             "json/get".to_string(),
             TcType::Arrow(
                 vec![TcType::Con(TcCon::Str)],
-                Box::new(TcType::Con(TcCon::Int)),
+                Box::new(TcType::Con(TcCon::Opt(Box::new(TcType::Con(TcCon::Any))))),
             ),
         );
         // json-return: (any) → nil  — return JSON result (host)
@@ -1156,6 +1181,14 @@ impl TcEnv {
             env.insert_mono(
                 "u128/from-i64".into(),
                 TcType::Arrow(vec![int_ty], Box::new(str_ty.clone())),
+            );
+            // u128/from_str : str → str — the hardened string→money door
+            // (traps on junk); missing entry made `seal(v)` infer generic
+            // and (u128/add pos (seal ...)) die with "str ≠ int"
+            // (clmm, 2026-10-12)
+            env.insert_mono(
+                "u128/from_str".into(),
+                TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
             );
             env.insert_mono(
                 "u128/to-i64".into(),
@@ -1997,7 +2030,10 @@ impl TcEnv {
         );
         env.insert_mono(
             "near/json_get_arr".into(),
-            TcType::Arrow(vec![str_ty.clone()], Box::new(any_arr_ty.clone())),
+            TcType::Arrow(
+                vec![str_ty.clone()],
+                Box::new(TcType::Con(TcCon::Opt(Box::new(any_arr_ty.clone())))),
+            ),
         );
         // lisp-rlm list builtins (emitter: call_list.rs)
         env.insert_mono(
@@ -2152,6 +2188,42 @@ impl TcEnv {
         // the mock returns the contract's real  near-bal)
         env.insert_mono(
             "near/account_balance".into(),
+            TcType::Arrow(vec![], Box::new(int_ty.clone())),
+        );
+        // u128/u64 context getters — emitter wired (call_near_context.rs:
+        // host 13 low/high limbs, host 10 tagged num, host 51 register
+        // read, host 85) but the type env never listed them, so any use
+        // died as "undefined variable" at typecheck (found 2026-10-12
+        // via the never-run hostfuncs tests).
+        env.insert_mono(
+            "near/account_locked_balance".into(),
+            TcType::Arrow(vec![], Box::new(int_ty.clone())),
+        );
+        env.insert_mono(
+            "near/account_locked_balance_high".into(),
+            TcType::Arrow(vec![], Box::new(int_ty.clone())),
+        );
+        env.insert_mono(
+            "near/account_balance_high".into(),
+            TcType::Arrow(vec![], Box::new(int_ty.clone())),
+        );
+        env.insert_mono(
+            "near/epoch_height".into(),
+            TcType::Arrow(vec![], Box::new(int_ty.clone())),
+        );
+        env.insert_mono(
+            "near/current_code_hash".into(),
+            TcType::Arrow(vec![], Box::new(str_ty.clone())),
+        );
+        env.insert_mono(
+            "near/validator_stake".into(),
+            TcType::Arrow(
+                vec![str_ty.clone(), num_ty.clone()],
+                Box::new(int_ty.clone()),
+            ),
+        );
+        env.insert_mono(
+            "near/validator_total_stake".into(),
             TcType::Arrow(vec![], Box::new(int_ty.clone())),
         );
         env.insert_mono(
@@ -2341,6 +2413,7 @@ impl std::fmt::Display for TcCon {
             }
             TcCon::Opt(t) => write!(f, "(opt {})", t),
             TcCon::Ptr => write!(f, "ptr"),
+            TcCon::U128 => write!(f, "u128"),
             TcCon::Any => write!(f, "any"),
         }
     }
