@@ -83,4 +83,160 @@ theorem reachable_donate:
   shows "reachable (P', s')"
   using reachable.mstep[OF r donate_is_mint[OF d]] .
 
+section \<open>Compositional roundtrip: withdrawal after any reachable history\<close>
+
+text \<open>The escrow layer proves single-op roundtrips neutral per user. Here we
+lift the LP-safety half to the reachable world: from ANY reachable state --
+i.e. after an arbitrary history of provisions, removals, donations and
+price walks -- a bounded withdrawal remains legal (never strands the venue),
+removes no more than the book holds at cell \<open>i\<close>, touches nothing else, and
+deposit/withdrawal order does not matter for the net book
+(\<open>mint_burn_commute\<close>). Honest scope: full book commutation through swaps is
+FALSE in general -- swap reindexes cells above the insertion point
+(refine/wedge in CLMM_Transformation), so cell identity is positional after
+a price walk; reconciling that reindexing is the escrow ledger's job, not
+the book's.\<close>
+
+definition roundtrip_withdraw ::
+  "pool \<Rightarrow> real \<Rightarrow> real \<Rightarrow> int \<Rightarrow> pool \<Rightarrow> real \<Rightarrow> bool" where
+"roundtrip_withdraw P s d i P'' s'' \<longleftrightarrow>
+  reachable (P, s) \<and> 0 \<le> d \<and>
+  burn_rel (min d (lq P i)) i i (P, s) (P'', s'')"
+
+theorem roundtrip_legal:
+  assumes rt: "roundtrip_withdraw P s d i P'' s''"
+  shows "reachable (P'', s'') \<and> clmm_state P'' s''"
+proof -
+  from rt have rs: "reachable (P, s)"
+    by (simp add: roundtrip_withdraw_def)
+  from rt have bd: "burn_rel (min d (lq P i)) i i (P, s) (P'', s'')"
+    by (simp add: roundtrip_withdraw_def)
+  from rs bd have "reachable (P'', s'')" by (rule reachable.bstep)
+  moreover
+  have st0: "clmm_state P s" using reachable_clmm_state[OF rs] by simp
+  have "clmm_state P'' s''" using burn_preserves[OF st0 bd] by simp
+  ultimately show ?thesis by blast
+qed
+
+text \<open>Bridge lemmas: burn = pointwise subtraction, stated WITHOUT the
+let/pair wrappers so every later theorem consumes these and never unfolds
+the nested definitions again (unfolding both together makes simp flounder).\<close>
+
+lemma burn_pointwise:
+  assumes bd: "burn_rel d i i (Q, t) (Q', t')"
+  shows "lq Q' i = lq Q i - d \<and>
+    (\<forall>j. j \<noteq> i \<longrightarrow> lq Q j = lq Q' j) \<and>
+    grd Q' = grd Q \<and> fee Q' = fee Q \<and> t' = t"
+proof -
+  from bd have md: "mint_rel d i i (Q', t') (Q, t)"
+    by (simp add: burn_rel_def split: prod.splits)
+  from md have pj: "\<And>j. lq Q j = (if j = i then lq Q' j + d else lq Q' j)"
+    by (simp add: mint_rel_def split: prod.splits)
+  have f1: "lq Q' i = lq Q i - d" using pj[of i] by simp
+  have f2: "\<And>j. j \<noteq> i \<Longrightarrow> lq Q j = lq Q' j" using pj by simp
+  have f3: "grd Q' = grd Q \<and> fee Q' = fee Q \<and> t' = t"
+    using md by (simp add: mint_rel_def split: prod.splits)
+  from f1 f2 f3 show ?thesis by blast
+qed
+
+theorem roundtrip_bounded:
+  assumes rt: "roundtrip_withdraw P s d i P'' s''"
+  shows "lq P'' i = lq P i - min d (lq P i)"
+proof -
+  from rt have bd: "burn_rel (min d (lq P i)) i i (P, s) (P'', s'')"
+    by (simp add: roundtrip_withdraw_def)
+  have pb: "lq P'' i = lq P i - min d (lq P i)"
+    using burn_pointwise[OF bd] by blast
+  from pb show ?thesis .
+qed
+
+theorem roundtrip_others_intact:
+  assumes rt: "roundtrip_withdraw P s d i P'' s''"
+    and ne: "j \<noteq> i"
+  shows "lq P'' j = lq P j \<and> grd P'' = grd P \<and>
+    fee P'' = fee P \<and> s'' = s"
+proof -
+  from rt have bd: "burn_rel (min d (lq P i)) i i (P, s) (P'', s'')"
+    by (simp add: roundtrip_withdraw_def)
+  from burn_pointwise[OF bd] ne have peq: "lq P j = lq P'' j" by blast
+  from burn_pointwise[OF bd] have pg: "grd P'' = grd P" by blast
+  from burn_pointwise[OF bd] have pf: "fee P'' = fee P" by blast
+  from burn_pointwise[OF bd] have ps: "s'' = s" by blast
+  from peq pg pf ps show ?thesis by simp
+qed
+
+lemma overburn_rejected:
+  assumes bd: "burn_rel d i i (P, s) (P'', s'')"
+    and big: "lq P i < d"
+  shows False
+proof -
+  from bd have md: "mint_rel d i i (P'', s'') (P, s)"
+    by (simp add: burn_rel_def split: prod.splits)
+  from md have dp: "0 \<le> d" by (simp add: mint_rel_def split: prod.splits)
+  from md have pj: "\<And>j. lq P j = (if j = i then lq P'' j + d else lq P'' j)"
+    by (simp add: mint_rel_def split: prod.splits)
+  from pj[of i] have pii: "lq P i = lq P'' i + d" by simp
+  from bd have gdi: "0 \<le> lq P'' i"
+    by (simp add: burn_rel_def split: prod.splits)
+  from dp pii gdi big show False by linarith
+qed
+
+lemma mint_pointwise:
+  assumes md: "mint_rel d i i (Q, t) (Q', t')"
+  shows "lq Q' i = lq Q i + d \<and>
+    (\<forall>j. j \<noteq> i \<longrightarrow> lq Q j = lq Q' j) \<and>
+    grd Q' = grd Q \<and> fee Q' = fee Q \<and> t' = t"
+  using md by (simp add: mint_rel_def split: prod.splits)
+
+lemma mint_burn_commute:
+  assumes e1: "mint_rel d1 i i (P, s) (P1, s1)"
+    and e2: "burn_rel d2 i i (P1, s1) (P2, s2)"
+    and e3: "burn_rel d2 i i (P, s) (P3, s3)"
+    and e4: "mint_rel d1 i i (P3, s3) (P4, s4)"
+  shows "lq P2 = lq P4 \<and> s2 = s4"
+proof -
+  have p1: "lq P1 i = lq P i + d1 \<and> (\<forall>j. j \<noteq> i \<longrightarrow> lq P j = lq P1 j)"
+    using mint_pointwise[OF e1] by blast
+  have p2: "lq P2 i = lq P1 i - d2 \<and> (\<forall>j. j \<noteq> i \<longrightarrow> lq P1 j = lq P2 j)"
+    using burn_pointwise[OF e2] by blast
+  have p3: "lq P3 i = lq P i - d2 \<and> (\<forall>j. j \<noteq> i \<longrightarrow> lq P j = lq P3 j)"
+    using burn_pointwise[OF e3] by blast
+  have p4: "lq P4 i = lq P3 i + d1 \<and> (\<forall>j. j \<noteq> i \<longrightarrow> lq P3 j = lq P4 j)"
+    using mint_pointwise[OF e4] by blast
+  have p1i: "lq P1 i = lq P i + d1" using p1 by blast
+  have p2i: "lq P2 i = lq P1 i - d2" using p2 by blast
+  have p3i: "lq P3 i = lq P i - d2" using p3 by blast
+  have p4i: "lq P4 i = lq P3 i + d1" using p4 by blast
+  have eqi: "lq P2 i = lq P4 i" using p1i p2i p3i p4i by linarith
+  have p1o: "\<And>j. j \<noteq> i \<Longrightarrow> lq P j = lq P1 j" using p1 by blast
+  have p2o: "\<And>j. j \<noteq> i \<Longrightarrow> lq P1 j = lq P2 j" using p2 by blast
+  have p3o: "\<And>j. j \<noteq> i \<Longrightarrow> lq P j = lq P3 j" using p3 by blast
+  have p4o: "\<And>j. j \<noteq> i \<Longrightarrow> lq P3 j = lq P4 j" using p4 by blast
+  have lqe: "lq P2 = lq P4"
+  proof
+    fix j :: int
+    show "lq P2 j = lq P4 j"
+    proof cases
+      assume je: "j = i"
+      then show ?thesis using eqi by simp
+    next
+      assume jne: "j \<noteq> i"
+      have c1: "lq P j = lq P1 j" using p1o[of j] jne by blast
+      have c2: "lq P1 j = lq P2 j" using p2o[of j] jne by blast
+      have c3: "lq P j = lq P3 j" using p3o[of j] jne by blast
+      have c4: "lq P3 j = lq P4 j" using p4o[of j] jne by blast
+      from c1 c2 c3 c4 show ?thesis by linarith
+    qed
+  qed
+  moreover have "s2 = s4"
+  proof -
+    from burn_pointwise[OF e2] have sb2: "s2 = s1" by blast
+    from burn_pointwise[OF e3] have sb3: "s3 = s" by blast
+    from mint_pointwise[OF e1] have sm1: "s1 = s" by blast
+    from mint_pointwise[OF e4] have sm4: "s4 = s3" by blast
+    from sb2 sb3 sm1 sm4 show "s2 = s4" by simp
+  qed
+  ultimately show ?thesis by blast
+qed
+
 end
