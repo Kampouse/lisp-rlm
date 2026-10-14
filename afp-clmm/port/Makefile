@@ -33,6 +33,11 @@ accrual:          ## accrual leg: regenerate twins, compile, fixture-wired scena
 build-ts:         ## compile all TS twins (13 pool twins + escrow-ts)
 	python3 generators/build_ts.py
 
+accrual-mount:    ## fee-ledger mount harness (PS accumulator, skim+solvency pins)
+	cd contracts/accrual-mount && python3 gen_scenario.py
+	cd contracts/accrual-mount && $(NC) build .
+	cd scenarios/lisp/accrual-mount && rm -f state.bin && $(NM) scenario s.json
+
 regenerate:       ## regenerate lisp contracts + TS twins from constants
 	python3 generators/gen.py && python3 generators/gen3.py && python3 generators/gen_ts.py && python3 generators/gen_escrow.py
 
