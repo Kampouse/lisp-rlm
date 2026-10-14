@@ -56,9 +56,15 @@ struct EventRecord {
 }
 
 pub(crate) fn run_serve(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let usage = "usage: near-mock serve <state.bin> <acct=wasm,...> [--port 3030]";
+    let usage = "usage: near-mock serve <acct=wasm,...> [--port 3030]\n\
+                 Options:\n\
+                 \x20 --state <file>   persist chain state to <file> (loaded if present,\n\
+                 \x20                  created+saved after every tx). Default: in-memory\n\
+                 \x20                  fresh chain — nothing touches disk.\n\
+                 \x20 --port <n>       listen port (default 3030)";
     let mut pos: Vec<String> = Vec::new();
     let mut port: u16 = 3030;
+    let mut state_path: Option<String> = None;
     let mut it = args[2..].iter();
     while let Some(t) = it.next() {
         match t.as_str() {
@@ -69,23 +75,30 @@ pub(crate) fn run_serve(args: &[String]) -> Result<(), Box<dyn std::error::Error
                     .parse()
                     .map_err(|_| "--port must be a number")?;
             }
+            "--state" => {
+                state_path = Some(it.next().ok_or("--state requires a file path")?.to_string());
+            }
             other if other.starts_with("--") => {
                 eprintln!("  ⚠ serve: ignoring flag {other}");
             }
             other => pos.push(other.to_string()),
         }
     }
-    if pos.len() < 2 {
+    if pos.len() < 1 {
         eprintln!("{usage}");
         std::process::exit(1);
     }
-    let state_path = pos[0].clone();
-    let manifest = pos[1].clone();
+    let manifest = pos[0].clone();
 
     // Load each manifest contract via the ChainBuilder (the builder reads
     // + compiles the wasm itself). Accounts are leaked to satisfy
     // CallBuilder's &'static str contract — bounded set, server-lifetime.
-    let mut builder = MockChain::builder().state_path(&state_path);
+    let mut builder = MockChain::builder();
+    if let Some(p) = &state_path {
+        // --state is create-on-first-use: a missing file starts empty genesis
+        // on purpose (that's the mode), then persists every tx.
+        builder = builder.state_path(p).state_create_new();
+    }
     let mut receivers: Vec<String> = Vec::new();
     for pair in manifest.split(',') {
         let Some((acct, path)) = pair.split_once('=') else {
@@ -101,7 +114,10 @@ pub(crate) fn run_serve(args: &[String]) -> Result<(), Box<dyn std::error::Error
 
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     eprintln!(
-        "🛰  near-mock serve: http://127.0.0.1:{port}  (state: {state_path})"
+        "🛰  near-mock serve: http://127.0.0.1:{port}  (state: {})",
+        state_path
+            .as_deref()
+            .unwrap_or("fresh, in-memory — pass --state <file> to persist")
     );
     eprintln!("   contracts: {}", receivers.join(", "));
     eprintln!("   NEAR_RPC_URL=http://127.0.0.1:{port}");
@@ -575,8 +591,8 @@ fn rpc_broadcast_tx_commit(
         decoded.signer_id, decoded.nonce
     ));
     let height = mock_block_height();
-    // Save state after every submitted tx (chain.call persists via MockChain
-    // only if save() is called; the CLI contract = persist committed txs).
+    // Persist after every submitted tx — only in --state mode (an in-memory
+    // chain has no state_path; save() would just error no-op).
     let _ = chain.save();
 
     let view = serde_json::json!({
