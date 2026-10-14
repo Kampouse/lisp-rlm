@@ -782,4 +782,44 @@ proof -
   show ?thesis using sumUB sumA sumB sumC sumU2 sumR by simp
 qed
 
+section \<open>Descents: falsification and the mirrored step law (item 2, descents)\<close>
+
+text \<open>kb94 states the fee-slack step for an ascent @{term "p \<le> p'"}, and
+slice A inherited that restriction. The investigation verdict: the
+restriction is LOAD-BEARING, not a proof artifact. Extending the ascent
+form to a descent is FALSE -- counterexample: one cell, lq = 1,
+fee = 1/2 (so the gross coefficient is 1/(1 - 1/2) = 2), price moves
+1 -> 1/2 inside the cell. Then net moves by 1*(1/2 - 1) = -1/2 while
+gross moves by 2*(1/2 - 1) = -1, and the ascent form would demand
+-1/2 <= -1, which is false: the fee mass widens the gross swing in
+BOTH directions, so the per-move diff inequality necessarily flips
+orientation on a down-move. (The build system caught this first: the
+drafted direction-free step theorem failed at linarith with exactly
+this goal -- the goal print is a soundness oracle, third campaign use.)
+
+What IS true on a descent is the mirrored law below: the gross move
+understates the net move, i.e. the gap between gross and net does not
+narrow on the way down. It is kb94 applied to the reversed (ascending)
+pair, with both sides negated -- no new decomposition needed. Scope
+consequence for paths: a mixed up-down path has NO uniform telescoping
+bound, because descent legs carry the mirrored inequality while
+telescoping needs one orientation; slice A's ascent premise is exactly
+what makes the telescope sum. The full path law stays an ascent law,
+now with the descent direction examined and its exact behavior
+pinned.\<close>
+
+theorem fee_slack_step_down:
+  assumes dsc: "clmm_dsc P"
+    and pp: "0 < p"
+    and pp': "0 < p'"
+    and le: "p' \<le> p"
+  shows "quote_gross P p' - quote_gross P p
+      \<le> quote_net P p' - quote_net P p"
+proof -
+  have flipped: "quote_net P p - quote_net P p'
+      \<le> quote_gross P p - quote_gross P p'"
+    by (rule fee_slack_step [OF dsc pp' le])
+  show ?thesis using flipped by linarith
+qed
+
 end
