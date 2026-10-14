@@ -519,6 +519,19 @@ const INPUT_CACHE_BUF: i64 = 40960;
 /// (was INPUT_BUF — fine when every getter re-read the input, fatal with
 /// caching: one jsonGet destroyed the cached input for all later getters)
 const JSON_SCAN_BUF: i64 = 57344;
+/// 64KiB @ 81920 — staging buffer for promise_result payloads (host 34
+/// read_register target). TEMP_MEM (64) was fatal here: read_register writes
+/// the FULL register bytes at the guest-chosen pointer with no bound, so any
+/// payload >192 bytes crossed into the data section (literals start at 256)
+/// and silently corrupted early literals — observed 2026-10-14 (kernel2 x402):
+/// a ~230B 1Click quote flattened into promise_result(0) overwrote the "job:"
+/// literal at 296, so every later "job:"+jobId key concat hashed garbage and
+/// setJobStatus's storageGet("job:…") read a record that didn't exist
+/// (status stuck at quote_phase). 81920..147456 sits in the fixed-zone hole
+/// (JSON_SCAN overflow zone ends ~73728; heap starts at 200000). Payloads
+/// >64KiB would still overflow — same 16KB-style cap as every other fixed
+/// staging buffer; promise payloads in practice are KB-scale.
+pub(crate) const PAYLOAD_BUF: i64 = 81920;
 
 // ── Borsh schema types (compile-time only) ──
 #[derive(Clone, Debug)]
