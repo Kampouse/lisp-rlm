@@ -577,4 +577,209 @@ proof -
   show "\<And>n. fee P' n \<in> range (fee P)" by (fact r2)
 qed
 
+section \<open>Aggregate fee mass under an off-grid refine (item 2, slice C)\<close>
+
+text \<open>The pointwise copy-shift law fixes the aggregate accounting as
+well. Summed over its own (finite) support, the new book carries the
+old mass PLUS ONE COPY of the boundary cell's value: the inserted cell
+i+1 duplicates fee P i, and every other cell merely repositions. The
+aggregate law therefore carries the copy term -- the falsified
+sum-preserving form (fee P = [3,5], wedge at 0: 8 -> 11) is exactly
+the instance fee P i = 3 of this theorem. Summation is over the
+nonzero support of each book; finiteness of the old support is
+assumed (well-formed pools have finite grids, hence finite fee
+support), and finiteness of the new support is derived from it.\<close>
+
+theorem fee_offgrid_sum:
+  assumes fsup: "finite {n. fee P n \<noteq> 0}"
+    and i: "i = lower_tick P sqp"
+    and off: "grd P i \<noteq> sqp"
+    and P': "P' = refine P sqp"
+  shows "sum (fee P') {n. fee P' n \<noteq> 0}
+       = sum (fee P) {n. fee P n \<noteq> 0} + fee P i"
+proof -
+  have pw: "\<And>n. fee P' n = (if n \<le> i then fee P n
+      else if n = i + 1 then fee P i else fee P (n - 1))"
+  proof -
+    fix n
+    have w: "fee P' = wedge (fee P) i (fee P i)"
+      using i off P' by (rule refine_fee)
+    show "fee P' n = (if n \<le> i then fee P n
+        else if n = i + 1 then fee P i else fee P (n - 1))"
+      using w by (rule wedge_split)
+  qed
+  let ?S = "{n. fee P n \<noteq> 0}"
+  let ?S' = "{n. fee P' n \<noteq> 0}"
+  have finS: "finite ?S" by (rule fsup)
+  have finB: "finite (?S \<union> {i + 1} \<union> (+) 1 ` ?S)" using finS by simp
+  have subS': "?S' \<subseteq> ?S \<union> {i + 1} \<union> (+) 1 ` ?S"
+  proof
+    fix n assume n: "n \<in> ?S'"
+    then have nz: "fee P' n \<noteq> 0" by simp
+    show "n \<in> ?S \<union> {i + 1} \<union> (+) 1 ` ?S"
+    proof (cases "n \<le> i")
+      case True
+      then have "fee P n \<noteq> 0" using pw [of n] nz by simp
+      then show ?thesis by simp
+    next
+      case False
+      note nle = False
+      show ?thesis
+      proof (cases "n = i + 1")
+        case True
+        then show ?thesis by simp
+      next
+        case False
+        have lt: "i < n" using nle by simp
+        have ub: "i + 2 \<le> n" using lt False by linarith
+        have eq: "fee P (n - 1) = fee P' n" using pw [of n] ub by simp
+        then have nz1: "fee P (n - 1) \<noteq> 0" using nz by simp
+        have m: "n - 1 \<in> ?S" using nz1 by simp
+        have heq: "n = 1 + (n - 1)" using lt by simp
+        have img: "n \<in> (+) 1 ` ?S"
+        proof (rule image_eqI)
+          show "n = 1 + (n - 1)" using heq by simp
+        next
+          show "n - 1 \<in> ?S" using m by simp
+        qed
+        show ?thesis using img by (rule UnI2)
+      qed
+    qed
+  qed
+  have finS': "finite ?S'" by (rule finite_subset [OF subS' finB])
+  have Aeq: "?S' \<inter> {n. n \<le> i} = ?S \<inter> {n. n \<le> i}"
+  proof (rule subset_antisym)
+    show "?S' \<inter> {n. n \<le> i} \<subseteq> ?S \<inter> {n. n \<le> i}"
+    proof
+      fix n assume "n \<in> ?S' \<inter> {n. n \<le> i}"
+      then have nS': "n \<in> ?S'" and le: "n \<le> i" by auto
+      have nz: "fee P' n \<noteq> 0" using nS' by simp
+      have eq: "fee P n = fee P' n" using pw [of n] le by simp
+      then have "fee P n \<noteq> 0" using nz by simp
+      then show "n \<in> ?S \<inter> {n. n \<le> i}" using le by simp
+    qed
+  next
+    show "?S \<inter> {n. n \<le> i} \<subseteq> ?S' \<inter> {n. n \<le> i}"
+    proof
+      fix n assume "n \<in> ?S \<inter> {n. n \<le> i}"
+      then have nS: "n \<in> ?S" and le: "n \<le> i" by auto
+      have nz: "fee P n \<noteq> 0" using nS by simp
+      have eq: "fee P' n = fee P n" using pw [of n] le by simp
+      then have "fee P' n \<noteq> 0" using nz by simp
+      then show "n \<in> ?S' \<inter> {n. n \<le> i}" using le by simp
+    qed
+  qed
+  have sumA: "sum (fee P') (?S' \<inter> {n. n \<le> i})
+      = sum (fee P) (?S \<inter> {n. n \<le> i})"
+    unfolding Aeq
+  proof (rule sum.cong)
+    show "?S \<inter> {n. n \<le> i} = ?S \<inter> {n. n \<le> i}" by simp
+  next
+    fix x assume "x \<in> ?S \<inter> {n. n \<le> i}"
+    then have le: "x \<le> i" by simp
+    show "fee P' x = fee P x" using pw [of x] le by simp
+  qed
+  have sumB: "sum (fee P') (?S' \<inter> {n. n = i + 1}) = fee P i"
+  proof (cases "fee P i = 0")
+    case True
+    have notin: "i + 1 \<notin> ?S'" using pw [of "i + 1"] True by simp
+    have int: "?S' \<inter> {n. n = i + 1} = {}" using notin by auto
+    show ?thesis unfolding int by (simp add: True)
+  next
+    case False
+    have inn: "i + 1 \<in> ?S'" using pw [of "i + 1"] False by simp
+    have int: "?S' \<inter> {n. n = i + 1} = {i + 1}" using inn by auto
+    show ?thesis unfolding int using pw [of "i + 1"] by simp
+  qed
+  have Cimg: "(\<lambda>n. n - 1) ` (?S' \<inter> {n. i + 2 \<le> n})
+      = ?S \<inter> {n. i + 1 \<le> n}"
+  proof (rule subset_antisym)
+    show "(\<lambda>n. n - 1) ` (?S' \<inter> {n. i + 2 \<le> n})
+        \<subseteq> ?S \<inter> {n. i + 1 \<le> n}"
+    proof
+      fix m assume "m \<in> (\<lambda>n. n - 1) ` (?S' \<inter> {n. i + 2 \<le> n})"
+      then obtain n where n: "n \<in> ?S'" and ub: "i + 2 \<le> n"
+        and meq: "m = n - 1" by auto
+      have nz: "fee P' n \<noteq> 0" using n by simp
+      have e1: "fee P (n - 1) = fee P' n" using pw [of n] ub by simp
+      have m0: "fee P m \<noteq> 0" using nz e1 meq by simp
+      have mlb: "i + 1 \<le> m" using ub meq by simp
+      show "m \<in> ?S \<inter> {n. i + 1 \<le> n}" using m0 mlb by simp
+    qed
+  next
+    show "?S \<inter> {n. i + 1 \<le> n}
+        \<subseteq> (\<lambda>n. n - 1) ` (?S' \<inter> {n. i + 2 \<le> n})"
+    proof
+      fix m assume "m \<in> ?S \<inter> {n. i + 1 \<le> n}"
+      then have mz: "fee P m \<noteq> 0" and lb: "i + 1 \<le> m" by auto
+      define n where "n = m + 1"
+      have meq: "m = n - 1" by (simp add: n_def)
+      have ub: "i + 2 \<le> n" unfolding n_def using lb by linarith
+      have "fee P' n = fee P (n - 1)" using pw [of n] ub by simp
+      then have nS: "n \<in> ?S'" using mz meq by simp
+      show "m \<in> (\<lambda>n. n - 1) ` (?S' \<inter> {n. i + 2 \<le> n})"
+      proof (rule image_eqI)
+        show "m = n - 1" using meq by simp
+      next
+        show "n \<in> ?S' \<inter> {n. i + 2 \<le> n}" using nS ub by (simp add: n_def)
+      qed
+    qed
+  qed
+  have injm: "inj_on (\<lambda>n. n - 1) (?S' \<inter> {n. i + 2 \<le> n})"
+    by (rule inj_onI) arith
+  have sumC: "sum (fee P') (?S' \<inter> {n. i + 2 \<le> n})
+      = sum (fee P) (?S \<inter> {n. i + 1 \<le> n})"
+  proof -
+    have r: "sum (fee P) ((\<lambda>n. n - 1) ` (?S' \<inter> {n. i + 2 \<le> n}))
+        = sum (\<lambda>x. fee P (x - 1)) (?S' \<inter> {n. i + 2 \<le> n})"
+      by (simp add: sum.reindex [OF injm])
+    have c2: "sum (\<lambda>x. fee P (x - 1)) (?S' \<inter> {n. i + 2 \<le> n})
+        = sum (fee P') (?S' \<inter> {n. i + 2 \<le> n})"
+    proof (rule sum.cong)
+      show "?S' \<inter> {n. i + 2 \<le> n} = ?S' \<inter> {n. i + 2 \<le> n}" by simp
+    next
+      fix x assume "x \<in> ?S' \<inter> {n. i + 2 \<le> n}"
+      then show "fee P (x - 1) = fee P' x" using pw [of x] by simp
+    qed
+    show ?thesis using r c2 Cimg by simp
+  qed
+  have finI: "finite (?S' \<inter> {n. n \<le> i})"
+    and finII: "finite (?S' \<inter> {n. i + 1 \<le> n})"
+    and finIII: "finite (?S' \<inter> {n. n = i + 1})"
+    and finIV: "finite (?S' \<inter> {n. i + 2 \<le> n})"
+    using finS' by simp_all
+  have split1: "?S' = (?S' \<inter> {n. n \<le> i}) \<union> (?S' \<inter> {n. i + 1 \<le> n})"
+    by auto
+  have d1: "?S' \<inter> {n. n \<le> i} \<inter> (?S' \<inter> {n. i + 1 \<le> n}) = {}" by auto
+  have sumUB: "sum (fee P') ?S'
+      = sum (fee P') (?S' \<inter> {n. n \<le> i})
+        + sum (fee P') (?S' \<inter> {n. i + 1 \<le> n})"
+    apply (subst split1)
+    apply (rule sum.union_disjoint [OF finI finII d1])
+    done
+  have split2: "?S' \<inter> {n. i + 1 \<le> n}
+      = (?S' \<inter> {n. n = i + 1}) \<union> (?S' \<inter> {n. i + 2 \<le> n})"
+    by auto
+  have d2: "?S' \<inter> {n. n = i + 1} \<inter> (?S' \<inter> {n. i + 2 \<le> n}) = {}" by auto
+  have sumU2: "sum (fee P') (?S' \<inter> {n. i + 1 \<le> n})
+      = sum (fee P') (?S' \<inter> {n. n = i + 1})
+        + sum (fee P') (?S' \<inter> {n. i + 2 \<le> n})"
+    apply (subst split2)
+    apply (rule sum.union_disjoint [OF finIII finIV d2])
+    done
+  have rsplit: "?S = (?S \<inter> {n. n \<le> i}) \<union> (?S \<inter> {n. i + 1 \<le> n})"
+    by auto
+  have finR1: "finite (?S \<inter> {n. n \<le> i})"
+    and finR2: "finite (?S \<inter> {n. i + 1 \<le> n})"
+    using finS by simp_all
+  have dR: "?S \<inter> {n. n \<le> i} \<inter> (?S \<inter> {n. i + 1 \<le> n}) = {}" by auto
+  have sumR: "sum (fee P) ?S
+      = sum (fee P) (?S \<inter> {n. n \<le> i})
+        + sum (fee P) (?S \<inter> {n. i + 1 \<le> n})"
+    apply (subst rsplit)
+    apply (rule sum.union_disjoint [OF finR1 finR2 dR])
+    done
+  show ?thesis using sumUB sumA sumB sumC sumU2 sumR by simp
+qed
+
 end
