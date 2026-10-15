@@ -1,0 +1,43 @@
+{
+ "name": "fee-ledger-attacks",
+ "manifest": "fl.clmm.test.near=../../../contracts/fee-ledger/target/fee-ledger.wasm",
+ "steps": [
+  {"method": "register", "as": "u1.test.near", "contract": "fl.clmm.test.near", "args": {}},
+  {"method": "register", "as": "u2.test.near", "contract": "fl.clmm.test.near", "args": {}},
+  {"method": "deposit", "as": "u1.test.near", "contract": "fl.clmm.test.near", "attach": "4000000", "args": {}},
+
+  {"method": "grow", "as": "u2.test.near", "contract": "fl.clmm.test.near",
+   "attach": "70000", "args": { "f": "100000" }, "expect": "trap"},
+
+  {"method": "grow", "as": "u2.test.near", "contract": "fl.clmm.test.near",
+   "attach": "100000", "args": { "f": "100000" }},
+
+  {"method": "wd-cb", "as": "u2.test.near", "contract": "fl.clmm.test.near",
+   "args": { "w": "u1.test.near", "b": "500000" }, "contains": "forbidden"},
+
+  {"method": "get-fees", "as": "u1.test.near", "contract": "fl.clmm.test.near",
+   "view": true, "args": {}, "contains": "100000"},
+
+  {"method": "withdraw", "as": "u1.test.near", "contract": "fl.clmm.test.near",
+   "args": { "sh": "2000000" }},
+  {"method": "withdraw", "as": "u1.test.near", "contract": "fl.clmm.test.near",
+   "args": { "sh": "2000000" }},
+
+  {"method": "book", "as": "u1.test.near", "contract": "fl.clmm.test.near",
+   "view": true, "args": { "w": "u1.test.near" }, "contains": "99999"},
+
+  {"method": "get-paid", "as": "u1.test.near", "contract": "fl.clmm.test.near",
+   "view": true, "args": {}, "contains": "99999"},
+
+  {"method": "strand-pay", "as": "u1.test.near", "contract": "fl.clmm.test.near",
+   "args": { "w": "u1.test.near" }},
+  {"method": "strand-pay", "as": "u1.test.near", "contract": "fl.clmm.test.near",
+   "args": { "w": "u1.test.near" }},
+
+  {"method": "get-paid", "as": "u1.test.near", "contract": "fl.clmm.test.near",
+   "view": true, "args": {}, "contains": "99999"},
+
+  {"method": "get-fees", "as": "u1.test.near", "contract": "fl.clmm.test.near",
+   "view": true, "args": {}, "contains": "100000"}
+ ]
+}

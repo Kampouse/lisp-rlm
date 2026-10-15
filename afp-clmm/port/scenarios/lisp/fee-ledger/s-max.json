@@ -1,0 +1,37 @@
+{
+ "name": "fee-ledger-max-yocto",
+ "manifest": "fl.clmm.test.near=../../../contracts/fee-ledger/target/fee-ledger.wasm",
+ "steps": [
+  {"method": "register", "as": "u1.test.near", "contract": "fl.clmm.test.near", "args": {}},
+  {"method": "register", "as": "u2.test.near", "contract": "fl.clmm.test.near", "args": {}},
+
+  {"method": "deposit", "as": "u1.test.near", "contract": "fl.clmm.test.near",
+   "attach": "1000000000000000000000000", "args": {}},
+  {"method": "deposit", "as": "u2.test.near", "contract": "fl.clmm.test.near",
+   "attach": "1", "args": {}},
+
+  {"method": "grow", "as": "u2.test.near", "contract": "fl.clmm.test.near",
+   "attach": "1000000000000000000", "args": { "f": "1000000000000000000" }},
+
+  {"method": "get-fees", "as": "u1.test.near", "contract": "fl.clmm.test.near",
+   "view": true, "args": {}, "contains": "1000000000000000000"},
+
+  {"method": "withdraw", "as": "u1.test.near", "contract": "fl.clmm.test.near",
+   "args": { "sh": "1000000000000000000000000" }},
+
+  {"method": "book", "as": "u1.test.near", "contract": "fl.clmm.test.near",
+   "view": true, "args": { "w": "u1.test.near" }, "contains": "999999999999970096"},
+
+  {"method": "get-paid", "as": "u1.test.near", "contract": "fl.clmm.test.near",
+   "view": true, "args": {}, "contains": "999999999999970096"},
+
+  {"method": "grow", "as": "u2.test.near", "contract": "fl.clmm.test.near",
+   "attach": "20000000000000000000", "args": { "f": "20000000000000000000" },
+   "expect": "trap"},
+
+  {"method": "get-fees", "as": "u1.test.near", "contract": "fl.clmm.test.near",
+   "view": true, "args": {}, "contains": "1000000000000000000"},
+  {"method": "get-grows", "as": "u1.test.near", "contract": "fl.clmm.test.near",
+   "view": true, "args": {}, "contains": "1"}
+ ]
+}
