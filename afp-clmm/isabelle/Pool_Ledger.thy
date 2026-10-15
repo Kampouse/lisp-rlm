@@ -30,11 +30,13 @@ definition psum :: "pstate \<Rightarrow> nat" where
 
 datatype pop =
     PDep nat                      \<comment> \<open>m tokens deposited (mint m shares)\<close>
+  | PSweep nat                    \<comment> \<open>m collected fees arrive in unalloc\<close>
   | PGrow nat                     \<comment> \<open>label f collected fees as fee credit\<close>
   | PWd nat nat                   \<comment> \<open>pay b principal + f fees out to a user\<close>
 
 fun pdep :: "pop \<Rightarrow> nat" where
   "pdep (PDep m) = m"
+| "pdep (PSweep m) = m"
 | "pdep (PGrow f) = 0"
 | "pdep (PWd b f) = 0"
 
@@ -49,6 +51,9 @@ fun pstep :: "pop \<Rightarrow> pstate \<Rightarrow> pstate" where
   \<comment> \<open>deposit: m tokens arrive, labeled principal (mint m shares in fee ledger)\<close>
   "pstep (PDep m) s =
     s\<lparr>principal := principal s + m\<rparr>"
+  \<comment> \<open>sweep: m collected fees arrive in unalloc (token moves in)\<close>
+| "pstep (PSweep m) s =
+    s\<lparr>unalloc := unalloc s + m\<rparr>"
   \<comment> \<open>grow wave: label f of the collected float as fee credit (no token moves)\<close>
 | "pstep (PGrow f) s =
     (if f \<le> unalloc s
@@ -90,6 +95,9 @@ next
   then show ?thesis by (simp add: psum_def)
 qed
 
+lemma psum_PSweep:
+  "psum (pstep (PSweep m) s) = psum s + pdep (PSweep m)"
+  by (simp add: psum_def)
 lemma psum_PWd:
   "psum (pstep (PWd b f) s) = psum s + pdep (PWd b f)"
 proof (cases "b \<le> principal s \<and> f \<le> setaside s")
@@ -110,6 +118,9 @@ lemma psum_step:
 proof (cases g)
   case (PDep m)
   then show ?thesis using psum_PDep by simp
+next
+  case (PSweep m)
+  then show ?thesis using psum_PSweep by simp
 next
   case (PGrow f)
   then show ?thesis using psum_PGrow by simp
