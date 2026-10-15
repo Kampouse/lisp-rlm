@@ -5,6 +5,7 @@ session "CLMM_Dynamic" = "Concentrated_Liquidity_Market_Making_Operations" +
   theories
     Aggregate_Book
     Aggregate_Accrual
+    User_Ledger
     CLMM_Fee_Slack
     CLMM_Fee_Slack_Fixed
     CLMM_Dynamic
