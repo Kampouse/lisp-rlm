@@ -107,6 +107,12 @@ fn main() {
                 eprintln!("❌ refusing to write output onto the input source: {}", out);
                 std::process::exit(1);
             }
+            // Ensure the output directory exists (e.g. `--output target/foo.wasm`)
+            if let Some(parent) = std::path::Path::new(&out).parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent).unwrap();
+                }
+            }
             std::fs::write(&out, &wasm).unwrap();
             eprintln!("✅ {} ({} bytes)", out, wasm.len());
             // Symbolication sidecar: fn name → source form (NEAR targets only;
