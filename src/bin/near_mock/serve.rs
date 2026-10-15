@@ -61,10 +61,12 @@ pub(crate) fn run_serve(args: &[String]) -> Result<(), Box<dyn std::error::Error
                  \x20 --state <file>   persist chain state to <file> (loaded if present,\n\
                  \x20                  created+saved after every tx). Default: in-memory\n\
                  \x20                  fresh chain — nothing touches disk.\n\
-                 \x20 --port <n>       listen port (default 3030)";
+                 \x20 --port <n>       listen port (default 3030)\n\
+                 \x20 --webhook <url>  POST every new event batch to <url> (a2a push)";
     let mut pos: Vec<String> = Vec::new();
     let mut port: u16 = 3030;
     let mut state_path: Option<String> = None;
+    let mut webhook: Option<String> = None;
     let mut it = args[2..].iter();
     while let Some(t) = it.next() {
         match t.as_str() {
@@ -78,6 +80,9 @@ pub(crate) fn run_serve(args: &[String]) -> Result<(), Box<dyn std::error::Error
             "--state" => {
                 state_path = Some(it.next().ok_or("--state requires a file path")?.to_string());
             }
+            "--webhook" => {
+                webhook = Some(it.next().ok_or("--webhook requires a URL")?.to_string());
+            }
             other if other.starts_with("--") => {
                 eprintln!("  ⚠ serve: ignoring flag {other}");
             }
@@ -89,6 +94,11 @@ pub(crate) fn run_serve(args: &[String]) -> Result<(), Box<dyn std::error::Error
         std::process::exit(1);
     }
     let manifest = pos[0].clone();
+    // Bridge --webhook to the process-global the notifier reads (set once,
+    // before any tx can execute; run_serve is called exactly once).
+    if let Some(u) = &webhook {
+        std::env::set_var("NEAR_MOCK_WEBHOOK", u);
+    }
 
     // Load each manifest contract via the ChainBuilder (the builder reads
     // + compiles the wasm itself). Accounts are leaked to satisfy
@@ -123,6 +133,9 @@ pub(crate) fn run_serve(args: &[String]) -> Result<(), Box<dyn std::error::Error
     eprintln!("   NEAR_RPC_URL=http://127.0.0.1:{port}");
     eprintln!("   NEARDATA_API_URL=http://127.0.0.1:{port}/v0/block");
     eprintln!("   API_BASE_URL=http://127.0.0.1:{port}");
+    if let Some(u) = &webhook {
+        eprintln!("   WEBHOOK → {u}");
+    }
 
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
@@ -286,7 +299,7 @@ fn route(
         let result = match rpc_method.as_str() {
             "block" => Some(rpc_block(next_height)),
             "query" => Some(rpc_query(&params, chain)),
-            "broadcast_tx_commit" | "broadcast_tx_async" => {
+            "broadcast_tx_commit" | "broadcast_tx_async" | "send_tx" | "send_tx_async" => {
                 return rpc_broadcast_tx_commit(&params, chain, records, next_height, id);
             }
             "tx" | "EXPERIMENTAL_tx_status" => Some(rpc_tx_status(&params, chain)),
@@ -470,12 +483,28 @@ fn rpc_broadcast_tx_commit(
     id: serde_json::Value,
 ) -> HttpResp {
     use base64::Engine;
-    let bytes_b64 = match params
-        .get("signed_tx_base64")
-        .and_then(|s| s.as_str())
-    {
-        Some(s) => s,
-        None => {
+    // Real nearcore sends broadcast_tx_commit params as a positional ARRAY
+    // ["<base64>"]; some clients (near-python send_tx) send the object form.
+    // Accept both — the array form is what near-rpc-client's
+    // broadcast_tx_commit actually emits (2026-10-15: batch resolve txs died
+    // here with "missing signed_tx_base64").
+    let params_obj = if params.is_array() {
+        // positional form: ["<base64>"] — element 0 IS the base64 string
+        match params.get(0).and_then(|v| v.as_str()) {
+            Some(s) => Ok(s.to_string()),
+            None => Err("array param[0] not a string"),
+        }
+    } else {
+        params
+            .get("signed_tx_base64")
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string())
+            .ok_or("missing signed_tx_base64")
+    };
+    let bytes_b64 = match params_obj {
+        Ok(s) => s,
+        Err(msg) => {
+            eprintln!("MOCK-DBG broadcast reject: {}", msg);
             return HttpResp(
                 200,
                 serde_json::json!({"jsonrpc": "2.0", "id": id,
@@ -708,13 +737,88 @@ fn record_events(
     let height = *h;
     drop(h);
     let _ = chain;
+    let tx_hash = bs58_hash(&format!("mock-event-tx-{height}"));
     let mut recs = records.lock().unwrap();
     recs.push(EventRecord {
         block_height: height,
-        tx_hash: bs58_hash(&format!("mock-event-tx-{height}")),
+        tx_hash: tx_hash.clone(),
         receiver_id: receiver_id.to_string(),
-        logs: event_logs,
+        logs: event_logs.clone(),
     });
+    drop(recs);
+    // ── webhook push: fire-and-forget POST of the new event batch ──
+    if let Some(url) = webhook_url() {
+        let payload = serde_json::json!({
+            "block_height": height,
+            "tx_hash": tx_hash,
+            "receiver_id": receiver_id,
+            "events": event_logs,
+        });
+        let url = url.to_string();
+        let body = payload.to_string();
+        std::thread::spawn(move || {
+            if let Err(e) = http_post_json(&url, &body) {
+                eprintln!("  ⚠ webhook POST failed: {e}");
+            }
+        });
+    }
+}
+
+/// Webhook target: set once via --webhook (bridged to NEAR_MOCK_WEBHOOK),
+/// also directly readable from the env. None = push disabled.
+fn webhook_url() -> Option<&'static str> {
+    use std::sync::OnceLock;
+    static WEBHOOK: OnceLock<Option<String>> = OnceLock::new();
+    WEBHOOK.get_or_init(|| std::env::var("NEAR_MOCK_WEBHOOK").ok()).as_deref()
+}
+
+/// Minimal HTTP/1.1 POST over TcpStream — no client crate (the server is raw
+/// sync TCP; pulling reqwest would drag a tokio runtime in for one call).
+/// http:// only — good enough for local a2a delivery.
+fn http_post_json(url: &str, body: &str) -> Result<(), String> {
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or_else(|| format!("only http:// webhook URLs supported, got {url}"))?;
+    let (host_port, path) = match rest.split_once('/') {
+        Some((h, p)) => (h, p),
+        None => (rest, ""),
+    };
+    let target = format!("/{}", path);
+    use std::net::ToSocketAddrs;
+    let addr = if host_port.contains(':') {
+        host_port.to_string()
+    } else {
+        format!("{host_port}:80")
+    };
+    let sock = addr
+        .to_socket_addrs()
+        .map_err(|e| e.to_string())?
+        .next()
+        .ok_or_else(|| format!("dns resolution failed: {host_port}"))?;
+    let mut stream = TcpStream::connect_timeout(&sock, std::time::Duration::from_secs(5))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .map_err(|e| e.to_string())?;
+    let req = format!(
+        "POST {target} HTTP/1.1\r\nHost: {host_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+    stream.flush().map_err(|e| e.to_string())?;
+    let mut resp = Vec::new();
+    let _ = stream.read_to_end(&mut resp);
+    let head = String::from_utf8_lossy(&resp);
+    let ok = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .is_some_and(|c| (200..300).contains(&c));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("webhook responded: {}", head.lines().next().unwrap_or("??")))
+    }
 }
 
 /// neardata `/v0/block/{height}` — build the BlockData JSON from records at
