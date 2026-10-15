@@ -1,0 +1,50 @@
+{
+ "name": "pool-ledger-conservation",
+ "manifest": "pl.clmm.test.near=../../../contracts/pool-ledger/target/pool-ledger.wasm",
+ "steps": [
+  {"method": "pdep", "as": "u1.test.near", "contract": "pl.clmm.test.near",
+   "attach": "400000", "args": {}},
+
+  {"method": "psweep", "as": "u1.test.near", "contract": "pl.clmm.test.near",
+   "attach": "1000", "args": {}},
+
+  {"method": "get-principal", "as": "u1.test.near", "contract": "pl.clmm.test.near",
+   "view": true, "args": {}, "contains": "400000"},
+
+  {"method": "pgrow", "as": "u1.test.near", "contract": "pl.clmm.test.near",
+   "args": { "f": "400" }},
+
+  {"method": "get-unalloc", "as": "u1.test.near", "contract": "pl.clmm.test.near",
+   "view": true, "args": {}, "contains": "600"},
+  {"method": "get-setaside", "as": "u1.test.near", "contract": "pl.clmm.test.near",
+   "view": true, "args": {}, "contains": "400"},
+
+  {"method": "pwd", "as": "u1.test.near", "contract": "pl.clmm.test.near",
+   "args": { "b": "150000", "f": "150" }},
+
+  {"method": "get-principal", "as": "u1.test.near", "contract": "pl.clmm.test.near",
+   "view": true, "args": {}, "contains": "250000"},
+  {"method": "get-setaside", "as": "u1.test.near", "contract": "pl.clmm.test.near",
+   "view": true, "args": {}, "contains": "250"},
+  {"method": "get-burnt", "as": "u1.test.near", "contract": "pl.clmm.test.near",
+   "view": true, "args": {}, "contains": "150150"},
+
+  {"method": "get-psum", "as": "u1.test.near", "contract": "pl.clmm.test.near",
+   "view": true, "args": {}, "contains": "401000"},
+
+  {"method": "pgrow", "as": "u1.test.near", "contract": "pl.clmm.test.near",
+   "args": { "f": "999999" }},
+
+  {"method": "get-unalloc", "as": "u1.test.near", "contract": "pl.clmm.test.near",
+   "view": true, "args": {}, "contains": "600"},
+
+  {"method": "pwd", "as": "u1.test.near", "contract": "pl.clmm.test.near",
+   "args": { "b": "999999", "f": "0" }},
+
+  {"method": "get-burnt", "as": "u1.test.near", "contract": "pl.clmm.test.near",
+   "view": true, "args": {}, "contains": "150150"},
+
+  {"method": "get-psum", "as": "u1.test.near", "contract": "pl.clmm.test.near",
+   "view": true, "args": {}, "contains": "401000"}
+ ]
+}

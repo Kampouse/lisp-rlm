@@ -1,0 +1,7 @@
+{
+ "name": "pool-ledger",
+ "src": "src/main.lisp",
+ "account": "pl.clmm.test.near",
+ "network": "local",
+ "output": "target/pool-ledger.wasm"
+}
