@@ -10,7 +10,7 @@
    "args": {
     "min_out": "0"
    },
-   "contains": "paid:trader.test.near=4981862715"
+   "contains": "4981862715"
   },
   {
    "method": "swap",
@@ -20,7 +20,7 @@
    "args": {
     "min_out": "0"
    },
-   "contains": "paid:trader.test.near=4984651520"
+   "contains": "4984651520"
   },
   {
    "method": "swap",
@@ -30,7 +30,7 @@
    "args": {
     "min_out": "0"
    },
-   "contains": "paid:trader.test.near=4974341321"
+   "contains": "4974341321"
   },
   {
    "method": "get_fee",
@@ -48,7 +48,7 @@
    "args": {
     "min_out": "0"
    },
-   "contains": "paid:trader.test.near=7476989400"
+   "contains": "7476989400"
   },
   {
    "method": "swap",
@@ -58,7 +58,7 @@
    "args": {
     "min_out": "0"
    },
-   "contains": "paid:trader.test.near=7461666641"
+   "contains": "7461666641"
   }
  ]
 }

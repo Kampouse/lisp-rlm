@@ -406,6 +406,55 @@ fn run_cross(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Human-readable companion for pure-integer return strings: thousands
+/// separators + short scale. "2487325320" → "2,487,325,320 (~2.49B)".
+/// `force_near=true` (scenario step `"display": "near"`) shows the
+/// yoctoNEAR → Ⓝ reading regardless of magnitude; default only annotates
+/// values confidently in yocto range (≥ 1e18).
+/// Returns the input unchanged when it isn't a plain decimal number.
+pub(crate) fn human_num(s: &str, force_near: bool) -> String {
+    let t = s.trim();
+    let neg = t.starts_with('-');
+    let digits = t.trim_start_matches('-');
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return s.to_string();
+    }
+    let bytes = digits.as_bytes();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(*b as char);
+    }
+    let sign: &str = if neg { "-" } else { "" };
+    let Ok(n) = digits.parse::<u128>() else {
+        return format!("{sign}{grouped}");
+    };
+    if n < 10_000 {
+        return format!("{sign}{grouped}");
+    }
+    let short = if n >= 1_000_000_000_000 {
+        format!("{:.2}T", n as f64 / 1e12)
+    } else if n >= 1_000_000_000 {
+        format!("{:.2}B", n as f64 / 1e9)
+    } else if n >= 1_000_000 {
+        format!("{:.2}M", n as f64 / 1e6)
+    } else {
+        format!("{:.2}K", n as f64 / 1e3)
+    };
+    // YoctoNEAR reading: forced by scenario step ("display": "near") or
+    // auto when the magnitude is confidently yocto (≥ 0.001 Ⓝ).
+    if force_near || n >= 1_000_000_000_000_000_000 {
+        let near = n as f64 / 1e24;
+        format!(
+            "{sign}{grouped} (~{short}, ~{near:.4} Ⓝ)"
+        )
+    } else {
+        format!("{sign}{grouped} (~{short})")
+    }
+}
+
 /// CLI skin: prints the outcome of a shared-core execution.
 fn print_outcome(o: &TxOutcome) {
     if o.ok {
@@ -431,9 +480,9 @@ fn print_outcome(o: &TxOutcome) {
             println!("📄 {} (raw i64, untagged: {})", val, val >> 3);
         } else {
             let s = String::from_utf8_lossy(d);
-            if !s.is_empty() {
-                println!("📄 {s}");
-            }
+            // Empty SuccessValue is printed explicitly — a silent no-print
+            // made `""` indistinguishable from no return at all.
+            println!("📄 {}", human_num(&s, false));
         }
     }
 }
@@ -671,9 +720,11 @@ pub(crate) fn execute_tx(
             if pending.is_none() {
                 let st = state.lock().unwrap();
                 if let Some(ref data) = st.return_data {
-                    if !data.is_empty() {
-                        outcome.return_data = Some(data.clone());
-                    }
+                    // Keep EMPTY return data too: `Some([])` = "contract
+                    // returned \"\"" (SuccessValue: "") — distinct from None
+                    // = "no return". Collapsing them hid compiler bugs
+                    // (2026-10-15 post-mortem).
+                    outcome.return_data = Some(data.clone());
                 }
             }
             // Deferred mode: commit the entry, queue the receipts, DON'T
@@ -718,9 +769,9 @@ pub(crate) fn execute_tx(
                         }
                         if let Some(bytes) = results.iter().rev().find_map(|r| r.as_ref().cloned())
                         {
-                            if !bytes.is_empty() {
-                                outcome.return_data = Some(bytes);
-                            }
+                            // Keep empty receipt results too: `Some([])` =
+                            // SuccessValue: "" — distinct from None (no result).
+                            outcome.return_data = Some(bytes);
                         }
                     }
                 }
@@ -2831,7 +2882,15 @@ pub(crate) fn run_scenario_opts(
                         } else {
                             let s = String::from_utf8_lossy(data);
                             if !s.is_empty() {
-                                println!("📄 {}", s);
+                                // Per-step display hint: {"display": "near"}
+                                // forces the yoctoNEAR reading (e.g. a method
+                                // that returns a deposit amount in yocto).
+                                let force_near = step
+                                    .get("display")
+                                    .and_then(|d| d.as_str())
+                                    .map(|d| d == "near")
+                                    .unwrap_or(false);
+                                println!("📄 {}", human_num(&s, force_near));
                                 expect_out.push(s.into_owned());
                             }
                         }

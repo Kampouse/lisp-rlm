@@ -71,7 +71,7 @@
     (begin (debit sender v) (credit rid v) (near/return "ok"))))
 
 (define (ft_balance_of)
-  (near/return (bal (default (near/json_get_str "account") ""))))
+  (near/return (bal (default (near/json_get_str "account_id") ""))))
 
 (define (register)
   (let ((a (default (near/json_get_str "account_id") "")))
