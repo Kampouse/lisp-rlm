@@ -51,7 +51,7 @@ lemma owed_eq_accruef:
 section \<open>The transitions (transcribed from the mirror, in machine order)\<close>
 
 datatype op =
-    Grow nat                       \<comment> \<open>fee wave f hits the pool (post-swap)\<close>
+    Grow nat nat                   \<comment> \<open>fee wave f; 2nd = attached witness (code gate: attached=f)\<close>
   | Deposit addr nat               \<comment> \<open>mint shares to a (H2 settle-then-ckpt)\<close>
   | Claim addr                     \<comment> \<open>explicit claim: settle into BAL\<close>
   | Withdraw addr nat              \<comment> \<open>burn + full payout; legs deliver\<close>
@@ -60,7 +60,7 @@ datatype op =
   | StrandPay addr                 \<comment> \<open>recovered B-leg callback: stranded credit finally delivers\<close>
 
 definition is_Grow :: "op \<Rightarrow> bool" where
-  "is_Grow g = (case g of Grow f \<Rightarrow> True | _ \<Rightarrow> False)"
+  "is_Grow g = (case g of Grow f a \<Rightarrow> True | _ \<Rightarrow> False)"
 
 text \<open>settle_inc: the literal acm-settle guards (g-behind-ck, SHT=0
 bootstrap).\<close>
@@ -71,10 +71,12 @@ definition settle_inc :: "lstate \<Rightarrow> addr \<Rightarrow> nat" where
      else (agg s - ck s a) * shf s a div TWO64)"
 
 fun acm_step :: "op \<Rightarrow> lstate \<Rightarrow> lstate" where
-  \<comment> \<open>acm-grow: agg += f*2^64 div SHT (SHT=0 guard), fees += f (charged)\<close>
-  "acm_step (Grow f) s =
-    s\<lparr>agg := agg s + (if sht s = 0 then 0 else f * TWO64 div sht s),
-      fees := fees s + f\<rparr>"
+  \<comment> \<open>acm-grow: code gate = attached deposit must equal f (grow-pay), else
+     identity (ERR_F abort). agg += f*2^64 div SHT (SHT=0 guard), fees += f\<close>
+  "acm_step (Grow f g) s =
+    (if g \<noteq> f then s
+     else s\<lparr>agg := agg s + (if sht s = 0 then 0 else f * TWO64 div sht s),
+      fees := fees s + f\<rparr>)"
   \<comment> \<open>add_b_liq: settle-then-ckpt, then mint shares into a AND sht\<close>
 | "acm_step (Deposit a m) s =
     (let owed = settle_inc s a in
@@ -253,14 +255,16 @@ lemma ck_le_agg:
 text \<open>Component rewriting: one simp lemma per op field (acm\_step
 unfolds + fun_upd apply; each is a one-liner).\<close>
 
-lemma grow_agg: "agg (acm_step (Grow f) s)
-  = agg s + (if sht s = 0 then 0 else f * TWO64 div sht s)"
+lemma grow_agg: "agg (acm_step (Grow f g) s)
+  = agg s + (if g \<noteq> f then 0 else if sht s = 0 then 0 else f * TWO64 div sht s)"
   by simp
-lemma grow_fees: "fees (acm_step (Grow f) s) = fees s + f" by simp
-lemma grow_ck: "ck (acm_step (Grow f) s) b = ck s b" by simp
-lemma grow_bal: "bal (acm_step (Grow f) s) b = bal s b" by simp
-lemma grow_paid: "paid (acm_step (Grow f) s) b = paid s b" by simp
-lemma grow_shf: "shf (acm_step (Grow f) s) x = shf s x" by simp
+lemma grow_fees: "fees (acm_step (Grow f g) s) = fees s + (if g = f then f else 0)"
+  by simp
+lemma grow_gated: "g \<noteq> f \<Longrightarrow> acm_step (Grow f g) s = s" by simp
+lemma grow_ck: "ck (acm_step (Grow f g) s) b = ck s b" by simp
+lemma grow_bal: "bal (acm_step (Grow f g) s) b = bal s b" by simp
+lemma grow_paid: "paid (acm_step (Grow f g) s) b = paid s b" by simp
+lemma grow_shf: "shf (acm_step (Grow f g) s) x = shf s x" by simp
 
 lemma deposit_shf: "shf (acm_step (Deposit a m) s) x
   = (if x = a then shf s a + m else shf s x)" by simp
@@ -403,20 +407,38 @@ qed
 
 text \<open>Per-op invariant preservation (gates = contract truth paths).\<close>
 
-lemma grow_preserves_inv: "ledger_inv s \<Longrightarrow> ledger_inv (acm_step (Grow f) s)"
+lemma grow_preserves_inv: "ledger_inv s \<Longrightarrow> ledger_inv (acm_step (Grow f g) s)"
 proof -
   assume inv: "ledger_inv s"
-  have ckstep: "\<forall>b. ck (acm_step (Grow f) s) b \<le> agg (acm_step (Grow f) s)"
-  proof
-    fix b
-    have c: "ck s b \<le> agg s" using inv by (simp add: ledger_inv_def)
-    have e1: "ck (acm_step (Grow f) s) b = ck s b" by (rule grow_ck)
-    have e2: "agg s \<le> agg (acm_step (Grow f) s)" by (simp add: grow_agg le_add2)
-    have "ck s b \<le> agg (acm_step (Grow f) s)" using c e2 by (rule le_trans)
-    then show "ck (acm_step (Grow f) s) b \<le> agg (acm_step (Grow f) s)"
-      by (simp add: e1)
+  show ?thesis
+  proof (cases "g = f")
+    case True
+    show ?thesis
+      unfolding ledger_inv_def
+    proof (intro conjI)
+      show "sum (shf (acm_step (Grow f g) s)) USERS \<le> sht (acm_step (Grow f g) s)"
+        using True inv by (simp add: ledger_inv_def grow_shf)
+    next
+      show "\<forall>a. a \<notin> USERS \<longrightarrow> shf (acm_step (Grow f g) s) a = 0"
+        using True inv by (simp add: ledger_inv_def grow_shf)
+    next
+      show "\<forall>b. ck (acm_step (Grow f g) s) b \<le> agg (acm_step (Grow f g) s)"
+      proof
+        fix b
+        have c: "ck s b \<le> agg s" using inv by (simp add: ledger_inv_def)
+        have e1: "ck (acm_step (Grow f g) s) b = ck s b" by (rule grow_ck)
+        have e2: "agg s \<le> agg (acm_step (Grow f g) s)"
+          using True by (simp add: grow_agg le_add2)
+        have "ck s b \<le> agg (acm_step (Grow f g) s)" using c e2 by (rule le_trans)
+        then show "ck (acm_step (Grow f g) s) b \<le> agg (acm_step (Grow f g) s)"
+          using True by (simp add: e1)
+      qed
+    qed
+  next
+    case False
+    have eq: "acm_step (Grow f g) s = s" using grow_gated[OF False] .
+    then show ?thesis using inv by simp
   qed
-  then show ?thesis using inv by (simp add: ledger_inv_def grow_agg)
 qed
 
 lemma deposit_preserves_inv:
@@ -810,34 +832,42 @@ lemma book_strand_pay_any: "book (acm_step (StrandPay a) s) b = book s b"
 
 lemma book_grow:
   assumes inv: "ledger_inv s" and aU: "a \<in> USERS"
-  shows "book (acm_step (Grow f) s) a \<le> book s a + f + 1"
+  shows "book (acm_step (Grow f g) s) a
+       \<le> book s a + (if g = f then f else 0) + (if g = f then 1 else 0)"
 proof -
-  have sh_le: "shf s a \<le> sht s" using inv aU by (rule shf_le_sht)
-  have cka: "ck s a \<le> agg s" using ck_le_agg[OF inv] .
-  have "\<Delta> \<le> f * TWO64 div sht s \<Longrightarrow>
+  have gated: "g \<noteq> f \<Longrightarrow> ?thesis"
+    by (simp add: book_def grow_gated)
+  have ungated: "g = f \<Longrightarrow> ?thesis"
+  proof -
+    assume gf: "g = f"
+    have sh_le: "shf s a \<le> sht s" using inv aU by (rule shf_le_sht)
+    have cka: "ck s a \<le> agg s" using ck_le_agg[OF inv] .
+    have "\<Delta> \<le> f * TWO64 div sht s \<Longrightarrow>
         (agg s + \<Delta> - ck s a) * shf s a div TWO64
           \<le> Suc ((agg s - ck s a) * shf s a div TWO64 + f)" for \<Delta>
-    using grow_pending_bound[of s a _ f] sh_le cka by simp
-  note bound = this
-  show ?thesis
-  proof (cases "sht s = 0")
-    case True
+      using grow_pending_bound[of s a _ f] sh_le cka by simp
+    note bound = this
     show ?thesis
-      unfolding book_def pending_def
-      using True
-      apply (simp add: grow_agg grow_ck grow_bal grow_paid grow_shf)
-      apply linarith?
-      done
-  next
-    case False
-    hence pos: "0 < sht s" by simp
-    show ?thesis
-      unfolding book_def pending_def
-      using pos bound[of "f * TWO64 div sht s"]
-      apply (simp add: grow_agg grow_ck grow_bal grow_paid grow_shf)
-      apply linarith?
-      done
+    proof (cases "sht s = 0")
+      case True
+      show ?thesis
+        unfolding book_def pending_def
+        using True gf
+        apply (simp add: grow_agg grow_ck grow_bal grow_paid grow_shf)
+        apply linarith?
+        done
+    next
+      case False
+      hence pos: "0 < sht s" by simp
+      show ?thesis
+        unfolding book_def pending_def
+        using pos gf bound[of "f * TWO64 div sht s"]
+        apply (simp add: grow_agg grow_ck grow_bal grow_paid grow_shf)
+        apply linarith?
+        done
+    qed
   qed
+  show ?thesis by (cases "g = f") (use gated ungated in auto)
 qed
 
 lemma fees_step_ge: "fees s \<le> fees (acm_step g s)"
@@ -855,24 +885,9 @@ next
   finally show ?case by simp
 qed
 
-text \<open>Grow-case arithmetic of conservation, factored out: nat
-truncated subtraction meets the telescoped fees book.\<close>
-
-lemma grow_conservation_step:
-  assumes ih': "book (acm_run gs (acm_step (Grow f) s)) a
-             \<le> book (acm_step (Grow f) s) a
-                + (fees (acm_run gs (acm_step (Grow f) s))
-                   - fees (acm_step (Grow f) s))
-                + length (filter is_Grow gs)"
-  assumes step: "book (acm_step (Grow f) s) a \<le> book s a + f + 1"
-  assumes fee: "fees (acm_step (Grow f) s) = fees s + f"
-  assumes feege: "fees s + f \<le> fees (acm_run gs (acm_step (Grow f) s))"
-  assumes len: "length (filter is_Grow (Grow f # gs))
-             = length (filter is_Grow gs) + 1"
-  shows "book (acm_run gs (acm_step (Grow f) s)) a
-       \<le> book s a + (fees (acm_run gs (acm_step (Grow f) s)) - fees s)
-         + length (filter is_Grow (Grow f # gs))"
-  using assms by arith
+text \<open>Grow-case arithmetic of conservation is inlined in the
+conservation proof below (nat truncated subtraction meets the
+telescoped fees book).\<close>
 
 lemma nat_le_add_right: "S \<le> B \<Longrightarrow> S + C \<le> B + (C :: nat)"
   by simp
@@ -902,48 +917,66 @@ next
     using Cons.IH[OF ok' inv'] by blast
   show ?case
   proof (cases g)
-    case (Grow f)
-    have step: "book (acm_step (Grow f) s) a \<le> book s a + f + 1"
-      using inv aU book_grow[where s=s and a=a and f=f] by blast
-    from ih[unfolded Grow] have ih': "book (acm_run gs (acm_step (Grow f) s)) a
-             \<le> book (acm_step (Grow f) s) a
-                + (fees (acm_run gs (acm_step (Grow f) s))
-                   - fees (acm_step (Grow f) s))
-                + length (filter is_Grow gs)" .
-    have runeq: "acm_run (Grow f # gs) s = acm_run gs (acm_step (Grow f) s)"
+    case (Grow f gv)
+    have runeq: "acm_run (Grow f gv # gs) s = acm_run gs (acm_step (Grow f gv) s)"
       by simp
-    have len: "length (filter is_Grow (Grow f # gs))
+    have len: "length (filter is_Grow (Grow f gv # gs))
              = length (filter is_Grow gs) + 1"
       by (simp add: is_Grow_def)
-    have fee: "fees (acm_step (Grow f) s) = fees s + f"
-      by (rule grow_fees)
-    have feege: "fees s + f \<le> fees (acm_run gs (acm_step (Grow f) s))"
-      using fee fees_run_ge[of "acm_step (Grow f) s" gs] by simp
-    from feege obtain k where
-      Aeq: "fees (acm_run gs (acm_step (Grow f) s)) = fees s + f + k"
-      by (auto simp: le_iff_add)
-    have ksub1: "fees (acm_run gs (acm_step (Grow f) s))
-                 - fees (acm_step (Grow f) s) = k"
-      using Aeq fee by simp
-    have ksub2: "fees (acm_run gs (acm_step (Grow f) s)) - fees s = f + k"
-      using Aeq by simp
-    have e1: "book (acm_run gs (acm_step (Grow f) s)) a
-            \<le> book (acm_step (Grow f) s) a + (k + length (filter is_Grow gs))"
-      using ih'[unfolded ksub1] by simp
-    have e2: "book (acm_step (Grow f) s) a + (k + length (filter is_Grow gs))
-            \<le> (book s a + f + 1) + (k + length (filter is_Grow gs))"
-      using nat_le_add_right[OF step,
-              of "k + length (filter is_Grow gs)"] by simp
-    have e3: "book (acm_run gs (acm_step (Grow f) s)) a
-            \<le> (book s a + f + 1) + (k + length (filter is_Grow gs))"
-      using le_trans[OF e1 e2] by simp
-    have e5: "(book s a + f + 1) + (k + length (filter is_Grow gs))
-            = book s a + (f + k) + (length (filter is_Grow gs) + 1)"
-      by simp
     show ?thesis
-      unfolding Grow runeq ksub2
-      using len e3 e5
-      by simp
+    proof (cases "gv = f")
+      case True note gf = True
+      have step: "book (acm_step (Grow f gv) s) a \<le> book s a + f + 1"
+        using inv aU book_grow[where s=s and a=a and f=f and g=gv] gf by simp
+      from ih[unfolded Grow] have ih': "book (acm_run gs (acm_step (Grow f gv) s)) a
+             \<le> book (acm_step (Grow f gv) s) a
+                + (fees (acm_run gs (acm_step (Grow f gv) s))
+                   - fees (acm_step (Grow f gv) s))
+                + length (filter is_Grow gs)" .
+      have fee: "fees (acm_step (Grow f gv) s) = fees s + f"
+        using gf grow_fees[of f gv s] by simp
+      have feege: "fees s + f \<le> fees (acm_run gs (acm_step (Grow f gv) s))"
+        using fee fees_run_ge[of "acm_step (Grow f gv) s" gs] by simp
+      from feege obtain k where
+        Aeq: "fees (acm_run gs (acm_step (Grow f gv) s)) = fees s + f + k"
+        by (auto simp: le_iff_add)
+      have ksub1: "fees (acm_run gs (acm_step (Grow f gv) s))
+                 - fees (acm_step (Grow f gv) s) = k"
+        using Aeq fee by simp
+      have ksub2: "fees (acm_run gs (acm_step (Grow f gv) s)) - fees s = f + k"
+        using Aeq by simp
+      have e1: "book (acm_run gs (acm_step (Grow f gv) s)) a
+            \<le> book (acm_step (Grow f gv) s) a + (k + length (filter is_Grow gs))"
+        using ih'[unfolded ksub1] by simp
+      have e2: "book (acm_step (Grow f gv) s) a + (k + length (filter is_Grow gs))
+            \<le> (book s a + f + 1) + (k + length (filter is_Grow gs))"
+        using nat_le_add_right[OF step,
+                of "k + length (filter is_Grow gs)"] by simp
+      have e3: "book (acm_run gs (acm_step (Grow f gv) s)) a
+            \<le> (book s a + f + 1) + (k + length (filter is_Grow gs))"
+        using le_trans[OF e1 e2] by simp
+      have e5: "(book s a + f + 1) + (k + length (filter is_Grow gs))
+            = book s a + (f + k) + (length (filter is_Grow gs) + 1)"
+        by simp
+      show ?thesis
+        unfolding Grow runeq ksub2
+        using len e3 e5
+        by simp
+    next
+      case False
+      have feq: "fees (acm_step (Grow f gv) s) = fees s"
+        using grow_fees[of f gv s] False by simp
+      have ih'': "book (acm_run gs (acm_step (Grow f gv) s)) a
+             \<le> book s a + (fees (acm_run gs (acm_step (Grow f gv) s)) - fees s)
+                + length (filter is_Grow gs)"
+        using ih[unfolded Grow] feq grow_gated[OF False] by simp
+      have len1: "length (filter is_Grow (Grow f gv # gs))
+             = length (filter is_Grow gs) + 1"
+        by (simp add: is_Grow_def)
+      show ?thesis
+        unfolding Grow runeq len1
+        using nat_le_add_right[OF ih'', of 1] by simp
+    qed
   next
     case (Deposit u m)
     have uU: "u \<in> USERS" using Cons.prems(1) Deposit by simp
@@ -1048,6 +1081,94 @@ lemma wd_fail_identity:
   "acm_step (WdFail a n) s = s"
   by (simp add: fail_id)
 
+section \<open>Attack-surface guards the code enforces, stated as theorems\<close>
+
+text \<open>Double withdraw: a second Withdraw on the same shares-rights is
+order-insensitive at the book level. The first payout rides the
+settlement; the second is the residual -- no double-credit.\<close>
+
+lemma withdraw_no_double_credit:
+  assumes inv: "ledger_inv s"
+  assumes aU: "a \<in> USERS"
+  assumes gate1: "n1 \<le> shf s a"
+  assumes gate2: "n1 + n2 \<le> shf s a"
+  shows "book (acm_run [Withdraw a n2, Withdraw a n1] s) a
+       = book (acm_run [Withdraw a n1, Withdraw a n2] s) a"
+proof -
+  have mid: "shf (acm_step (Withdraw a n1) s) a = shf s a - n1"
+    using gate1 by (simp add: wd_shf)
+  have gate2': "n2 \<le> shf (acm_step (Withdraw a n1) s) a"
+    using gate2 mid by linarith
+  have inv1: "ledger_inv (acm_step (Withdraw a n1) s)"
+    using wd_preserves_inv[OF inv gate1] .
+  have b1: "book (acm_step (Withdraw a n1) s) a = book s a"
+    using book_withdraw_any[OF inv aU gate1] by simp
+  have b2: "book (acm_step (Withdraw a n2) (acm_step (Withdraw a n1) s)) a
+          = book (acm_step (Withdraw a n1) s) a"
+    using book_withdraw_any[OF inv1 aU gate2'] by simp
+  have mid2: "shf (acm_step (Withdraw a n2) s) a = shf s a - n2"
+    using gate2 by (simp add: wd_shf)
+  have gate1': "n1 \<le> shf (acm_step (Withdraw a n2) s) a"
+    using gate2 mid2 by linarith
+  have g2: "n2 \<le> shf s a" using gate2 by linarith
+  have inv2: "ledger_inv (acm_step (Withdraw a n2) s)"
+    using wd_preserves_inv[OF inv g2] .
+  have c1: "book (acm_step (Withdraw a n2) s) a = book s a"
+    using book_withdraw_any[OF inv aU g2] by simp
+  have c2: "book (acm_step (Withdraw a n1) (acm_step (Withdraw a n2) s)) a
+          = book (acm_step (Withdraw a n2) s) a"
+    using book_withdraw_any[OF inv2 aU gate1'] by simp
+  have U1: "acm_run [Withdraw a n2, Withdraw a n1] s
+          = acm_step (Withdraw a n1) (acm_step (Withdraw a n2) s)"
+    by (subst acm_run.simps(2), subst acm_run.simps(2),
+        subst acm_run.simps(1)) (rule refl)
+  have U2: "acm_run [Withdraw a n1, Withdraw a n2] s
+          = acm_step (Withdraw a n2) (acm_step (Withdraw a n1) s)"
+    by (subst acm_run.simps(2), subst acm_run.simps(2),
+        subst acm_run.simps(1)) (rule refl)
+  have FWD: "book (acm_step (Withdraw a n1) (acm_step (Withdraw a n2) s)) a
+           = book (acm_step (Withdraw a n2) (acm_step (Withdraw a n1) s)) a"
+  proof -
+    have "book (acm_step (Withdraw a n1) (acm_step (Withdraw a n2) s)) a
+        = book (acm_step (Withdraw a n2) s) a" by (rule c2)
+    also have "... = book s a" by (rule c1)
+    also have "... = book (acm_step (Withdraw a n1) s) a" by (rule b1[symmetric])
+    also have "... = book (acm_step (Withdraw a n2) (acm_step (Withdraw a n1) s)) a"
+      by (rule b2[symmetric])
+    finally show ?thesis .
+  qed
+  show ?thesis unfolding U1 U2 by (rule FWD)
+qed
+
+text \<open>StrandPay idempotency: once the parked credit is delivered, a
+second StrandPay is the identity on the book (nothing left parked).\<close>
+
+lemma strandpay_idempotent_book:
+  "book (acm_run [StrandPay a, StrandPay a] s) b = book (acm_step (StrandPay a) s) b"
+proof -
+  have once: "stranded (acm_step (StrandPay a) s) a = 0"
+    unfolding strandpay_stranded by simp
+  show ?thesis
+  proof (cases "b = a")
+    case True
+    have "book (acm_step (StrandPay a) (acm_step (StrandPay a) s)) a
+        = book (acm_step (StrandPay a) s) a"
+      unfolding book_def pending_def
+      by (simp add: strandpay_shf strandpay_sht strandpay_agg strandpay_ck
+                    strandpay_bal strandpay_paid once)
+    then show ?thesis using True by simp
+  next
+    case False
+    have "book (acm_step (StrandPay a) (acm_step (StrandPay a) s)) b
+        = book (acm_step (StrandPay a) s) b"
+      unfolding book_def pending_def
+      using False
+      by (simp add: strandpay_shf strandpay_sht strandpay_agg strandpay_ck
+                    strandpay_bal strandpay_paid strandpay_stranded)
+    then show ?thesis using False by simp
+  qed
+qed
+
 section \<open>Port-boundary proofs: fee provenance + width safety\<close>
 
 text \<open>The conservation theorem lives over unbounded nat; the lisp-rlm
@@ -1062,7 +1183,7 @@ definition BND :: nat where
   "BND = 2^128"
 
 fun amt_of :: "op \<Rightarrow> nat" where
-  "amt_of (Grow f) = f"
+  "amt_of (Grow f g) = (if g = f then f else 0)"
 | "amt_of _ = 0"
 
 lemma fees_step: "fees (acm_step g s) = fees s + amt_of g"
@@ -1154,11 +1275,11 @@ the same payout. (3*2^64 div 4) per share, times 4 shares, div 2^64 --
 the machine echoes it without hand-transcription.\<close>
 
 value "paid (acm_step (Withdraw 1 4)
-           (acm_step (Grow 3) (acm_step (Deposit 1 4) \<sigma>0))) 1"
+           (acm_step (Grow 3 3) (acm_step (Deposit 1 4) \<sigma>0))) 1"
 
-value "book (acm_run [Deposit 1 4, Grow 3, Withdraw 1 4] \<sigma>0) 1"
+value "book (acm_run [Deposit 1 4, Grow 3 3, Withdraw 1 4] \<sigma>0) 1"
 
-value "book (acm_run [Deposit 1 4, Grow 3, Strand 1 4] \<sigma>0) 1"
+value "book (acm_run [Deposit 1 4, Grow 3 3, Strand 1 4] \<sigma>0) 1"
 
 end
 
