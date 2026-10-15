@@ -685,9 +685,16 @@ fn execute_promise_uncached(
         return Ok(vec![None]);
     }
     if is_yield_join(idx) {
-        // Join on a yield: only promise_yield_resume may fire it (with the
-        // resume payload as the dep result). The flush/chain walk must skip.
-        return Ok(Vec::new());
+        // (2026-10-15) Yield-join mark with NO open yield on the deps = the pt
+        // host's speculative dep_cross mark (any cross-contract dep gets it).
+        // A dep that never yields (MPC `sign`, plain FT calls) must fire its
+        // join from the flush drain like a normal then — the resume path has
+        // nothing to deliver. Previously this arm swallowed the join
+        // unconditionally AND marked it executed, so the kernel's onSignDone
+        // never ran. Keep the inert skip ONLY for true yield deps (those are
+        // already deferred by the arm above; this arm is now just the
+        // fall-through guard for correctness).
+        eprintln!("  ⛓ join {} fires from drain (dep owns no open yield)", idx);
     }
     EXECUTED_PROMISES.with(|e| e.borrow_mut().insert(idx));
     let forced = FAIL_RECEIPTS.with(|f| f.borrow().contains(&idx));

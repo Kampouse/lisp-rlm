@@ -787,10 +787,22 @@ pub(crate) fn execute_tx(
                         .enumerate()
                         .find(|(i, _)| {
                             !EXECUTED_PROMISES.with(|e| e.borrow().contains(i))
-                                && !crate::promises::is_yield_join(*i)
-                                && !PROMISE_DAG.with(|d| {
-                                    crate::promises::deps_own_open_yield(&d.borrow()[*i].deps)
-                                })
+                                // (2026-10-15) A yield-join whose dep created NO
+                                // open yield must still fire from the drain: the
+                                // yield-join mark is set speculatively at
+                                // promise_then time whenever the dep is a cross-
+                                // contract call (pt host dep_cross heuristic) —
+                                // an MPC `sign` dep never yields, so gating the
+                                // drain on the mark alone orphaned the callback
+                                // forever (kernel onSignDone never ran). Fire
+                                // when the dep chain owns no open yield; the
+                                // resume path still owns the true-yield case.
+                                && (!crate::promises::is_yield_join(*i)
+                                    || !PROMISE_DAG.with(|d| {
+                                        crate::promises::deps_own_open_yield(
+                                            &d.borrow()[*i].deps,
+                                        )
+                                    }))
                         })
                         .map(|(i, _)| i)
                 });
