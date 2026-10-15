@@ -1,0 +1,125 @@
+{
+ "name": "clmm-accrual-mount",
+ "manifest": "acm.test.near=../../../contracts/accrual-mount/target/acm.wasm",
+ "steps": [
+  {
+   "method": "m-init",
+   "as": "factory.test.near",
+   "contract": "acm.test.near",
+   "attach": "0",
+   "args": {},
+   "contains": "SHT:0"
+  },
+  {
+   "method": "m-deposit",
+   "as": "factory.test.near",
+   "contract": "acm.test.near",
+   "attach": "0",
+   "args": {
+    "lp": "lp1.test.near",
+    "amt": "6000"
+   },
+   "contains": "SHT:6000"
+  },
+  {
+   "method": "m-deposit",
+   "as": "factory.test.near",
+   "contract": "acm.test.near",
+   "attach": "0",
+   "args": {
+    "lp": "lp2.test.near",
+    "amt": "4000"
+   },
+   "contains": "SHT:10000"
+  },
+  {
+   "method": "m-fee",
+   "as": "factory.test.near",
+   "contract": "acm.test.near",
+   "attach": "0",
+   "args": {
+    "f": "3000"
+   },
+   "contains": "PS:5534023222112865484"
+  },
+  {
+   "method": "m-claim",
+   "as": "factory.test.near",
+   "contract": "acm.test.near",
+   "attach": "0",
+   "args": {
+    "lp": "lp2.test.near"
+   },
+   "contains": "BAL:lp2.test.near=1199"
+  },
+  {
+   "method": "m-deposit",
+   "as": "factory.test.near",
+   "contract": "acm.test.near",
+   "attach": "0",
+   "args": {
+    "lp": "lp3.test.near",
+    "amt": "10"
+   },
+   "contains": "SHT:10010"
+  },
+  {
+   "method": "m-fee",
+   "as": "factory.test.near",
+   "contract": "acm.test.near",
+   "attach": "0",
+   "args": {
+    "f": "1000"
+   },
+   "contains": "PS:7376854797908025485"
+  },
+  {
+   "method": "m-fee",
+   "as": "factory.test.near",
+   "contract": "acm.test.near",
+   "attach": "0",
+   "args": {
+    "f": "7"
+   },
+   "contains": "PS:7389754618938591605"
+  },
+  {
+   "method": "m-claim",
+   "as": "factory.test.near",
+   "contract": "acm.test.near",
+   "attach": "0",
+   "args": {
+    "lp": "lp3.test.near"
+   },
+   "contains": "BAL:lp3.test.near=1"
+  },
+  {
+   "method": "m-claim",
+   "as": "factory.test.near",
+   "contract": "acm.test.near",
+   "attach": "0",
+   "args": {
+    "lp": "lp1.test.near"
+   },
+   "contains": "BAL:lp1.test.near=2403"
+  },
+  {
+   "method": "m-claim",
+   "as": "factory.test.near",
+   "contract": "acm.test.near",
+   "attach": "0",
+   "args": {
+    "lp": "lp2.test.near"
+   },
+   "contains": "BAL:lp2.test.near=1601"
+  },
+  {
+   "method": "m-view",
+   "as": "factory.test.near",
+   "contract": "acm.test.near",
+   "attach": "0",
+   "args": {},
+   "contains": "OWEDSUM:4005"
+  }
+ ]
+}

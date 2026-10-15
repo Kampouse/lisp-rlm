@@ -401,6 +401,61 @@ impl WasmEmitter {
                 let mut v = Vec::new();
                 v.extend(key);
                 v.push(Instruction::LocalSet(k));
+                // ── 2B binary-cell fast path (u128_storage.rs) ──
+                // Literal key + limb-borne value ⇒ skip the to_str render:
+                // store 0x00 || 16B LE, pass the packed tagged Str to the
+                // generic write below. Dynamic keys and tagged values fall
+                // through to the plain decimal path — byte-identical to
+                // phase 1 (this is what keeps paid:/left: human-audit).
+                if self.storage_reads_hot {
+                    if let Some(binv) = self.try_hot_write(&a[0], &a[1])? {
+                        v.extend(binv);
+                        v.push(Instruction::LocalSet(val_l));
+                        Self::emit_assert_tag_str(&mut v, k);
+                        Self::emit_assert_tag_str(&mut v, val_l);
+                        // ── P3 write-through: the 2B binary-cell write
+                        // coalesces exactly like the generic one — upsert
+                        // (k, val_l) and skip the immediate host write when
+                        // the table took it; __h_wt_flush replays it once
+                        // at the export boundary. ──
+                        let (upsert, wt_flag) = self.emit_wt_upsert(k, val_l)?;
+                        v.extend(upsert);
+                        if wt_flag != u32::MAX {
+                            v.push(Instruction::LocalGet(wt_flag));
+                            v.push(Instruction::I64Eqz);
+                            v.push(Instruction::If(BlockType::Empty));
+                        }
+                        // storage_write(klen, kptr, vlen, vptr, 0) — kptr is
+                        // the LOW 32 bits of the payload (mask, never
+                        // wrap(extend): that truncates the POINTER, not the
+                        // length, and the flush replays garbage key bytes).
+                        v.push(Instruction::LocalGet(k));
+                        v.extend(self.emit_untag());
+                        v.push(Instruction::I64Const(32));
+                        v.push(Instruction::I64ShrU);
+                        v.push(Instruction::LocalGet(k));
+                        v.extend(self.emit_untag());
+                        v.push(Instruction::I64Const(0xFFFF_FFFF));
+                        v.push(Instruction::I64And);
+                        v.push(Instruction::LocalGet(val_l));
+                        v.extend(self.emit_untag());
+                        v.push(Instruction::I64Const(32));
+                        v.push(Instruction::I64ShrU);
+                        v.push(Instruction::LocalGet(val_l));
+                        v.extend(self.emit_untag());
+                        v.push(Instruction::I64Const(0xFFFF_FFFF));
+                        v.push(Instruction::I64And);
+                        v.push(Instruction::I64Const(0));
+                        v.push(Self::host_call(17));
+                        v.push(Instruction::Drop);
+                        if wt_flag != u32::MAX {
+                            v.push(Instruction::End);
+                        }
+                        v.push(Instruction::I64Const(0));
+                        v.extend(self.emit_tag_num());
+                        return Ok(v);
+                    }
+                }
                 v.extend(val);
                 v.push(Instruction::LocalSet(val_l));
                 // Runtime tag guard: both operands must be Str. A Num value
@@ -409,6 +464,18 @@ impl WasmEmitter {
                 // hard-errors with the same rule).
                 Self::emit_assert_tag_str(&mut v, k);
                 Self::emit_assert_tag_str(&mut v, val_l);
+                // ── P3 write-through: coalesce into the memo table with a
+                // dirty bit; the immediate host write below is SKIPPED on the
+                // upsert path (flag != u32::MAX ⇒ emitted) and replayed once
+                // by __h_wt_flush at the export boundary. Fallback paths
+                // (long key / full table) keep the immediate host write.
+                let (upsert, wt_flag) = self.emit_wt_upsert(k, val_l)?;
+                v.extend(upsert);
+                if wt_flag != u32::MAX {
+                    v.push(Instruction::LocalGet(wt_flag));
+                    v.push(Instruction::I64Eqz);
+                    v.push(Instruction::If(BlockType::Empty));
+                }
                 // storage_write(key_len, key_ptr, val_len, val_ptr, register=0)
                 v.push(Instruction::LocalGet(k));
                 v.extend(self.emit_untag());
@@ -429,6 +496,9 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(0));
                 v.push(Self::host_call(17));
                 v.push(Instruction::Drop); // evicted-length return is not the Lisp result
+                if wt_flag != u32::MAX {
+                    v.push(Instruction::End);
+                }
                 v.push(Instruction::I64Const(0));
                 v.extend(self.emit_tag_num());
                 Ok(v)
@@ -541,6 +611,85 @@ impl WasmEmitter {
                     self.emit_storage_cache_insert(k, res_l, cnt_l, slot_l, j_l, klen_l, kptr_l),
                 );
                 v.push(Instruction::End);
+                // 2B string-context normalization: any storage_get can
+                // return a binary cell (0x00 || 16B LE) — the write-side
+                // splice makes them reachable under ANY key spelling.
+                // String sinks (log / str-cat / return / decimal parse)
+                // need canonical decimal. Sniff: Str-tag + non-empty +
+                // NUL first byte ⇒ render limbs via __h_u128_to_str
+                // (identical text to the tagged path); anything else ⇒
+                // pass through untouched.
+                // Placed AFTER the cache insert so hit and miss normalize
+                // alike and the cache itself stays raw. Limb-context callers
+                // (emit_u128_val sniff) consume the raw cell directly and
+                // never reach this arm twice.
+                if self.storage_reads_hot && !self.b2b_limb_read_active {
+                    // 2B-fixed: normalize at EVERY storage_get site whose
+                    // value can reach a string sink — dynamic keys included.
+                    // The write-side splice makes binary cells reachable
+                    // under any key spelling (computed keys that alias a
+                    // literal-written cell), so a literal-key-only guard
+                    // leaks raw 17-byte cells into __h_u128_parse
+                    // (pool_internal quote_buy trap). NIL-miss guard keeps
+                    // misses untouched; len>0 keeps byte-exact empty values
+                    // (decimal "" and binary cells are never confusable).
+                    {
+                        let h = self.ensure_u128_str_helpers();
+                        let ptr_l = self.local_idx("__b2b_norm_ptr");
+                        let len_l = self.local_idx("__b2b_norm_len");
+                        // NIL-miss guard: only Str-tagged results are
+                        // normalized. A miss returns TAG_NIL — untagging it
+                        // yields ptr 0 and load8(addr 0) would misread heap
+                        // zero-page as a binary cell ("0" on miss, breaking
+                        // `default`/nil string sinks). Non-Str ⇒ pass through.
+                        v.push(Instruction::LocalGet(res_l));
+                        v.push(Instruction::I64Const(7));
+                        v.push(Instruction::I64And);
+                        v.push(Instruction::I64Const(TAG_STR));
+                        v.push(Instruction::I64Eq);
+                        v.push(Instruction::If(BlockType::Empty));
+                        v.push(Instruction::LocalGet(res_l));
+                        v.extend(self.emit_untag());
+                        v.push(Instruction::I64Const(0xFFFF_FFFF));
+                        v.push(Instruction::I64And);
+                        v.push(Instruction::LocalSet(ptr_l));
+                        v.push(Instruction::LocalGet(ptr_l));
+                        v.push(Instruction::I32WrapI64);
+                        v.push(Instruction::I64Load8U(wasm_encoder::MemArg {
+                            offset: 0,
+                            align: 0,
+                            memory_index: 0,
+                        }));
+                        // First byte as condition — but we need INVERTED
+                        // polarity (normalize when byte == 0), so route the
+                        // byte through Eqz FIRST, then If on the result.
+                        v.push(Instruction::I64Eqz);
+                        v.push(Instruction::If(BlockType::Empty));
+                        // Second tier: a zero-LENGTH Str ("") is never a
+                        // binary cell (cells are 17 bytes) — skip so
+                        // byte-exact empty values stay empty. Non-empty +
+                        // NUL first byte is the binary-cell shape.
+                        v.push(Instruction::LocalGet(res_l));
+                        v.extend(self.emit_untag());
+                        v.push(Instruction::I64Const(32));
+                        v.push(Instruction::I64ShrU);
+                        v.push(Instruction::I64Eqz);
+                        v.push(Instruction::If(BlockType::Empty));
+                        v.push(Instruction::Else);
+                        // NUL + non-empty ⇒ binary cell: render the PAYLOAD
+                        // (ptr+1 skips the 0x00 tag byte — cells are
+                        // 0x00 || 16B LE; rendering at ptr would fold the
+                        // tag into the value, 1000 → 256000).
+                        v.push(Instruction::LocalGet(ptr_l));
+                        v.push(Instruction::I64Const(1));
+                        v.push(Instruction::I64Add);
+                        v.push(Self::call_user(h.to_str));
+                        v.push(Instruction::LocalSet(res_l));
+                        v.push(Instruction::End);
+                        v.push(Instruction::End);
+                        v.push(Instruction::End); // close the Str-tag guard
+                    }
+                }
                 v.push(Instruction::LocalGet(res_l));
                 Ok(v)
             }
@@ -580,6 +729,10 @@ impl WasmEmitter {
                 v.extend(key);
                 v.push(Instruction::LocalSet(k));
                 Self::emit_assert_tag_str(&mut v, k);
+                // P3: replay any pending coalesced writes FIRST (program
+                // order), then remove from real storage, then drop the memo
+                // table (count=0 — a later re-put upserts a fresh slot).
+                v.extend(self.emit_wt_flush_call());
                 v.push(Instruction::LocalGet(k));
                 v.extend(self.emit_untag());
                 v.push(Instruction::I64Const(32));

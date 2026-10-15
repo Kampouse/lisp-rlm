@@ -23,6 +23,10 @@ pub(crate) const U128_R: i64 = 8512; // remainder (divmod)
 pub(crate) const U128_C: i64 = 8528; // muldiv third operand (divisor)
 pub(crate) const U128_Q: i64 = 8544; // muldiv quotient result
 pub(crate) const U128_RM: i64 = 8560; // muldiv remainder result
+// 2026-10-13 (phase 2A): param-twin return cell. Twins parse their tagged
+// __ret once and leave limbs here; call sites copy (lo, hi) from U128_W.
+// Distinct from U128_A/B so twin epilogues never clobber live operand state.
+pub(crate) const U128_W: i64 = 8576;
 
 /// Function-table indices of the synthesized helpers (positions in `funcs`).
 #[derive(Clone, Copy)]

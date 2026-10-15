@@ -22,12 +22,19 @@ ACCRUAL_ACCT = "accrual.test.near"
 LISP_HELPERS = """(define (add a b) (u128/add a b))
 (define (sub a b) (u128/sub a b))
 (define (ult a b) (u128/lt a b))
-(define (bal u) (sget (str-cat "a:bal:" u) "0"))
-(define (charged u) (sget (str-cat "a:charged:" u) "0"))
+(define (sget k) (default (near/storage_get k) "0"))
+(define (sput k v) (near/storage_set k v))
+(define (fail m) (near/log m) (near/abort m))
+(define (bal u) (sget (str-cat "a:bal:" u)))
+(define (charged u) (sget (str-cat "a:charged:" u)))
 (define (credit u a) (sput (str-cat "a:bal:" u) (add (bal u) a)))
 (define (debit u a)
   (if (ult (bal u) a) (fail "ERR_FUNDS") "ok")
   (sput (str-cat "a:bal:" u) (sub (bal u) a)))
+; div-floor64 a b = (a * b) div 2^64, truncating (floor on nat).
+; Mirrors Isabelle div_floor64: owed side rounds DOWN, fail-closed.
+; b = 0 yields 0 (accruef semantics), no error.
+(define (div-floor64 a b) (u128/muldiv a b "18446744073709551616"))
 """
 
 TS_HELPERS = """function sget(k: string): string {
@@ -49,19 +56,11 @@ function charged(u: string): string {
 function credit(u: string, a: string): void {
   sput("a:bal:" + u, u128.add(bal(u), a));
 }
-function debit(u: string, a: string): void {
-  if (u128.lt(bal(u), a)) fail("ERR_FUNDS");
-  sput("a:bal:" + u, u128.sub(bal(u), a));
-}
-function u128MulDiv(a: string, b: string, d: string): string {
-  // (a * b) / d, truncating; d != 0
-  if (d === "0") fail("ERR_DIV0");
-  const A = BigInt(a), B = BigInt(b), D = BigInt(d);
-  return ((A * B) / D).toString();
-}
-function u128Shr64(a: string): string {
-  // a div 2^64  (exact transcription of `div 2^64` in accruef)
-  return (BigInt(a) >> 64n).toString();
+// divFloor64 a b = (a * b) div 2^64, truncating (floor on nat).
+// Mirrors Isabelle div_floor64: owed side rounds DOWN, fail-closed.
+// Same 2^64 literal as the LISP twin and the .thy.
+function divFloor64(a: string, b: string): string {
+  return u128MulDiv(a, b, "18446744073709551616");
 }
 """
 
@@ -72,39 +71,34 @@ def lisp_src():
 ; accruef Lf c (g # gs) = (g - c) * Lf g div 2^64 + accruef Lf g gs
 ; Theorem accrue_within_charged_book: owed <= charged book (per-cell CHARGED).
 
-(define (sget k) (if (defined? k) k "0"))
 ''' + LISP_HELPERS + r'''
-; owed fold: checkpoint-threaded sum of (g - c) * Lf g div 2^64
-; gs: "g1,g2,..." per-op growth deltas; Lf: "rate1,rate2,..." (per-op);
-; c: starting checkpoint (must be <= every g, else ERR_ORDER)
-; -> owed string, then checkpoint advances to last g
-(define (accrue gs-lfs c)
-  (let loop ((gs (map str->num (str-split (car gs-lfs) ",")))
-             (ls (map str->num (str-split (cadr gs-lfs) ",")))
-             (ck (str->num c))
-             (acc 0))
-    (if (null? gs) acc
-        (begin
-          (if (< (car gs) ck) (fail "ERR_ORDER") "ok")
-          (loop (cdr gs) (cdr ls) (car gs)
-                (+ acc (div-floor64 (- (car gs) ck) (car ls)))))))
+; Cons step of the owed fold: accruef Lf c (g # gs) instantiated at the
+; head -- owed(g,c) = (g - c) * Lf g div 2^64. The checkpoint a:ck:<u>
+; carries the fold's c across calls (monotone; g < c aborts ERR_ORDER,
+; exactly accruef's precondition). One exported step = one equation
+; instance; the scenario's step sequence IS the list gs.
+; One call per let* binding (compiler call-sequence discipline: sibling
+; calls in one primitive application clobber -- see probe contract).
+(define (accrue_step)
+  (let* ((g (default (near/json_get_str "g") "0"))
+         (l (default (near/json_get_str "l") "0"))
+         (u (near/predecessor_account_id))
+         (ck-key (str-cat "a:ck:" u))
+         (c (default (near/storage_get ck-key) "0"))
+         (lt (ult g c))
+         (guard (if lt (fail "ERR_ORDER") "ok"))
+         (d (u128/sub g c))
+         (term (div-floor64 d l)))
+    (begin
+      (credit u term)
+      (let ((ch (charged u)))
+        (let ((ch2 (u128/add ch term)))
+          (begin
+            (sput (str-cat "a:charged:" u) ch2)
+            (sput ck-key g)
+            (near/return term)))))))
 
-; entry: accrue { "gs": "g1,g2", "ls": "l1,l2", "c": "ck" }
-; charges owed into caller's cell, preserves invariant owed <= charged
-(define (handle arg)
-  (let* ((gs (get-arg arg "gs"))
-         (ls (get-arg arg "ls"))
-         (c  (get-arg arg "c"))
-         (u  (get-arg arg "user"))
-         (owed (accrue (list gs ls) c))
-         (new-charged (+ (str->num (charged u)) owed)))
-    (credit u (num->str owed))
-    (sput (str-cat "a:charged:" u) (num->str new-charged))
-    (num->str owed)))
-
-(define (get-arg arg k)
-  (let ((v (assoc k arg)))
-    (if v (cdr v) (fail "ERR_ARG"))))
+(export "accrue_step" accrue_step)
 '''
 
 
@@ -114,34 +108,23 @@ def ts_src():
 // accruef Lf c (g # gs) = (g - c) * Lf g div 2^64 + accruef Lf g gs
 // Theorem accrue_within_charged_book: owed <= charged book (per-cell CHARGED).
 ''' + TS_HELPERS + r'''
-// owed fold: checkpoint-threaded sum of (g - c) * Lf g div 2^64.
-// gs: per-op growth deltas (charged book entries, Aggregate_Book);
-// ls: per-op liquidity Lf; c: starting checkpoint (<= every g, else ERR_ORDER).
-// Returns owed as string; checkpoint advances to last g.
-function accrue(gs: string[], ls: string[], c: string): string {
-  let ck = BigInt(c);
-  let acc = 0n;
-  for (let i = 0; i < gs.length; i++) {
-    const g = BigInt(gs[i]);
-    if (g < ck) fail("ERR_ORDER");
-    acc += BigInt(divFloor64((g - ck).toString(), ls[i]));
-    ck = g;
-  }
-  return acc.toString();
-}
-
-// entry: accrue { gs: "g1,g2,...", ls: "l1,l2,...", c: "ck", user: "alice" }
-// charges owed into the caller's cell; preserves owed <= charged.
-export function accrue_entry(arg: string): string {
-  const o = JSON.parse(arg);
-  const gs: string[] = String(o.gs).split(",");
-  const ls: string[] = String(o.ls).split(",");
-  if (gs.length !== ls.length) fail("ERR_LEN");
-  const u = String(o.user);
-  const owed = accrue(gs, ls, String(o.c));
-  credit(u, owed);
-  sput("a:charged:" + u, u128.add(charged(u), owed));
-  return owed;
+// Cons step of the owed fold: owed(g, c) = (g - c) * Lf g div 2^64.
+// Checkpoint a:ck:<u> carries the fold's c across calls (monotone;
+// g < c aborts ERR_ORDER = accruef's precondition). Scenario steps are
+// the list gs. String layer only (u128.*), like the LISP twin.
+export function accrueStep(): string {
+  const g = near.jsonGetStr("g") ?? "0";
+  const l = near.jsonGetStr("l") ?? "0";
+  const u = near.predecessorAccountId();
+  const ckKey = "a:ck:" + u;
+  const c = sget(ckKey);
+  if (u128.lt(g, c)) fail("ERR_ORDER");
+  const d = u128.sub(g, c);
+  const term = divFloor64(d, l);
+  credit(u, term);
+  sput("a:charged:" + u, u128.add(charged(u), term));
+  sput(ckKey, g);
+  return term;
 }
 '''
 

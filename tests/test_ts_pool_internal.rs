@@ -58,8 +58,10 @@ fn mock(
     signer: &str,
 ) -> String {
     let mut cmd = Command::new("./target/release/near-mock");
-    cmd.env("NEAR_MOCK_QUIET", "1")
-        .arg("cross")
+    if std::env::var("TI_TRACE").is_err() {
+        cmd.env("NEAR_MOCK_QUIET", "1");
+    }
+    cmd.arg("cross")
         .arg(state())
         .arg(manifest)
         .arg(contract)
@@ -69,6 +71,9 @@ fn mock(
         .arg(signer);
     if let Some(a) = attach {
         cmd.arg("--attach").arg(a.to_string());
+    }
+    if std::env::var("TI_TRACE").is_ok() {
+        cmd.arg("--trace");
     }
     let out = cmd.output().expect("near-mock run");
     format!(

@@ -1,9 +1,13 @@
 chapter AFP
 
 session "CLMM_Dynamic" = "Concentrated_Liquidity_Market_Making_Operations" +
-  options [timeout = 600]
+  options [timeout = 60]
   theories
     Aggregate_Book
     Aggregate_Accrual
+    User_Ledger
     CLMM_Fee_Slack
+    CLMM_Fee_Slack_Fixed
     CLMM_Dynamic
+    CLMM_Reachable
+    CLMM_Fee_Attack
