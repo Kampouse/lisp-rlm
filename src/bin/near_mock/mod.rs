@@ -808,7 +808,13 @@ pub(crate) fn execute_tx(
                 });
                 let Some(idx) = next else { break };
                 match execute_promise(idx) {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        // Consumed here too: the persisted \x00yjoin marker must
+                        // not let a later resolve/worker pass re-deliver a join
+                        // the drain already fired (double onSignDone → "bad job
+                        // state" trap).
+                        crate::promises::yield_joins_persist_take(idx);
+                    }
                     Err(_) => outcome.orphan_failures += 1,
                 }
             }
@@ -1734,6 +1740,19 @@ fn build_promise_hosts(
                     // consume the marker first (one-shot, like the real chain)
                     crate::promises::yield_joins_persist_take(jidx);
                     crate::promises::yield_joins_take(jidx);
+                    // (2026-10-15) Skip joins the in-process drain already
+                    // fired: since the drain now runs plain-dep joins (no open
+                    // yield on deps), a same-process yield_resume sees them
+                    // already in EXECUTED_PROMISES — re-delivering would run
+                    // the callback twice (kernel onSignDone trapped "bad job
+                    // state" on the second run).
+                    if EXECUTED_PROMISES.with(|e| e.borrow().contains(&jidx)) {
+                        mtrace!(
+                            "  ⛓ join receipt {} → {}.{} already fired by drain — skip",
+                            jidx, jacct, jmethod
+                        );
+                        continue;
+                    }
                     mtrace!("  ⛓ join receipt {} → {}.{} (payload-delivered)", jidx, jacct, jmethod);
                     // The join callback reads its dep result (the resolved
                     // payload) via promise_result(0) — same as nearcore. The
