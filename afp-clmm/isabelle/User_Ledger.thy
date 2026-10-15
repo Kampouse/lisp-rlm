@@ -16,8 +16,11 @@ commits BAL=0 but the payout leg never delivers).
 
 Scope, stated honestly: this is the FEE ledger. Principal
 redistribution (out_a/out_b from AB/PB) and the v1 pool-side fee walk
-are out of scope; the strand is modeled as a transition (proved to
-break conservation), not repaired -- repair is a topology change.\<close>
+are out of scope. The strand WAS the provable face of the last-leg
+failure (the ledger commits BAL=0 but the payout leg never delivers);
+as of 2026-10-15 it is REPAIRED by topology change: the credit parks
+in a visible stranded jar and the StrandPay callback (the recovered
+B-leg) delivers it, so conservation now holds for ALL runs.\<close>
 
 type_synonym addr = nat
 
@@ -28,6 +31,7 @@ record lstate =
   ck  :: "addr \<Rightarrow> nat"              \<comment> \<open>CK: per-user checkpoint\<close>
   bal :: "addr \<Rightarrow> nat"              \<comment> \<open>BAL: per-user pending credit\<close>
   paid :: "addr \<Rightarrow> nat"             \<comment> \<open>realized fee payouts to the user\<close>
+  stranded :: "addr \<Rightarrow> nat"          \<comment> \<open>credits parked by a trapped payout leg (visible, recoverable)\<close>
   fees :: nat                       \<comment> \<open>total fees charged since inception (the only source)\<close>
 
 definition TWO64 :: nat where
@@ -52,7 +56,8 @@ datatype op =
   | Claim addr                     \<comment> \<open>explicit claim: settle into BAL\<close>
   | Withdraw addr nat              \<comment> \<open>burn + full payout; legs deliver\<close>
   | WdFail addr nat                \<comment> \<open>A-leg traps: pay_b restores -- identity\<close>
-  | Strand addr nat                \<comment> \<open>B-leg traps AFTER BAL:=0 commit: credit stranded\<close>
+  | Strand addr nat                \<comment> \<open>B-leg traps AFTER BAL:=0 commit: credit PARKED in stranded\<close>
+  | StrandPay addr                 \<comment> \<open>recovered B-leg callback: stranded credit finally delivers\<close>
 
 definition is_Grow :: "op \<Rightarrow> bool" where
   "is_Grow g = (case g of Grow f \<Rightarrow> True | _ \<Rightarrow> False)"
@@ -96,8 +101,9 @@ fun acm_step :: "op \<Rightarrow> lstate \<Rightarrow> lstate" where
               paid := (paid s)(a := paid s a + bnew)\<rparr>)))"
   \<comment> \<open>pay_b fail leg: kc/bc restore -- the machine state is untouched\<close>
 | "acm_step (WdFail a n) s = s"
-  \<comment> \<open>the strand: settle + burn + BAL:=0 commit, but the B leg trapped
-     and no later callback exists -- the credit never reaches paid\<close>
+  \<comment> \<open>the strand: settle + burn + BAL:=0 commit, but the B leg trapped --
+     the credit is PARKED in stranded (never silently dropped); the
+     shares still burn, the exit still happens\<close>
 | "acm_step (Strand a n) s =
     (if shf s a < n then s
      else (let owed = settle_inc s a in
@@ -105,7 +111,13 @@ fun acm_step :: "op \<Rightarrow> lstate \<Rightarrow> lstate" where
             s\<lparr>bal := (bal s)(a := 0),
               ck  := (ck s)(a := agg s),
               shf := (shf s)(a := shf s a - n),
-              sht := sht s - n\<rparr>)))"
+              sht := sht s - n,
+              stranded := (stranded s)(a := stranded s a + bnew)\<rparr>)))"
+  \<comment> \<open>StrandPay: the recovered B-leg callback finally delivers -- the
+     parked credit rides stranded -> paid (no-op when nothing parked)\<close>
+| "acm_step (StrandPay a) s =
+    s\<lparr>paid := (paid s)(a := paid s a + stranded s a),
+       stranded := (stranded s)(a := 0)\<rparr>"
 
 fun acm_run :: "op list \<Rightarrow> lstate \<Rightarrow> lstate" where
   "acm_run [] s = s"
@@ -113,7 +125,8 @@ fun acm_run :: "op list \<Rightarrow> lstate \<Rightarrow> lstate" where
 
 definition \<sigma>0 :: lstate where
   "\<sigma>0 = \<lparr>agg = 0, sht = 0, shf = (\<lambda>_. 0), ck = (\<lambda>_. 0),
-          bal = (\<lambda>_. 0), paid = (\<lambda>_. 0), fees = 0\<rparr>"
+          bal = (\<lambda>_. 0), paid = (\<lambda>_. 0), stranded = (\<lambda>_. 0),
+          fees = 0\<rparr>"
 
 section \<open>Truncation arithmetic (shared grind) -- manual proofs, no
 sledgehammer (it cycles unbounded on these) \<close>
@@ -294,6 +307,21 @@ lemma strand_ck: "ck (acm_step (Strand a n) s) b
 lemma strand_bal: "bal (acm_step (Strand a n) s) b
   = (if shf s a < n then bal s b else if b = a then 0 else bal s b)" by simp
 lemma strand_paid: "paid (acm_step (Strand a n) s) b = paid s b" by simp
+
+lemma strand_stranded: "stranded (acm_step (Strand a n) s) b
+  = (if shf s a < n then stranded s b
+     else if b = a then stranded s a + (bal s a + settle_inc s a)
+          else stranded s b)" by simp
+
+lemma strandpay_shf: "shf (acm_step (StrandPay a) s) x = shf s x" by simp
+lemma strandpay_sht: "sht (acm_step (StrandPay a) s) = sht s" by simp
+lemma strandpay_agg: "agg (acm_step (StrandPay a) s) = agg s" by simp
+lemma strandpay_ck: "ck (acm_step (StrandPay a) s) b = ck s b" by simp
+lemma strandpay_bal: "bal (acm_step (StrandPay a) s) b = bal s b" by simp
+lemma strandpay_paid: "paid (acm_step (StrandPay a) s) b
+  = (if b = a then paid s a + stranded s a else paid s b)" by simp
+lemma strandpay_stranded: "stranded (acm_step (StrandPay a) s) b
+  = (if b = a then 0 else stranded s b)" by simp
 
 lemma fail_id: "acm_step (WdFail a n) s = s" by simp
 
@@ -559,6 +587,9 @@ qed
 lemma fail_preserves_inv: "ledger_inv s \<Longrightarrow> ledger_inv (acm_step (WdFail a n) s)"
   by (simp add: fail_id)
 
+lemma strandpay_preserves_inv: "ledger_inv s \<Longrightarrow> ledger_inv (acm_step (StrandPay a) s)"
+  by (simp add: ledger_inv_def strandpay_shf strandpay_sht strandpay_agg strandpay_ck)
+
 text \<open>Run validity: the contract's truth gates, threaded along the
 state (deposits come from known users; burns fit under the burner's
 shares -- both are enforced by add-b-liq / withdraw4 in the lisp).\<close>
@@ -593,6 +624,10 @@ next
   show ?thesis
     unfolding Strand using inv gate by (rule strand_preserves_inv)
 next
+  case (StrandPay a)
+  show ?thesis
+    unfolding StrandPay using inv by (rule strandpay_preserves_inv)
+next
   case Grow
   show ?thesis
     unfolding Grow using inv by (rule grow_preserves_inv)
@@ -623,21 +658,16 @@ next
   from Cons.IH[OF ok' inv'] show ?case by simp
 qed
 
-text \<open>The book of user a: every credited unit is pending, banked, or
-paid. Conservation: the book is bounded by the charged fees plus one
-truncation unit per grow -- the machine cannot credit more than the
-pool charged (modulo per-wave floor dust). The strand transition is
-EXCLUDED by the honesty predicate: conservation holds only for
-strand-free runs, which is exactly the guarantee the real machine can
-make (the strand is environmental, not arithmetic).\<close>
+text \<open>The book of user a: every credited unit is pending, banked, paid,
+or stranded. Conservation: the book is bounded by the charged fees
+plus one truncation unit per grow -- the machine cannot credit more
+than the pool charged (modulo per-wave floor dust). Holds for ALL
+runs: a trapped payout leg parks the credit in stranded (visible)
+instead of dropping it, and StrandPay (the recovered callback)
+delivers it later.\<close>
 
 definition book :: "lstate \<Rightarrow> addr \<Rightarrow> nat" where
-  "book s a = bal s a + paid s a + pending s a"
-
-fun strand_free :: "op list \<Rightarrow> bool" where
-  "strand_free [] = True"
-| "strand_free (Strand a n # gs) = False"
-| "strand_free (g # gs) = strand_free gs"
+  "book s a = bal s a + paid s a + pending s a + stranded s a"
 
 lemma book_deposit:
   assumes inv: "ledger_inv s" and aU: "a \<in> USERS"
@@ -744,6 +774,40 @@ qed
 lemma book_fail: "book (acm_step (WdFail a n) s) a = book s a"
   by (simp add: fail_id)
 
+lemma book_strand:
+  assumes inv: "ledger_inv s" and gate: "n \<le> shf s a"
+  shows "book (acm_step (Strand a n) s) b = book s b"
+proof (cases "b = a")
+  case True
+  have bal0: "bal (acm_step (Strand a n) s) a = 0"
+    using gate by (simp add: strand_bal)
+  have paidE: "paid (acm_step (Strand a n) s) a = paid s a"
+    by (simp add: strand_paid)
+  have pend0: "pending (acm_step (Strand a n) s) a = 0"
+    unfolding pending_def using gate by (simp add: strand_ck strand_agg strand_shf)
+  have stradd: "stranded (acm_step (Strand a n) s) a
+              = stranded s a + (bal s a + settle_inc s a)"
+    using gate by (simp add: strand_stranded)
+  show ?thesis
+    unfolding book_def
+    using True gate settle_eq_pending[OF inv]
+    by (simp add: bal0 paidE pend0 stradd
+                  strand_bal strand_paid strand_ck strand_agg strand_shf
+                  pending_def)
+next
+  case False
+  have pendE: "pending (acm_step (Strand a n) s) b = pending s b"
+    unfolding pending_def using False gate by (simp add: strand_agg strand_ck strand_shf)
+  show ?thesis
+    unfolding book_def pendE
+    using False gate by (simp add: strand_bal strand_paid strand_stranded)
+qed
+
+lemma book_strand_pay_any: "book (acm_step (StrandPay a) s) b = book s b"
+  unfolding book_def pending_def
+  by (simp add: strandpay_shf strandpay_sht strandpay_agg strandpay_ck
+                strandpay_bal strandpay_paid strandpay_stranded)
+
 lemma book_grow:
   assumes inv: "ledger_inv s" and aU: "a \<in> USERS"
   shows "book (acm_step (Grow f) s) a \<le> book s a + f + 1"
@@ -816,33 +880,31 @@ lemma nat_le_add_right: "S \<le> B \<Longrightarrow> S + C \<le> B + (C :: nat)"
 lemma conservation:
   assumes ok: "run_ok gs s"
   assumes inv: "ledger_inv s"
-  assumes honest: "strand_free gs"
   assumes aU: "a \<in> USERS"
   shows "book (acm_run gs s) a
        \<le> book s a + (fees (acm_run gs s) - fees s)
          + length (filter is_Grow gs)"
-  using ok inv honest
+  using ok inv
 proof (induction gs arbitrary: s)
   case Nil
   then show ?case by simp
 next
   case (Cons g gs)
   have ok1: "run_ok [g] s" using Cons.prems(1) by (cases g) simp_all
+  have inv: "ledger_inv s" using Cons.prems(2) .
   have inv': "ledger_inv (acm_step g s)"
     using step_preserves_inv[OF Cons.prems(2) ok1] .
   have ok': "run_ok gs (acm_step g s)" using Cons.prems(1)
     by (cases g) (auto split: if_splits)
-  have honest': "strand_free gs"
-    using Cons.prems(3) by (cases g) simp_all
   have ih: "book (acm_run gs (acm_step g s)) a
           \<le> book (acm_step g s) a + (fees (acm_run gs (acm_step g s))
              - fees (acm_step g s)) + length (filter is_Grow gs)"
-    using Cons.IH[OF ok' inv' honest'] by blast
+    using Cons.IH[OF ok' inv'] by blast
   show ?case
   proof (cases g)
     case (Grow f)
     have step: "book (acm_step (Grow f) s) a \<le> book s a + f + 1"
-      using book_grow[OF inv aU, of f] .
+      using inv aU book_grow[where s=s and a=a and f=f] by blast
     from ih[unfolded Grow] have ih': "book (acm_run gs (acm_step (Grow f) s)) a
              \<le> book (acm_step (Grow f) s) a
                 + (fees (acm_run gs (acm_step (Grow f) s))
@@ -871,10 +933,10 @@ next
     have e2: "book (acm_step (Grow f) s) a + (k + length (filter is_Grow gs))
             \<le> (book s a + f + 1) + (k + length (filter is_Grow gs))"
       using nat_le_add_right[OF step,
-              of "k + length (filter is_Grow gs)"] .
+              of "k + length (filter is_Grow gs)"] by simp
     have e3: "book (acm_run gs (acm_step (Grow f) s)) a
             \<le> (book s a + f + 1) + (k + length (filter is_Grow gs))"
-      using le_trans[OF e1 e2] .
+      using le_trans[OF e1 e2] by simp
     have e5: "(book s a + f + 1) + (k + length (filter is_Grow gs))
             = book s a + (f + k) + (length (filter is_Grow gs) + 1)"
       by simp
@@ -887,8 +949,11 @@ next
     have uU: "u \<in> USERS" using Cons.prems(1) Deposit by simp
     have step: "book (acm_step g s) a = book s a"
       using Deposit book_deposit_any[OF inv uU] by simp
+    have feq: "fees (acm_step (Deposit u m) s) = fees s" by simp
+    have len: "length (filter is_Grow (Deposit u m # gs)) = length (filter is_Grow gs)"
+      by (simp add: is_Grow_def)
     show ?thesis
-      using ih step Deposit by (simp add: is_Grow_def)
+      using ih step Deposit feq len by simp
   next
     case (Claim u)
     have step: "book (acm_step g s) a = book s a"
@@ -896,33 +961,73 @@ next
       by (cases "a = u")
          (auto simp add: book_def pending_def claim_bal claim_paid
                          claim_ck claim_agg claim_shf)
+    have feq: "fees (acm_step (Claim u) s) = fees s" by simp
+    have len: "length (filter is_Grow (Claim u # gs)) = length (filter is_Grow gs)"
+      by (simp add: is_Grow_def)
     show ?thesis
-      using ih step Claim by (simp add: is_Grow_def)
+      using ih step Claim feq len by simp
   next
     case (Withdraw u n)
     have gate: "n \<le> shf s u" using Cons.prems(1) Withdraw by simp
     have step: "book (acm_step g s) a = book s a"
-      using Withdraw book_withdraw_any[OF inv aU gate] by simp
+    proof -
+      have W: "book (acm_step (Withdraw u n) s) a = book s a"
+      proof (cases "a = u")
+        case True
+        then have gate': "n \<le> shf s a" using gate by simp
+        then show ?thesis
+          using True aU book_withdraw_any[OF inv aU gate'] by simp
+      next
+        case False note au = this
+        have pend: "pending (acm_step (Withdraw u n) s) a = pending s a"
+          unfolding pending_def using au gate
+            by (simp add: wd_agg wd_ck wd_shf)
+        show ?thesis unfolding book_def pend
+          using au gate by (simp add: wd_bal wd_paid)
+      qed
+      then show ?thesis using Withdraw by simp
+    qed
+    have feq: "fees (acm_step (Withdraw u n) s) = fees s" by simp
+    have len: "length (filter is_Grow (Withdraw u n # gs)) = length (filter is_Grow gs)"
+      by (simp add: is_Grow_def)
     show ?thesis
-      using ih step Withdraw by (simp add: is_Grow_def)
+      using ih step Withdraw feq len by simp
   next
     case (WdFail u n)
     have step: "book (acm_step g s) a = book s a"
       using WdFail by (simp add: fail_id)
+    have feq: "fees (acm_step (WdFail u n) s) = fees s"
+      by (simp add: fail_id)
+    have len: "length (filter is_Grow (WdFail u n # gs)) = length (filter is_Grow gs)"
+      by (simp add: is_Grow_def)
     show ?thesis
-      using ih step WdFail by (simp add: is_Grow_def)
+      using ih step WdFail feq len by simp
   next
-    case (Strand a n)
-    have "strand_free (g # gs)" by (rule Cons.prems(3))
-    then have "strand_free gs" using Strand by (cases g) simp_all
-    then have F: "False" using Strand by simp
-    then show ?thesis ..
+    case (Strand u n)
+    have gate: "n \<le> shf s u" using Cons.prems(1) Strand by simp
+    have step: "book (acm_step g s) a = book s a"
+      using book_strand[OF inv gate] Strand by simp
+    have feq: "fees (acm_step (Strand u n) s) = fees s" by simp
+    have len: "length (filter is_Grow (Strand u n # gs))
+             = length (filter is_Grow gs)"
+      by (simp add: is_Grow_def)
+    show ?thesis
+      using ih step Strand feq len by simp
+  next
+    case (StrandPay u)
+    have step: "book (acm_step g s) a = book s a"
+      using book_strand_pay_any StrandPay by simp
+    have feq: "fees (acm_step (StrandPay u) s) = fees s" by simp
+    have len: "length (filter is_Grow (StrandPay u # gs))
+             = length (filter is_Grow gs)"
+      by (simp add: is_Grow_def)
+    show ?thesis
+      using ih step StrandPay feq len by simp
   qed
 qed
 
 corollary conservation_from_scratch:
   assumes ok: "run_ok gs \<sigma>0"
-  assumes honest: "strand_free gs"
   assumes aU: "a \<in> USERS"
   shows "book (acm_run gs \<sigma>0) a
        \<le> fees (acm_run gs \<sigma>0) + length (filter is_Grow gs)"
@@ -933,7 +1038,7 @@ proof -
     unfolding book_def \<sigma>0_def pending_def by simp
   have f0: "fees \<sigma>0 = 0"
     unfolding \<sigma>0_def by simp
-  from conservation[OF ok inv0 honest aU] show ?thesis
+  from conservation[OF ok inv0 aU] show ?thesis
     using b0 f0 by simp
 qed
 
@@ -943,7 +1048,81 @@ lemma wd_fail_identity:
   "acm_step (WdFail a n) s = s"
   by (simp add: fail_id)
 
-(* HUSHED FOR BISECT
+section \<open>Port-boundary proofs: fee provenance + width safety\<close>
+
+text \<open>The conservation theorem lives over unbounded nat; the lisp-rlm
+port runs bounded registers. Two facts close the gap. PROVENANCE: fees
+move only in Grow steps, so fees after a run is EXACTLY fees before
+plus the charged Grow units -- the bound input is the fee source.
+WIDTH: no jar ever reaches 2^128, GIVEN the fee volume fits (cap
+premise) -- the port asserts the cap per run, the theorem does the
+rest.\<close>
+
+definition BND :: nat where
+  "BND = 2^128"
+
+fun amt_of :: "op \<Rightarrow> nat" where
+  "amt_of (Grow f) = f"
+| "amt_of _ = 0"
+
+lemma fees_step: "fees (acm_step g s) = fees s + amt_of g"
+  by (cases g) simp_all
+
+theorem fees_run_exact:
+  "fees (acm_run gs s) = fees s + sum_list (map amt_of gs)"
+proof (induction gs arbitrary: s)
+  case Nil
+  then show ?case by simp
+next
+  case (Cons g gs)
+  show ?case using Cons.IH[of "acm_step g s"] fees_step[of g s] by simp
+qed
+
+theorem width_safety_run:
+  assumes ok: "run_ok gs s"
+  assumes inv: "ledger_inv s"
+  assumes aU: "a \<in> USERS"
+  assumes cap: "book s a + sum_list (map amt_of gs)
+              + length (filter is_Grow gs) < BND"
+  shows "bal (acm_run gs s) a < BND \<and> paid (acm_run gs s) a < BND
+       \<and> pending (acm_run gs s) a < BND
+       \<and> stranded (acm_run gs s) a < BND"
+proof -
+  have bookrun: "book (acm_run gs s) a
+      \<le> book s a + sum_list (map amt_of gs)
+        + length (filter is_Grow gs)"
+    using conservation[OF ok inv aU] fees_run_exact[of gs s] by simp
+  have total: "book (acm_run gs s) a < BND" using cap bookrun by simp
+  have jars: "bal (acm_run gs s) a < BND" "paid (acm_run gs s) a < BND"
+             "pending (acm_run gs s) a < BND"
+             "stranded (acm_run gs s) a < BND"
+    using total unfolding book_def by linarith+
+  show ?thesis using jars by simp
+qed
+
+corollary width_safety_scratch:
+  assumes ok: "run_ok gs \<sigma>0"
+  assumes aU: "a \<in> USERS"
+  assumes cap: "sum_list (map amt_of gs)
+              + length (filter is_Grow gs) < BND"
+  shows "bal (acm_run gs \<sigma>0) a < BND \<and> paid (acm_run gs \<sigma>0) a < BND
+       \<and> pending (acm_run gs \<sigma>0) a < BND
+       \<and> stranded (acm_run gs \<sigma>0) a < BND"
+proof -
+  have inv0: "ledger_inv \<sigma>0"
+    unfolding ledger_inv_def \<sigma>0_def USERS_def by simp
+  have b0: "book \<sigma>0 a = 0"
+    unfolding book_def \<sigma>0_def pending_def by simp
+  from width_safety_run[OF ok inv0 aU] cap b0 show ?thesis by simp
+qed
+
+(* HUSHED FOR BISECT -- partly RETIRED 2026-10-15: the strand was
+   REPAIRED (credit parks in stranded; StrandPay delivers), so
+   strand_drops_book below describes the PRE-repair transition and is
+   false of the current machine BY DESIGN. phantom_grow_breaks_bound
+   remains a true statement about the phantom-grow bug (pgrow), which
+   is NOT repaired. Left hushed: this section documents the failure
+   history, not the current machine.
 section \<open>The teeth: the strand transition provably breaks conservation\<close>
 
 text \<open>Concrete instance transcribed from the bug scenario: deposit 4
