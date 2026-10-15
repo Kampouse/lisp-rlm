@@ -48,8 +48,13 @@ with near-mock --trace, old wasm (65a0bcd5) vs new, identical scenario:
   steps (claims/views/mints) unchanged, as expected
 - scenario total: 42532→37534 G (**−11.8%**; swaps are 4 of 29 steps)
 
-M1b candidates (unstarted): pack S0–S4 into one S key + str-slice
-parse helpers (defers reads too), memoize G/F reads. residual
+M1b candidates (probe MEASURED, not yet applied): packing S0–S4 into
+one key + str-slice parse = 534.7G → 109.5G (**−80%** on the 5-read
+cluster; string ops are pure WASM, 0 host calls — probe contract
+/tmp/probe_m1b, both patterns byte-identical output). Read-memoize G/F
+is subsumed by this. Layout change touches slot-get/set call sites
+(swap reads, add-b-liq widen/sum, withdraw restore args) — a focused
+session, not a drive-by. residual
 deposit-path stores untouched. Known residuals (stock-pool
 design, inherited from v1, not mount bugs, flagged for Jean): share
 pricing is donation-attackable (first-depositor inflation: donate
