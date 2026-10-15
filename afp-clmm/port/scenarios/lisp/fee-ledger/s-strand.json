@@ -1,0 +1,107 @@
+{
+ "name": "fee-ledger-strand-trap",
+ "manifest": "fl.clmm.test.near=../../../contracts/fee-ledger/target/fee-ledger.wasm",
+ "steps": [
+  {
+   "method": "register",
+   "as": "u1.test.near",
+   "contract": "fl.clmm.test.near",
+   "args": {}
+  },
+  {
+   "method": "register",
+   "as": "u2.test.near",
+   "contract": "fl.clmm.test.near",
+   "args": {}
+  },
+  {
+   "method": "deposit",
+   "as": "u1.test.near",
+   "contract": "fl.clmm.test.near",
+   "attach": "1000000",
+   "args": {}
+  },
+  {
+   "method": "deposit",
+   "as": "u2.test.near",
+   "contract": "fl.clmm.test.near",
+   "attach": "3000000",
+   "args": {}
+  },
+  {
+   "method": "grow",
+   "as": "u1.test.near",
+   "contract": "fl.clmm.test.near",
+   "attach": "100000",
+   "args": { "f": "100000" }
+  },
+  {
+   "method": "grow",
+   "as": "u2.test.near",
+   "contract": "fl.clmm.test.near",
+   "attach": "300000",
+   "args": { "f": "300000" }
+  },
+  {
+   "method": "book",
+   "as": "u1.test.near",
+   "contract": "fl.clmm.test.near",
+   "view": true,
+   "args": { "w": "u1.test.near" },
+   "contains": "99999"
+  },
+  {
+   "method": "withdraw",
+   "as": "u1.test.near",
+   "contract": "fl.clmm.test.near",
+   "args": { "sh": "1000000" },
+   "fail_receipt": 0
+  },
+  {
+   "method": "get-stranded",
+   "as": "u1.test.near",
+   "contract": "fl.clmm.test.near",
+   "view": true,
+   "args": {},
+   "contains": "99999"
+  },
+  {
+   "method": "get-paid",
+   "as": "u1.test.near",
+   "contract": "fl.clmm.test.near",
+   "view": true,
+   "args": {},
+   "contains": "0"
+  },
+  {
+   "method": "strand-pay",
+   "as": "u1.test.near",
+   "contract": "fl.clmm.test.near",
+   "args": { "w": "u1.test.near" }
+  },
+  {
+   "method": "get-paid",
+   "as": "u1.test.near",
+   "contract": "fl.clmm.test.near",
+   "view": true,
+   "args": {},
+   "contains": "99999"
+  },
+  {
+   "method": "get-stranded",
+   "as": "u1.test.near",
+   "contract": "fl.clmm.test.near",
+   "view": true,
+   "args": {},
+   "contains": "0"
+  },
+  {
+   "method": "get-fees",
+   "as": "u1.test.near",
+   "contract": "fl.clmm.test.near",
+   "view": true,
+   "args": {},
+   "contains": "400000"
+  }
+ ]
+}
