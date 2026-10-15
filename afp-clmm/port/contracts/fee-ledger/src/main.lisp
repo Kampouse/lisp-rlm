@@ -15,14 +15,16 @@
 ;; (the theorem's StrandPay). WdFail = identity needs no code: a failed
 ;; receipt commits nothing.
 ;;
-;; Mock simplification: the payout leg is a self-call receipt (no token
-;; contract wired). On mainnet replace the batch target with the NEP-141
-;; ft_transfer — the parking discipline is identical.
+;; Payout leg: withdraw parks credit in stranded, wd-cb dispatches a real
+;; ft_transfer at the token contract (tok.test.near) and then-chains
+;; wd-deliver, which alone moves stranded → paid. Token-side failure
+;; commits nothing — parking discipline identical to the theorem.
 ;;
 ;; Registration gate (USERS assumption → enforced): deposit/claim/withdraw
 ;; require reg:<a> = "1" or existing shares.
 
 (define TWO64 "18446744073709551616")
+(define TOKEN "tok.test.near")
 
 (define (sput k v) (near/storage_set k v))
 (define (sget k d) (default (near/storage_get k) d))
@@ -128,18 +130,47 @@
                     (near/log (str-cat "wd parked=" bnew))
                     (near/return "wd-queued")))))))))
 
-;; ── wd-cb: success branch ONLY delivers stranded → paid ──
+;; ── wd-cb: PURE dispatch — no state change. Fires ft_transfer at the
+;;    token contract, then-chains wd-deliver back here. Token trap ⇒
+;;    neither leg commits ⇒ str stays parked (WdFail = identity). ──
 (define (wd-cb)
   (if (str= (near/predecessor_account_id) (near/current_account_id))
       (let* ((who (default (near/json_get_str "w") ""))
-             (stk (str-cat "str:" who))
-             (kp (str-cat "paid:" who))
-             (parked (sget stk "0")))
-        (begin
-          (sput kp (add (sget kp "0") parked))
-          (sput stk "0")
-          (near/log (str-cat "wd-cb paid=" parked))
-          (near/return "paid")))
+             (parked (sget (str-cat "str:" who) "0")))
+        (let ((p (near/promise_batch_create TOKEN)))
+          (let ((q (near/promise_batch_then p (near/current_account_id))))
+            (begin
+              (near/promise_batch_action_function_call p "ft_transfer"
+                (json-set (json-set "{}" "receiver_id" who) "amount" parked)
+                "0" 60000000000000)
+              (near/promise_batch_action_function_call q "wd-deliver"
+                (json-set "{}" "w" who) "0" 60000000000000)
+              (near/promise_return q)
+              (near/log (str-cat "wd dispatched=" parked))
+              (near/return "dispatched")))))
+      (near/return "forbidden")))
+
+;; ── wd-deliver: the then-callback receipt arrives with predecessor =
+;;    creator (self) — nearcore semantics, mocked faithfully. Guard = self
+;;    receipt (attackers can't forge fl.clmm receipts) AND
+;;    receipt (attackers can't forge fl.clmm receipts) AND the dep result
+;;    non-empty: promise_result 0 returns the token's return data, ""
+;;    when the ft_transfer leg trapped. Failed ⇒ commit NOTHING, park. ──
+(define (wd-deliver)
+  (if (str= (near/predecessor_account_id) (near/current_account_id))
+      (if (str= (near/promise_result 0) "")
+          (begin
+            (near/log "wd token-failed: str parked")
+            (near/return "not-paid"))
+          (let* ((who (default (near/json_get_str "w") ""))
+                 (stk (str-cat "str:" who))
+                 (kp (str-cat "paid:" who))
+                 (parked (sget stk "0")))
+            (begin
+              (sput kp (add (sget kp "0") parked))
+              (sput stk "0")
+              (near/log (str-cat "wd delivered=" parked))
+              (near/return "paid"))))
       (near/return "forbidden")))
 
 ;; ── StrandPay: manual recovery of a parked credit ──
@@ -181,6 +212,7 @@
 (export "claim" claim)
 (export "withdraw" withdraw)
 (export "wd-cb" wd-cb)
+(export "wd-deliver" wd-deliver)
 (export "strand-pay" strand-pay)
 (export "book" book)
 (export "get-fees" get-fees)

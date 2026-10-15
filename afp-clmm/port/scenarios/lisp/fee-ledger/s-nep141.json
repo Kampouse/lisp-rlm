@@ -1,0 +1,17 @@
+{
+ "name": "nep141-wd",
+ "manifest": "fl.clmm.test.near=../../../contracts/fee-ledger/target/fee-ledger.wasm,tok.test.near=../../../contracts/token/target/token.wasm",
+ "steps": [
+  {"method": "init", "as": "fl-owner.test.near", "contract": "tok.test.near", "args": {"supply": "1000000000000"}},
+  {"method": "ft_transfer", "as": "fl-owner.test.near", "contract": "tok.test.near", "args": {"receiver_id": "fl.clmm.test.near", "amount": "1000000"}},
+  {"method": "register", "as": "u1.test.near", "contract": "fl.clmm.test.near", "args": {}},
+  {"method": "register", "as": "u2.test.near", "contract": "fl.clmm.test.near", "args": {}},
+  {"method": "deposit", "as": "u1.test.near", "contract": "fl.clmm.test.near", "attach": "1000000", "args": {}},
+  {"method": "deposit", "as": "u2.test.near", "contract": "fl.clmm.test.near", "attach": "3000000", "args": {}},
+  {"method": "grow", "as": "fl-owner.test.near", "contract": "fl.clmm.test.near", "attach": "100000", "args": {"f": "100000"}},
+  {"method": "withdraw", "as": "u1.test.near", "contract": "fl.clmm.test.near", "args": {"sh": "99999"}},
+  {"method": "ft_balance_of", "as": "u1.test.near", "contract": "tok.test.near", "args": {"account_id": "u1.test.near"}},
+  {"method": "ft_balance_of", "as": "fl-owner.test.near", "contract": "tok.test.near", "args": {"account_id": "fl-owner.test.near"}},
+  {"method": "book", "as": "u1.test.near", "contract": "fl.clmm.test.near", "args": {"a": "u1.test.near"}}
+ ]
+}

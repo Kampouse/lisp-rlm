@@ -80,8 +80,11 @@ def op_withdraw(o, who, amt):
     o.put(f"ck:{who}", o.g("G"))
     o.put(f"sh:{who}", o.g(f"sh:{who}") - n)
     o.put("SHT", o.g("SHT") - n)
-    # wd-cb receipt fires on success (mock auto-delivers): parked -> paid
-    o.put(f"paid:{who}", o.g(f"paid:{who}") + credit)
+    # NEP-141 chain: withdraw parks; wd-cb dispatches ft_transfer at the
+    # token; wd-deliver moves str->paid ONLY if the transfer succeeded.
+    # Fuzz scenarios don't fund the token escrow, so the transfer always
+    # fails: str stays parked (WdFail = identity). paid: never moves.
+    o.put(f"str:{who}", o.g(f"str:{who}") + credit)
     return "ok"
 
 def op_strandpay(o, who, amt):

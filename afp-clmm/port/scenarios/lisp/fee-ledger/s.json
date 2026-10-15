@@ -1,7 +1,24 @@
 {
  "name": "fee-ledger-happy",
- "manifest": "fl.clmm.test.near=../../../contracts/fee-ledger/target/fee-ledger.wasm",
+ "manifest": "fl.clmm.test.near=../../../contracts/fee-ledger/target/fee-ledger.wasm,tok.test.near=../../../contracts/token/target/token.wasm",
  "steps": [
+  {
+   "method": "init",
+   "as": "fl-owner.test.near",
+   "contract": "tok.test.near",
+   "args": {
+    "supply": "1000000000000000000000000"
+   }
+  },
+  {
+   "method": "ft_transfer",
+   "as": "fl-owner.test.near",
+   "contract": "tok.test.near",
+   "args": {
+    "receiver_id": "fl.clmm.test.near",
+    "amount": "1000000000000000000000000"
+   }
+  },
   {
    "method": "register",
    "as": "u1.test.near",
@@ -33,21 +50,27 @@
    "as": "u1.test.near",
    "contract": "fl.clmm.test.near",
    "attach": "100000",
-   "args": { "f": "100000" }
+   "args": {
+    "f": "100000"
+   }
   },
   {
    "method": "grow",
    "as": "u2.test.near",
    "contract": "fl.clmm.test.near",
    "attach": "300000",
-   "args": { "f": "300000" }
+   "args": {
+    "f": "300000"
+   }
   },
   {
    "method": "book",
    "as": "u1.test.near",
    "contract": "fl.clmm.test.near",
    "view": true,
-   "args": { "w": "u1.test.near" },
+   "args": {
+    "w": "u1.test.near"
+   },
    "contains": "99999"
   },
   {
@@ -55,7 +78,9 @@
    "as": "u2.test.near",
    "contract": "fl.clmm.test.near",
    "view": true,
-   "args": { "w": "u2.test.near" },
+   "args": {
+    "w": "u2.test.near"
+   },
    "contains": "299999"
   },
   {
@@ -70,7 +95,9 @@
    "method": "withdraw",
    "as": "u1.test.near",
    "contract": "fl.clmm.test.near",
-   "args": { "sh": "1000000" }
+   "args": {
+    "sh": "1000000"
+   }
   },
   {
    "method": "get-paid",
@@ -93,7 +120,9 @@
    "as": "u2.test.near",
    "contract": "fl.clmm.test.near",
    "view": true,
-   "args": { "w": "u2.test.near" },
+   "args": {
+    "w": "u2.test.near"
+   },
    "contains": "299999"
   },
   {
