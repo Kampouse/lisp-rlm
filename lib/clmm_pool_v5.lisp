@@ -247,7 +247,7 @@
 ;; ── support bounds: exact, bounded probes ──────────────────────────────
 ;; IMIN/IMAX cached; burn of an edge cell walks inward (≤ 4096 probes).
 
-(define (p5-lq-nz? i) (> (str->num (p5-bz (p5-lqkey i))) 0))
+(define (p5-lq-nz? i) (not (= (li-cmp (p5-bz (p5-lqkey i)) "0") 0)))
 
 (define (p5-imin) (str->num (p5-bz "6|IMIN")))
 
@@ -779,7 +779,7 @@
 ;; any excess of this leg via the chain result.
 (define (p5-mint-finish sender d a b amt)
   (begin
-    (p5-put (str-cat "6|PM:" sender) "")
+    (p5-put (str-cat "6|PM:" sender) "0")
     ;; position books — pointwise LQ += d, POS += d, widen support
     (loop ((i a))
       (if (> i b)
