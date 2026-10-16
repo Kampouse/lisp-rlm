@@ -3,7 +3,7 @@ theory CLMM_Bridge
 begin
 
 text \<open>\<paragraph>\<open>Baseline\<close> Compiled against the LAST VERIFIED escrow chain
-(commit ee07c482, kb93 era, snapshotted in bridge/committed/) -- HEAD's
+-- HEAD's -- HEAD's
 CLMM_Escrow.thy carries 36e516d8 (committed explicitly UNVERIFIED) and
 the working copy is mid-fix. The ledger side is HEAD (verified Oct 15 +
 16:06 build). When the escrow fix lands green, refresh the committed/

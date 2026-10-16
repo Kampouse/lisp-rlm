@@ -189,6 +189,35 @@ lemma holders_finiteI[intro]:
   shows "finite (holders e)"
   using assms unfolding holders_def by simp
 
+
+(* Unity (repair follow-up): ONE conservation lemma for both LpRemove twins.
+   Parameterized over the post-op record R: the twin supplies
+   holders R = insert u (holders e); every other step is field-free
+   arithmetic, so no finale carries its own copy of the h0/sL/fin0 chain. *)
+lemma reserve_credit_conservation:
+  assumes fin: "finite (holders e)" and v: "0 < v" and g4: "v \<le> reserve e"
+      and hR: "holders R = insert u (holders e)"
+  shows "reserve e - v
+       + sum (\<lambda>x. if x = u then credits e u + v else credits e x) (holders R)
+       = reserve e + sum (credits e) (holders e)"
+proof -
+  have c0: "sum ((credits e)(u := credits e u + v)) (insert u (holders e))
+          = sum (credits e) (holders e) + v"
+    using sum_credit_add[OF fin v] .
+  have c1: "sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))
+          = sum ((credits e)(u := credits e u + v)) (insert u (holders e))"
+    by (rule sum.cong) simp_all
+  have p1: "(reserve e - v) + (sum (credits e) (holders e) + v)
+          = reserve e + sum (credits e) (holders e)" using g4 by arith
+  have p2: "reserve e - v
+          + sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))
+          = (reserve e - v) + (sum (credits e) (holders e) + v)" using c0 c1 by metis
+  have p3: "sum (\<lambda>x. if x = u then credits e u + v else credits e x) (holders R)
+          = sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))"
+    using hR by simp
+  show ?thesis using p1 p2 p3 by metis
+qed
+
 lemma balance_ok:
   assumes "escrow_ok e"
   shows "reserve e + sum (credits e) (holders e) = inflow e - outflow e"
@@ -966,17 +995,6 @@ proof -
       by (simp add: holders_def)
     show ?thesis using r1 holders_credit_add[OF g(3)] by simp
   qed
-  have sL: "sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))
-          = sum (credits e) (holders e) + v"
-  proof -
-    have c0: "sum ((credits e)(u := credits e u + v)) (insert u (holders e))
-            = sum (credits e) (holders e) + v"
-      using sum_credit_add[OF fin_h g(3)] .
-    have c1: "sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))
-            = sum ((credits e)(u := credits e u + v)) (insert u (holders e))"
-      by (rule sum.cong) simp_all
-    show ?thesis using c0 c1 by metis
-  qed
   have fin0: "reserve e - v
             + sum (\<lambda>x. if x = u then credits e u + v else credits e x) (holders (e\<lparr>reserve := reserve e - v
                         , lp_pool := lp_pool e - v
@@ -984,21 +1002,7 @@ proof -
                         , shares := (shares e)(u := shares e u - s)
                         , credits := (credits e)(u := credits e u + v)\<rparr>))
             = reserve e + sum (credits e) (holders e)"
-  proof -
-    have p1: "(reserve e - v) + (sum (credits e) (holders e) + v)
-            = reserve e + sum (credits e) (holders e)" using g(4) by arith
-    have p2: "reserve e - v
-            + sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))
-            = (reserve e - v) + (sum (credits e) (holders e) + v)" using sL by simp
-    have p3: "sum (\<lambda>x. if x = u then credits e u + v else credits e x) (holders (e\<lparr>reserve := reserve e - v
-                        , lp_pool := lp_pool e - v
-                        , total_shares := total_shares e - s
-                        , shares := (shares e)(u := shares e u - s)
-                        , credits := (credits e)(u := credits e u + v)\<rparr>))
-            = sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))"
-      using h0 by simp
-    show ?thesis using p1 p2 p3 by metis
-  qed
+    by (rule reserve_credit_conservation[OF fin_h g(3) g(4) h0])
   show ?thesis unfolding eq escrow_ok_def
     using f2 ok_le ok_bal fin0 by (simp add: balance_def)
 qed
@@ -1124,20 +1128,6 @@ proof -
            = insert u (holders e)"
     using holders_credit_add[OF g(3)]
     by (simp add: holders_def)
-  have b3: "sum ((credits e)(u := credits e u + v)) (insert u (holders e))
-          = sum (credits e) (holders e) + v"
-    using sum_credit_add[OF fin_h g(3)] .
-  have sL: "sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))
-          = sum (credits e) (holders e) + v"
-  proof -
-    have c0: "sum ((credits e)(u := credits e u + v)) (insert u (holders e))
-            = sum (credits e) (holders e) + v"
-      using sum_credit_add[OF fin_h g(3)] .
-    have c1: "sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))
-            = sum ((credits e)(u := credits e u + v)) (insert u (holders e))"
-      by (rule sum.cong) simp_all
-    show ?thesis using c0 c1 by metis
-  qed
   have fin0: "reserve e - v
             + sum (\<lambda>x. if x = u then credits e u + v else credits e x) (holders (e\<lparr>reserve := reserve e - v
                              , pools := (pools e)(k := pools e k - v)
@@ -1145,21 +1135,7 @@ proof -
                              , books := (books e)(k := (books e k)(u := books e k u - s))
                              , credits := (credits e)(u := credits e u + v)\<rparr>))
             = reserve e + sum (credits e) (holders e)"
-  proof -
-    have p1: "(reserve e - v) + (sum (credits e) (holders e) + v)
-            = reserve e + sum (credits e) (holders e)" using g(4) by arith
-    have p2: "reserve e - v
-            + sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))
-            = (reserve e - v) + (sum (credits e) (holders e) + v)" using sL by simp
-    have p3: "sum (\<lambda>x. if x = u then credits e u + v else credits e x) (holders (e\<lparr>reserve := reserve e - v
-                             , pools := (pools e)(k := pools e k - v)
-                             , totals := (totals e)(k := totals e k - s)
-                             , books := (books e)(k := (books e k)(u := books e k u - s))
-                             , credits := (credits e)(u := credits e u + v)\<rparr>))
-            = sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))"
-      using h0 by simp
-    show ?thesis using p1 p2 p3 by metis
-  qed
+    by (rule reserve_credit_conservation[OF fin_h g(3) g(4) h0])
   show ?thesis unfolding eq escrow_ok_def
     using f2 ok_le ok_bal fin0 by (simp add: balance_def)
 qed

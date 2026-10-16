@@ -112,6 +112,78 @@ definition lp_ok :: "escrow \<Rightarrow> bool" where
    both sides, so a weaker bound could never be restored. The equality is what makes the
    per-user redemption bound provable: s <= shares u <= sum <= total_shares. *)
 
+(* Oct-16 fix (36e516d8 follow-up): LpRemove/LpKeyRemove credit v to the user
+   INTERNALLY, and 0 < v makes that credit positive, so the user JOINS the
+   holder set. Conservation is unaffected: the v leaving reserve reappears as
+   v of credits over the enlarged holder set. *)
+
+lemma holders_credit_add:
+  assumes "0 < v"
+  shows "holders (e\<lparr>credits := (credits e)(u := credits e u + v)\<rparr>)
+       = insert u (holders e)"
+  using assms by (auto simp: holders_def)
+
+lemma sum_credit_add:
+  assumes fin: "finite (holders e)" and v: "0 < v"
+  shows "sum ((credits e)(u := credits e u + v)) (insert u (holders e))
+       = sum (credits e) (holders e) + v"
+proof (cases "u \<in> holders e")
+  case True
+  let ?g = "(credits e)(u := credits e u + v)"
+  have i0: "insert u (holders e) = holders e"
+    using True by (rule insert_absorb)
+  have s1: "sum ?g (holders e)
+          = (credits e u + v) + sum (credits e) (holders e - {u})"
+  proof -
+    have a: "sum ?g (holders e)
+           = ?g u + sum ?g (holders e - {u})"
+      using fin True by (rule sum.remove)
+    have g1: "?g u = credits e u + v" by simp
+    show ?thesis using a g1 by simp
+  qed
+  have s2: "sum (credits e) (holders e)
+          = credits e u + sum (credits e) (holders e - {u})"
+    using fin True by (rule sum.remove)
+  have c1: "sum ?g (holders e - {u})
+          = sum (credits e) (holders e - {u})"
+  proof (rule sum.cong)
+    show "holders e - {u} = holders e - {u}" by simp
+  next
+    fix x assume "x \<in> holders e - {u}"
+    then show "?g x = credits e x" by simp
+  qed
+  show ?thesis
+  proof -
+    have t1: "sum ?g (insert u (holders e))
+            = (credits e u + v) + sum (credits e) (holders e - {u})"
+      using i0 s1 by simp
+    have t2: "sum (credits e) (holders e) + v
+            = (credits e u + v) + sum (credits e) (holders e - {u})"
+      using s2 by simp
+    show ?thesis using t1 t2 by simp
+  qed
+next
+  case False
+  let ?g = "(credits e)(u := credits e u + v)"
+  have z: "credits e u = 0" using False by (simp add: holders_def)
+  have s1: "sum ?g (insert u (holders e))
+          = (credits e u + v) + sum (credits e) (holders e)"
+  proof -
+    have a: "sum ?g (insert u (holders e))
+           = ?g u + sum ?g (holders e)"
+      using fin False by (rule sum.insert)
+    have b: "sum ?g (holders e) = sum (credits e) (holders e)"
+    proof (rule sum.cong)
+      show "holders e = holders e" by simp
+    next
+      fix x assume "x \<in> holders e"
+      then show "?g x = credits e x" using False by (cases "x = u") auto
+    qed
+    show ?thesis using a b z by (simp add: algebra_simps)
+  qed
+  show ?thesis using s1 z by arith
+qed
+
 lemma holders_finiteI[intro]:
   assumes "finite {u. credits e u > 0}"
   shows "finite (holders e)"
@@ -189,7 +261,7 @@ fun apply_op :: "escrow_op \<Rightarrow> escrow \<Rightarrow> escrow option" whe
                     , lp_pool := lp_pool e - v
                     , total_shares := total_shares e - s
                     , shares := (shares e)(u := shares e u - s)
-                    , outflow := outflow e + v \<rparr>)
+                    , credits := (credits e)(u := credits e u + v) \<rparr>)
       else None)"
 (* Multi-LP (keyed pools): each pool key k carries its own slice (pools k),
    share supply (totals k) and per-user book (books k). LpKeyOpen/LpKeyRemove
@@ -224,7 +296,7 @@ fun apply_op :: "escrow_op \<Rightarrow> escrow \<Rightarrow> escrow option" whe
                     , pools := (pools e)(k := pools e k - v)
                     , totals := (totals e)(k := totals e k - s)
                     , books := (books e)(k := (books e k)(u := books e k u - s))
-                    , outflow := outflow e + v \<rparr>)
+                    , credits := (credits e)(u := credits e u + v) \<rparr>)
       else None)"
 
 fun apply_seq :: "escrow_op list \<Rightarrow> escrow \<Rightarrow> escrow option" where
@@ -273,14 +345,9 @@ proof (rule finite_subset)
 qed (insert assms, simp)
 
 lemma holders_lp_finite:
-  assumes "finite (holders e)"
-  shows "finite (holders (e\<lparr>reserve := w, lp_pool := x, total_shares := y
-                              , shares := sh, outflow := z\<rparr>))"
-proof (rule finite_subset)
-  show "holders (e\<lparr>reserve := w, lp_pool := x, total_shares := y
-                      , shares := sh, outflow := z\<rparr>) \<subseteq> holders e"
-    by (auto simp: holders_def)
-qed (insert assms, simp)
+  assumes "finite (holders e)" and "0 < v"
+  shows "finite (holders (e\<lparr>credits := (credits e)(u := credits e u + v)\<rparr>))"
+  using holders_credit_add[OF assms(2)] assms(1) by simp
 
 lemma holders_full_finite:
   assumes "finite (holders e)"
@@ -305,14 +372,9 @@ proof (rule finite_subset)
 qed (insert assms, simp)
 
 lemma holders_keyremove_finite:
-  assumes "finite (holders e)"
-  shows "finite (holders (e\<lparr>reserve := w, pools := p, totals := t
-                              , books := b, outflow := z\<rparr>))"
-proof (rule finite_subset)
-  show "holders (e\<lparr>reserve := w, pools := p, totals := t
-                        , books := b, outflow := z\<rparr>) \<subseteq> holders e"
-    by (auto simp: holders_def)
-qed (insert assms, simp)
+  assumes "finite (holders e)" and "0 < v"
+  shows "finite (holders (e\<lparr>credits := (credits e)(u := credits e u + v)\<rparr>))"
+  using holders_credit_add[OF assms(2)] assms(1) by simp
 
 lemma sum_upd_gen_member:
   fixes f :: "'a \<Rightarrow> nat" and c :: nat
@@ -678,26 +740,63 @@ next
 qed
 
 lemma lpremove_sum_raw:
-  assumes le: "v \<le> reserve e"
+  assumes le: "v \<le> reserve e" and fin: "finite (holders e)" and v: "0 < v"
   shows "reserve e - v
        + sum (credits e)
              (holders (e\<lparr>reserve := reserve e - v
                                    , lp_pool := lp_pool e - v
                                    , total_shares := total_shares e - s
                                    , shares := (shares e)(u := shares e u - s)
-                                   , outflow := outflow e + v\<rparr>))
+                                   , credits := (credits e)(u := credits e u + v)\<rparr>))
        = (reserve e + sum (credits e) (holders e)) - v"
 proof -
   have h0: "holders (e\<lparr>reserve := reserve e - v
                               , lp_pool := lp_pool e - v
                               , total_shares := total_shares e - s
                               , shares := (shares e)(u := shares e u - s)
-                              , outflow := outflow e + v\<rparr>) = holders e"
-    by (simp add: holders_def)
+                              , credits := (credits e)(u := credits e u + v)\<rparr>)
+           = insert u (holders e)"
+  proof -
+    have r1: "holders (e\<lparr>reserve := reserve e - v
+                              , lp_pool := lp_pool e - v
+                              , total_shares := total_shares e - s
+                              , shares := (shares e)(u := shares e u - s)
+                              , credits := (credits e)(u := credits e u + v)\<rparr>)
+             = holders (e\<lparr>credits := (credits e)(u := credits e u + v)\<rparr>)"
+      by (simp add: holders_def)
+    show ?thesis using r1 holders_credit_add[OF v] by simp
+  qed
   have s1: "(reserve e + sum (credits e) (holders e)) - v
           = (reserve e - v) + sum (credits e) (holders e)"
     using le by arith
-  show ?thesis using h0 s1 by simp
+  show ?thesis
+  proof -
+    have step: "sum (credits e) (insert u (holders e))
+              = sum (credits e) (holders e)"
+    proof (cases "u \<in> holders e")
+      case True
+      have ins_eq: "insert u (holders e) = holders e"
+        using True by (rule insert_absorb)
+      then show ?thesis by simp
+    next
+      case False
+      have z: "credits e u = 0" using False by (simp add: holders_def)
+      have ins: "sum (credits e) (insert u (holders e))
+               = credits e u + sum (credits e) (holders e)"
+        using fin False by (rule sum.insert)
+      show ?thesis using ins z by simp
+    qed
+    have lhs: "reserve e - v
+       + sum (credits e)
+             (holders (e\<lparr>reserve := reserve e - v
+                                   , lp_pool := lp_pool e - v
+                                   , total_shares := total_shares e - s
+                                   , shares := (shares e)(u := shares e u - s)
+                                   , credits := (credits e)(u := credits e u + v)\<rparr>))
+       = (reserve e - v) + sum (credits e) (holders e)"
+      using h0 step by simp
+    show ?thesis using lhs s1 by simp
+  qed
 qed
 
 section \<open>Conservation theorems\<close>
@@ -825,42 +924,83 @@ theorem lpremove_ok:
   assumes ok: "escrow_ok e" and ap: "apply_op (LpRemove u s) e = Some e'"
   shows "escrow_ok e'"
 proof -
-  have g: "0 < s" "s \<le> shares e u"
-    and v: "0 < s * lp_pool e div total_shares e" "s * lp_pool e div total_shares e \<le> reserve e"
-    and eq: "e' = e\<lparr>reserve := reserve e - (s * lp_pool e div total_shares e)
-                          , lp_pool := lp_pool e - (s * lp_pool e div total_shares e)
-                          , total_shares := total_shares e - s
-                          , shares := (shares e)(u := shares e u - s)
-                          , outflow := outflow e + (s * lp_pool e div total_shares e)\<rparr>"
-    using ap by (auto simp: apply_op.simps Let_def split: if_splits)
-  then obtain v where v: "v = s * lp_pool e div total_shares e"
+  obtain v where v: "v = s * lp_pool e div total_shares e"
     and g: "0 < s" "s \<le> shares e u" "0 < v" "v \<le> reserve e"
     and eq: "e' = e\<lparr>reserve := reserve e - v
                           , lp_pool := lp_pool e - v
                           , total_shares := total_shares e - s
                           , shares := (shares e)(u := shares e u - s)
-                          , outflow := outflow e + v\<rparr>"
-    by (auto simp: apply_op.simps split: if_splits)
+                          , credits := (credits e)(u := credits e u + v)\<rparr>"
+    using ap by (auto simp: apply_op.simps Let_def split: if_splits)
   have ok_le: "outflow e \<le> inflow e" using ok by (simp add: escrow_ok_def)
   have ok_bal: "reserve e + sum (credits e) (holders e) = inflow e - outflow e"
     using ok by (simp add: escrow_ok_def balance_def)
-  have b2: "balance (e\<lparr>reserve := reserve e - v
-                                  , lp_pool := lp_pool e - v
-                                  , total_shares := total_shares e - s
-                                  , shares := (shares e)(u := shares e u - s)
-                                  , outflow := outflow e + v\<rparr>)
-           = inflow e - (outflow e + v)"
-    using lpremove_sum_raw ok_bal v g ok_le by (simp add: balance_def)
-  have le: "outflow e + v \<le> inflow e"
-    using ok_le ok_bal g(4) by arith
   have fin_h: "finite (holders e)" using ok by (simp add: escrow_ok_def)
   have f2: "finite (holders (e\<lparr>reserve := reserve e - v
                                   , lp_pool := lp_pool e - v
                                   , total_shares := total_shares e - s
                                   , shares := (shares e)(u := shares e u - s)
-                                  , outflow := outflow e + v\<rparr>))"
-    using holders_lp_finite[OF fin_h] by simp
-  show ?thesis unfolding eq escrow_ok_def using f2 le b2 by simp
+                                  , credits := (credits e)(u := credits e u + v)\<rparr>))"
+  proof -
+    have r1: "holders (e\<lparr>reserve := reserve e - v
+                                  , lp_pool := lp_pool e - v
+                                  , total_shares := total_shares e - s
+                                  , shares := (shares e)(u := shares e u - s)
+                                  , credits := (credits e)(u := credits e u + v)\<rparr>)
+             = holders (e\<lparr>credits := (credits e)(u := credits e u + v)\<rparr>)"
+      by (simp add: holders_def)
+    show ?thesis using r1 holders_lp_finite[OF fin_h g(3)] by simp
+  qed
+  have h0: "holders (e\<lparr>reserve := reserve e - v
+                       , lp_pool := lp_pool e - v
+                       , total_shares := total_shares e - s
+                       , shares := (shares e)(u := shares e u - s)
+                       , credits := (credits e)(u := credits e u + v)\<rparr>) = insert u (holders e)"
+  proof -
+    have r1: "holders (e\<lparr>reserve := reserve e - v
+                       , lp_pool := lp_pool e - v
+                       , total_shares := total_shares e - s
+                       , shares := (shares e)(u := shares e u - s)
+                       , credits := (credits e)(u := credits e u + v)\<rparr>)
+             = holders (e\<lparr>credits := (credits e)(u := credits e u + v)\<rparr>)"
+      by (simp add: holders_def)
+    show ?thesis using r1 holders_credit_add[OF g(3)] by simp
+  qed
+  have sL: "sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))
+          = sum (credits e) (holders e) + v"
+  proof -
+    have c0: "sum ((credits e)(u := credits e u + v)) (insert u (holders e))
+            = sum (credits e) (holders e) + v"
+      using sum_credit_add[OF fin_h g(3)] .
+    have c1: "sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))
+            = sum ((credits e)(u := credits e u + v)) (insert u (holders e))"
+      by (rule sum.cong) simp_all
+    show ?thesis using c0 c1 by metis
+  qed
+  have fin0: "reserve e - v
+            + sum (\<lambda>x. if x = u then credits e u + v else credits e x) (holders (e\<lparr>reserve := reserve e - v
+                        , lp_pool := lp_pool e - v
+                        , total_shares := total_shares e - s
+                        , shares := (shares e)(u := shares e u - s)
+                        , credits := (credits e)(u := credits e u + v)\<rparr>))
+            = reserve e + sum (credits e) (holders e)"
+  proof -
+    have p1: "(reserve e - v) + (sum (credits e) (holders e) + v)
+            = reserve e + sum (credits e) (holders e)" using g(4) by arith
+    have p2: "reserve e - v
+            + sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))
+            = (reserve e - v) + (sum (credits e) (holders e) + v)" using sL by simp
+    have p3: "sum (\<lambda>x. if x = u then credits e u + v else credits e x) (holders (e\<lparr>reserve := reserve e - v
+                        , lp_pool := lp_pool e - v
+                        , total_shares := total_shares e - s
+                        , shares := (shares e)(u := shares e u - s)
+                        , credits := (credits e)(u := credits e u + v)\<rparr>))
+            = sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))"
+      using h0 by simp
+    show ?thesis using p1 p2 p3 by metis
+  qed
+  show ?thesis unfolding eq escrow_ok_def
+    using f2 ok_le ok_bal fin0 by (simp add: balance_def)
 qed
 
 section \<open>Multi-LP: keyed pools over one reserve\<close>
@@ -955,7 +1095,7 @@ proof -
                           , pools := (pools e)(k := pools e k - v)
                           , totals := (totals e)(k := totals e k - s)
                           , books := (books e)(k := (books e k)(u := books e k u - s))
-                          , outflow := outflow e + v\<rparr>"
+                          , credits := (credits e)(u := credits e u + v)\<rparr>"
     using ap by (auto simp: apply_op.simps Let_def split: if_splits)
   have fin_h: "finite (holders e)" using ok by (simp add: escrow_ok_def)
   have ok_le: "outflow e \<le> inflow e" using ok by (simp add: escrow_ok_def)
@@ -965,26 +1105,63 @@ proof -
                                   , pools := (pools e)(k := pools e k - v)
                                   , totals := (totals e)(k := totals e k - s)
                                   , books := (books e)(k := (books e k)(u := books e k u - s))
-                                  , outflow := outflow e + v\<rparr>))"
-    using holders_keyremove_finite[OF fin_h] by simp
+                                  , credits := (credits e)(u := credits e u + v)\<rparr>))"
+  proof -
+    have r1: "holders (e\<lparr>reserve := reserve e - v
+                                  , pools := (pools e)(k := pools e k - v)
+                                  , totals := (totals e)(k := totals e k - s)
+                                  , books := (books e)(k := (books e k)(u := books e k u - s))
+                                  , credits := (credits e)(u := credits e u + v)\<rparr>)
+             = holders (e\<lparr>credits := (credits e)(u := credits e u + v)\<rparr>)"
+      by (simp add: holders_def)
+    show ?thesis using r1 holders_keyremove_finite[OF fin_h g(3)] by simp
+  qed
   have h0: "holders (e\<lparr>reserve := reserve e - v
                               , pools := (pools e)(k := pools e k - v)
                               , totals := (totals e)(k := totals e k - s)
                               , books := (books e)(k := (books e k)(u := books e k u - s))
-                              , outflow := outflow e + v\<rparr>) = holders e"
+                              , credits := (credits e)(u := credits e u + v)\<rparr>)
+           = insert u (holders e)"
+    using holders_credit_add[OF g(3)]
     by (simp add: holders_def)
-  have b3: "reserve e - v + sum (credits e) (holders e) = inflow e - outflow e - v"
-    using ok_bal g(4) by arith
-  have le: "outflow e + v \<le> inflow e"
-    using ok_le ok_bal g(4) by arith
-  have b2: "balance (e\<lparr>reserve := reserve e - v
-                              , pools := (pools e)(k := pools e k - v)
-                              , totals := (totals e)(k := totals e k - s)
-                              , books := (books e)(k := (books e k)(u := books e k u - s))
-                              , outflow := outflow e + v\<rparr>)
-          = inflow e - outflow e - v"
-    using b3 h0 by (simp add: balance_def)
-  show ?thesis unfolding eq escrow_ok_def using f2 le b2 by simp
+  have b3: "sum ((credits e)(u := credits e u + v)) (insert u (holders e))
+          = sum (credits e) (holders e) + v"
+    using sum_credit_add[OF fin_h g(3)] .
+  have sL: "sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))
+          = sum (credits e) (holders e) + v"
+  proof -
+    have c0: "sum ((credits e)(u := credits e u + v)) (insert u (holders e))
+            = sum (credits e) (holders e) + v"
+      using sum_credit_add[OF fin_h g(3)] .
+    have c1: "sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))
+            = sum ((credits e)(u := credits e u + v)) (insert u (holders e))"
+      by (rule sum.cong) simp_all
+    show ?thesis using c0 c1 by metis
+  qed
+  have fin0: "reserve e - v
+            + sum (\<lambda>x. if x = u then credits e u + v else credits e x) (holders (e\<lparr>reserve := reserve e - v
+                             , pools := (pools e)(k := pools e k - v)
+                             , totals := (totals e)(k := totals e k - s)
+                             , books := (books e)(k := (books e k)(u := books e k u - s))
+                             , credits := (credits e)(u := credits e u + v)\<rparr>))
+            = reserve e + sum (credits e) (holders e)"
+  proof -
+    have p1: "(reserve e - v) + (sum (credits e) (holders e) + v)
+            = reserve e + sum (credits e) (holders e)" using g(4) by arith
+    have p2: "reserve e - v
+            + sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))
+            = (reserve e - v) + (sum (credits e) (holders e) + v)" using sL by simp
+    have p3: "sum (\<lambda>x. if x = u then credits e u + v else credits e x) (holders (e\<lparr>reserve := reserve e - v
+                             , pools := (pools e)(k := pools e k - v)
+                             , totals := (totals e)(k := totals e k - s)
+                             , books := (books e)(k := (books e k)(u := books e k u - s))
+                             , credits := (credits e)(u := credits e u + v)\<rparr>))
+            = sum (\<lambda>x. if x = u then credits e u + v else credits e x) (insert u (holders e))"
+      using h0 by simp
+    show ?thesis using p1 p2 p3 by metis
+  qed
+  show ?thesis unfolding eq escrow_ok_def
+    using f2 ok_le ok_bal fin0 by (simp add: balance_def)
 qed
 
 text \<open>Set-level update toolkit: a point update against an EXPLICIT finite
@@ -1216,22 +1393,14 @@ lemma lp_ok_lpremove:
   assumes ok: "lp_ok e" and ap: "apply_op (LpRemove u s) e = Some e'"
   shows "lp_ok e'"
 proof -
-  have g0: "0 < s" "s \<le> shares e u" "0 < s * lp_pool e div total_shares e"
-    "s * lp_pool e div total_shares e \<le> reserve e"
-    and eq0: "e' = e\<lparr>reserve := reserve e - (s * lp_pool e div total_shares e)
-                          , lp_pool := lp_pool e - (s * lp_pool e div total_shares e)
-                          , total_shares := total_shares e - s
-                          , shares := (shares e)(u := shares e u - s)
-                          , outflow := outflow e + (s * lp_pool e div total_shares e)\<rparr>"
-    using ap by (auto simp: apply_op.simps Let_def split: if_splits)
-  then obtain v where v: "v = s * lp_pool e div total_shares e"
+  obtain v where v: "v = s * lp_pool e div total_shares e"
     and g: "0 < s" "s \<le> shares e u" "0 < v" "v \<le> reserve e"
     and eq: "e' = e\<lparr>reserve := reserve e - v
                           , lp_pool := lp_pool e - v
                           , total_shares := total_shares e - s
                           , shares := (shares e)(u := shares e u - s)
-                          , outflow := outflow e + v\<rparr>"
-    by (auto simp: apply_op.simps split: if_splits)
+                          , credits := (credits e)(u := credits e u + v)\<rparr>"
+    using ap by (auto simp: apply_op.simps Let_def split: if_splits)
   have mem0: "0 < shares e u" by (rule less_le_trans[OF g(1) g(2)])
   hence mem: "u \<in> lp_holders e" by (simp add: lp_holders_def)
   have fin: "finite (lp_holders e)" using ok by (simp add: lp_ok_def)
@@ -1806,7 +1975,7 @@ proof -
                           , pools := (pools e)(k := pools e k - v)
                           , totals := (totals e)(k := totals e k - s)
                           , books := (books e)(k := (books e k)(u := books e k u - s))
-                          , outflow := outflow e + v\<rparr>"
+                          , credits := (credits e)(u := credits e u + v)\<rparr>"
     using ap by (auto simp: apply_op.simps Let_def split: if_splits)
   (* guard consequences *)
   have T0: "totals e k \<noteq> 0"
@@ -2050,14 +2219,14 @@ proof -
                           , pools := (pools e)(k := pools e k - v)
                           , totals := (totals e)(k := totals e k - s)
                           , books := (books e)(k := (books e k)(u := books e k u - s))
-                          , outflow := outflow e + v\<rparr>)
+                          , credits := (credits e)(u := credits e u + v)\<rparr>)
              = {x. ((totals e)(k := totals e k - s)) x > 0}"
       by (simp add: total_support_def)
     have t1: "finite (total_support (e\<lparr>reserve := reserve e - v
                           , pools := (pools e)(k := pools e k - v)
                           , totals := (totals e)(k := totals e k - s)
                           , books := (books e)(k := (books e k)(u := books e k u - s))
-                          , outflow := outflow e + v\<rparr>))"
+                          , credits := (credits e)(u := credits e u + v)\<rparr>))"
       using fnz base by arith
     show ?thesis unfolding eq by (rule t1)
   qed
