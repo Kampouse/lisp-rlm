@@ -370,9 +370,14 @@
 ;; The walk: current cell P (active L = LQ:<P>), cell covers
 ;; [G(P), G(P+1)) going up / [G(P-1), G(P)) going down. Per-cell output
 ;; floors (fail-closed). Each leg moves s; the book is untouched.
-;; Emitter discipline (ft2 arc): big multi-binding let* blocks in one
-;; function collide local slots — every function below uses sequential
-;; single-binding lets only, and loops return ONE packed string.
+;; Emitter note (ft2 arc, revised 2026-10-15): the "let* slot collision"
+;; was a misdiagnosis — the repro files were mis-parenthesized sources the
+;; compiler faithfully compiled. The detectable corruption form (4+
+;; positional if arms) is now a hard error (arity cap, cf7f60e3); the
+;; 2-form-if / 2-body-let* shape is still legal lisp — paren discipline
+;; still matters. let* itself is safe (p5-burn uses it). The walk arms
+;; keep the sequential single-binding style they went green with, and
+;; loops return ONE packed string.
 ;;
 ;; walk arm for neg=1 (down): returns "acc|rm" packed, puts P/S.
 (define (p5-swarm-dn s p xbook ybook v)
