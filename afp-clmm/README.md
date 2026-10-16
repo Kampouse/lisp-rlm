@@ -4,8 +4,11 @@ Machine-checked Isabelle/HOL model of Uniswap-v3-style concentrated-liquidity
 ops (Echenim, AFP 2025) ported to lisp-rlm contracts, differentially verified.
 
 - **theory/** — verbatim AFP entry, read-only reference (`*.thy`, ~12.5K lines)
-- **escrow/** — the escrow-solvency theory (`CLMM_Escrow.thy`, STRICT
-  session: 0 sorries) ported as contract twins under `port/contracts/escrow/`
+- **proof/** — all Isabelle sessions in one folder: CLMM_Dynamic (fee
+  ledger), CLMM_Escrow (escrow-solvency shell, STRICT: 0 sorries, ported
+  as contract twins under `port/contracts/escrow/`), CLMM_Bridge
+  (composition; parent session = CLMM_Escrow, imports the live theories —
+  no snapshots). Build: `isabelle build -D proof`
 - **port/** — the port itself. See `port/README.md` for the tour.
 
 ```
