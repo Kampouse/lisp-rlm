@@ -39,6 +39,12 @@ const WASM_ONLY_DOCUMENTED: &[(&str, &str)] = &[
         "reads NEAR tx input (jsonExtract) — interp has no tx input; the
          buffer-arg twin json-extract IS ported",
     ),
+    (
+        "json-get-str-esc",
+        "unescapes JSON-in-JSON then scans at any depth (jsonGetStrEsc) —
+         interp has no escaped-JSON surface; wasm-only by design
+         (kernel2 msgHex extraction)",
+    ),
     // ── raw linear-memory / C-ABI internals: interp has no linear memory ──
     ("mem-get", "raw linear-memory read (wasm layout)"),
     ("mem-get8", "raw linear-memory read (wasm layout)"),
