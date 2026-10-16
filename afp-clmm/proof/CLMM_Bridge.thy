@@ -2,12 +2,9 @@ theory CLMM_Bridge
   imports CLMM_Escrow User_Ledger
 begin
 
-text \<open>\<paragraph>\<open>Baseline\<close> Compiled against the LAST VERIFIED escrow chain
--- HEAD's -- HEAD's
-CLMM_Escrow.thy carries 36e516d8 (committed explicitly UNVERIFIED) and
-the working copy is mid-fix. The ledger side is HEAD (verified Oct 15 +
-16:06 build). When the escrow fix lands green, refresh the committed/
-snapshots and rebuild.\<close>
+text \<open>\<paragraph>\<open>Baseline\<close> Lives in the consolidated single-session
+proof tree (live imports, no snapshots): escrow side and ledger side are
+both verified at their current commits in this folder.\<close>
 
 text \<open>
 \<paragraph>\<open>What this theory is\<close> The bridge between the two disjoint machines

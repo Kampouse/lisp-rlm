@@ -24,3 +24,4 @@ session "CLMM_Proof" = "Concentrated_Liquidity_Market_Making_Operations" +
     Pool_Ledger
     CLMM_Fee_Vectors
     CLMM_Bridge
+    CLMM_Coverage
