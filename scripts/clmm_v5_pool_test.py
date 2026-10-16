@@ -41,7 +41,7 @@ TWO64 = 1 << 64
 
 # ────────────────────────────────────────────── oracle: the thy, in ints
 
-def G(i: int) -> int:
+def _G(i: int) -> int:
     """S(i) = isqrt(1.0001^i · 2^128) — the fixed Q64.64 lattice."""
     if abs(i) > PMAX:
         raise ValueError
@@ -53,6 +53,16 @@ def G(i: int) -> int:
     else:
         num = pow(10000, -i) * TWO128 // pow(10001, -i)
     return math.isqrt(num)
+
+_G_CACHE = {}
+def G(i):
+    """G with memoization — the exact bigint pow is far too slow to recompute
+    inside p()'s binary search (20+ calls per op over ±PMAX)."""
+    v = _G_CACHE.get(i)
+    if v is None:
+        v = _G(i)
+        _G_CACHE[i] = v
+    return v
 
 def dy(L, S, S2):
     return (L * (S2 - S)) >> 64
@@ -74,16 +84,16 @@ def sfdx(L, S, dxin):
     return lo
 
 def sfdyi(L, S, dyin):
+    """S_for_dy_in: largest S2 ≤ S with dy(L, S2, S) ≤ dyin (up-convention dy).
+
+    Mirrors the kernel/p5-sfdyi closed form: t* = ceil((2^64·(dy+1) − 1)/L),
+    S2 = max(1, S − t*). The old binary search tested dy(L, S, S2) with S2 < S
+    (negative), which collapsed to 1 and teleported s to ~0."""
     if L == 0:
         return 1
-    lo, hi = 1, S
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if dy(L, S, mid) <= dyin:
-            hi = mid
-        else:
-            lo = mid + 1
-    return lo
+    tstar = ((1 << 64) * (dyin + 1) - 1) // L
+    s2 = S - tstar
+    return s2 if s2 >= 1 else 1
 
 class Oracle:
     """(P, s, lq) — the thy state, plus books (arc-C1 swap legs only)."""
@@ -110,8 +120,21 @@ class Oracle:
         return self.lq.get(i, 0)
 
     def p(self):
-        """P = lower_tick: largest grid point with G(p) ≤ s."""
-        lo, hi = -PMAX, PMAX
+        """P = lower_tick: largest grid point with G(p) ≤ s.
+        s is always within [G(imin), G(imax+1)) — swap walks clamp at the span
+        edges — so search the support neighborhood, not ±PMAX (each extreme
+        _G is a million-digit bigint pow)."""
+        sp = self.support()
+        if sp is None:
+            lo, hi = -2, 2
+        else:
+            hi = sp[1] + 2
+            # s may sit far BELOW the span after burns shrink support under it;
+            # exponential probe downward (each G is cached, ticks stay small in
+            # practice; the probe doubles until G(lo) ≤ s or PMAX floor).
+            lo = sp[0]
+            while lo > -PMAX and G(lo) > self.s:
+                lo = max(-PMAX, lo * 2 - sp[0] - 8)
         while lo < hi:
             mid = (lo + hi + 1) // 2
             if G(mid) <= self.s:
@@ -129,8 +152,14 @@ class Oracle:
             if sp is None:
                 return 0, v
             gmax = G(sp[1] + 1)
+            if os.environ.get("V5_TRACE"):
+                print(f"[quote up v={v} s={self.s} sp={sp}]", file=sys.stderr)
             s, p, acc, rm = self.s, self.p(), 0, v
+            _guard = 0
             while rm > 0 and s < gmax:
+                _guard += 1
+                if _guard > 100000:
+                    raise RuntimeError(f"up-walk runaway: p={p} s={s} gmax={gmax} rm={rm}")
                 L = self.cell(p)
                 gh = G(p + 1)
                 if L == 0:
@@ -140,8 +169,10 @@ class Oracle:
                     continue
                 dx_leg = dx(L, s, gh)
                 if dx_leg == 0:
-                    # fail-closed: zero input leg ⇒ zero output (no free y)
+                    # fail-closed: zero input leg ⇒ zero output (no free y);
+                    # jump the gap (s must advance or the s<gmax bound never fires)
                     p += 1
+                    s = gh
                     continue
                 if dx_leg <= rm:
                     acc += dy(L, s, gh)
@@ -170,6 +201,7 @@ class Oracle:
                 dy_leg = dy(L, gl, s)        # dy() is up-convention: (S→S2 up)
                 if dy_leg == 0:
                     p -= 1
+                    s = gl
                     continue
                 if dy_leg <= rm:
                     acc += dx(L, gl, s)
@@ -218,7 +250,7 @@ class Oracle:
             self.y += -v - rem
             self.x += out
         # move s/p: recompute from the walk (only if some input consumed)
-        consumed = v - rem
+        consumed = abs(v) - rem
         if consumed == 0:
             return "swap-empty", None
         if v > 0:
@@ -236,6 +268,7 @@ class Oracle:
                 dx_leg = dx(L, s, gh)
                 if dx_leg == 0:
                     p += 1
+                    s = gh
                     continue
                 if dx_leg <= rm:
                     rm -= dx_leg
@@ -260,6 +293,7 @@ class Oracle:
                 dy_leg = dy(L, gl, s)
                 if dy_leg == 0:
                     p -= 1
+                    s = gl
                     continue
                 if dy_leg <= rm:
                     rm -= dy_leg
@@ -294,8 +328,10 @@ class Pool:
             raise RuntimeError(f"{op} failed: {out[-400:]}")
         ret = None
         for line in out.splitlines():
-            if "RETURN" in line or "📄" in line:
-                ret = line.split(":", 1)[-1].strip()
+            if "RETURN" in line:
+                ret = line.split("RETURN", 1)[-1].lstrip(" :").strip()
+            elif "📄" in line:
+                ret = line.split("📄", 1)[1].strip()
         return r.returncode, ret
 
 # ────────────────────────────────────────────── state comparison
@@ -359,6 +395,9 @@ def main():
 
     def check(tag):
         """full-state equality: oracle vs contract storage."""
+        if os.environ.get("V5_TRACE"):
+            print(f"[check {tag}] oracle s={o.s} p={o.p()} imin={o.imin()} imax={o.imax()} "
+                  f"lq={ {k: v for k, v in sorted(o.lq.items()) if v} }", file=sys.stderr)
         rows = pool_rows(state)
         def gv(k, d="0"):
             v = rows.get("6|" + k)
@@ -411,7 +450,7 @@ def main():
         ("e11 swap zero", "swap", {"v": "0"}),
     ]
     for tag, op, margs in EDGE:
-        rc, out = pool.call(op, margs)
+        rc, out = pool.call(op, margs, expect_ok=False)
         if rc != 0 and "reject" not in tag and "too much" not in tag:
             fails.append(f"{tag}: rc={rc} out={out}")
         if op == "swap" and v_ok(margs):
@@ -436,11 +475,16 @@ def main():
     # ── fuzz ──
     for t in range(args.ops):
         roll = rng.random()
+        if os.environ.get("V5_TRACE"):
+            print(f"[fuzz {t}] roll={roll:.4f}", file=sys.stderr)
         if roll < 0.30:
             a = rng.randint(-4, 4)
             b = a + rng.randint(0, 6)
             d = rng.randint(1, 10**13)
-            rc, out = pool.call("mint", {"d": str(d), "a": str(a), "b": str(b)})
+            if os.environ.get("V5_TRACE"):
+                print(f"[mint {d} [{a},{b}]]", file=sys.stderr)
+            rc, out = pool.call("mint", {"d": str(d), "a": str(a), "b": str(b)},
+                                expect_ok=False)
             try:
                 o.mint(d, a, b)
                 if rc != 0:
@@ -454,7 +498,10 @@ def main():
                 a = rng.choice(cand) - rng.randint(0, 2)
                 b = a + rng.randint(0, 4)
                 d = rng.randint(1, 10**13)
-                rc, out = pool.call("burn", {"d": str(d), "a": str(a), "b": str(b)})
+                if os.environ.get("V5_TRACE"):
+                    print(f"[burn {d} [{a},{b}]]", file=sys.stderr)
+                rc, out = pool.call("burn", {"d": str(d), "a": str(a), "b": str(b)},
+                                    expect_ok=False)
                 try:
                     o.burn(d, a, b)
                     if rc != 0:
@@ -465,6 +512,8 @@ def main():
         elif roll < 0.52:
             i = rng.randint(-4, 6)
             v = rng.randint(0, 10**11)
+            if os.environ.get("V5_TRACE"):
+                print(f"[donate {v} @ {i}]", file=sys.stderr)
             pool.call("donate", {"v": str(v), "i": str(i)})
             o.donate(v, i)
         else:
@@ -475,8 +524,12 @@ def main():
             oout, orem = o.quote(v)
             if qout != oout:
                 fails.append(f"f{t} quote mismatch v={v}: {qout} != {oout} ({q})")
+            if os.environ.get("V5_TRACE"):
+                print(f"[swap {v}]", file=sys.stderr)
             rc, out = pool.call("swap", {"v": str(v)})
             o.swap(v)
+            if os.environ.get("V5_TRACE") and (o.s <= 1 or rc != 0):
+                print(f"[!! after swap v={v}: rc={rc} out={out} oracle s={o.s}]", file=sys.stderr)
             m = out.split(":")
             if len(m) >= 4 and m[0] == "swap-out":
                 if int(m[1]) != oout:

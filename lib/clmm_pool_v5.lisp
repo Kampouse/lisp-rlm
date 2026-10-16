@@ -49,7 +49,7 @@
 
 (define (p5-bz k) (let ((v (near/load-bytes k))) (if (nil? v) "0" v)))
 (define (p5-put k v) (near/store-bytes k v))
-(define (p5-fail m) (begin (near/log m) "ERR"))
+(define (p5-fail m) (near/abort m))
 (define (p5-ok m) m)
 
 ;; "acc|rm" packing: split at the FIRST | (acc never contains |)
@@ -233,6 +233,33 @@
 
 (define (p5-imax) (str->num (p5-bz "6|IMAX")))
 
+;; shrink IMIN upward to the first nonzero cell (≤4096 probes); 0 if none
+(define (p5-shrink-imin lo hi)
+  (loop ((i lo) (n 0))
+    (if (> n 4096) 0
+    (if (> i hi) 0
+        (if (p5-lq-nz? i)
+            i
+            (recur (+ i 1) (+ n 1)))))))
+
+;; shrink IMAX downward to the last nonzero cell (≤4096 probes); 0 if none
+(define (p5-shrink-imax lo hi)
+  (loop ((i hi) (n 0))
+    (if (> n 4096) 0
+    (if (< i lo) 0
+        (if (p5-lq-nz? i)
+            i
+            (recur (- i 1) (+ n 1)))))))
+
+;; respan after burn: IMIN/IMAX = exact nonzero support, 0/0 when empty
+(define (p5-respan!)
+  (let ((lo (p5-imin)) (hi (p5-imax)))
+    (let ((nlo (p5-shrink-imin lo hi)) (nhi (p5-shrink-imax lo hi)))
+      (begin
+        (p5-put "6|IMIN" (to-string nlo))
+        (p5-put "6|IMAX" (to-string nhi))
+        0))))
+
 ;; ── ops ────────────────────────────────────────────────────────────────
 
 (define (p5-init)
@@ -283,14 +310,15 @@
 ;; burn_rel d a b — authority + per-cell non-negativity + support + span
 (define (p5-burn)
   (let* ((inp (near/input))
-         (who (near/predecessor_account_id))
          (d (json-get-str "d" inp))
          (a (str->num (json-get-str "a" inp)))
          (b (str->num (json-get-str "b" inp))))
+    ;; thy burn_rel: guards = range, per-cell 0 ≤ lq' i, nonzero support,
+    ;; span bounds. No authority predicate exists in the relation — the
+    ;; pos-key check the v4 skeleton carried was beyond the proof and is
+    ;; dropped (spec-parity; positions remain mint-side bookkeeping).
     (if (or (< b a) (> (- b a) 64))
         (p5-fail "ERR_RANGE")
-    (if (< (li-cmp (p5-bz (p5-poskey who a b)) d) 0)
-        (p5-fail "ERR_AUTH")
     ;; per-cell guard ∀i∈[a,b]. lq i ≥ d  (relation: 0 ≤ lq' i)
     (if (= (loop ((i a))
                  (if (> i b) 1
@@ -308,14 +336,11 @@
                 (begin
                   (p5-put k (li-sub (p5-bz k) d))
                   (recur (+ i 1))))))
-        (p5-put (p5-poskey who a b)
-                (li-sub (p5-bz (p5-poskey who a b)) d))
         ;; support: shrink edges exactly — the thy span is IMIN/IMAX
-        ;; themselves; burn only shrinks to cells still carrying LQ, and
-        ;; a full-empty burn leaves the bounds at the burned span (oracle
-        ;; treats all-zero span as empty either way).
-        (if (p5-lq-nz? (str->num (p5-bz "6|IMIN"))) 0 0)
-        (str-cat "burn-ok:" d))))))))
+        ;; themselves; walk inward to the first/last nonzero cell, 0/0
+        ;; when the span emptied (oracle: support None ≡ bounds 0/0).
+        (p5-respan!)
+        (str-cat "burn-ok:" d)))))))
 
 ;; donate_rel v i — lq i += v, nothing else
 (define (p5-donate)
@@ -376,7 +401,9 @@
                               v0)
                        (let ((s2 (p5-sfdyi L ss rm)))
                          (begin
-                           (p5-put "6|P" (to-string pp))
+                           ;; s2 lands strictly inside the cell BELOW pp
+                           ;; ([G(gl), G(pp))) — thy P' = lower_tick(s').
+                           (p5-put "6|P" (to-string (- pp 1)))
                            (p5-put "6|S" s2)
                            (str-cat (li-add acc (p5-dxo L ss s2))
                                     (str-cat "|" "0"))))))))))))))
