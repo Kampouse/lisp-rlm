@@ -36,11 +36,17 @@
 ;; grd_max = G(IMAX+1). Swap clamped to the span = maximal swap_rel
 ;; instance; remainder refunded (a smaller v is still a valid swap_rel).
 ;;
-;; C1 SCOPE (this commit): _run-only. Books 6|X/6|Y move ONLY in swaps
-;; (consumed in / quoted out, exact). Token custody legs (ft_on_transfer,
-;; payout promises, fault reversal) are arc C2 on the proven v4/NEP-141
-;; pattern. POS:<who>:<a>:<b> = per-owner cumulative mint (burn authority;
+;; C1 SCOPE: _run-only. Books 6|X/6|Y move ONLY in swaps
+;; (consumed in / quoted out, exact).
+;; C2a (this commit): swap custody on the v4/NEP-141 pattern. ft_on_transfer
+;; accepts TOKX/TOKY deposits: msg "seed" credits the pool float (ESCX/ESCY
+;; — out-leg funding; escrow inflow mirrors the intake side of each swap),
+;; msg "sw" = swap: escrow intake, walk, then promise payout of `out` to
+;; sender. Payout failure (promise_result empty) reverses the full leg:
+;; books/P/S restored, escrows unwound, ft_resolve refunds the trader.
+;; POS:<who>:<a>:<b> = per-owner cumulative mint (burn authority;
 ;; the User_Ledger-flavored book). Driver oracle = thy formulas directly.
+;; Mint/burn payout custody = C2b (still _run-only bookkeeping).
 ;;
 ;; Call discipline: one value-producing call per let binding (compiler
 ;; sibling-call clobber — accrual contract note). `begin` wraps only
@@ -420,6 +426,8 @@
     (if (= (li-cmp rmf v) 0)
         msg
         (begin
+          (p5-put "6|OUT" out)
+          (p5-put "6|REM" rmf)
           (p5-put "6|X" xnew)
           (p5-put "6|Y" (li-add ybook yin))
           (p5-put "6|LAST" msg)
@@ -464,6 +472,8 @@
     (if (= (li-cmp rmf v) 0)
         msg
         (begin
+          (p5-put "6|OUT" out)
+          (p5-put "6|REM" rmf)
           (p5-put "6|Y" ynew)
           (p5-put "6|X" (li-add xbook xin))
           (p5-put "6|LAST" msg)
@@ -485,6 +495,189 @@
     (if (= neg 1)
         (p5-swarm-dn s p xbook ybook v)
         (p5-swarm-up s p xbook ybook v)))))))))))))
+;; ── custody (arc C2a): swap leg only ───────────────────────────────────
+;; NEP-141 entry: predecessor must be 6|TOKX or 6|TOKY; msg side-tags the
+;; operation ("sw"). 6|X/6|Y are flow ledgers (both rise on every swap),
+;; NOT reserves — trader token custody lives in 6|ESCX/6|ESCY, fed only by
+;; ft_on_transfer, drained only by payout ft_transfers.
+;; Refund coupling (ft2 resolve semantics): ft_resolve_transfer reads the
+;; ft_on_transfer receipt's CHAIN RESULT — the payout callback's own
+;; near/return, not intermediate returns. So p5-pay re-returns the refund
+;; string on every path: success ⇒ rm (remainder back to trader); payout
+;; failure ⇒ full intake c+rm (v4 returned only rm there and leaked the
+;; consumed slice — fixed here), plus ledger reversal (X-=c, Y-=o) and
+;; escrow unwound (-rm). Reject/empty-walk ⇒ near/return amt directly.
+(define (p5-num-ok? s)
+  ;; <=40 digits, ASCII only — OOB-parse & u128-scale guard (v4 pattern)
+  (if (> (str-length s) 40)
+      "0"
+      (loop ((i 0))
+        (if (>= i (str-length s))
+            "1"
+            (let ((d (- (byte-at s i) 48)))
+              (if (or (< d 0) (> d 9))
+                  "0"
+                  (recur (+ i 1))))))))
+
+;; index of next occurrence of `sep` byte at/after `from` (str-length if none)
+(define (p5-seek s from sep)
+  (loop ((j from))
+    (if (>= j (str-length s))
+        j
+        (if (= (byte-at s j) sep) j (recur (+ j 1))))))
+
+;; nth `sep`-field of s, 0-based. Swarm arms return OUT|RM (pipe-packed).
+(define (p5-fld s i sep)
+  (loop ((k 0) (start 0))
+    (if (> k i)
+        ""
+        (let ((e (p5-seek s start sep)))
+          (if (= k i)
+              (str-slice s start e)
+              (recur (+ k 1) (+ e 1)))))))
+
+(define (p5-on-transfer)
+  (let ((inp (near/input)))
+    (let ((sender (json-get-str "sender_id" inp)))
+      (let ((amt (json-get-str "amount" inp)))
+        (if (str= (p5-num-ok? amt) "0")
+            (near/return amt)
+            (if (str= (near/predecessor_account_id) (p5-bz "6|TOKX"))
+                (if (str= (json-get-str "msg" inp) "sw")
+                    (p5-swap-x sender amt)
+                    (if (str= (json-get-str "msg" inp) "seed")
+                        (begin
+                          ;; C2a bootstrap: pool-owned float, no position.
+                          ;; Out-legs pay from the OUT-token escrow, which
+                          ;; starts empty — LPs seed both sides (C2b moves
+                          ;; this into mint/burn custody proper).
+                          (p5-put "6|ESCX" (li-add (p5-bz "6|ESCX") amt))
+                          (near/return "0"))
+                        (near/return amt)))
+                (if (str= (near/predecessor_account_id) (p5-bz "6|TOKY"))
+                    (if (str= (json-get-str "msg" inp) "sw")
+                        (p5-swap-y sender amt)
+                        (if (str= (json-get-str "msg" inp) "seed")
+                            (begin
+                              (p5-put "6|ESCY" (li-add (p5-bz "6|ESCY") amt))
+                              (near/return "0"))
+                            (near/return amt)))
+                    (near/return amt))))))))
+
+;; sell X for Y: escrow intake, walk via the same core as op "swap", then
+;; promise the out-leg from 6|ESCY. Chain result (p5-pay's return) is what
+;; ft2's resolve refunds.
+(define (p5-swap-x sender amt)
+  (let ((s (p5-bz "6|S")))
+  (let ((p (str->num (p5-bz "6|P"))))
+  (let ((xbook (p5-bz "6|X")))
+  (let ((ybook (p5-bz "6|Y")))
+  (let ((ps0 (p5-bz "6|S")))
+  (let ((pl0 (p5-bz "6|P")))
+    (if (nil? (near/load-bytes "6|TOKX"))
+        (near/return amt)
+    (if (= (li-cmp amt "0") 0)
+        (near/return amt)
+        (begin
+          ;; v4 DY/REM pattern: sentinel the result keys, walk, read back.
+          (p5-put "6|OUT" "D")
+          (p5-put "6|REM" "D")
+          (p5-put "6|ESCX" (li-add (p5-bz "6|ESCX") amt))
+          ;; up sells X for Y (p5-swap: v>0 = sell x)
+          (p5-swarm-up s p xbook ybook amt)
+          (p5-leg-decide sender amt "6|X" "6|ESCX" "6|ESCY" ps0 pl0 "6|TOKY")))))))))))
+
+;; sell Y for X — mirror of p5-swap-x (out-leg from 6|ESCX on 6|TOKX)
+(define (p5-swap-y sender amt)
+  (let ((s (p5-bz "6|S")))
+  (let ((p (str->num (p5-bz "6|P"))))
+  (let ((xbook (p5-bz "6|X")))
+  (let ((ybook (p5-bz "6|Y")))
+  (let ((ps0 (p5-bz "6|S")))
+  (let ((pl0 (p5-bz "6|P")))
+    (if (nil? (near/load-bytes "6|TOKX"))
+        (near/return amt)
+    (if (= (li-cmp amt "0") 0)
+        (near/return amt)
+        (begin
+          (p5-put "6|OUT" "D")
+          (p5-put "6|REM" "D")
+          (p5-put "6|ESCY" (li-add (p5-bz "6|ESCY") amt))
+          ;; down sells Y for X (p5-swap: v<0 = sell y)
+          (p5-swarm-dn s p xbook ybook amt)
+          (p5-leg-decide sender amt "6|Y" "6|ESCY" "6|ESCX" ps0 pl0 "6|TOKX")))))))))))
+
+;; shared leg decision — reads 6|OUT/6|REM via bz (v4 pattern: NO
+;; return-string parsing inside receipts):
+;;   sentinel ⇒ walker moved nothing: undo escrow, refund all;
+;;   out == 0 ⇒ degenerate (intake consumed, output floored): undo the
+;;     intake-book delta + P/S + escrow, refund all;
+;;   else ⇒ consume intake escrow (-c), promise the out-leg; p5-pay owns
+;;     full reversal (X/Y/P/S + escrow -rm) on payout failure.
+(define (p5-leg-decide sender amt ibook ekey okey ps0 pl0 tokkey)
+  (let ((out (p5-bz "6|OUT")))
+    (if (str= out "D")
+        (begin
+          (p5-put ekey (li-sub (p5-bz ekey) amt))
+          (near/return amt))
+        (if (= (li-cmp out "0") 0)
+            (begin
+              (p5-put ibook (li-sub (p5-bz ibook) (li-sub amt (p5-bz "6|REM"))))
+              (p5-put "6|P" pl0)
+              (p5-put "6|S" ps0)
+              (p5-put ekey (li-sub (p5-bz ekey) amt))
+              (near/return amt))
+            (let ((c (li-sub amt (p5-bz "6|REM"))))
+              (begin
+                (p5-put ekey (li-sub (p5-bz ekey) c))
+                (p5-payout sender out (p5-bz "6|REM") c ps0 pl0 ekey okey tokkey)))))))
+
+;; promise the out-leg, then the pay callback. Chain result = pay's return.
+;; oe = the OUT-side escrow key (drained on payout success).
+(define (p5-payout sender out rm c ps pl ekey oe tokkey)
+  (let ((p (near/promise_batch_create (p5-bz tokkey))))
+    (begin
+      (near/promise_batch_action_function_call p "ft_transfer"
+        (json-set (json-set "{}" "receiver_id" sender) "amount" out)
+        "0" 40000000000000)
+      (near/promise_return
+        (near/promise_then p (near/current_account_id) "pay"
+          (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set "{}"
+            "r" sender) "o" out) "m" rm) "c" c) "ps" ps) "pl" pl) "e" ekey) "w" oe)
+          "0" 5000000000000)))))
+
+;; payout callback (internal only — self-call gate). promise_result(0)
+;; empty ⇒ ft_transfer receipt failed: reverse this swap's ledger deltas,
+;; unwind the intake escrow (-rm), restore P/S, and return the FULL
+;; intake (c+m) so resolve refunds the trader whole. Success ⇒ return rm.
+;; Both paths return via near/return: the chain result is this value.
+;; Reversal needs the walker's terminal P/S — snapshot them BEFORE the
+;; walk (p5-payout's ps/pl args) since the walker itself puts them.
+(define (p5-pay)
+  (if (str= (near/predecessor_account_id) (near/current_account_id))
+      (let ((inp (near/input)))
+        (let ((r (near/promise_result 0)))
+          (if (< (str-length r) 1)
+              (begin
+                ;; payout FAILED: reverse ledger + P/S, unwind intake
+                ;; escrow, refund the FULL intake (c+m) via the chain
+                ;; result (resolve credits it back to the trader)
+                (p5-put "6|X" (li-sub (p5-bz "6|X") (json-get-str "c" inp)))
+                (p5-put "6|Y" (li-sub (p5-bz "6|Y") (json-get-str "o" inp)))
+                (p5-put "6|P" (json-get-str "pl" inp))
+                (p5-put "6|S" (json-get-str "ps" inp))
+                (p5-put (json-get-str "e" inp)
+                  (li-sub (p5-bz (json-get-str "e" inp)) (json-get-str "m" inp)))
+                (near/return (li-add (json-get-str "c" inp) (json-get-str "m" inp))))
+              (begin
+                ;; payout OK: drain the out-side escrow by `out`; the
+                ;; trader's own rm refund flows through resolve, and the
+                ;; intake escrow stays decremented by c only.
+                (p5-put (json-get-str "w" inp)
+                  (li-sub (p5-bz (json-get-str "w" inp)) (json-get-str "o" inp)))
+                (near/return (json-get-str "m" inp))))))
+      (near/return "forbidden")))
+
 ;; ── views + dispatch ───────────────────────────────────────────────────
 
 (define (p5-get)
@@ -572,3 +765,5 @@
         "unknown-op")))))))))))
 
 (export "_run" p5-run)
+(export "ft_on_transfer" p5-on-transfer)
+(export "pay" p5-pay)
