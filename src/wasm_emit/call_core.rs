@@ -433,6 +433,19 @@ impl WasmEmitter {
             }
             "if" => {
                 let mut v = Vec::new();
+                // if: HARD ARITY CAP (2026-10-15) — mirrors infer_if in the type
+                // checker. The emitter reads at most (cond then else); a misplaced
+                // close-paren that mis-nests a let*/begin body under the if lands
+                // here with extra args, which were SILENTLY DROPPED — flipping which
+                // arm runs while the code still compiles (the CLMM v5 swap-arc bug
+                // class). Fail loudly instead.
+                if a.len() > 3 {
+                    return Err(format!(
+                        "if: expected (if cond then [else]), got {} positional forms — \
+                         a misplaced ')' likely nested extra forms under the if",
+                        a.len()
+                    ));
+                }
                 // cond fast path (2026-09-14, gas): numeric comparison conds
                 // branch directly on the raw i32 — skip the Bool re-tag +
                 // truthiness dispatch (same rationale as the while fast path)

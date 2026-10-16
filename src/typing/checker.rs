@@ -1245,6 +1245,22 @@ fn infer_if(
     let then_branch = parts.get(1).ok_or("if: missing then")?;
     let else_branch = parts.get(2);
 
+    // if: HARD ARITY CAP (2026-10-15). The emitter reads at most (cond then else);
+    // anything beyond arg 3 was SILENTLY DROPPED — and a misplaced close-paren that
+    // mis-nests a let*/begin body under the if produces exactly this shape, flipping
+    // which arm runs while the code still compiles (the CLMM v5 swap-arc bug class:
+    // both arms executed, the if returned the inner arm's value). The interpreter
+    // hard-errors on user-fn arity since round-3 fix 3 — special forms get the same
+    // discipline. All repo contracts are 3-arg-or-less (verified 2026-10-15 sweep;
+    // the 4 bip340 probe scripts carrying a stray 4th arg were never compiled paths).
+    if parts.len() > 3 {
+        return Err(format!(
+            "if: expected (if cond then [else]), got {} positional forms — \
+             a misplaced ')' likely nested extra forms under the if",
+            parts.len()
+        ));
+    }
+
     // Check condition is bool-ish (we allow any for truthy)
     let _cond_type = infer(cond, env, supply, subst)?;
 

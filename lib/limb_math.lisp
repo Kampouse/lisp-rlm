@@ -63,7 +63,7 @@
 
 ;; halve: walk limbs top→bottom, v = limb + 10^9×carry (carry∈{0,1};
 ;; v ≤ 2×10^9 < 2^31 ✓), limb' = v/2, next carry = v mod 2.
-;; returns (buf len carry) — carry is the bit shifted out.
+;; returns buf/len/carry — carry is the bit shifted out.
 (define (limb-halve b l)
   (let ((out (buf-alloc 64)))
     (loop ((k (- (limb-strip b l) 1)) (carry 0))
