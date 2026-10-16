@@ -375,9 +375,9 @@
 ;; compiler faithfully compiled. The detectable corruption form (4+
 ;; positional if arms) is now a hard error (arity cap, cf7f60e3); the
 ;; 2-form-if / 2-body-let* shape is still legal lisp — paren discipline
-;; still matters. let* itself is safe (p5-burn uses it). The walk arms
-;; keep the sequential single-binding style they went green with, and
-;; loops return ONE packed string.
+;; still matters. let* itself is safe (p5-burn uses it, and the walk arms
+;; were converted to let* in 88e3ec17 once the phantom repro was buried).
+;; Loops return ONE packed string.
 ;;
 ;; walk arm for neg=1 (down): returns "acc|rm" packed, puts P/S.
 (define (p5-swarm-dn s p xbook ybook v)
@@ -400,7 +400,6 @@
                  (gl (p5-G (- pp 1)))
                  (dxo (p5-dxo L ss gl))
                  (dyi (p5-dyi L ss gl)))
-                 
                    (if (< (li-cmp dyi rm) 1)
                        (recur (- pp 1) gl (li-add acc (if (= (li-cmp dyi "0") 0) "0" dxo))
                               (li-sub rm dyi)
@@ -413,13 +412,11 @@
                            (p5-put "6|S" s2)
                            (str-cat (li-add acc (p5-dxo L ss s2))
                                     (str-cat "|" "0")))))))))))
-         
   (let* ((out (p5-fst res))
          (rmf (p5-snd res))
          (xnew (li-add xbook out))
          (yin (li-sub v rmf))
          (msg (str-cat "swap-out:" (str-cat out (str-cat ":rem:" rmf)))))
-  
     (if (= (li-cmp rmf v) 0)
         msg
         (begin
@@ -449,7 +446,6 @@
                  (gh (p5-G (+ pp 1)))
                  (dy (p5-dy L ss gh))
                  (dx (p5-dx L ss gh)))
-                 
                    (if (< (li-cmp dx rm) 1)
                        (recur (+ pp 1) gh (li-add acc (if (= (li-cmp dx "0") 0) "0" dy))
                               (li-sub rm dx)
@@ -460,7 +456,6 @@
                            (p5-put "6|S" s2)
                            (str-cat (li-add acc (p5-dy L ss s2))
                                     (str-cat "|" "0")))))))))))
-         
   (let* ((out (p5-fst res))
          (rmf (p5-snd res))
          (ynew (li-add ybook out))

@@ -140,3 +140,46 @@ fn clean_skeleton_up_arm_wins() {
     assert!(r.contains("Uy"), "up arm marker: {r}");
     assert!(!r.contains("D"), "down arm leaked into up: {r}");
 }
+
+// ── bytecode backend (the define→lambda VM compiler): same A/B ──────────
+// run_program compiles EVERY define to bytecode — a failed lambda compile
+// is a hard error (program.rs ok_or_else on LAST_COMPILE_ERROR), never a
+// tree-walk fallback. So the corrupted twin must fail program eval with
+// the cap's message, and the clean 3-form must compile AND run both arms.
+
+const BC_AB: &str = r#"
+(define (arm neg)
+  (if (= neg 1)
+      (let* ((a 41) (b (+ a 1))) b)
+      7))
+"#;
+
+fn bc_run(src: &str) -> Result<String, String> {
+    let exprs = parse_all(src)?;
+    let mut env = lisp_rlm_wasm::Env::new();
+    let mut state = lisp_rlm_wasm::EvalState::new();
+    let mut out = String::new();
+    for e in &exprs {
+        out = lisp_rlm_wasm::program::run_program(&[e.clone()], &mut env, &mut state)?.to_string();
+    }
+    Ok(out)
+}
+
+#[test]
+fn bytecode_corrupted_twin_is_rejected() {
+    let err = bc_run(T22).expect_err("4-form if must fail the bytecode lambda compile");
+    assert!(err.contains("positional"), "wrong error: {err}");
+}
+
+#[test]
+fn bytecode_clean_skeleton_down_arm() {
+    // let* sequential semantics survive the VM: b references a.
+    let r = bc_run(&format!("{BC_AB}\n(arm 1)")).expect("down arm runs");
+    assert!(r.contains("42"), "down arm result: {r}");
+}
+
+#[test]
+fn bytecode_clean_skeleton_up_arm() {
+    let r = bc_run(&format!("{BC_AB}\n(arm 0)")).expect("up arm runs");
+    assert!(r.contains("7"), "up arm result: {r}");
+}
