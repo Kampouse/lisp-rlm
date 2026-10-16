@@ -654,8 +654,12 @@
         "0" 40000000000000)
       (near/promise_return
         (near/promise_then p (near/current_account_id) "pay"
-          (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set "{}"
+          (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set (json-set "{}"
             "r" sender) "o" out) "m" rm) "c" c) "ps" ps) "pl" pl) "e" ekey) "w" oe)
+            ;; k tags the custody case — pay dispatches on it (sw = swap
+            ;; reversal/refund; missing k used to fall into the cx/cy
+            ;; branch and consume the full intake).
+            "k" "sw")
           "0" 5000000000000)))))
 
 ;; payout callback (internal only — self-call gate). promise_result(0)

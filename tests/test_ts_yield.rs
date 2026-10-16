@@ -58,15 +58,19 @@ fn run(state: &str, taker: bool, acct: &str, method: &str, args: &str, view: boo
     let out = cmd.output().expect("near-mock");
     format!(
         "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+        normalize_num(&String::from_utf8_lossy(&out.stdout)),
+        normalize_num(&String::from_utf8_lossy(&out.stderr))
     )
 }
 
 #[test]
 fn yield_oracle_suspend_and_cross_process_resume() {
     let _ = std::fs::remove_file("/tmp/yld-t.bin");
-    // 1. suspend: NotReady pass returns pending, price unset
+    // 1. suspend: the yield stays pending. Since 9a4bfd94 (2026-10-14,
+    //    real-chain semantics) promise_yield_create no longer runs an
+    //    optimistic NotReady callback pass — onPrice first executes when
+    //    the feeder calls yieldResume. The tx succeeds with no result
+    //    line; the suspension itself is proven by the unset price below.
     let req = run(
         "/tmp/yld-t.bin",
         true,
@@ -75,7 +79,7 @@ fn yield_oracle_suspend_and_cross_process_resume() {
         "{}",
         false,
     );
-    assert!(req.contains("pending"), "NotReady pass: {req}");
+    assert!(req.contains("✅ Success"), "suspend: {req}");
     let price0 = run(
         "/tmp/yld-t.bin",
         true,
@@ -140,4 +144,27 @@ fn yield_oracle_suspend_and_cross_process_resume() {
         price2.contains("4210"),
         "price unchanged after failed re-resume: {price2}"
     );
+}
+
+/// The near-mock's \u{1f4c4} printer comma-groups digit runs (human_num,
+/// 7d2b3cb1). Strip the grouping so asserts written against raw digits keep
+/// working. Commas inside non-digit contexts are preserved.
+fn normalize_num(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b',' {
+            let before = out.as_bytes().last().map_or(false, |c| c.is_ascii_digit());
+            let after = bytes.get(i + 1).map_or(false, |c| c.is_ascii_digit());
+            if before && after {
+                i += 1;
+                continue;
+            }
+        }
+        let ch = s[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
