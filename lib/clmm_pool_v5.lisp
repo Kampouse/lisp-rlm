@@ -38,15 +38,29 @@
 ;;
 ;; C1 SCOPE: _run-only. Books 6|X/6|Y move ONLY in swaps
 ;; (consumed in / quoted out, exact).
-;; C2a (this commit): swap custody on the v4/NEP-141 pattern. ft_on_transfer
-;; accepts TOKX/TOKY deposits: msg "seed" credits the pool float (ESCX/ESCY
-;; — out-leg funding; escrow inflow mirrors the intake side of each swap),
-;; msg "sw" = swap: escrow intake, walk, then promise payout of `out` to
-;; sender. Payout failure (promise_result empty) reverses the full leg:
-;; books/P/S restored, escrows unwound, ft_resolve refunds the trader.
-;; POS:<who>:<a>:<b> = per-owner cumulative mint (burn authority;
-;; the User_Ledger-flavored book). Driver oracle = thy formulas directly.
-;; Mint/burn payout custody = C2b (still _run-only bookkeeping).
+;; C2a (committed eeeb50eb): swap custody on the v4/NEP-141 pattern.
+;; ft_on_transfer accepts TOKX/TOKY deposits: msg "seed" credits the pool
+;; float (ESCX/ESCY — out-leg funding; escrow inflow mirrors the intake
+;; side of each swap), msg "sw" = swap: escrow intake, walk, then promise
+;; payout of `out` to sender. Payout failure (promise_result empty)
+;; reverses the full leg: books/P/S restored, escrows unwound, ft_resolve
+;; refunds the trader. POS:<who>:<a>:<b> = per-owner cumulative mint
+;; (burn authority; the User_Ledger-flavored book).
+;; C2b (this commit): mint/burn custody — REQUIRED-AMOUNT escrow. op "req"
+;; {d,a,b} exposes rx/ry, the S-independent closed form both mint legs
+;; and burnc owe. Mint = TWO legs (X/Y arrive in separate receipts):
+;; msg "m:d:a:b" — leg 1 attaches EXACTLY its side's req (no refund path
+;; exists for leg-1 excess), records 6|PM:<who> = "S:a:b:d:req" and
+;; escrows req; leg 2 attaches ≥ req, matches side+a+b+d, escrows its
+;; req, completes (exact op-mint core) and refunds excess via used.
+;; msg "c" cancels: plain ft_transfer of the RECORDED slice, PM cleared +
+;; escrow drained only in the p5-pay "mk" success branch (failure leaves
+;; pending+escrow intact for retry). Burn = op "burnc" (authority +
+;; per-cell LQ guard + exact op-burn core; owed ledgers = req capped at
+;; the escrow float) + op "claim" {t} per token: owed zeroed + escrow
+;; debited, single payout leg; p5-pay "cx"/"cy" restores owed+escrow when
+;; the receipt fails (single-leg reversal — two legs cannot be atomic).
+;; Parity ops mint/burn untouched (driver oracle).
 ;;
 ;; Call discipline: one value-producing call per let binding (compiler
 ;; sibling-call clobber — accrual contract note). `begin` wraps only
@@ -547,13 +561,11 @@
                     (p5-swap-x sender amt)
                     (if (str= (json-get-str "msg" inp) "seed")
                         (begin
-                          ;; C2a bootstrap: pool-owned float, no position.
-                          ;; Out-legs pay from the OUT-token escrow, which
-                          ;; starts empty — LPs seed both sides (C2b moves
-                          ;; this into mint/burn custody proper).
+                          ;; pool-owned float, no position (bootstrap for
+                          ;; swap out-legs; mint custody escrows its own)
                           (p5-put "6|ESCX" (li-add (p5-bz "6|ESCX") amt))
                           (near/return "0"))
-                        (near/return amt)))
+                        (p5-mint-leg sender amt)))
                 (if (str= (near/predecessor_account_id) (p5-bz "6|TOKY"))
                     (if (str= (json-get-str "msg" inp) "sw")
                         (p5-swap-y sender amt)
@@ -561,7 +573,7 @@
                             (begin
                               (p5-put "6|ESCY" (li-add (p5-bz "6|ESCY") amt))
                               (near/return "0"))
-                            (near/return amt)))
+                            (p5-mint-leg sender amt)))
                     (near/return amt))))))))
 
 ;; sell X for Y: escrow intake, walk via the same core as op "swap", then
@@ -647,9 +659,10 @@
           "0" 5000000000000)))))
 
 ;; payout callback (internal only — self-call gate). promise_result(0)
-;; empty ⇒ ft_transfer receipt failed: reverse this swap's ledger deltas,
-;; unwind the intake escrow (-rm), restore P/S, and return the FULL
-;; intake (c+m) so resolve refunds the trader whole. Success ⇒ return rm.
+;; empty ⇒ the payout receipt failed: dispatch on k (sw = full C2a swap
+;; reversal + full-intake refund; mk = re-credit mint-cancel escrow;
+;; cx/cy = restore claim owed + escrow). Success ⇒ C2a returns rm (the
+;; trader's remainder rides resolve); mk/cx/cy consume (return "0").
 ;; Both paths return via near/return: the chain result is this value.
 ;; Reversal needs the walker's terminal P/S — snapshot them BEFORE the
 ;; walk (p5-payout's ps/pl args) since the walker itself puts them.
@@ -658,25 +671,324 @@
       (let ((inp (near/input)))
         (let ((r (near/promise_result 0)))
           (if (< (str-length r) 1)
+              ;; payout FAILED — dispatch on the custody case k:
+              ;;   sw (C2a): reverse ledger + P/S, unwind intake escrow,
+              ;;     refund the FULL intake (c+m) via the chain result;
+              ;;   mk: mint-cancel refund failed — re-credit the escrow;
+              ;;   cx/cy: claim failed — restore owed + escrow.
+              (if (str= (json-get-str "k" inp) "sw")
+                  (begin
+                    (p5-put "6|X" (li-sub (p5-bz "6|X") (json-get-str "c" inp)))
+                    (p5-put "6|Y" (li-sub (p5-bz "6|Y") (json-get-str "o" inp)))
+                    (p5-put "6|P" (json-get-str "pl" inp))
+                    (p5-put "6|S" (json-get-str "ps" inp))
+                    (p5-put (json-get-str "e" inp)
+                      (li-sub (p5-bz (json-get-str "e" inp)) (json-get-str "m" inp)))
+                    (near/return (li-add (json-get-str "c" inp) (json-get-str "m" inp))))
+                  (if (str= (json-get-str "k" inp) "mk")
+                      ;; mint-cancel refund failed: restore NOTHING — the
+                      ;; pending record + escrow survive (retry or leg 2).
+                      (near/return "cancel-failed")
+                      (begin
+                        (p5-put (json-get-str "w" inp)
+                          (li-add (p5-bz (json-get-str "w" inp))
+                                  (json-get-str "o" inp)))
+                        (p5-put (json-get-str "e" inp)
+                          (li-add (p5-bz (json-get-str "e" inp))
+                                  (json-get-str "o" inp)))
+                        (near/return "0"))))
               (begin
-                ;; payout FAILED: reverse ledger + P/S, unwind intake
-                ;; escrow, refund the FULL intake (c+m) via the chain
-                ;; result (resolve credits it back to the trader)
-                (p5-put "6|X" (li-sub (p5-bz "6|X") (json-get-str "c" inp)))
-                (p5-put "6|Y" (li-sub (p5-bz "6|Y") (json-get-str "o" inp)))
-                (p5-put "6|P" (json-get-str "pl" inp))
-                (p5-put "6|S" (json-get-str "ps" inp))
-                (p5-put (json-get-str "e" inp)
-                  (li-sub (p5-bz (json-get-str "e" inp)) (json-get-str "m" inp)))
-                (near/return (li-add (json-get-str "c" inp) (json-get-str "m" inp))))
-              (begin
-                ;; payout OK: drain the out-side escrow by `out`; the
-                ;; trader's own rm refund flows through resolve, and the
-                ;; intake escrow stays decremented by c only.
-                (p5-put (json-get-str "w" inp)
-                  (li-sub (p5-bz (json-get-str "w" inp)) (json-get-str "o" inp)))
-                (near/return (json-get-str "m" inp))))))
+                ;; payout OK — dispatch on k:
+                ;;   sw: drain the out-side escrow by `out`; the trader's
+                ;;     rm refund flows through resolve (return rm).
+                ;;   mk: cancel refund delivered — clear the pending
+                ;;     record + drain the escrow slice.
+                ;;   cx/cy: owed/escrow were netted at claim time — consume.
+                (if (str= (json-get-str "k" inp) "sw")
+                    (begin
+                      (p5-put (json-get-str "w" inp)
+                        (li-sub (p5-bz (json-get-str "w" inp)) (json-get-str "o" inp)))
+                      (near/return (json-get-str "m" inp)))
+                    (if (str= (json-get-str "k" inp) "mk")
+                        (begin
+                          ;; cleared marker = "0" (bz's missing value):
+                          ;; storing "" traps the host store
+                          (p5-put (str-cat "6|PM:" (json-get-str "r" inp)) "0")
+                          (p5-put (json-get-str "w" inp)
+                            (li-sub (p5-bz (json-get-str "w" inp))
+                                    (json-get-str "d" inp)))
+                          (near/return "0"))
+                        (near/return "0")))))))
       (near/return "forbidden")))
+
+;; ── custody (arc C2b): mint/burn legs ──────────────────────────────────
+;; Positions are two-token liabilities: X and Y arrive in SEPARATE
+;; ft_transfer_call receipts, so mint custody is a two-leg protocol and
+;; burn custody is accounting + per-token claims (two payout legs cannot
+;; be atomically reversed — each claim leg reverses ITSELF on failure).
+;;
+;; MINT (msg "m:d:a:b" on either token; REQUIRED-amount custody —
+;; op "req" {d,a,b} gives rx/ry, the S-independent closed form both
+;; legs charge and burnc refunds; leg 1 attaches EXACTLY its side's req
+;; (its excess could never ride a refund); leg 2 attaches ≥ req,
+;; excess refunded via its chain result; cancel msg "c" attaches 0):
+;;   leg 1 records 6|PM:<sender> = "<X|Y>:a:b:d" and escrows d on its
+;;   side; leg 2 matches a/b and the opposite side, requires ≥ req,
+;;   completes the position (exact op-mint core). Both sides' REQUIRED
+;;   slices stay escrowed — burn claims pay req back (same closed form,
+;;   so custody is symmetric; swap PnL lives in the books, not custody).
+;;   Mismatch / short / re-entry / bad shape ⇒ p5-fail
+;;   (resolve refunds that leg whole).
+;;   Cancel refunds the recorded slice via plain ft_transfer; state is
+;;   touched ONLY in the callback (success clears PM + drains escrow;
+;;   failure leaves the pending mint intact for a retry).
+;; BURN:
+;;   op "burnc" {d,a,b} — authority (POS ≥ d) + the EXACT op-burn core,
+;;   then owed ledgers 6|OWX/<who>·6|OWY/<who> += the required amounts
+;;   (SAME closed form as the mint charge — S-independent, cell-edge
+;;   chaining from G(a); helpers persist 6|RX/6|RY — receipts never
+;;   parse returns), capped at the escrow float (insolvency guard).
+;;   op "claim" {"t"} — pays one owed token per receipt from its escrow
+;;   side; promise failure ⇒ p5-pay "cx"/"cy" restores owed + escrow
+;;   exactly (C2a-proven single-leg reversal).
+;; Parity ops "mint"/"burn" are UNTOUCHED (driver oracle).
+
+;; required X to add d over [a,b]: sum of dx(d, G(i), G(i+1)) — the
+;; X-consumption form (up-leg input, ÷ S·S2), rising so S2 > S holds.
+;; Tail-recursive at fixed depth (≤ 65 = mint span cap).
+(define (p5-reqx i b s d acc)
+  (if (> i b) acc
+      (p5-reqx (+ i 1) b (p5-G (+ i 1)) d
+               (li-add acc (p5-dx d s (p5-G (+ i 1)))))))
+
+;; required Y: sum of dy(d, G(i), G(i+1)) — the Y-consumption form
+;; (down-leg input, >> 64), rising (dyi over a rising walk would walk
+;; the pair DOWN into limb-sub underflow — the trap this fixed).
+(define (p5-reqy i b s d acc)
+  (if (> i b) acc
+      (p5-reqy (+ i 1) b (p5-G (+ i 1)) d
+               (li-add acc (p5-dy d s (p5-G (+ i 1)))))))
+
+;; complete a matched two-leg mint: BOTH sides' d stays escrowed (the
+;; deposited tokens back the position — burn claims pay from them);
+;; write the position (exact op-mint core), consume exactly d, refund
+;; any excess of this leg via the chain result.
+(define (p5-mint-finish sender d a b amt)
+  (begin
+    (p5-put (str-cat "6|PM:" sender) "")
+    ;; position books — pointwise LQ += d, POS += d, widen support
+    (loop ((i a))
+      (if (> i b)
+          0
+          (let ((k (p5-lqkey i)))
+            (begin (p5-put k (li-add (p5-bz k) d)) (recur (+ i 1))))))
+    (p5-put (p5-poskey sender a b)
+            (li-add (p5-bz (p5-poskey sender a b)) d))
+    (if (< a (str->num (p5-bz "6|IMIN")))
+        (p5-put "6|IMIN" (to-string a))
+        0)
+    (if (> b (str->num (p5-bz "6|IMAX")))
+        (p5-put "6|IMAX" (to-string b))
+        0)
+    (near/return amt)))
+
+;; ft_on_transfer mint/cancel leg (predecessor = a pool token, amount
+;; validated). msg "c" cancels a pending mint: refund the recorded
+;; slice via an escrow-backed ft_transfer_call (failure ⇒ p5-pay "mk"
+;; re-credits the escrow).
+(define (p5-mint-leg sender amt)
+  (let ((msg (json-get-str "msg" (near/input))))
+    (if (str= msg "c")
+        (let ((rec (p5-bz (str-cat "6|PM:" sender))))
+          (if (or (str= rec "") (str= rec "0"))
+              (near/return amt)
+              (let ((esc (p5-fld rec 4 58)))   ;; recorded escrow slice
+              (let ((ek1 (str-cat "6|ESC" (str-slice rec 0 1))))
+                (begin
+                  ;; cancel: refund the recorded slice via plain ft_transfer
+                  ;; (a 0-amount ft_transfer_call moves nothing). State is
+                  ;; touched ONLY in the callback: success clears PM + drains
+                  ;; escrow; failure restores nothing — the pending mint and
+                  ;; its escrow survive for a retry or leg 2 completion.
+                  (let ((p (near/promise_batch_create (p5-bz "6|TOKX"))))
+                    (begin
+                      (near/promise_batch_action_function_call p
+                        "ft_transfer"
+                        (json-set (json-set "{}" "receiver_id" sender)
+                                  "amount" esc)
+                        "0" 40000000000000)
+                      (near/promise_return
+                        (near/promise_then p (near/current_account_id)
+                          "pay"
+                          (json-set (json-set (json-set (json-set
+                            (json-set "{}" "k" "mk") "r" sender)
+                            "d" esc) "w" ek1) "t" "6|TOKX")
+                          "0" 5000000000000)))))))))
+        (if (not (= (byte-at msg 0) 109))
+            (near/return amt)
+            (let ((d (p5-fld msg 1 58)))
+            (let ((a (str->num (p5-fld msg 2 58))))
+            (let ((b (str->num (p5-fld msg 3 58))))
+              ;; NOTE: no pend guard here — a pending record IS the leg-2
+              ;; trigger; same-side re-entry dies in ERR_MISMATCH below
+              ;; (byte check), and completion clears the record.
+              (if (or (< b a)
+                      (> (- b a) 64)
+                      (not (= (p5-num-ok? d) "1"))
+                      (not (= (li-cmp d "0") 1)))
+                  (p5-fail "ERR_RANGE")
+              ;; attach validation is req-based per leg below (leg 1:
+              ;; ERR_EXACT, leg 2: ERR_SHORT against its own side's req)
+              (let ((toky? (str= (near/predecessor_account_id)
+                                 (p5-bz "6|TOKY"))))
+              (let ((rec (p5-bz (str-cat "6|PM:" sender))))
+                ;; "0" = never written, "" = cancel-cleared: BOTH mean
+                ;; first leg (bz never returns "" for a missing key)
+                (if (or (str= rec "") (str= rec "0"))
+                    ;; FIRST leg: record + escrow the REQUIRED amount on
+                    ;; this side. EXACT attach only — leg 1's excess could
+                    ;; never ride a refund (only leg 2's chain result goes
+                    ;; through resolve), so sloppy legs are rejected whole
+                    ;; (op "req" gives the caller the exact figure).
+                    (let ((ga (p5-G a)))
+                    (let ((req (if toky?
+                                   (p5-reqy a b ga d "0")
+                                   (p5-reqx a b ga d "0"))))
+                      (if (not (= (li-cmp amt req) 0))
+                          (p5-fail "ERR_EXACT")
+                          (let ((ek (if toky? "6|ESCY" "6|ESCX")))
+                            (begin
+                              (p5-put (str-cat "6|PM:" sender)
+                                (str-cat (if toky? "Y" "X")
+                                  (str-cat ":" (str-cat (to-string a)
+                                    (str-cat ":" (str-cat (to-string b)
+                                      (str-cat ":" (str-cat d (str-cat ":" req)))))))))
+                              (p5-put ek (li-add (p5-bz ek) req))
+                              (near/return "0"))))))
+                    ;; SECOND leg: opposite side, same a/b (d must match
+                    ;; too — field 3 — else the two legs split escrow)
+                    (if (not (and (= (byte-at rec 0)
+                                     (if toky? 88 89))
+                                  (= (str->num (p5-fld rec 1 58)) a)
+                                  (= (str->num (p5-fld rec 2 58)) b)
+                                  (str= (p5-fld rec 3 58) d)))
+                        (p5-fail "ERR_MISMATCH")
+                        (let ((ga (p5-G a)))
+                        (let ((req (if toky?
+                                       (p5-reqy a b ga d "0")
+                                       (p5-reqx a b ga d "0"))))
+                          (if (< (li-cmp amt req) 0)
+                              (p5-fail "ERR_SHORT")
+                              (begin
+                                ;; leg 2's required slice joins the escrow
+                                (p5-put (if toky? "6|ESCY" "6|ESCX")
+                                  (li-add (p5-bz (if toky? "6|ESCY" "6|ESCX"))
+                                          req))
+                                (p5-mint-finish sender d a b
+                                  (li-sub amt req))))))))))))))))))
+
+;; op "burnc" {d,a,b} — custody burn: authority + exact op-burn core,
+;; then owed ledgers from the required-amount closed forms. 6|RX/6|RY
+;; carry the raw sums for callers/tests.
+(define (p5-burnc)
+  (let* ((inp (near/input))
+         (who (near/predecessor_account_id))
+         (d (json-get-str "d" inp))
+         (a (str->num (json-get-str "a" inp)))
+         (b (str->num (json-get-str "b" inp))))
+    (if (or (< b a)
+            (> (- b a) 64)
+            (not (= (p5-num-ok? d) "1"))
+            (not (= (li-cmp d "0") 1)))
+        (p5-fail "ERR_RANGE")
+    ;; authority: caller owns ≥ d at [a,b] (POS keys = custody truth)
+    (if (< (li-cmp (p5-bz (p5-poskey who a b)) d) 0)
+        (p5-fail "ERR_AUTH")
+    ;; per-cell guard ∀i∈[a,b]. LQ i ≥ d  (same relation as op burn)
+    (if (= (loop ((i a))
+                 (if (> i b) 1
+                     (if (< (li-cmp (p5-bz (p5-lqkey i)) d) 0)
+                         0
+                         (recur (+ i 1)))))
+           0)
+        (p5-fail "ERR_LIQ")
+    (let ((ga (p5-G a)))
+    (let ((rx (p5-reqx a b ga d "0")))
+    (let ((ry (p5-reqy a b ga d "0")))
+      (begin
+        (p5-put "6|RX" rx)
+        (p5-put "6|RY" ry)
+        ;; pointwise subtract — op-burn core
+        (loop ((i a))
+          (if (> i b) 0
+              (let ((k (p5-lqkey i)))
+                (begin
+                  (p5-put k (li-sub (p5-bz k) d))
+                  (recur (+ i 1))))))
+        (p5-respan!)
+        (p5-put (p5-poskey who a b)
+                (li-sub (p5-bz (p5-poskey who a b)) d))
+        ;; owed = the required amount, capped at the escrow float
+        (let ((cx (p5-req-cap rx "6|ESCX")))
+        (let ((cy (p5-req-cap ry "6|ESCY")))
+        (let ((kx (str-cat "6|OWX:" who))
+              (ky (str-cat "6|OWY:" who)))
+          (begin
+            (p5-put kx (li-add (p5-bz kx) cx))
+            (p5-put ky (li-add (p5-bz ky) cy))
+            (str-cat "burnc-ok:" (str-cat cx (str-cat ":" cy))))))))))))))))
+
+;; required-amount custody: owed = min(req, escrow float) — insolvency
+;; guard only. req is token-denominated (same closed form at mint and
+;; burn), so no unit scaling.
+(define (p5-req-cap req ekey)
+  (let ((e (p5-bz ekey)))
+    (if (< (li-cmp req e) 1) req e)))
+
+;; op "req" {d,a,b} — the required-amount closed form (S-independent:
+;; pure cell-edge chaining from G(a)); mint legs attach these exactly.
+(define (p5-req)
+  (let ((inp (near/input)))
+  (let ((d (json-get-str "d" inp)))
+  (let ((a (str->num (json-get-str "a" inp))))
+  (let ((b (str->num (json-get-str "b" inp))))
+    (let ((ga (p5-G a)))
+      (str-cat "rx:" (str-cat (p5-reqx a b ga d "0")
+                 (str-cat ":ry:" (p5-reqy a b ga d "0"))))))))))
+
+;; op "claim" {"t"} — pay one owed token per receipt. Failure ⇒ p5-pay
+;; "cx"/"cy" restores owed + escrow (single-leg reversal, C2a pattern).
+(define (p5-claim)
+  (let ((inp (near/input)))
+    (let ((who (near/predecessor_account_id)))
+      (let ((tok (json-get-str "t" inp)))
+        (let ((w (if (str= tok "y")
+                     (str-cat "6|OWY:" who)
+                     (str-cat "6|OWX:" who))))
+        (let ((e (if (str= tok "y") "6|ESCY" "6|ESCX")))
+        (let ((tkey (if (str= tok "y") "6|TOKY" "6|TOKX")))
+        (let ((k (if (str= tok "y") "cy" "cx"))
+              (v (p5-bz w)))
+          (if (= (li-cmp v "0") 0)
+              "no-owed"
+              (begin
+                (p5-put w "0")
+                (p5-put e (li-sub (p5-bz e) v))
+                (let ((p (near/promise_batch_create (p5-bz tkey))))
+                  (begin
+                    (near/promise_batch_action_function_call p
+                      "ft_transfer"
+                      (json-set (json-set "{}" "receiver_id" who)
+                                "amount" v)
+                      "0" 40000000000000)
+                    (near/promise_return
+                      (near/promise_then p (near/current_account_id)
+                        "pay"
+                        (json-set (json-set (json-set (json-set
+                          (json-set "{}" "k" k) "r" who) "o" v)
+                          "w" w) "e" e)
+                        "0" 5000000000000))
+                    "claim-sent"))))))))))))
 
 ;; ── views + dispatch ───────────────────────────────────────────────────
 
@@ -756,13 +1068,16 @@
     (if (str= op "init") (p5-init)
     (if (str= op "mint") (p5-mint)
     (if (str= op "burn") (p5-burn)
+    (if (str= op "burnc") (p5-burnc)
+    (if (str= op "claim") (p5-claim)
+    (if (str= op "req") (p5-req)
     (if (str= op "donate") (p5-donate)
     (if (str= op "swap") (p5-swap)
     (if (str= op "quote") (p5-quote)
     (if (str= op "get") (p5-get)
     (if (str= op "view") (p5-view)
     (if (str= op "g") (p5-G (str->num (json-get-str "i" (near/input))))
-        "unknown-op")))))))))))
+        "unknown-op"))))))))))))))
 
 (export "_run" p5-run)
 (export "ft_on_transfer" p5-on-transfer)
