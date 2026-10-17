@@ -64,13 +64,13 @@ let rec walk_conservation (take:take_t) (v:amt) (n:nat)
    refunded == v_eff exactly — the fee-skimmed input is fully accounted,
    neither created nor destroyed (skim itself is covered in CLMM.Fee). *)
 
-let walk_bookkeeping (take:take_t) (v:amt) (n:nat)
-  : Lemma (ensures (v_eff v - remn take (v_eff v) n == walk_sum take (v_eff v) n 0))
-  = walk_conservation take (v_eff v) n
+let walk_bookkeeping (take:take_t) (k:nat) (v:amt) (n:nat)
+  : Lemma (ensures (v_eff k v - remn take (v_eff k v) n == walk_sum take (v_eff k v) n 0))
+  = walk_conservation take (v_eff k v) n
 
 (* ---------- 5. sanity pin: 3-step worked example ----------
-   take = r/4 (a quarter-cell drain), v = 100, no skim path fee (feep?=nil
-   equivalent): v_eff 100 -> 75 -> 56 -> 42 remainder; consumed 58. *)
+   take = r/4 (a quarter-cell drain), v = 100, legacy skim (k=8, but
+   v < 256 so F = 0): v_eff 100 -> 75 -> 56 -> 42 remainder; consumed 58. *)
 
 let ex_take : take_t = fun r -> r / 4
 

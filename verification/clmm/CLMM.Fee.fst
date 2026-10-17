@@ -19,27 +19,42 @@ type liq    = d:int{0 <= d /\ d < u128_max}
 type growth = g:int{0 <= g /\ g < u128_max}
 type snap   = s:int{0 <= s /\ s < u128_max}
 
-(* ---------- 1. custody intake skim: F = v >> 8 ---------- *)
+(* ---------- 1. custody intake skim: F = v >> fee_shift ----------
+   fee_shift is a POOL PARAM (key 6|SHIFT, default/legacy 8 -> /256).
+   Model: divisor = 2^k; F = v / 2^k (floor). v >> k == floor(v / 2^k)
+   for the li/limb impl (parity-harness pinned; ash-floor on nonneg). *)
 
-let fee_skim (v:amt) : amt = v / 256
-let v_eff   (v:amt) : amt = v - fee_skim v
+let rec pow2 (k:nat) : Tot pos = if k = 0 then 1 else op_Multiply 2 (pow2 (k - 1))
 
-let skim_complete (v:amt)
-  : Lemma (ensures (fee_skim v + v_eff v == v /\ fee_skim v <= v /\ v_eff v <= v))
-  = ()
+let skim (k:nat) (v:amt) : amt = v / pow2 k
+let v_eff (k:nat) (v:amt) : amt = v - skim k v
 
-let skim_floor (v:amt)
-  : Lemma (ensures (op_Multiply 256 (fee_skim v) <= v /\ v < op_Multiply 256 (fee_skim v) + 256))
-  = ()
+// q <= v for divisor >= 1 (div_le_self)
+let div_le_self (v:nat) (d:pos)
+  : Lemma (ensures (v / d <= v))
+  = FStar.Math.Lemmas.lemma_div_mod v d;
+    FStar.Math.Lemmas.lemma_mod_lt v d;
+    FStar.Math.Lemmas.lemma_mult_le_left 1 d (v / d)
 
-let skim_zero_small (v:amt)
-  : Lemma (requires (v < 256)) (ensures (fee_skim v == 0 /\ v_eff v == v))
-  = ()
+let skim_complete (k:nat) (v:amt)
+  : Lemma (ensures (skim k v + v_eff k v == v /\ skim k v <= v /\ v_eff k v <= v))
+  = div_le_self v (pow2 k)
 
-let skim_effective_lower (v:amt)
-  : Lemma (ensures (op_Multiply 256 (v_eff v) >= op_Multiply 255 v))
-  = FStar.Math.Lemmas.lemma_div_mod v 256;
-    FStar.Math.Lemmas.lemma_mod_lt v 256
+let skim_floor (k:nat) (v:amt)
+  : Lemma (ensures (op_Multiply (pow2 k) (skim k v) <= v
+                    /\ v < op_Multiply (pow2 k) (skim k v) + pow2 k))
+  = FStar.Math.Lemmas.lemma_div_mod v (pow2 k);
+    FStar.Math.Lemmas.lemma_mod_lt v (pow2 k)
+
+let skim_zero_small (k:nat) (v:amt)
+  : Lemma (requires (v < pow2 k))
+          (ensures (skim k v == 0 /\ v_eff k v == v))
+  = skim_floor k v;
+    FStar.Math.Lemmas.lemma_mult_le_left 1 (skim k v) (pow2 k)
+
+let skim_effective_lower (k:nat) (v:amt)
+  : Lemma (ensures (op_Multiply (pow2 k) (v_eff k v) >= op_Multiply (pow2 k - 1) v))
+  = skim_floor k v
 
 (* ---------- 2. mulshr64: (x * d) >> 64 (Q64.64 scaling) ---------- *)
 
