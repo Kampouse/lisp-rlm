@@ -909,14 +909,21 @@
 ;; Known v1 under-credit (pool-favoring): a top-up mint resets the
 ;; whole key's snapshots, forfeiting pre-top-up accrual.
 ;;
-;; EMITTER TRAP (cost a real bug, Oct 2026): do NOT restructure as
-;; (define acc (loop ...)) + (begin (p5-put ...) acc) — near-compile
-;; rejects a let-bound loop result referenced in a trailing begin
-;; ("undefined variable 'acc'"). The accumulator must ride the loop
-;; itself and the FS write must happen INSIDE the body (read-before-
-;; write), as below. The original bug: the loop's reset put ran, but
-;; its return value was discarded, so FWX/FWY stayed empty and LP
-;; fee claims paid principal only.
+;; NAME-SCOPE TRAP (cost a real bug, Oct 2026; reproduced + characterized
+;; 2026-10-17, probe recipe: /tmp/trap_v{3,4}.lisp): there are exactly two
+;; ways to "naturally" return a fold result here, and BOTH are compile
+;; errors — (1) referencing the loop's binding after the loop:
+;;   (loop ((i a) (acc "0")) ...) ... acc
+;;   → "type error: undefined variable 'acc'" (loop bindings do not
+;;   escape the loop); (2) hoisting with an internal define:
+;;   (define acc (loop ...)) → "undefined variable 'define'" (defines
+;;   are top-level only; a let-bound result in a trailing begin DOES
+;;   compile fine — that shape is not the trap). Therefore the fold
+;;   value can only escape AS the loop's own return value: the FS
+;;   snapshot resets MUST ride inside the body (read-before-write), as
+;;   below. The original bug: the loop's reset put ran, but its fold
+;;   value was discarded, so FWX/FWY stayed empty and LP fee claims
+;;   paid principal only.
 (define (p5-feefold who a b d side)
   (loop ((i a) (s "0"))
     (if (> i b)
