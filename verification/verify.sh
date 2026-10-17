@@ -86,6 +86,7 @@ verify_split semantics/lisp_ir/LispIR.PerExpr3.fst
 echo "--- Layer 4b: CLMM arithmetic ---"
 verify clmm/CLMM.Fee.fst
 verify clmm/CLMM.Walk.fst
+verify clmm/CLMM.Cell.fst
 
 # Layer 5: Tests
 echo "--- Layer 5: Tests ---"
