@@ -1,0 +1,9 @@
+# Generated artifacts — rebuild from source
+*.cmi
+*.cmo
+*.cmx
+*.o
+clmm_v5_quote
+clmm_v5_quote_opt
+clmm_v5_kernel_full.ml
+export/
