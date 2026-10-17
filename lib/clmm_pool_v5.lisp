@@ -1296,8 +1296,7 @@
                     (or (> b hi) (> b (+ a 64)))
                     s
                     (let
-                      ((ta (to-string a)) (tb (to-string b))
-                       (d (p5-bz (p5-poskey who a b))))
+                      ((d (p5-bz (p5-poskey who a b))))
                       (recur
                         (+ b 1)
                         (if
@@ -1310,10 +1309,10 @@
                               (str-cat
                                 "pos:"
                                 (str-cat
-                                  ta
+                                  (to-string a)
                                   (str-cat
                                     ":"
-                                    (str-cat tb (str-cat ":" d)))))))))))))
+                                    (str-cat (to-string b) (str-cat ":" d)))))))))))))
 )
             (recur (+ a 1) inner)))))))
 

@@ -645,6 +645,19 @@ impl WasmEmitter {
         // garbage (run_g '10,21,8590263846'). Site reuse was also unsound for
         // any result that OUTLIVES the call (array slots, later joins).
         v.extend(self.heap_bump_runtime(64, "__its2_dst"));
+        // OOB fix (2026-10-17, CLMM live-find): the negative path below
+        // writes '-' at dst-1 — with dst = the heap-bump base that byte
+        // belongs to the PREVIOUS allocation. A load-bytes value whose
+        // length ≡ 0 (mod 8) has no alignment padding, so to-string(-1)
+        // evaluated while that value was live overwrote its LAST byte
+        // (32-char storage string came back "...000-" instead of "...0000").
+        // Reserve the sign byte: dst = base+1 ⇒ lowest write = base,
+        // highest = base+33 (digits+sign) < base+64. Byte stores only —
+        // the shifted pointer needs no alignment.
+        v.push(Instruction::LocalGet(dst_i));
+        v.push(Instruction::I64Const(1));
+        v.push(Instruction::I64Add);
+        v.push(Instruction::LocalSet(dst_i));
         // Handle negative
         v.push(Instruction::LocalGet(n_i));
         v.push(Instruction::I64Const(0));
