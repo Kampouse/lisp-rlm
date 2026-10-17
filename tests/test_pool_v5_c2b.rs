@@ -345,6 +345,24 @@ fn pool_v5_c2b_mint_burn_custody() {
         "S:18446744073709551616:P:0:X:0:Y:0:IMIN:0:IMAX:0",
         "pool back to seed state — no dust"
     );
+
+    // ── view-surface parity: escrow op == get-keys == raw FT balances ──
+    // The gauntlet's chain layer reconciles exactly this triple on live
+    // chain; pinned here at the funded checkpoints (final: all zero).
+    let esc = m.ret(&m.pool_op("{\"op\":\"escrow\"}"));
+    assert_eq!(esc, "ESCX:0:ESCY:0", "escrow op matches get-keys at 0");
+    assert_eq!(
+        bal(&m, "tokx.tst", "pool.tst"),
+        escrow(&m, "ESCX") + m.ret(&m.pool_op("{\"op\":\"get\",\"k\":\"X\"}")).parse::<u128>().unwrap(),
+        "raw tokx(pool) == ESCX + reserve X"
+    );
+    assert_eq!(
+        bal(&m, "toky.tst", "pool.tst"),
+        escrow(&m, "ESCY") + m.ret(&m.pool_op("{\"op\":\"get\",\"k\":\"Y\"}")).parse::<u128>().unwrap(),
+        "raw toky(pool) == ESCY + reserve Y"
+    );
+    let st = m.ret(&m.pool_op("{\"op\":\"state\"}"));
+    assert!(st.ends_with("TOKX:tokx.tst:TOKY:toky.tst"), "state carries token ids");
 }
 // Regression pin (8a56ddcf): burnc support-shrink must compare LQ in the
 // string domain. `p5-lq-nz?` used to push token-scale LQ through checked

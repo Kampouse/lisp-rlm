@@ -61,6 +61,11 @@
 ;; debited, single payout leg; p5-pay "cx"/"cy" restores owed+escrow when
 ;; the receipt fails (single-leg reversal — two legs cannot be atomic).
 ;; Parity ops mint/burn untouched (driver oracle).
+;; C2b+views (Oct 16): read-only surface for auditors/gauntlet — op
+;; "escrow" { } → "ESCX:n:ESCY:n" (the custody pair in one call), op
+;; "state" { } → view readout + :LAST: + :ESCX:/ESCY: + :TOKX:/TOKY:
+;; (token contracts in charge). Both ZERO-write; pinned in
+;; tests/test_pool_v5_views.rs + funded-flow parity in c2b.
 ;;
 ;; Call discipline: one value-producing call per let binding (compiler
 ;; sibling-call clobber — accrual contract note). `begin` wraps only
@@ -1015,6 +1020,23 @@
   (let ((t5 (str-cat t4 (str-cat ":IMIN:" imn))))
     (str-cat t5 (str-cat ":IMAX:" imx))))))))))))))
 
+;; read-only custody view: the escrow ledger pair in one call — the exact
+;; keys external auditors reconcile against raw ft_balance_of. ZERO writes.
+(define (p5-escrow)
+  (str-cat "ESCX:" (str-cat (p5-bz "6|ESCX")
+             (str-cat ":ESCY:" (p5-bz "6|ESCY")))))
+
+;; read-only full state: reserves, curve bounds, last action, custody pair,
+;; and the token contracts in charge. ZERO writes.
+(define (p5-state)
+  (let ((b (p5-view)))
+    (str-cat b
+      (str-cat ":LAST:" (p5-bz "6|LAST"))
+      (str-cat ":ESCX:" (p5-bz "6|ESCX"))
+      (str-cat ":ESCY:" (p5-bz "6|ESCY"))
+      (str-cat ":TOKX:" (p5-bz "6|TOKX"))
+      (str-cat ":TOKY:" (p5-bz "6|TOKY")))))
+
 ;; oracle op: pure quote — same closed form, ZERO state writes (the
 ;; driver's differential oracle target; also swap_rel's s'-projection).
 (define (p5-qarm-dn s p v)
@@ -1080,8 +1102,10 @@
     (if (str= op "quote") (p5-quote)
     (if (str= op "get") (p5-get)
     (if (str= op "view") (p5-view)
+    (if (str= op "escrow") (p5-escrow)
+    (if (str= op "state") (p5-state)
     (if (str= op "g") (p5-G (str->num (json-get-str "i" (near/input))))
-        "unknown-op"))))))))))))))
+        "unknown-op"))))))))))))))))
 
 (export "_run" p5-run)
 (export "ft_on_transfer" p5-on-transfer)
