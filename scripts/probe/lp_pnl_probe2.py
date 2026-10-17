@@ -142,12 +142,12 @@ def main():
     assert f[0] == "pnl" and len(f) == 10, f"shape: {r}"
     d, x, y, fx, fy, V, hodl, il, pnl = f[1:]
 
-    ga, gb = G(A1), G(B1)
+    ga, gb = G(A1), G(B1 + 1)
     sc = min(max(S, ga), gb)
     P = (S * S) >> 64
     ox, oy = dx(D, sc, gb), dy(D, ga, sc)
-    oV = oy + ((ox * P) >> 64)
-    ohodl = reqy(A1, B1, D) + ((reqx(A1, B1, D) * P) >> 64)
+    oV = oy + ox * P
+    ohodl = reqy(A1, B1, D) + reqx(A1, B1, D) * P
     ofy = accrual(rows, "Y", A1, B1, D)
     ofx = accrual(rows, "X", A1, B1, D)
     print(f"A: post Y-sell (S={S}, FEEY={feey})")
@@ -159,7 +159,7 @@ def main():
     ok &= check("fy > 0", 1 if int(fy) > 0 else 0, 1)
     ok &= check("V", int(V), oV, tol=2)
     ok &= check("HODL", int(hodl), ohodl, tol=2)
-    tot = oV + ((ofx * P) >> 64) + ofy
+    tot = oV + ofx * P + ofy
     ok &= check("pnl", signed(pnl), tot - ohodl, tol=4)
 
     # B: partial custody burn — burnc accrues fees into owed + writes FS;

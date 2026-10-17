@@ -1371,20 +1371,25 @@
 ;; ── LP PnL view (Oct 17): read-only mark-to-market + fee + IL surface ──
 ;; op "pnl" {who,a,b} →
 ;;   "pnl:<d>:<x>:<y>:<fx>:<fy>:<V>:<HODL>:<il_bp>:<pnl>"
-;;   x,y    current composition at S, clamped to [G(a),G(b)] — kernel
-;;          exact (x = d·(1/Sc − 1/G(b)) as the dx form, y = dy form)
+;;   x,y    current composition at S, clamped to the position's price
+;;          span [G(a), G(b+1)] — b is INCLUSIVE (cell b spans
+;;          [G(b),G(b+1)]; probe3/3b: burnc pays x_max below range and
+;;          y_max above, both = this span's closed forms)
 ;;   fx,fy  unclaimed fees (read-only feefold — FS NOT reset; state
 ;;          bit-identical after the read; burnc's fold minus the puts)
-;;   V      composition marked in Y units: y + (x·P)>>64, P = S²>>64.
-;;          VALUE lines are quote-grade (≤2 >>64-dust); token amounts
-;;          themselves are kernel-exact
+;;   V      composition marked in Y units: y + x·P with atom-price
+;;          P = S²>>64 (probe3: x_max·P = ry exactly — no second shift;
+;;          fee-marking saturates at u128 if fx·P overflows, the only
+;;          quote-grade line; token amounts themselves kernel-exact)
 ;;   HODL   the range-max deposit (reqx/reqy closed forms — the actual
-;;          custody leg amounts, S-independent) marked at CURRENT S.
-;;          Post-partial-burn this is the re-mint benchmark, not wallet
-;;          history — the same epoch-mixing class as the FS top-up
-;;          reset (display-only, documented here)
+;;          custody leg amounts: custody escrows BOTH extrema, burnc
+;;          returns current composition + fees) marked at CURRENT S —
+;;          i.e. the RE-MINT COST of the same position, not a v3
+;;          deposit-and-hold baseline. Post-partial-burn same caveat
+;;          (re-mint, not wallet history; FS top-up-reset class)
 ;;   il_bp  (V·10⁴)//HODL − 10⁴, signed ("-n" when negative, floor)
-;;   pnl    (V + fx·P + fy) − HODL in Y units = fees − IL, signed
+;;   pnl    (V + fx·P + fy) − HODL in Y units = fees + drift vs the
+;;          re-mint cost, signed
 ;; ZERO writes. Gas class: two ≤64-cell folds + two req folds ≈ 2× burnc.
 (define (p5-mul10 v)
   ;; 10v = 2v + 8v, li-add only (stays in the limb world; native * would
@@ -1396,6 +1401,16 @@
 
 (define (p5-mul1e4 v)
   (p5-mul10 (p5-mul10 (p5-mul10 (p5-mul10 v)))))
+
+;; raw 128-bit product of decimal-string bignums (mulshr64 minus the
+;; >>64 stage). For value marking only: x·P ≤ L·Δspan/2⁶⁴ < L fits
+;; u128 in any sane state; degenerate S traps — bound documented in
+;; the pnl header.
+(define (p5-mul x y)
+  (let ((XA (str->limbs x)) (YA (str->limbs y)) (tC (buf-alloc 64)))
+    (begin
+      (limb-mul (car XA) (car YA) tC (car (cdr XA)) (car (cdr YA)))
+      (limbs->str tC (if (> (v5-strip tC 16) 0) (v5-strip tC 16) 1)))))
 
 ;; floor(a/b) for decimal-string bignums, b ≠ 0 (padded limb divmod —
 ;; same idiom as p5-shr8; a up to 10⁴·u128 fits the 12-limb width)
@@ -1436,7 +1451,7 @@
         "pnl:0"
         (let* ((S (p5-bz "6|S"))
                (ga (p5-G a))
-               (gb (p5-G b))
+               (gb (p5-G (if (> b 799999) 800000 (+ b 1))))
                (sc (if (> (li-cmp S gb) 0)
                        gb
                        (if (< (li-cmp S ga) 0) ga S)))
@@ -1445,11 +1460,15 @@
                (fx (p5-feefold-ro who a b d "X"))
                (fy (p5-feefold-ro who a b d "Y"))
                (P (p5-mulshr64 S S))
-               (V (li-add y (p5-mulshr64 x P)))
+               (V (li-add y (p5-mul x P)))
                (rx (p5-reqx a b ga d "0"))
                (ry (p5-reqy a b ga d "0"))
-               (hodl (li-add ry (p5-mulshr64 rx P)))
-               (tot (li-add V (li-add (p5-mulshr64 fx P) fy)))
+               (hodl (li-add ry (p5-mul rx P)))
+               (fxp (p5-mul fx P))
+               (fxm (if (> (li-cmp fxp "340282366920938463463374607431768211455") 0)
+                        "340282366920938463463374607431768211455"
+                        fxp))
+               (tot (li-add V (li-add fxm fy)))
                (q (p5-quot (p5-mul1e4 V) hodl))
                (il (if (< (li-cmp q "10000") 0)
                        (str-cat "-" (li-sub "10000" q))
