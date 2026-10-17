@@ -1368,6 +1368,97 @@
         (p5-qarm-dn s p v)
         (p5-qarm-up s p v))))))))))
 
+;; ── LP PnL view (Oct 17): read-only mark-to-market + fee + IL surface ──
+;; op "pnl" {who,a,b} →
+;;   "pnl:<d>:<x>:<y>:<fx>:<fy>:<V>:<HODL>:<il_bp>:<pnl>"
+;;   x,y    current composition at S, clamped to [G(a),G(b)] — kernel
+;;          exact (x = d·(1/Sc − 1/G(b)) as the dx form, y = dy form)
+;;   fx,fy  unclaimed fees (read-only feefold — FS NOT reset; state
+;;          bit-identical after the read; burnc's fold minus the puts)
+;;   V      composition marked in Y units: y + (x·P)>>64, P = S²>>64.
+;;          VALUE lines are quote-grade (≤2 >>64-dust); token amounts
+;;          themselves are kernel-exact
+;;   HODL   the range-max deposit (reqx/reqy closed forms — the actual
+;;          custody leg amounts, S-independent) marked at CURRENT S.
+;;          Post-partial-burn this is the re-mint benchmark, not wallet
+;;          history — the same epoch-mixing class as the FS top-up
+;;          reset (display-only, documented here)
+;;   il_bp  (V·10⁴)//HODL − 10⁴, signed ("-n" when negative, floor)
+;;   pnl    (V + fx·P + fy) − HODL in Y units = fees − IL, signed
+;; ZERO writes. Gas class: two ≤64-cell folds + two req folds ≈ 2× burnc.
+(define (p5-mul10 v)
+  ;; 10v = 2v + 8v, li-add only (stays in the limb world; native * would
+  ;; overflow i128 at u128 scale). Buffers 64B — 10·u128 fits.
+  (let* ((t2 (li-add v v))
+         (t4 (li-add t2 t2))
+         (t8 (li-add t4 t4)))
+    (li-add t2 t8)))
+
+(define (p5-mul1e4 v)
+  (p5-mul10 (p5-mul10 (p5-mul10 (p5-mul10 v)))))
+
+;; floor(a/b) for decimal-string bignums, b ≠ 0 (padded limb divmod —
+;; same idiom as p5-shr8; a up to 10⁴·u128 fits the 12-limb width)
+(define (p5-quot a b)
+  (let ((A (str->limbs a)) (B (str->limbs b))
+        (tA (buf-alloc 48)) (tB (buf-alloc 48))
+        (q (buf-alloc 64)) (r (buf-alloc 64)) (one (buf-alloc 8))
+        (nbs (buf-alloc 64)) (s (buf-alloc 400)))
+    (begin
+      (v5-zero! tA 12) (v5-copy! (car A) tA (car (cdr A)))
+      (v5-zero! tB 12) (v5-copy! (car B) tB (car (cdr B)))
+      (v5-zero! q 12) (v5-zero! r 10)
+      (v5-divmod! tA tB q r nbs s one)
+      (limbs->str q (if (> (v5-strip q 8) 0) (v5-strip q 8) 1)))))
+
+;; read-only feefold — burnc's accruef WITHOUT the FS reset (post-view
+;; state bit-identical). Scope-trap shape honored: the fold escapes as
+;; the loop's own return value (see NAME-SCOPE TRAP above — never bind
+;; it after the loop). fg − fs is safe: snapshots ≤ growth by the sane-
+;; state invariant (identical to the burn path's own sub).
+(define (p5-feefold-ro who a b d side)
+  (loop ((i a) (s "0"))
+    (if (> i b)
+        s
+        (let ((fg (p5-bz (str-cat "6|FG" (str-cat side
+                     (str-cat ":" (to-string i))))))
+              (fs (p5-bz (p5-fsk side who a b i))))
+          (recur (+ i 1)
+                 (li-add s (p5-mulshr64 (li-sub fg fs) d)))))))
+
+(define (p5-pnl)
+  (let* ((inp (near/input))
+         (who (json-get-str "who" inp))
+         (a (str->num (json-get-str "a" inp)))
+         (b (str->num (json-get-str "b" inp)))
+         (d (p5-bz (p5-poskey who a b))))
+    (if (str= d "0")
+        "pnl:0"
+        (let* ((S (p5-bz "6|S"))
+               (ga (p5-G a))
+               (gb (p5-G b))
+               (sc (if (> (li-cmp S gb) 0)
+                       gb
+                       (if (< (li-cmp S ga) 0) ga S)))
+               (x (p5-dx d sc gb))
+               (y (p5-dy d ga sc))
+               (fx (p5-feefold-ro who a b d "X"))
+               (fy (p5-feefold-ro who a b d "Y"))
+               (P (p5-mulshr64 S S))
+               (V (li-add y (p5-mulshr64 x P)))
+               (rx (p5-reqx a b ga d "0"))
+               (ry (p5-reqy a b ga d "0"))
+               (hodl (li-add ry (p5-mulshr64 rx P)))
+               (tot (li-add V (li-add (p5-mulshr64 fx P) fy)))
+               (q (p5-quot (p5-mul1e4 V) hodl))
+               (il (if (< (li-cmp q "10000") 0)
+                       (str-cat "-" (li-sub "10000" q))
+                       (li-sub q "10000")))
+               (pnl (if (< (li-cmp tot hodl) 0)
+                        (str-cat "-" (li-sub hodl tot))
+                        (li-sub tot hodl))))
+          (str-cat "pnl:" (str-cat d (str-cat ":" (str-cat x (str-cat ":" (str-cat y (str-cat ":" (str-cat fx (str-cat ":" (str-cat fy (str-cat ":" (str-cat V (str-cat ":" (str-cat hodl (str-cat ":" (str-cat il (str-cat ":" pnl)))))))))))))))))))))
+
 (define (p5-run)
   (let ((op (json-get-str "op" (near/input))))
     (if (str= op "init") (p5-init)
@@ -1386,8 +1477,9 @@
     (if (str= op "fg") (p5-fg)
     (if (str= op "owed") (p5-owed)
     (if (str= op "positions") (p5-positions)
+    (if (str= op "pnl") (p5-pnl)
     (if (str= op "g") (p5-G (str->num (json-get-str "i" (near/input))))
-        "unknown-op")))))))))))))))))))
+        "unknown-op"))))))))))))))))))))
 
 (export "_run" p5-run)
 (export "ft_on_transfer" p5-on-transfer)
