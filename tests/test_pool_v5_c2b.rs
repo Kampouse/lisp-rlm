@@ -330,14 +330,30 @@ fn pool_v5_c2b_mint_burn_custody() {
         "no tokens moved"
     );
 
-    // ── clean retry pays exactly once ──
+    // ── regression (live tx 2026-10-17): UPPERCASE "Y" must route to the
+    // Y branch. Old code matched (str= tok "y") strictly and silently
+    // took the X branch instead (OWX already 0 ⇒ "no-owed", Y stuck). ──
     assert_eq!(
-        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"claim\",\"t\":\"y\"}", "alice.tst")),
+        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"claim\",\"t\":\"Y\"}", "alice.tst")),
         "0"
     );
-    assert_eq!(escrow(&m, "ESCY"), 0);
-    assert_eq!(escrow(&m, "OWY:alice.tst"), 0);
+    assert_eq!(escrow(&m, "ESCY"), 0, "uppercase claim drained Y escrow");
+    assert_eq!(escrow(&m, "OWY:alice.tst"), 0, "uppercase claim consumed owed");
     assert_eq!(bal(&m, "toky.tst", "alice.tst"), FUND, "alice Y whole");
+
+    // ── lowercase retry after uppercase: clean no-op (no double-pay) ──
+    assert_eq!(
+        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"claim\",\"t\":\"y\"}", "alice.tst")),
+        "no-owed"
+    );
+    assert_eq!(bal(&m, "toky.tst", "alice.tst"), FUND, "still whole");
+
+    // ── unknown token rejected (old fall-through paid the X branch) ──
+    assert_eq!(
+        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"claim\",\"t\":\"z\"}", "alice.tst")),
+        "bad-token"
+    );
+    assert_eq!(bal(&m, "toky.tst", "alice.tst"), FUND, "no dust moved");
 
     // pool ended where it started (no dust anywhere)
     assert_eq!(

@@ -908,6 +908,15 @@
 ;; Then FS_i ← FG_i: the residual position earns from current growth.
 ;; Known v1 under-credit (pool-favoring): a top-up mint resets the
 ;; whole key's snapshots, forfeiting pre-top-up accrual.
+;;
+;; EMITTER TRAP (cost a real bug, Oct 2026): do NOT restructure as
+;; (define acc (loop ...)) + (begin (p5-put ...) acc) — near-compile
+;; rejects a let-bound loop result referenced in a trailing begin
+;; ("undefined variable 'acc'"). The accumulator must ride the loop
+;; itself and the FS write must happen INSIDE the body (read-before-
+;; write), as below. The original bug: the loop's reset put ran, but
+;; its return value was discarded, so FWX/FWY stayed empty and LP
+;; fee claims paid principal only.
 (define (p5-feefold who a b d side)
   (loop ((i a) (s "0"))
     (if (> i b)
@@ -1128,37 +1137,49 @@
 
 ;; op "claim" {"t"} — pay one owed token per receipt. Failure ⇒ p5-pay
 ;; "cx"/"cy" restores owed + escrow (single-leg reversal, C2a pattern).
+;; Token is case-normalized ("X"/"Y" accepted — a live 2026-10-17 tx sent
+;; "Y" and the old strict (str= tok "y") silently routed it to the X
+;; branch) and any other value is REJECTED: the old fall-through paid the
+;; X branch for arbitrary garbage input.
+(define (p5-claim-norm tok)
+  (if (str= tok "X") "x"
+      (if (str= tok "Y") "y" tok)))
+
+(define (p5-claim-one tok who)
+  (let ((w (if (str= tok "y")
+               (str-cat "6|OWY:" who)
+               (str-cat "6|OWX:" who))))
+  (let ((e (if (str= tok "y") "6|ESCY" "6|ESCX")))
+  (let ((tkey (if (str= tok "y") "6|TOKY" "6|TOKX")))
+  (let ((k (if (str= tok "y") "cy" "cx"))
+        (v (p5-bz w)))
+    (if (= (li-cmp v "0") 0)
+        "no-owed"
+        (begin
+          (p5-put w "0")
+          (p5-put e (li-sub (p5-bz e) v))
+          (let ((p (near/promise_batch_create (p5-bz tkey))))
+            (begin
+              (near/promise_batch_action_function_call p
+                "ft_transfer"
+                (json-set (json-set "{}" "receiver_id" who)
+                          "amount" v)
+                "0" 40000000000000)
+              (near/promise_return
+                (near/promise_then p (near/current_account_id)
+                  "pay"
+                  (json-set (json-set (json-set (json-set
+                    (json-set "{}" "k" k) "r" who) "o" v)
+                    "w" w) "e" e)
+                  "0" 5000000000000))
+              "claim-sent")))))))))
+
 (define (p5-claim)
-  (let ((inp (near/input)))
-    (let ((who (near/predecessor_account_id)))
-      (let ((tok (json-get-str "t" inp)))
-        (let ((w (if (str= tok "y")
-                     (str-cat "6|OWY:" who)
-                     (str-cat "6|OWX:" who))))
-        (let ((e (if (str= tok "y") "6|ESCY" "6|ESCX")))
-        (let ((tkey (if (str= tok "y") "6|TOKY" "6|TOKX")))
-        (let ((k (if (str= tok "y") "cy" "cx"))
-              (v (p5-bz w)))
-          (if (= (li-cmp v "0") 0)
-              "no-owed"
-              (begin
-                (p5-put w "0")
-                (p5-put e (li-sub (p5-bz e) v))
-                (let ((p (near/promise_batch_create (p5-bz tkey))))
-                  (begin
-                    (near/promise_batch_action_function_call p
-                      "ft_transfer"
-                      (json-set (json-set "{}" "receiver_id" who)
-                                "amount" v)
-                      "0" 40000000000000)
-                    (near/promise_return
-                      (near/promise_then p (near/current_account_id)
-                        "pay"
-                        (json-set (json-set (json-set (json-set
-                          (json-set "{}" "k" k) "r" who) "o" v)
-                          "w" w) "e" e)
-                        "0" 5000000000000))
-                    "claim-sent"))))))))))))
+  (let ((who (near/predecessor_account_id)))
+    (let ((tok (p5-claim-norm (json-get-str "t" (near/input)))))
+      (if (or (str= tok "x") (str= tok "y"))
+          (p5-claim-one tok who)
+          "bad-token"))))
 
 ;; ── views + dispatch ───────────────────────────────────────────────────
 
