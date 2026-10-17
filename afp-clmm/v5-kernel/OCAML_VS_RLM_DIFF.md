@@ -27,7 +27,10 @@
 
 4. **Final-state `P`.** Oracle `walk_dn` returns `P` unchanged when no step is taken, and `P-1` when crossing a full cell. RLM writes `6|P` as `pp-1` on full crossing or when falling inside the lower cell (`s2` in `[G(pp-1), G(pp))`). Matches.
 
-5. **Fee path.** Oracle applies `fee_eff` once up front; RLM does the same for `p5-swap` non-custody (`feep?=0` currently), and applies fee-skimming separately in custody path. The differential fuzz only compares non-custody swaps, so the kernels match bit-exact.
+5. **Fee path.** The exported oracle now has two variants:
+   - `quote_y_in_fee` / `quote_x_in_fee`: apply `fee_eff` once up front (custody path, `feep?=1` in RLM).
+   - `quote_y_in_gross` / `quote_x_in_gross`: walk on the raw input `v` (parity path, `feep?=0` in RLM `p5-swap`).
+   The harness selects the matching variant so both internal fee models are covered.
 
 ## Verification status
 

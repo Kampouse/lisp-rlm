@@ -83,9 +83,11 @@ impl Oracle {
         v: u128,
         shift: u8,
         lq: &[(i64, u128)],
+        fee: bool,
     ) -> Quote {
+        let op_code = if fee { op } else { &format!("{}g", op) };
         let mut json = format!(
-            "{{\"op\":\"{op}\",\"s\":\"{s}\",\"p\":\"{p}\",\"imin\":\"{imin}\",\"imax\":\"{imax}\",\"v\":\"{v}\",\"shift\":\"{shift}\"",
+            "{{\"op\":\"{op_code}\",\"s\":\"{s}\",\"p\":\"{p}\",\"imin\":\"{imin}\",\"imax\":\"{imax}\",\"v\":\"{v}\",\"shift\":\"{shift}\"",
         );
         for (i, l) in lq {
             json.push_str(&format!(",\"lq_{i}\":\"{l}\""));
@@ -400,7 +402,7 @@ fn pool_v5_fuzz_differential() {
 
             if last == Some("swap-out:y") {
                 let amt = swap_amt.map(|(a, _)| a).unwrap_or(0);
-                let want = oracle.ask("y", prev_s, prev_p, imin, imax, amt, 8, &lq);
+                let want = oracle.ask("y", prev_s, prev_p, imin, imax, amt, 8, &lq, true);
                 assert_eq!(
                     (s, p),
                     (want.s, want.p),
@@ -410,7 +412,7 @@ fn pool_v5_fuzz_differential() {
                 );
             } else if last == Some("swap-out:x") {
                 let amt = swap_amt.map(|(a, _)| a).unwrap_or(0);
-                let want = oracle.ask("x", prev_s, prev_p, imin, imax, amt, 8, &lq);
+                let want = oracle.ask("x", prev_s, prev_p, imin, imax, amt, 8, &lq, true);
                 assert_eq!(
                     (s, p),
                     (want.s, want.p),

@@ -1,21 +1,4 @@
-module CLMM_v5_Kernel : sig
-  type int = Int_of_integer of Z.t
-  type num
-  type nat
-  val g : int -> int
-  val dx_in : int -> int -> int -> int
-  val dy_in : int -> int -> int -> int
-  val isqrt : int -> int
-  val dx_out : int -> int -> int -> int
-  val dy_out : int -> int -> int -> int
-  val fee_eff : int -> int -> int
-  val s_for_dy_in : int -> int -> int -> int
-  val s_for_dx_in : int -> int -> int -> int
-  val quote_x_in :
-    (int -> int) -> int -> int -> int -> int -> int -> int -> int * (int * int)
-  val quote_y_in :
-    (int -> int) -> int -> int -> int -> int -> int -> int -> int * (int * int)
-end = struct
+module CLMM_v5_Kernel = struct
 
 type int = Int_of_integer of Z.t;;
 
@@ -287,16 +270,26 @@ let rec walk_up
                       else (let s2a = s_for_dx_in l s rem in
                              (plus_int acc (dy_out l s s2a), (s2a, p)))))));;
 
-let rec quote_x_in
+let rec quote_x_in_fee
   lq s p imin imax v shift =
     (let v_eff = fee_eff v shift in
      let fuel = nat (minus_int (plus_int imax one_inta) p) in
       walk_up lq s p imax fuel zero_int v_eff);;
 
-let rec quote_y_in
+let rec quote_y_in_fee
   lq s p imin imax v shift =
     (let v_eff = fee_eff v shift in
      let fuel = nat (plus_int (minus_int p imin) one_inta) in
       walk_dn lq s p imin fuel zero_int v_eff);;
+
+let rec quote_x_in_gross
+  lq s p imin imax v shift =
+    (let fuel = nat (minus_int (plus_int imax one_inta) p) in
+      walk_up lq s p imax fuel zero_int v);;
+
+let rec quote_y_in_gross
+  lq s p imin imax v shift =
+    (let fuel = nat (plus_int (minus_int p imin) one_inta) in
+      walk_dn lq s p imin fuel zero_int v);;
 
 end;; (*struct CLMM_v5_Kernel*)

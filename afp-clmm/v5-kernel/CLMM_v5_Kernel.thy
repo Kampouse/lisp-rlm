@@ -99,22 +99,35 @@ fun walk_up :: "(int => int) => int => int => int => nat => int => int => int * 
              else let S2' = S_for_dx_in L S rem
                   in (acc + dy_out L S S2', S2', P))"
 
-definition quote_y_in :: "(int => int) => int => int => int => int => int => int => int * int * int" where
-  "quote_y_in LQ S P imin imax v shift =
+definition quote_y_in_fee :: "(int => int) => int => int => int => int => int => int => int * int * int" where
+  "quote_y_in_fee LQ S P imin imax v shift =
     (let v_eff = fee_eff v shift;
          fuel = nat (P - imin + 1)
      in walk_dn LQ S P imin fuel 0 v_eff)"
 
-definition quote_x_in :: "(int => int) => int => int => int => int => int => int => int * int * int" where
-  "quote_x_in LQ S P imin imax v shift =
+definition quote_x_in_fee :: "(int => int) => int => int => int => int => int => int => int * int * int" where
+  "quote_x_in_fee LQ S P imin imax v shift =
     (let v_eff = fee_eff v shift;
          fuel = nat (imax + 1 - P)
      in walk_up LQ S P imax fuel 0 v_eff)"
 
+(* Gross (parity) variants: no fee skim on the input side. *)
+
+definition quote_y_in_gross :: "(int => int) => int => int => int => int => int => int => int * int * int" where
+  "quote_y_in_gross LQ S P imin imax v shift =
+    (let fuel = nat (P - imin + 1)
+     in walk_dn LQ S P imin fuel 0 v)"
+
+definition quote_x_in_gross :: "(int => int) => int => int => int => int => int => int => int * int * int" where
+  "quote_x_in_gross LQ S P imin imax v shift =
+    (let fuel = nat (imax + 1 - P)
+     in walk_up LQ S P imax fuel 0 v)"
+
 (* Export to OCaml *)
 
 export_code
-  quote_y_in quote_x_in
+  quote_y_in_fee quote_x_in_fee
+  quote_y_in_gross quote_x_in_gross
   S_for_dy_in S_for_dx_in
   dy_in dx_in dy_out dx_out
   fee_eff G isqrt

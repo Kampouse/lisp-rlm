@@ -1,5 +1,7 @@
-(* Driver: read JSON from stdin, call CLMM_v5_Kernel.quote_y_in / quote_x_in,
-   print JSON triple. *)
+(* Driver: read JSON from stdin, call CLMM_v5_Kernel quote variants,
+   print JSON triple.
+   op "y" / "x" use the custody/fee model (subtract v >> shift up front).
+   op "yg" / "xg" use the gross parity model (no fee skim). *)
 
 open CLMM_v5_Kernel
 
@@ -32,8 +34,11 @@ let rec run_quote () =
     let shift = int_of_string (get "shift" "8") in
     let lq k = int_of_string (get ("lq_" ^ string_of_int k) "0") in
     let (out, (s1, p1)) =
-      if op = "y" then quote_y_in lq s0 p0 imin imax v shift
-      else quote_x_in lq s0 p0 imin imax v shift
+      if op = "y" then quote_y_in_fee lq s0 p0 imin imax v shift
+      else if op = "yg" then quote_y_in_gross lq s0 p0 imin imax v shift
+      else if op = "x" then quote_x_in_fee lq s0 p0 imin imax v shift
+      else if op = "xg" then quote_x_in_gross lq s0 p0 imin imax v shift
+      else quote_x_in_fee lq s0 p0 imin imax v shift
     in
     Printf.printf "{\"out\":%s,\"s\":%s,\"p\":%s}\n"
       (string_of_int out) (string_of_int s1) (string_of_int p1);
