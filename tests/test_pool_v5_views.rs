@@ -131,7 +131,7 @@ fn pool_v5_view_ops_fresh_surface() {
     // state op: view readout + LAST + custody + token ids + fee totals
     assert_eq!(
         m.ret(&m.pool_op("{\"op\":\"state\"}")),
-        "S:18446744073709551616:P:0:X:0:Y:0:IMIN:0:IMAX:0:LAST:0:ESCX:0:ESCY:0:TOKX:tokx.tst:TOKY:toky.tst:FEEX:0:FEEY:0",
+        "S:18446744073709551616:P:0:X:0:Y:0:IMIN:0:IMAX:0:LAST:0:ESCX:0:ESCY:0:TOKX:tokx.tst:TOKY:toky.tst:SHIFT:8:FEEX:0:FEEY:0",
         "state = view + LAST + custody + token ids + fee totals"
     );
 

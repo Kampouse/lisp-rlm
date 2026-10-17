@@ -381,7 +381,7 @@ fn pool_v5_c2b_mint_burn_custody() {
     // fee-gen (Oct 16): state carries parked-fee totals too; this flow does
     // no swaps, so both totals must read 0 (no phantom fee mass).
     assert!(
-        st.ends_with("TOKX:tokx.tst:TOKY:toky.tst:FEEX:0:FEEY:0"),
+        st.ends_with("TOKX:tokx.tst:TOKY:toky.tst:SHIFT:8:FEEX:0:FEEY:0"),
         "state carries token ids + zero fee totals"
     );
 }

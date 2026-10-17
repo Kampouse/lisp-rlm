@@ -66,8 +66,15 @@
 ;; "state" { } → view readout + :LAST: + :ESCX:/ESCY: + :TOKX:/TOKY:
 ;; (token contracts in charge). Both ZERO-write; pinned in
 ;; tests/test_pool_v5_views.rs + funded-flow parity in c2b.
-;; Fee generation (Oct 16): custody-path swaps skim F = intake >> 8
-;; (1/256, floor). The walker runs on v_eff = intake − F; F stays in the
+;; Params + client views (Oct 17): init gains fee_shift (divisor 2^shift,
+;; default/legacy = 8 ⇒ ÷256) and s0 (boot price, default 2^64); stored in
+;; 6|SHIFT / 6|S, exposed via op "state" (:SHIFT: — effective value).
+;; op "owed" {who} → "owed:<x>:<y>" (OW keys, one call); op "positions"
+;; {who} → "pos:<a>:<b>:<d>;…" (poskey scan, d≠0; gas-bounded, see fn
+;; comment). Views ZERO-write; pinned in tests/test_pool_v5_params.rs.
+;; Fee generation (Oct 16): custody-path swaps skim F = intake >> SHIFT
+;; (shift is the POOL PARAMETER above; legacy/default 8 = 1/256 floor).
+;; The walker runs on v_eff = intake − F; F stays in the
 ;; intake escrow (trader pays X_eff + F; escrow retains exactly F) and
 ;; per CROSSED cell i the arm credits FG<side>:i += (F_i << 64) // LQ_i
 ;; (equal split, last cell takes the remainder; LQ=0 cells forfeit —
@@ -114,13 +121,22 @@
   (limbs->str b (if (> (v5-strip b 12) 0) (v5-strip b 12) 1)))
 
 ;; ── fee math (limb primitives; string-in/string-out) ──────────────────
+;; fee skim: v >> SHIFT. SHIFT is a pool PARAMETER (key 6|SHIFT, set at
+;; init, default 8 ⇒ 1/256 ≈ 0.39%; init 10 ⇒ 1/1024 ≈ 0.098%).
+;; v5-divmod! is binary: the loop computes 2^SHIFT exactly (SHIFT ≤ 40),
+;; so the knob never touches the bit-level limb math.
+(define (p5-shf) (let ((sh (p5-bz "6|SHIFT")))
+                   (if (= (str->num sh) 0) 8 (str->num sh))))
+(define (p5-pow2 n)
+  (loop ((i n) (acc 1))
+    (if (= i 0) acc (recur (- i 1) (* 2 acc)))))
 (define (p5-shr8 v)
   (let ((A (str->limbs v)) (tA (buf-alloc 48)) (tB (buf-alloc 48))
         (q (buf-alloc 64)) (r (buf-alloc 64)) (one (buf-alloc 8))
         (nbs (buf-alloc 64)) (s (buf-alloc 400)))
     (begin
       (v5-zero! tA 12) (v5-copy! (car A) tA (car (cdr A)))
-      (v5-zero! tB 12) (limb-set! tB 0 256)
+      (v5-zero! tB 12) (limb-set! tB 0 (p5-pow2 (p5-shf)))
       (v5-zero! q 12) (v5-zero! r 10)
       (v5-divmod! tA tB q r nbs s one)
       (limbs->str q (if (> (v5-strip q 8) 0) (v5-strip q 8) 1)))))
@@ -396,12 +412,20 @@
 (define (p5-init)
   (if (nil? (near/load-bytes "6|TOKX"))
       (let ((tokx (json-get-str "toka" (near/input)))
-            (toky (json-get-str "tokb" (near/input))))
+            (toky (json-get-str "tokb" (near/input)))
+            ;; pool PARAMS: fee divisor = 2^fee_shift, boot price = s0.
+            ;; Defaults: shift 8 (1/256 ≈ 0.39%), s0 = 2^64 (price 1.0).
+            (sh (json-get-str "fee_shift" (near/input)))
+            (s0 (json-get-str "s0" (near/input))))
         (begin
           (p5-put "6|TOKX" tokx)
           (p5-put "6|TOKY" toky)
-          ;; s0 = 2^64 (price 1.0), P = 0, empty book
-          (p5-put "6|S" "18446744073709551616")
+          ;; SHIFT: empty/0 input falls back to 8 via p5-shf — pre-param
+          ;; pools (and legacy init callers) keep the ÷256 skim exactly.
+          (p5-put "6|SHIFT"
+                  (if (= (str->num sh) 0) "" (if (< (str->num sh) 41) sh "")))
+          ;; s0 = boot price; empty ⇒ 2^64 (price 1.0)
+          (p5-put "6|S" (if (= (str-len s0) 0) "18446744073709551616" s0))
           (p5-put "6|P" "0")
           (p5-put "6|X" "0")
           (p5-put "6|Y" "0")
@@ -1225,6 +1249,9 @@
       (str-cat ":ESCY:" (p5-bz "6|ESCY"))
       (str-cat ":TOKX:" (p5-bz "6|TOKX"))
       (str-cat ":TOKY:" (p5-bz "6|TOKY"))
+      (str-cat ":SHIFT:" (if (= (str->num (p5-bz "6|SHIFT")) 0)
+                             "8"
+                             (p5-bz "6|SHIFT")))
       (str-cat ":FEEX:" (p5-bz "6|FEEX"))
       (str-cat ":FEEY:" (p5-bz "6|FEEY")))))
 
@@ -1233,6 +1260,62 @@
   (let ((i (json-get-str "i" (near/input))))
     (str-cat "fgx:" (str-cat (p5-bz (str-cat "6|FGX:" i))
                (str-cat ":fgy:" (p5-bz (str-cat "6|FGY:" i)))))))
+
+;; read-only: one owner's owed balances in one call. ZERO writes.
+;; owed:<x>:<y> (0 when no receipt).
+(define (p5-owed)
+  (let ((who (json-get-str "who" (near/input))))
+    (str-cat "owed:" (str-cat (p5-bz (str-cat "6|OWX:" who))
+               (str-cat ":" (p5-bz (str-cat "6|OWY:" who)))))))
+
+;; read-only: all of an owner's LP positions, format
+;; pos:<a>:<b>:<d>;... (semicolon-joined). No index — the scan reads the
+;; poskeys themselves (single source of truth; the flag-key variant was
+;; dropped: same silent-orphan class as the feefold trap). a over
+;; [IMIN..IMAX], b over [a..min(a+64, IMAX)] — IMIN/IMAX are the mint
+;; extremes so no poskey can lie outside. Membership = str= d "0"
+;; (poskey values are canonical li-add output; NEVER li-cmp per cell —
+;; 129*65 bignum parses blew the mock gas cap, 2026-10-17). Empty
+;; string => no positions. ZERO writes.
+(define
+  (p5-positions)
+  (let
+    ((who (json-get-str "who" (near/input))))
+    (let
+      ((lo (str->num (p5-bz "6|IMIN"))) (hi (str->num (p5-bz "6|IMAX"))))
+      (loop
+        ((a lo) (acc ""))
+        (if
+          (> a hi)
+          acc
+          (let
+            ((inner
+                (loop
+                  ((b a) (s acc))
+                  (if
+                    (or (> b hi) (> b (+ a 64)))
+                    s
+                    (let
+                      ((ta (to-string a)) (tb (to-string b))
+                       (d (p5-bz (p5-poskey who a b))))
+                      (recur
+                        (+ b 1)
+                        (if
+                          (str= d "0")
+                          s
+                          (str-cat
+                            s
+                            (str-cat
+                              (if (= (str-len s) 0) "" ";")
+                              (str-cat
+                                "pos:"
+                                (str-cat
+                                  ta
+                                  (str-cat
+                                    ":"
+                                    (str-cat tb (str-cat ":" d)))))))))))))
+)
+            (recur (+ a 1) inner)))))))
 
 ;; oracle op: pure quote — same closed form, ZERO state writes (the
 ;; driver's differential oracle target; also swap_rel's s'-projection).
@@ -1302,8 +1385,10 @@
     (if (str= op "escrow") (p5-escrow)
     (if (str= op "state") (p5-state)
     (if (str= op "fg") (p5-fg)
+    (if (str= op "owed") (p5-owed)
+    (if (str= op "positions") (p5-positions)
     (if (str= op "g") (p5-G (str->num (json-get-str "i" (near/input))))
-        "unknown-op")))))))))))))))))
+        "unknown-op")))))))))))))))))))
 
 (export "_run" p5-run)
 (export "ft_on_transfer" p5-on-transfer)
