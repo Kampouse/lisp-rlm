@@ -36,6 +36,7 @@ fn is_builtin_wildcard(name: &str) -> bool {
                 // P1/OutLayer HTTP functions (emitter guards with wasi_mode)
                 | "http-get"
                 | "http-get-hdr"
+                | "http-get-with-header"
                 | "http-post"
                 | "env/get"
                 | "vrf-generate"

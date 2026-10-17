@@ -8526,6 +8526,7 @@ fn map_builtin_call(name: &str) -> String {
         "httpPost" => "http-post",
         "httpGet" => "http-get",
         "httpGetHdr" => "http-get-hdr",
+        "httpGetWithHeader" => "http-get-with-header",
         "jsonSet" => "json-set",
         "jsonQuote" => "json-quote",
         // u128-precision arithmetic (decimal-string ABI, both runtimes)

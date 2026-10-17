@@ -177,6 +177,74 @@ impl WasmEmitter {
                 v.push(Instruction::I64Or);
                 Ok(v)
             }
+            "http-get-with-header" => {
+                // (http-get-with-header "url" "Name" "value") -> BODY
+                // string. Literal-URL static core family (same proven
+                // cores as http-get-hdr) + one extra REQUEST header
+                // registered per URL — the x402 settle leg (merchant
+                // reads PAYMENT-SIGNATURE on the GET).
+                if a.len() < 3 {
+                    return Err("http-get-with-header requires (url name value)".into());
+                }
+                if !self.wasi_mode {
+                    return Err("http-get-with-header is only available on OutLayer (WASI) target".into());
+                }
+                let url = match &a[0] {
+                    crate::types::LispVal::Str(u) => u.clone(),
+                    _ => return Err("http-get-with-header: url must be a string literal".into()),
+                };
+                let hdr_name = match &a[1] {
+                    crate::types::LispVal::Str(n) => n.clone(),
+                    _ => return Err("http-get-with-header: header name must be a string literal".into()),
+                };
+                let hdr_value = match &a[2] {
+                    crate::types::LispVal::Str(v) => v.clone(),
+                    _ => return Err("http-get-with-header: header value must be a string literal".into()),
+                };
+                let (auth, path) = Self::split_url(&url)
+                    .ok_or_else(|| "http-get-with-header: bad url".to_string())?;
+                let url_idx: u32 = match self.http_urls.iter().position(|(x, p)| x == &auth && p == &path) {
+                    Some(idx) => idx as u32,
+                    None => {
+                        self.http_urls.push((auth, path));
+                        (self.http_urls.len() - 1) as u32
+                    }
+                };
+                while self.http_req_headers.len() <= url_idx as usize {
+                    self.http_req_headers.push(String::new());
+                }
+                self.http_req_headers[url_idx as usize] = format!("{}:{}", hdr_name, hdr_value);
+                while self.http_hdr_names.len() <= url_idx as usize {
+                    self.http_hdr_names.push(String::new());
+                }
+
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE;
+                let buf_ptr: i32 = crate::wasi_http::SENTINEL_BUF;
+                let buf_len: i32 = crate::wasi_http::SENTINEL_BUF_SIZE;
+                let mut v = Vec::new();
+                v.push(Instruction::I32Const(0));
+                v.push(Instruction::I32Const(0));
+                v.push(Instruction::I32Const(buf_ptr));
+                v.push(Instruction::I32Const(buf_len));
+                v.push(Instruction::I32Const(ret_area + 8));
+                v.push(Instruction::Call(103 + url_idx));
+                v.push(Instruction::Drop);
+                // Return BODY string: (buf[0..len], len @ ret_area+8)
+                v.push(Instruction::I32Const(buf_ptr));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 8));
+                v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Or);
+                Ok(v)
+            }
             "http-post" => {
                 // (http-post "https://api.example.com/data" "body") -> string or nil
                 // Always uses outlayer host function path (has auth injection)

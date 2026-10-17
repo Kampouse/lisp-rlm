@@ -1082,18 +1082,40 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
         // httpGetHdr), wire it so the core fn runs fields.get(name) and
         // stashes the value at buf tail + len_ptr+4.
         let hdr_name = em.http_hdr_names.get(url_idx).filter(|n| !n.is_empty());
+        // Optional per-URL REQUEST header ("Name: value") from
+        // http-get-with-header - appended after the default headers.
+        let extra_hdr = em
+            .http_req_headers
+            .get(url_idx)
+            .filter(|h| !h.is_empty())
+            .map(|h| h.splitn(2, ':').collect::<Vec<_>>())
+            .filter(|parts| parts.len() == 2)
+            .map(|parts| (parts[0].to_string(), parts[1].trim().to_string()));
+        let url_headers: Vec<(&[u8], &[u8])>;
+        let headers_for_url: &[(&[u8], &[u8])] = match &extra_hdr {
+            Some((n, v)) => {
+                let mut hv: Vec<(&[u8], &[u8])> = headers.to_vec();
+                // leak: keep owned strings alive for module lifetime
+                let owned: &'static (String, String) =
+                    Box::leak(Box::new((n.clone(), v.clone())));
+                hv.push((owned.0.as_bytes(), owned.1.as_bytes()));
+                url_headers = hv;
+                url_headers.as_slice()
+            }
+            None => headers,
+        };
         let http_data = match hdr_name {
             Some(name) => wasi_http_buffer::build_url_data_segments_with_capture(
                 authority.as_bytes(),
                 path.as_bytes(),
-                headers,
+                headers_for_url,
                 current_data_offset,
                 name.as_bytes(),
             ),
             None => wasi_http_buffer::build_url_data_segments_with_base(
                 authority.as_bytes(),
                 path.as_bytes(),
-                headers,
+                headers_for_url,
                 current_data_offset,
             ),
         };
@@ -2896,6 +2918,9 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         realloc_fn_idx + 1
     };
     let uses_env_lookup = used_ol_indices.contains(&25);
+    // Dynamic-URL GET + runtime request header core (sentinel 170) lives
+    // AFTER the env-lookup helper in the codes section.
+    let with_hdr_fn_idx = env_lookup_fn_idx + if uses_env_lookup { 1 } else { 0 };
 
     // ═══ Type Section + Import Section ═══
     let mut types = TypeSection::new();
@@ -2946,6 +2971,10 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
             wasm_import_type_map_c.insert(key, idx);
         }
     }
+    // Dynamic-URL GET with a runtime request header (x402 settle):
+    // (url_ptr,url_len,buf,cap,len_ptr,name_ptr,name_len,val_ptr,val_len) -> (i32 disc)
+    let get_with_hdr_type = schnorr_type_base + wasm_import_type_map_c.len() as u32;
+    types.ty().function(vec![ValType::I32; 9], vec![ValType::I32]);
 
     module.section(&types);
 
@@ -3045,6 +3074,8 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     if uses_env_lookup {
         functions.function(ol_type_1);
     }
+    // Dynamic-URL GET with runtime request header (sentinel 170)
+    functions.function(get_with_hdr_type);
     module.section(&functions);
 
     // ═══ Memory ═══
@@ -3172,18 +3203,40 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     // ── HTTP GET internal functions ──
     for (url_idx, (authority, path)) in http_urls.iter().enumerate() {
         let hdr_name = em.http_hdr_names.get(url_idx).filter(|n| !n.is_empty());
+        // Optional per-URL REQUEST header ("Name: value") from
+        // http-get-with-header - appended after the default headers.
+        let extra_hdr = em
+            .http_req_headers
+            .get(url_idx)
+            .filter(|h| !h.is_empty())
+            .map(|h| h.splitn(2, ':').collect::<Vec<_>>())
+            .filter(|parts| parts.len() == 2)
+            .map(|parts| (parts[0].to_string(), parts[1].trim().to_string()));
+        let url_headers: Vec<(&[u8], &[u8])>;
+        let headers_for_url: &[(&[u8], &[u8])] = match &extra_hdr {
+            Some((n, v)) => {
+                let mut hv: Vec<(&[u8], &[u8])> = headers.to_vec();
+                // leak: keep owned strings alive for module lifetime
+                let owned: &'static (String, String) =
+                    Box::leak(Box::new((n.clone(), v.clone())));
+                hv.push((owned.0.as_bytes(), owned.1.as_bytes()));
+                url_headers = hv;
+                url_headers.as_slice()
+            }
+            None => headers,
+        };
         let http_data = match hdr_name {
             Some(name) => crate::wasi_http_buffer::build_url_data_segments_with_capture(
                 authority.as_bytes(),
                 path.as_bytes(),
-                headers,
+                headers_for_url,
                 current_data_offset,
                 name.as_bytes(),
             ),
             None => crate::wasi_http_buffer::build_url_data_segments_with_base(
                 authority.as_bytes(),
                 path.as_bytes(),
-                headers,
+                headers_for_url,
                 current_data_offset,
             ),
         };
@@ -3425,6 +3478,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
             if uses_env_lookup {
                 ol_map.insert(150, env_lookup_fn_idx);
             }
+            ol_map.insert(170, with_hdr_fn_idx);
             ol_map.insert(crate::wasm_emit::MEMCPY_SENTINEL, memcpy_fn_idx);
             WasmEmitter::resolve_static_pub_ex(
                 &f.instrs,
@@ -3930,10 +3984,54 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         codes.function(&fb);
     }
 
+    let mut with_hdr_segments: Vec<(i32, Vec<u8>)> = Vec::new();
+    // ── Dynamic-URL GET with runtime request header at with_hdr_fn_idx ──
+    // Sentinel 170: (url_ptr,url_len,buf,cap,len_ptr,name_ptr,name_len,
+    // val_ptr,val_len) -> i32 disc. Body in (buf,len_ptr); response also
+    // duplicated header-capture style? No — plain body read (settle leg).
+    {
+        let mut hf = Function::new([
+            (10u32, ValType::I32), // locals 9..18 scratch
+        ]);
+        // Fixed data segment for the with-header core's default headers.
+        // Layout (byte offsets from WITH_HDR_SEG_BASE):
+        //   0:  "User-Agent" (10)
+        //   10: "lisp-rlm/0.1 (wasi:http)" (24)
+        //   34: "Accept" (6)
+        //   40: "application/json" (16)
+        //   56: UA entry  (val_off=10, val_len=24)  8B
+        //   64: ACC entry (val_off=40, val_len=16)  8B
+        const WITH_HDR_SEG_BASE: i32 = 139_600;
+        {
+            let mut seg = Vec::with_capacity(72);
+            seg.extend_from_slice(b"User-Agent");
+            seg.extend_from_slice(b"lisp-rlm/0.1 (wasi:http)");
+            seg.extend_from_slice(b"Accept");
+            seg.extend_from_slice(b"application/json");
+            seg.extend_from_slice(&(WITH_HDR_SEG_BASE + 10).to_le_bytes());
+            seg.extend_from_slice(&24i32.to_le_bytes());
+            seg.extend_from_slice(&(WITH_HDR_SEG_BASE + 40).to_le_bytes());
+            seg.extend_from_slice(&16i32.to_le_bytes());
+            with_hdr_segments.push((WITH_HDR_SEG_BASE, seg));
+        }
+        crate::wasi_http_buffer::emit_http_get_with_header_to_buffer(
+            &mut hf,
+            (WITH_HDR_SEG_BASE, 10, WITH_HDR_SEG_BASE + 10, 24),
+            (WITH_HDR_SEG_BASE + 56, 8),
+            (WITH_HDR_SEG_BASE + 34, 6, WITH_HDR_SEG_BASE + 40, 16),
+            (WITH_HDR_SEG_BASE + 64, 8),
+        );
+        hf.instruction(&Instruction::End);
+        codes.function(&hf);
+    }
+
     module.section(&codes);
     // ── Emit data segments ──
     {
         let mut data = DataSection::new();
+        for (off, bytes) in &with_hdr_segments {
+            data.active(0, &ConstExpr::i32_const(*off), bytes.iter().copied());
+        }
         // Initialize RUNTIME_HEAP_PTR (addr 56) to HEAP_START (200000)
         let heap_start_bytes: [u8; 8] = (HEAP_START as u64).to_le_bytes();
         data.active(
