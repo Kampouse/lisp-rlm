@@ -66,6 +66,15 @@
 ;; "state" { } → view readout + :LAST: + :ESCX:/ESCY: + :TOKX:/TOKY:
 ;; (token contracts in charge). Both ZERO-write; pinned in
 ;; tests/test_pool_v5_views.rs + funded-flow parity in c2b.
+;; Market sim (Oct 16, test_pool_v5_market.rs): NO fee parameter exists —
+;; books take full in/out (fee cells never move, invariant at top), and
+;; the grid curve quotes a per-cell BID-ASK SPREAD instead: a boot round
+;; trip (sell X → Y, reverse the exact Y) restores S/P to the atom and
+;; returns 1e9−186950004 X; the spread lands in the pool's token balance
+;; (LP-side surplus). Order-book-style pricing, not AMM skim. Traders ride
+;; the real NEP-141 path (ft_transfer_call msg "sw" → escrow → walk →
+;; payout); range edges clamp: past-lip sells refund whole until reverse
+;; pressure walks P back inside.
 ;;
 ;; Call discipline: one value-producing call per let binding (compiler
 ;; sibling-call clobber — accrual contract note). `begin` wraps only

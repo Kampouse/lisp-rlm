@@ -66,9 +66,11 @@ run_layer "L2 cargo (full suite)" GAUNTLET_SKIP_CARGO /tmp/gauntlet_L2_cargo.log
   env CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/dev/rlm-shared-target}" cargo test --release
 
 # ---------------------------------------------------------------- L3 targeted v5 suites
-run_layer "L3 targeted (c2b+pin, parity, custody, loop_gas)" GAUNTLET_SKIP_TARGETED /tmp/gauntlet_L3_targeted.log \
+run_layer "L3 targeted (c2b+pin, parity, custody, loop_gas, market)" GAUNTLET_SKIP_TARGETED /tmp/gauntlet_L3_targeted.log \
   env CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/dev/rlm-shared-target}" bash -c '
     cargo test --release --test test_pool_v5_c2b && \
+    cargo test --release --test test_pool_v5_views && \
+    cargo test --release --test test_pool_v5_market && \
     cargo test --release --test surface_parity && \
     cargo test --release --test test_pool_v5_custody && \
     cargo test --release --test test_loop_gas'

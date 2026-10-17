@@ -41,17 +41,9 @@ const WASM_ONLY_DOCUMENTED: &[(&str, &str)] = &[
     ),
     (
         "json-get-str-esc",
-<<<<<<< HEAD
         "unescapes JSON-in-JSON then scans at any depth (jsonGetStrEsc) —
          interp has no escaped-JSON surface; wasm-only by design
          (kernel2 msgHex extraction)",
-=======
-        "reads the promiseResult(0) ESCAPED-JSON shape (jsonGetStrEsc) —
-         only exists under the promise runtime; interp near-mode stubs
-         return empty (type_check-only), and a stub esc scan would fake
-         unescape semantics the VM proves. Buffer-arg json-get-str IS
-         ported",
->>>>>>> 72139e42 (clmm_pool_v5: C2b custody — two-leg mint escrow + burnc/claim payout)
     ),
     // ── raw linear-memory / C-ABI internals: interp has no linear memory ──
     ("mem-get", "raw linear-memory read (wasm layout)"),
