@@ -153,9 +153,65 @@ let feefold_range_mono (fg: int -> growth) (fs: int -> snap) (d:liq) (a b1 b2:in
           (ensures (feefold_sum fg fs d a b1 <= feefold_sum fg fs d a b2))
   = sumat_len_mono (fun i -> fg i - fs i) d a (b1 - a + 1) (b2 - b1)
 
-// v2 target (tracked): raw-delta upper bound  fold <= (Σ raw deltas)*d/2^64
-// then overflow safety when Σ(fg−fs)*d < 2^128*2^64. Needs a Σ bookkeeping
-// lemma over the fold — deferred until v1 pins are green.
+// ---------- v2: raw-delta bound + overflow safety ----------
+
+// raw (unscaled) delta sum — pure int fold, no truncation
+let rec sumraw_n (dl: int -> amt) (a:int) (n:nat) (acc:int)
+  : Tot int (decreases n)
+  = if n = 0 then acc
+    else sumraw_n dl a (n - 1) (acc + dl (a + n - 1))
+
+let sumrawt (dl: int -> amt) (a:int) (n:nat) : Tot int = sumraw_n dl a n 0
+
+let rec sumraw_acc_eq (dl: int -> amt) (a:int) (n:nat) (acc:int)
+  : Lemma (ensures (sumraw_n dl a n acc == sumraw_n dl a n 0 + acc))
+          (decreases n)
+  = if n > 0 then begin
+      (sumraw_acc_eq dl a (n - 1) (acc + dl (a + n - 1)));
+      (sumraw_acc_eq dl a (n - 1) (dl (a + n - 1)))
+    end
+
+let sumraw_split (dl: int -> amt) (a:int) (n:nat)
+  : Lemma (requires (n > 0))
+          (ensures (sumrawt dl a n == sumrawt dl a (n - 1) + dl (a + n - 1)))
+  = sumraw_acc_eq dl a (n - 1) (dl (a + n - 1))
+
+// scaled bound: the truncated fold never exceeds the raw sum scaled by d
+//   2^64 * Σ ((dl_i * d) / 2^64)  <=  (Σ dl_i) * d
+let sumat_le_scaled (dl: int -> amt) (d:liq) (a:int) (n:nat)
+  : Lemma (ensures (op_Multiply two64 (sumat dl d a n)
+                    <= op_Multiply (sumrawt dl a n) d))
+  = let rec aux (k:nat)
+      : Lemma (ensures (op_Multiply two64 (sumat dl d a k)
+                        <= op_Multiply (sumrawt dl a k) d))
+              (decreases k)
+      = if k > 0 then begin
+          (aux (k - 1));
+          (sum_n_split dl d a k);
+          (sumraw_split dl a k);
+          (mulshr64_le_raw (dl (a + k - 1)) d)
+        end
+    in aux n
+
+// overflow safety, abstract deltas: if the raw delta sum fits the
+// budget scaled by d, the truncated fold cannot reach u128 wrap
+let feefold_overflow (dl: int -> amt) (d:liq) (a b budget:int)
+  : Lemma (requires (a <= b + 1
+                     /\ sumrawt dl a (b - a + 1) <= budget
+                     /\ op_Multiply budget d < op_Multiply u128_max two64))
+          (ensures (sumat dl d a (b - a + 1) < u128_max))
+  = sumat_le_scaled dl d a (b - a + 1);
+    FStar.Math.Lemmas.lemma_mult_le_right d (sumrawt dl a (b - a + 1)) budget;
+    ()
+
+// feefold instantiation: same bound in (FG,FS) terms
+let feefold_overflow_fg (fg: int -> growth) (fs: int -> snap) (d:liq) (a b budget:int)
+  : Lemma (requires (a <= b + 1
+                     /\ (forall i. fs i <= fg i)
+                     /\ sumrawt (fun i -> fg i - fs i) a (b - a + 1) <= budget
+                     /\ op_Multiply budget d < op_Multiply u128_max two64))
+          (ensures (feefold_sum fg fs d a b < u128_max))
+  = feefold_overflow (fun i -> fg i - fs i) d a b budget
 
 (* ---------- 4. sanity pin: two-point worked example ----------
    Position d=1e18 over points [5,6]:
