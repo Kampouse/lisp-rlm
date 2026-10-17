@@ -35,6 +35,9 @@ pub struct HttpDataSegments {
     pub path_len: i32,
     /// Per-header data for fields.set calls: (name_ptr, name_len, val_list_ptr, val_list_len)
     pub headers: Vec<(i32, i32, i32, i32)>,
+    /// Response header to capture (x402): name ptr/len in data segments.
+    pub hdr_name_offset: i32,
+    pub hdr_name_len: i32,
 }
 
 /// Pre-compute data segments for a URL + optional headers.
@@ -107,7 +110,31 @@ pub fn build_url_data_segments_with_base(
         path_offset,
         path_len: path.len() as i32,
         headers: header_entries,
+        hdr_name_offset: 0,
+        hdr_name_len: 0,
     }
+}
+
+/// Same as [`build_url_data_segments_with_base`] plus a response-header
+/// capture: places `capture_name` in the data segments and records its
+/// offset/len so the GET core fn runs fields.get(name) and stashes the
+/// value at (buf + 65536 - 2048), len at len_ptr+4.
+pub fn build_url_data_segments_with_capture(
+    authority: &[u8],
+    path: &[u8],
+    headers: &[Header],
+    base_offset: i32,
+    capture_name: &[u8],
+) -> HttpDataSegments {
+    let mut d = build_url_data_segments_with_base(authority, path, headers, base_offset);
+    // place the capture name after the last segment
+    let last = d.segments.last().map(|(off, b)| *off as i32 + b.len() as i32);
+    let end = last.unwrap_or(base_offset);
+    let name_off = (end + 3) & !3;
+    d.segments.push((name_off as u32, capture_name.to_vec()));
+    d.hdr_name_offset = name_off;
+    d.hdr_name_len = capture_name.len() as i32;
+    d
 }
 
 impl HttpDataSegments {
@@ -189,21 +216,107 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&cl(FN_SET_SCHEME));
     func.instruction(&Instruction::Drop);
 
-    // Set authority (from data segment)
-    func.instruction(&lg(6));
-    func.instruction(&cst(1)); // option some
-    func.instruction(&cst(data.auth_offset));
-    func.instruction(&cst(data.auth_len));
-    func.instruction(&cl(FN_SET_AUTHORITY));
-    func.instruction(&Instruction::Drop);
+    // Set authority + path. DYNAMIC when capture is wired (httpGetHdr):
+    // parse "https://authority/path" from url params (locals 0/1). Static
+    // data-segment path otherwise.
+    let dynamic = data.hdr_name_len > 0;
+    if dynamic {
+        // locals: 13=i, 14=auth_len, 15=path_ptr, 16=path_len
+        // i = 8 (skip "https://")
+        func.instruction(&cst(8));
+        func.instruction(&ls(13));
+        // auth_len = url_len - 8 (default: no slash)
+        func.instruction(&lg(1));
+        func.instruction(&cst(8));
+        func.instruction(&Instruction::I32Sub);
+        func.instruction(&ls(14));
+        func.instruction(&Instruction::Block(BlockType::Empty)); // $done
+        func.instruction(&Instruction::Loop(BlockType::Empty)); // $scan
+        // if i >= url_len → br $done
+        func.instruction(&lg(13));
+        func.instruction(&lg(1));
+        func.instruction(&Instruction::I32GeU);
+        func.instruction(&Instruction::BrIf(1));
+        // if url[i] == '/' → auth_len = i-8; br $done
+        func.instruction(&lg(0));
+        func.instruction(&lg(13));
+        func.instruction(&Instruction::I32Add);
+        func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+        func.instruction(&cst(0x2f));
+        func.instruction(&Instruction::I32Eq);
+        // if eq: compute auth_len then br 1; else drop and continue
+        func.instruction(&Instruction::If(BlockType::Empty));
+        func.instruction(&lg(13));
+        func.instruction(&cst(8));
+        func.instruction(&Instruction::I32Sub);
+        func.instruction(&ls(14));
+        func.instruction(&Instruction::Br(2)); // br $done: If=0, Loop=1, Block=2
+        func.instruction(&Instruction::End); // if
+        // i++ ; br $scan
+        func.instruction(&lg(13));
+        func.instruction(&cst(1));
+        func.instruction(&Instruction::I32Add);
+        func.instruction(&ls(13));
+        func.instruction(&Instruction::Br(0));
+        func.instruction(&Instruction::End); // loop
+        func.instruction(&Instruction::End); // block
+        // NOTE on br depth inside If inside Loop inside Block:
+        //   labels innermost-first: If=0, Loop=1, Block=2.
+        //   br 2 = exit block; br 0 = loop continue.
+        // authority = url+8, len = auth_len
+        func.instruction(&lg(6));
+        func.instruction(&cst(1)); // option some
+        func.instruction(&lg(0));
+        func.instruction(&cst(8));
+        func.instruction(&Instruction::I32Add);
+        func.instruction(&lg(14));
+        func.instruction(&cl(FN_SET_AUTHORITY));
+        func.instruction(&Instruction::Drop);
+        // path: if auth_len+8 < url_len → url+8+auth_len+1, url_len-9-auth_len
+        // else static "/" segment (data.path_offset)
+        func.instruction(&lg(14));
+        func.instruction(&cst(8));
+        func.instruction(&Instruction::I32Add);
+        func.instruction(&lg(1));
+        func.instruction(&Instruction::I32LtU);
+        func.instruction(&Instruction::If(BlockType::Empty));
+        func.instruction(&lg(6));
+        func.instruction(&cst(1));
+        func.instruction(&lg(0));
+        func.instruction(&cst(8));
+        func.instruction(&Instruction::I32Add);
+        func.instruction(&lg(14));
+        func.instruction(&Instruction::I32Add);
+        func.instruction(&lg(1));
+        func.instruction(&cst(8));
+        func.instruction(&Instruction::I32Sub);
+        func.instruction(&lg(14));
+        func.instruction(&Instruction::I32Sub);
+        func.instruction(&cl(FN_SET_PATH_WITH_QUERY));
+        func.instruction(&Instruction::Drop);
+        func.instruction(&Instruction::Else);
+        func.instruction(&lg(6));
+        func.instruction(&cst(1));
+        func.instruction(&cst(data.path_offset));
+        func.instruction(&cst(data.path_len));
+        func.instruction(&cl(FN_SET_PATH_WITH_QUERY));
+        func.instruction(&Instruction::Drop);
+        func.instruction(&Instruction::End);
+    } else {
+        func.instruction(&lg(6));
+        func.instruction(&cst(1)); // option some
+        func.instruction(&cst(data.auth_offset));
+        func.instruction(&cst(data.auth_len));
+        func.instruction(&cl(FN_SET_AUTHORITY));
+        func.instruction(&Instruction::Drop);
 
-    // Set path-with-query (from data segment)
-    func.instruction(&lg(6));
-    func.instruction(&cst(1)); // option some
-    func.instruction(&cst(data.path_offset));
-    func.instruction(&cst(data.path_len));
-    func.instruction(&cl(FN_SET_PATH_WITH_QUERY));
-    func.instruction(&Instruction::Drop);
+        func.instruction(&lg(6));
+        func.instruction(&cst(1)); // option some
+        func.instruction(&cst(data.path_offset));
+        func.instruction(&cst(data.path_len));
+        func.instruction(&cl(FN_SET_PATH_WITH_QUERY));
+        func.instruction(&Instruction::Drop);
+    }
 
     // Body → handle at +4
     func.instruction(&lg(6));
@@ -265,6 +378,64 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&ld(SCRATCH_RESPONSE_RESULT + 24));
     func.instruction(&ls(10)); // incoming-response handle
 
+    // ── Header capture (x402): hdr = headers(response);
+    //    (disc,ptr,len) = fields.get(hdr, name from data segment);
+    //    copy value into HDR region (buf + HDR_REGION_OFF), store its len at
+    //    len_ptr+4. Best-effort: silent skip on none/empty.
+    func.instruction(&lg(10));
+    func.instruction(&cl(FN_INCOMING_RESPONSE_HEADERS));
+    func.instruction(&ls(16)); // local 16: response headers fields handle
+    // fields.get(fields, name_ptr, name_len) -> (disc, ptr, len) flat
+    func.instruction(&lg(16));
+    func.instruction(&cst(data.hdr_name_offset));
+    func.instruction(&cst(data.hdr_name_len));
+    func.instruction(&cst(SCRATCH_WRITE_RESULT)); // ret_area (list = ptr+len)
+    func.instruction(&cl(FN_FIELDS_GET));
+    // ret_area: +0 entries ptr, +4 count; entry = (ptr,len) pair
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_WRITE_RESULT));
+    func.instruction(&ls(18)); // entries ptr
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_WRITE_RESULT + 4));
+    func.instruction(&ls(17)); // count
+    func.instruction(&cst(0));
+    func.instruction(&ls(19)); // value len = 0 default
+    func.instruction(&Instruction::Block(BlockType::Empty));
+    // skip when no entries
+    func.instruction(&lg(17));
+    func.instruction(&Instruction::I32Eqz);
+    func.instruction(&Instruction::BrIf(0));
+    // entry 0: base = entries ptr; val_ptr = [base+0], val_len = [base+4]
+    func.instruction(&lg(18));
+    func.instruction(&Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+    func.instruction(&ls(19)); // val_ptr (local 19 reuse)
+    func.instruction(&lg(18));
+    func.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+    func.instruction(&ls(17)); // val_len
+    // clamp: len = min(len, 2048) via select (a=len, b=2048, cond=len>2048)
+    func.instruction(&lg(17));
+    func.instruction(&cst(2048));
+    func.instruction(&lg(17));
+    func.instruction(&cst(2048));
+    func.instruction(&Instruction::I32GtU);
+    func.instruction(&Instruction::Select);
+    func.instruction(&ls(17));
+    // copy value into HDR region at (buf + 65536 - 2048)
+    func.instruction(&lg(2));
+    func.instruction(&cst(65536 - 2048));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&lg(19));
+    func.instruction(&lg(17));
+    func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    // hdr len at len_ptr+4
+    func.instruction(&lg(4));
+    func.instruction(&Instruction::I32Const(4));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&lg(17));
+    func.instruction(&st(0));
+    func.instruction(&Instruction::End);
+    func.instruction(&lg(16));
+    func.instruction(&cl(FN_DROP_FIELDS));
     // Consume → incoming-body handle at +4
     func.instruction(&lg(10));
     func.instruction(&cst(SCRATCH_IBODY_RESULT));

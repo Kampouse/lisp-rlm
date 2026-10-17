@@ -774,6 +774,10 @@ impl WasmEmitter {
                 self.need_outlayer = true;
                 self.need_wasi_http = true;
             }
+            "http-get-hdr" => {
+                self.need_outlayer = true;
+                self.need_wasi_http = true;
+            }
             "outlayer/send-telegram" | "send-telegram" => {
                 self.need_outlayer = true;
             }

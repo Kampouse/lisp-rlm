@@ -43,10 +43,12 @@ pub const FN_INPUT_STREAM_BLOCKING_READ: u32 = 22;
 pub const FN_GET_STDOUT: u32 = 23;
 pub const FN_OUTPUT_STREAM_WRITE: u32 = 24;
 pub const FN_DROP_INCOMING_BODY: u32 = 25;
-pub const FN_DROP_FIELDS: u32 = 26;
+pub const FN_FIELDS_GET: u32 = 29;
+pub const FN_INCOMING_RESPONSE_HEADERS: u32 = 28;
 pub const FN_FIELDS_SET: u32 = 27;
+pub const FN_DROP_FIELDS: u32 = 26;
 /// Total count of wasi:http imports — must equal the last FN_* + 1.
-pub const HTTP_IMPORT_COUNT: u32 = 28;
+pub const HTTP_IMPORT_COUNT: u32 = 30;
 
 /// Total number of canonical ABI types used by the wasi:http imports.
 /// Count the `types.ty().function(...)` calls in [`add_http_imports_to_sections`].
@@ -280,6 +282,10 @@ pub fn add_http_imports_only(imports: &mut ImportSection) {
     imports.import(ht, "[resource-drop]incoming-body", EntityType::Function(3));
     imports.import(ht, "[resource-drop]fields", EntityType::Function(3));
     imports.import(ht, "[method]fields.set", EntityType::Function(9));
+    // [method]incoming-response.headers: (self) -> own fields (flat i32)
+    imports.import(ht, "[method]incoming-response.headers", EntityType::Function(1));
+    // [method]fields.get: (self, name_ptr, name_len) -> (disc, ptr, len)
+    imports.import(ht, "[method]fields.get", EntityType::Function(6));
 
     assert_eq!(
         imports.len(),

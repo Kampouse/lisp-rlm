@@ -1,0 +1,3 @@
+session ClmmLaws = HOL +
+  theories
+    LimbMath

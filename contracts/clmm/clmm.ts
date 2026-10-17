@@ -165,8 +165,10 @@ function dxForDrop(liq: U128, sp: U128, spTgt: U128): U128 {
 
 // ── TWAP (biased cumulative: Σ(tick+BIAS)·dt), u128 throughout ──
 function accCarry() {
+  near.log("DBG accCarry enter");
   let p = poolRec();
   let now: U128 = near.blockTimestamp();
+  near.log("DBG now=[" + now + "]");
   let last: U128 = jsonGetU128("ts", p);
   if (u128Gt(now, last)) {
     // cum = tc + (tick+BIAS) * (now - last)
@@ -216,7 +218,9 @@ function balSub1(amt: U128) {
 }
 
 function doAddLiquidity(lower: number, upper: number, liq: U128): string {
+  near.log("DBG doAdd enter lo=" + lower + " up=" + upper + " liq=" + liq);
   accCarry();
+  near.log("DBG accCarry done");
   netSub(lower, liq);
   netAdd(upper, liq);
   near.storageSet(tickKey(lower, 1), u128Add(tickGross(lower), liq));

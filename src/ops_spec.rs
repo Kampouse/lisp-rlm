@@ -66,6 +66,7 @@ pub const OPS_SPEC: &[OpSpec] = &[
     OpSpec { name: "cons", min_arity: 2, max_arity: Some(2), interp: true, wasm: true, ts: "(x: unknown, xs: unknown[]) => unknown[]" },
     OpSpec { name: "append", min_arity: 0, max_arity: None, interp: true, wasm: true, ts: "(...xss: unknown[][]) => unknown[]" },
     // ── strings ──
+    OpSpec { name: "reverse", min_arity: 1, max_arity: Some(1), interp: true, wasm: true, ts: "(xs: unknown[]) => unknown[]" },
     OpSpec { name: "str-cat", min_arity: 0, max_arity: None, interp: true, wasm: true, ts: "(...xs: unknown[]) => string" },
     OpSpec { name: "str-join", min_arity: 2, max_arity: Some(2), interp: true, wasm: true, ts: "(sep: string, xs: unknown[]) => string" },
     OpSpec { name: "str-len", min_arity: 1, max_arity: Some(1), interp: true, wasm: true, ts: "(s: string) => number" },

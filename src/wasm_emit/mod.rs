@@ -723,6 +723,7 @@ pub struct WasmEmitter {
     pub(crate) need_wasi_http: bool, // true if http-get is used (for P2 wasi:http path)
     pub(crate) http_urls: Vec<(String, String)>, // (authority, path) per http-get call in p2_mode
     pub(crate) http_post_urls: Vec<(String, String)>, // (authority, path) per http-post call in p2_mode
+    pub(crate) http_hdr_names: Vec<String>, // response header to capture, per http-get URL index
     pub(crate) wasi_mode: bool,                       // true when targeting WASI/OutLayer
     pub(crate) p2_mode: bool, // true when targeting P2 component (return i32 from _start)
     pub(crate) no_proc_exit: bool, // true when wrapping with wit-component adapter (return cleanly, don't call proc_exit)
@@ -853,6 +854,7 @@ impl WasmEmitter {
             need_wasi_http: false,
             http_urls: Vec::new(),
             http_post_urls: Vec::new(),
+            http_hdr_names: Vec::new(),
             wasi_mode: false,
             p2_mode: false,
             no_proc_exit: false,

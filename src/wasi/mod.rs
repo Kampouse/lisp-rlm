@@ -1076,14 +1076,27 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
         (b"Accept", b"application/json"),
     ];
 
-    for (_url_idx, (authority, path)) in http_urls.iter().enumerate() {
-        // Build data segments at the current offset
-        let http_data = wasi_http_buffer::build_url_data_segments_with_base(
-            authority.as_bytes(),
-            path.as_bytes(),
-            headers,
-            current_data_offset,
-        );
+    for (url_idx, (authority, path)) in http_urls.iter().enumerate() {
+        // Build data segments at the current offset. When the emitter
+        // registered a response-header capture name for this URL (x402
+        // httpGetHdr), wire it so the core fn runs fields.get(name) and
+        // stashes the value at buf tail + len_ptr+4.
+        let hdr_name = em.http_hdr_names.get(url_idx).filter(|n| !n.is_empty());
+        let http_data = match hdr_name {
+            Some(name) => wasi_http_buffer::build_url_data_segments_with_capture(
+                authority.as_bytes(),
+                path.as_bytes(),
+                headers,
+                current_data_offset,
+                name.as_bytes(),
+            ),
+            None => wasi_http_buffer::build_url_data_segments_with_base(
+                authority.as_bytes(),
+                path.as_bytes(),
+                headers,
+                current_data_offset,
+            ),
+        };
 
         // ── __wasi_http_get for this URL ──
         // Params: 0=url_ptr, 1=url_len, 2=buf_ptr, 3=buf_len, 4=len_ptr
@@ -1106,6 +1119,7 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
             (1u32, ValType::I32),
             (1u32, ValType::I32),
             (5u32, ValType::I32), // locals 13-17 (copy_i=16, etc.)
+            (2u32, ValType::I32), // locals 18-19: header capture (ptr, disc)
         ]);
         wasi_http_buffer::emit_http_get_to_buffer(&mut http_get_fn, &http_data);
         http_get_fn.instruction(&Instruction::End);
@@ -3156,13 +3170,23 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     ];
 
     // ── HTTP GET internal functions ──
-    for (_idx, (authority, path)) in http_urls.iter().enumerate() {
-        let http_data = crate::wasi_http_buffer::build_url_data_segments_with_base(
-            authority.as_bytes(),
-            path.as_bytes(),
-            headers,
-            current_data_offset,
-        );
+    for (url_idx, (authority, path)) in http_urls.iter().enumerate() {
+        let hdr_name = em.http_hdr_names.get(url_idx).filter(|n| !n.is_empty());
+        let http_data = match hdr_name {
+            Some(name) => crate::wasi_http_buffer::build_url_data_segments_with_capture(
+                authority.as_bytes(),
+                path.as_bytes(),
+                headers,
+                current_data_offset,
+                name.as_bytes(),
+            ),
+            None => crate::wasi_http_buffer::build_url_data_segments_with_base(
+                authority.as_bytes(),
+                path.as_bytes(),
+                headers,
+                current_data_offset,
+            ),
+        };
 
         let mut http_get_fn = Function::new([
             (1u32, ValType::I32),
@@ -3179,6 +3203,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
             (1u32, ValType::I32),
             (1u32, ValType::I32),
             (5u32, ValType::I32), // locals 13-17 (copy_i=16, etc.)
+            (2u32, ValType::I32), // locals 18-19: header capture (ptr, disc)
         ]);
         crate::wasi_http_buffer::emit_http_get_to_buffer(&mut http_get_fn, &http_data);
         http_get_fn.instruction(&Instruction::End);
@@ -3999,6 +4024,7 @@ fn build_combined_p2_component(
     let (resolve, world) = crate::wasi_http::build_combined_wit_metadata()
         .map_err(|e| format!("WIT metadata: {}", e))?;
     let mut mod_bytes = core_bytes.to_vec();
+    std::fs::write("/tmp/p2_core_d31.wasm", &mod_bytes).ok();
     wit_component::embed_component_metadata(
         &mut mod_bytes,
         &resolve,

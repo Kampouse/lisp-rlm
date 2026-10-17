@@ -447,7 +447,7 @@
           (begin
             ;; pointwise: LQ i += d for a ≤ i ≤ b
             (loop ((i a))
-              (if (> i b) 0
+              (if (or (> i b) (> i 10)) 0
                   (let ((k (p5-lqkey i)))
                     (begin
                       (p5-put k (li-add (p5-bz k) d))
@@ -914,18 +914,21 @@
 ;; required X to add d over [a,b]: sum of dx(d, G(i), G(i+1)) — the
 ;; X-consumption form (up-leg input, ÷ S·S2), rising so S2 > S holds.
 ;; Tail-recursive at fixed depth (≤ 65 = mint span cap).
-(define (p5-reqx i b s d acc)
-  (if (> i b) acc
-      (p5-reqx (+ i 1) b (p5-G (+ i 1)) d
-               (li-add acc (p5-dx d s (p5-G (+ i 1)))))))
+(define (p5-reqx a b s d acc)
+  (loop ((i a) (s s) (acc acc))
+    (if (> i b)
+        (str-join "|" (cons (to-string i) (cons s (cons d acc))))
+        (recur (+ i 1) (p5-G (+ i 1)) (cons (to-string (p5-dx d s (p5-G (+ i 1)))) acc)))))
 
 ;; required Y: sum of dy(d, G(i), G(i+1)) — the Y-consumption form
 ;; (down-leg input, >> 64), rising (dyi over a rising walk would walk
 ;; the pair DOWN into limb-sub underflow — the trap this fixed).
-(define (p5-reqy i b s d acc)
-  (if (> i b) acc
-      (p5-reqy (+ i 1) b (p5-G (+ i 1)) d
-               (li-add acc (p5-dy d s (p5-G (+ i 1)))))))
+(define (p5-reqy a b s d acc)
+  (loop ((i a) (s s) (acc acc))
+    (if (> i b)
+        acc
+        (recur (+ i 1) (p5-G (+ i 1))
+               (li-add acc (p5-dy d s (p5-G (+ i 1))))))))
 
 ;; accruef fold (Aggregate_Accrual verbatim): owed_fee =
 ;; Σ (FG_i − FS_i) × d >> 64 — per-cell floor ⇒ under-credit only.
@@ -1055,7 +1058,7 @@
                     (let ((ga (p5-G a)))
                     (let ((req (if toky?
                                    (p5-reqy a b ga d "0")
-                                   (p5-reqx a b ga d "0"))))
+                                   (p5-reqx a b ga d nil))))
                       (if (not (= (li-cmp amt req) 0))
                           (p5-fail "ERR_EXACT")
                           (let ((ek (if toky? "6|ESCY" "6|ESCX")))
@@ -1078,7 +1081,7 @@
                         (let ((ga (p5-G a)))
                         (let ((req (if toky?
                                        (p5-reqy a b ga d "0")
-                                       (p5-reqx a b ga d "0"))))
+                                       (p5-reqx a b ga d nil))))
                           (if (< (li-cmp amt req) 0)
                               (p5-fail "ERR_SHORT")
                               (begin
@@ -1115,7 +1118,7 @@
            0)
         (p5-fail "ERR_LIQ")
     (let ((ga (p5-G a)))
-    (let ((rx (p5-reqx a b ga d "0")))
+    (let ((rx (p5-reqx a b ga d nil)))
     (let ((ry (p5-reqy a b ga d "0")))
       (begin
         (p5-put "6|RX" rx)
@@ -1163,7 +1166,7 @@
   (let ((a (str->num (json-get-str "a" inp))))
   (let ((b (str->num (json-get-str "b" inp))))
     (let ((ga (p5-G a)))
-      (str-cat "rx:" (str-cat (p5-reqx a b ga d "0")
+      (str-cat "rx:" (str-cat (p5-reqx a b ga d nil)
                  (str-cat ":ry:" (p5-reqy a b ga d "0"))))))))))
 
 ;; op "reg" { } — self-registration gate for claim payouts. NEP-141

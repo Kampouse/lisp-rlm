@@ -101,6 +101,82 @@ impl WasmEmitter {
                 v.push(Instruction::I64Or);
                 Ok(v)
             }
+            "http-get-hdr" => {
+                // (http-get-hdr "https://host/path" "Header-Name") -> header
+                // value string ("" when absent). Same core GET fn family as
+                // http-get, but the URL is registered with a response-header
+                // capture: the core fn stashes the header value at
+                // (buf + 65536 - 2048) and its len at len_ptr+4.
+                if a.len() < 2 {
+                    return Err("http-get-hdr requires (url header-name)".into());
+                }
+                if !self.wasi_mode {
+                    return Err("http-get-hdr is only available on OutLayer (WASI) target".into());
+                }
+                let name = match &a[1] {
+                    crate::types::LispVal::Str(n) => n.clone(),
+                    _ => return Err("http-get-hdr: header name must be a string literal".into()),
+                };
+                let mut url_idx: u32 = 0;
+                if let crate::types::LispVal::Str(url) = &a[0] {
+                    if let Some((auth, path)) = Self::split_url(url) {
+                        match self.http_urls.iter().position(|(x, p)| x == &auth && p == &path) {
+                            Some(idx) => url_idx = idx as u32,
+                            None => {
+                                url_idx = self.http_urls.len() as u32;
+                                self.http_urls.push((auth, path));
+                            }
+                        }
+                    }
+                }
+                // Register the capture name for this URL index (per-URL).
+                while self.http_hdr_names.len() <= url_idx as usize {
+                    self.http_hdr_names.push(String::new());
+                }
+                self.http_hdr_names[url_idx as usize] = name;
+
+                let url_expr = self.expr(&a[0])?;
+                let ma4 = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                let ret_area: i32 = crate::wasi_http::OL_RET_AREA_BASE;
+                let buf_ptr: i32 = crate::wasi_http::SENTINEL_BUF;
+                let buf_len: i32 = crate::wasi_http::SENTINEL_BUF_SIZE;
+                let mut v = Vec::new();
+                v.extend(url_expr.clone());
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(0xFFFFFFFF));
+                v.push(Instruction::I64And);
+                v.push(Instruction::I32WrapI64);
+                v.extend(url_expr);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64ShrU);
+                v.push(Instruction::I32WrapI64);
+                v.push(Instruction::I32Const(buf_ptr));
+                v.push(Instruction::I32Const(buf_len));
+                v.push(Instruction::I32Const(ret_area + 8));
+                v.push(Instruction::Call(103 + url_idx));
+                v.push(Instruction::Drop);
+                v.push(Instruction::I32Const(ret_area));
+                v.push(Instruction::I32Const(0));
+                v.push(Instruction::I32Store(ma4));
+                // Return the HEADER VALUE string: ptr = buf + 65536 - 2048,
+                // len = i32 at ret_area+12.
+                v.push(Instruction::I32Const(buf_ptr + 65536 - 2048));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I32Const(ret_area + 12));
+                v.push(Instruction::I32Load(ma4));
+                v.push(Instruction::I64ExtendI32U);
+                v.push(Instruction::I64Const(32));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Or);
+                v.push(Instruction::I64Const(3));
+                v.push(Instruction::I64Shl);
+                v.push(Instruction::I64Const(TAG_STR));
+                v.push(Instruction::I64Or);
+                Ok(v)
+            }
             "http-post" => {
                 // (http-post "https://api.example.com/data" "body") -> string or nil
                 // Always uses outlayer host function path (has auth injection)
