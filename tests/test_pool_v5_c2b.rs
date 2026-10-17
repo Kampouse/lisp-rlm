@@ -362,7 +362,12 @@ fn pool_v5_c2b_mint_burn_custody() {
         "raw toky(pool) == ESCY + reserve Y"
     );
     let st = m.ret(&m.pool_op("{\"op\":\"state\"}"));
-    assert!(st.ends_with("TOKX:tokx.tst:TOKY:toky.tst"), "state carries token ids");
+    // fee-gen (Oct 16): state carries parked-fee totals too; this flow does
+    // no swaps, so both totals must read 0 (no phantom fee mass).
+    assert!(
+        st.ends_with("TOKX:tokx.tst:TOKY:toky.tst:FEEX:0:FEEY:0"),
+        "state carries token ids + zero fee totals"
+    );
 }
 // Regression pin (8a56ddcf): burnc support-shrink must compare LQ in the
 // string domain. `p5-lq-nz?` used to push token-scale LQ through checked

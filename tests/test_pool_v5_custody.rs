@@ -201,8 +201,11 @@ fn pool_v5_custody_swap_and_reversal() {
     assert_eq!(escrow(&m, "ESCX"), FLOAT);
     assert_eq!(escrow(&m, "ESCY"), FLOAT);
 
-    // quote gives (out, rm) — both feed the custody identities
-    let q = m.ret(&m.pool_op(&format!("{{\"op\":\"quote\",\"v\":\"{SWAP}\"}}")));
+    // fee-gen: the custody walker runs on v_eff = intake − skim (F =
+    // intake >> 8 stays escrowed, LP-claimable). Parity quote stays GROSS,
+    // so the differential oracle for the fee walk is quote(v_eff).
+    let f: u128 = SWAP / 256;
+    let q = m.ret(&m.pool_op(&format!("{{\"op\":\"quote\",\"v\":\"{}\"}}", SWAP - f)));
     let qbody = q.trim_start_matches("q:");
     let (qout_s, qrm_s) = qbody
         .split_once(":rm:")

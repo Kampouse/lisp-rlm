@@ -4,13 +4,15 @@
 //! price walking cells both directions, clamps on both range faces, LP
 //! liquidity provably stationary, tokens conserved to the atom.
 //!
-//! FEE VERDICT (measured, then pinned): v5 has NO fee parameter — books
-//! take full in/out and fee cells never move (header invariant). But the
-//! grid curve itself quotes a per-cell bid-ask spread: a boot round trip
-//! (sell 1e9 X → Y, reverse the exact Y) returns 813049996 X — the pool's
-//! token balance gains exactly the 186950004 difference — while S/P
-//! restore to boot EXACTLY. Market shape: order-book-style spread, zero
-//! explicit fee, LPs redeem closed-form deposits (burnc req forms).
+//! FEE VERDICT (re-measured after fee-gen, Oct 16): custody-path swaps skim
+//! F = intake >> 8 (1/256). The walker runs on v_eff = intake − F; per-cell
+//! FG growth ledgers accrue F; positions fold (FG−FS)×d >> 64 into OWX/OWY
+//! at burnc. The grid curve's per-cell bid-ask spread is SEPARATE and still
+//! pools: a boot round trip (sell 1e9 X → Y, reverse the exact Y) returns
+//! 809873544 X — pool balance gains exactly the 190126456 difference
+//! (spread + two skims). Fee = friction: S no longer restores to the atom
+//! on reversal (18446754882618868780 vs boot 2^64). Flow books take the
+//! walked slice: delta == kept − intake/256.
 //!
 //! Scale note (probed live): at S = 2^64 (price 1.0) a straddle position
 //! d over [-8,8] holds ry/rx ≈ 2^64 — X-side inventory is in ~1e9 units,
@@ -287,8 +289,9 @@ fn pool_v5_market_two_sided_sim() {
     assert_eq!(key_i128(&m, "P"), 0);
 
     // ── R0: the FEE/SPREAD probe, from boot — buy Y then reverse exactly ──
-    // Zero-fee books take full in/out both legs AND the state restores
-    // exactly; the only cost is the grid curve's per-cell spread.
+    // Books take the walked slice (intake − skim); the only state cost is
+    // the grid curve's per-cell spread PLUS the two skims (fee = friction:
+    // S restores to a hair above boot, not the atom).
     println!("== R0: fee probe — sell 1e9 X for Y, reverse the exact Y ==");
     let probe: u128 = 1_000_000_000;
     let pool_x0 = bal(&m, "tokx.tst", "pool.tst");
@@ -313,20 +316,22 @@ fn pool_v5_market_two_sided_sim() {
     let x_back = bal(&m, "tokx.tst", "bob.tst");
     assert_eq!(
         bob_x0 - x_back,
-        186_950_004,
-        "golden: round trip keeps 186950004 of the 1e9 input"
+        190_126_456,
+        "golden: round trip keeps 809873544 of the 1e9 input (spread + 2 skims)"
     );
     assert_eq!(bal(&m, "toky.tst", "bob.tst"), bob_y0, "Y fully returned");
+    // fee = friction: S restores a hair ABOVE boot (18446754882618868780),
+    // not to the atom — the skims are gone from the books for good.
     assert_eq!(
         key_i128(&m, "S"),
-        S0,
-        "state reversal: S restored to the atom"
+        18_446_754_882_618_868_780,
+        "state reversal: S pinned at the fee-shifted restore point"
     );
     assert_eq!(key_i128(&m, "P"), 0, "state reversal: P restored");
     assert_eq!(
         bal(&m, "tokx.tst", "pool.tst") - pool_x0,
-        186_950_004,
-        "the spread landed in the pool's balance, to the atom"
+        190_126_456,
+        "the spread + two skims landed in the pool's balance, to the atom"
     );
     snap(&m, "R0b reversed");
 
@@ -346,8 +351,8 @@ fn pool_v5_market_two_sided_sim() {
         assert!(got > 0, "paid out");
         assert_eq!(
             key_i128(&m, "X") - xb_before,
-            1_000_000_000,
-            "flow ledger takes FULL intake (no skim)"
+            1_000_000_000 - 1_000_000_000 / 256,
+            "flow ledger takes the walked slice (kept − intake/256)"
         );
         assert_eq!(
             y_out_before - bal(&m, "toky.tst", "pool.tst"),
@@ -369,7 +374,7 @@ fn pool_v5_market_two_sided_sim() {
         .trim_start_matches("used:")
         .parse()
         .unwrap_or_else(|_| panic!("used shape: {ret_big}"));
-    assert_eq!(kept, 812_806_130, "golden: lip capacity consumed exactly");
+    assert_eq!(kept, 828_431_130, "golden: lip capacity consumed exactly");
     assert_eq!(
         key_i128(&m, "S"),
         18_455_046_561_344_878_016,
@@ -409,8 +414,8 @@ fn pool_v5_market_two_sided_sim() {
         assert!(got > 0, "paid out");
         assert_eq!(
             key_i128(&m, "Y") - yb_before,
-            kept_y as i128,
-            "flow ledger takes exactly the kept slice"
+            kept_y as i128 - (amt / 256) as i128,
+            "flow ledger takes the walked slice (kept − intake/256)"
         );
         assert_eq!(
             x_out_before - bal(&m, "tokx.tst", "pool.tst"),
@@ -447,10 +452,18 @@ fn pool_v5_market_two_sided_sim() {
         format!("{D}"),
         "V1: position record unchanged"
     );
-    // V2: no fee ledgers exist — fee cells never move (header invariant)
-    for k in ["FEE", "FEE:X", "FEE:Y", "BOOK"] {
-        assert_eq!(key_i128(&m, k), 0, "V2: no fee ledger at 6|{k}");
-    }
+    // V2 (fee-gen): the custody skims are PARKED in the FEE ledgers —
+    // exact sums of per-leg gross skims (F = intake >> 8, both sides).
+    assert_eq!(
+        key_i128(&m, "FEEX"),
+        3 * (1_000_000_000 / 256) + 4_000_000_000 / 256,
+        "V2: FEEX = Σ skims (three 1e9 legs + the 4e9 lip leg)"
+    );
+    assert_eq!(
+        key_i128(&m, "FEEY"),
+        410_157_714_819_336_834_325_531_025,
+        "V2: FEEY = Σ skims (R0 reverse + the two Y sells)"
+    );
     // V3: token conservation to the atom — every minted unit sits in a
     //     trader balance or the pool's ft-side balance (its real custody).
     let x_tot = bal(&m, "tokx.tst", "alice.tst")
@@ -462,13 +475,13 @@ fn pool_v5_market_two_sided_sim() {
     assert_eq!(x_tot, 2 * FUND, "V3: X conserved to the atom");
     assert_eq!(y_tot, 2 * FUND, "V3: Y conserved to the atom");
     println!("  V1 liquidity stationary: PASS (cells+POS identical)");
-    println!("  V2 fee ledgers: PASS (none exist — books take full in/out)");
+    println!("  V2 fee ledgers: PASS (FEEX/FEEY = exact skim sums)");
     println!("  V3 conservation: PASS (X {x_tot}, Y {y_tot} = exact mints)");
     println!("  price: 2^64 → up 2 cells×2 → lip → down to floor lip (pinned)");
-    println!("  round trip at boot: 1e9 X in → 813049996 back; S/P exact;");
-    println!("  spread 186950004 X → pool balance (LP-side surplus).");
+    println!("  round trip at boot: 1e9 X in → 809873544 back; S pinned above");
+    println!("  boot (fee = friction); spread+skims 190126456 X → pool balance.");
     println!("MARKET SIM: GREEN — both sides active, clamps proven both");
-    println!("faces, state reversal exact. Fee generation: NO fee parameter");
-    println!("(fee cells never move); the grid curve quotes a per-cell");
-    println!("bid-ask spread instead — order-book style, not AMM-style.");
+    println!("faces, fee skims parked in FEE ledgers + FG cells (LP-claimable");
+    println!("via burnc fold), books take the walked slice, grid curve still");
+    println!("quotes its per-cell bid-ask spread on top.");
 }

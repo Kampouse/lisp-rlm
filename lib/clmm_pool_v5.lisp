@@ -66,15 +66,20 @@
 ;; "state" { } → view readout + :LAST: + :ESCX:/ESCY: + :TOKX:/TOKY:
 ;; (token contracts in charge). Both ZERO-write; pinned in
 ;; tests/test_pool_v5_views.rs + funded-flow parity in c2b.
-;; Market sim (Oct 16, test_pool_v5_market.rs): NO fee parameter exists —
-;; books take full in/out (fee cells never move, invariant at top), and
-;; the grid curve quotes a per-cell BID-ASK SPREAD instead: a boot round
-;; trip (sell X → Y, reverse the exact Y) restores S/P to the atom and
-;; returns 1e9−186950004 X; the spread lands in the pool's token balance
-;; (LP-side surplus). Order-book-style pricing, not AMM skim. Traders ride
-;; the real NEP-141 path (ft_transfer_call msg "sw" → escrow → walk →
-;; payout); range edges clamp: past-lip sells refund whole until reverse
-;; pressure walks P back inside.
+;; Fee generation (Oct 16): custody-path swaps skim F = intake >> 8
+;; (1/256, floor). The walker runs on v_eff = intake − F; F stays in the
+;; intake escrow (trader pays X_eff + F; escrow retains exactly F) and
+;; per CROSSED cell i the arm credits FG<side>:i += (F_i << 64) // LQ_i
+;; (equal split, last cell takes the remainder; LQ=0 cells forfeit —
+;; under-credit only, the div_floor64 slack proved in Fee_Slack).
+;; Positions snapshot growth at mint (FS<side>:<who>:<a>:<b>:<i> + FSP
+;; marker; parity mints get no marker ⇒ they accrue zero — clean epoch).
+;; burnc folds owed_fee = Σ (FG−FS)×d >> 64 (accruef, Aggregate_Accrual
+;; verbatim; bridge theorem = claims ≤ charged mass), caps each side at
+;; the float (p5-req-cap), folds into OWX/OWY (claim pays), resets FS.
+;; Parity swap/quote stay GROSS (differential oracle). 6|FEE<side>
+;; totals parked mass (op "state" carries it; op "fg" {i} reads cells).
+;; The grid bid-ask spread (market sim) is SEPARATE and still pools.
 ;;
 ;; Call discipline: one value-producing call per let binding (compiler
 ;; sibling-call clobber — accrual contract note). `begin` wraps only
@@ -107,6 +112,55 @@
 
 (define (p5-buf-str b)
   (limbs->str b (if (> (v5-strip b 12) 0) (v5-strip b 12) 1)))
+
+;; ── fee math (limb primitives; string-in/string-out) ──────────────────
+(define (p5-shr8 v)
+  (let ((A (str->limbs v)) (tA (buf-alloc 48)) (tB (buf-alloc 48))
+        (q (buf-alloc 64)) (r (buf-alloc 64)) (one (buf-alloc 8))
+        (nbs (buf-alloc 64)) (s (buf-alloc 400)))
+    (begin
+      (v5-zero! tA 12) (v5-copy! (car A) tA (car (cdr A)))
+      (v5-zero! tB 12) (limb-set! tB 0 256)
+      (v5-zero! q 12) (v5-zero! r 10)
+      (v5-divmod! tA tB q r nbs s one)
+      (limbs->str q (if (> (v5-strip q 8) 0) (v5-strip q 8) 1)))))
+
+(define (p5-C64! b)
+  (begin
+    (v5-zero! b 4) (limb-set! b 0 1)
+    (loop ((j 0))
+      (if (>= j 64) 0 (begin (v5-double! b 4) (recur (+ j 1)))))))
+
+(define (p5-feegrow F L)
+  (if (= (li-cmp L "0") 0)
+      "0"
+      (let ((FA (str->limbs F)) (LA (str->limbs L))
+            (tF (buf-alloc 48)) (tB (buf-alloc 48)) (tC (buf-alloc 48)) (C64 (buf-alloc 16))
+            (q (buf-alloc 64)) (r (buf-alloc 64)) (one (buf-alloc 8))
+            (nbs (buf-alloc 64)) (s (buf-alloc 400)))
+        (begin
+          (v5-zero! tF 12) (v5-copy! (car FA) tF (car (cdr FA)))
+          (v5-zero! tB 12) (v5-copy! (car LA) tB (car (cdr LA)))
+          (p5-C64! C64)
+          (v5-zero! tC 12)
+          (limb-mul tF C64 tC 8 4)
+          (v5-zero! q 12) (v5-zero! r 10)
+          (v5-divmod! tC tB q r nbs s one)
+          (limbs->str q (if (> (v5-strip q 8) 0) (v5-strip q 8) 1))))))
+
+(define (p5-mulshr64 x y)
+  (let ((XA (str->limbs x)) (YA (str->limbs y))
+        (tB (buf-alloc 48)) (tC (buf-alloc 64)) (C64 (buf-alloc 48))
+        (q (buf-alloc 64)) (r (buf-alloc 64)) (one (buf-alloc 8))
+        (nbs (buf-alloc 64)) (s (buf-alloc 400)))
+    (begin
+      (v5-zero! tC 16)
+      (limb-mul (car XA) (car YA) tC (car (cdr XA)) (car (cdr YA)))
+      (p5-C64! C64)
+      (v5-zero! tB 12) (v5-copy! C64 tB 4)
+      (v5-zero! q 12) (v5-zero! r 10)
+      (v5-divmod! tC tB q r nbs s one)
+      (limbs->str q (if (> (v5-strip q 8) 0) (v5-strip q 8) 1)))))
 
 ;; S(i) = isqrt(1.0001^i · 2^128), |i| ≤ 800000 (kernel gates beyond)
 (define (p5-G i)
@@ -258,6 +312,14 @@
   (str-cat "6|POS:" (str-cat w (str-cat ":" (str-cat (to-string a)
     (str-cat ":" (to-string b)))))))
 
+;; fee-snapshot keys: per (side,who,a,b,cell) growth checkpoint.
+(define (p5-fskey w a b i) (p5-fsk "X" w a b i))
+(define (p5-fskeyy w a b i) (p5-fsk "Y" w a b i))
+(define (p5-fsk s w a b i)
+  (str-cat "6|FS" (str-cat s (str-cat ":" (str-cat w (str-cat ":"
+    (str-cat (to-string a) (str-cat ":" (str-cat (to-string b)
+      (str-cat ":" (to-string i)))))))))))
+
 ;; ── support bounds: exact, bounded probes ──────────────────────────────
 ;; IMIN/IMAX cached; burn of an edge cell walks inward (≤ 4096 probes).
 
@@ -266,6 +328,41 @@
 (define (p5-imin) (str->num (p5-bz "6|IMIN")))
 
 (define (p5-imax) (str->num (p5-bz "6|IMAX")))
+
+;; F // k for small k (≤ 65)
+(define (p5-quotk F k)
+  (let ((FA (str->limbs F)) (tA (buf-alloc 48)) (tB (buf-alloc 48))
+        (q (buf-alloc 64)) (r (buf-alloc 64)) (one (buf-alloc 8))
+        (nbs (buf-alloc 64)) (s (buf-alloc 400)))
+    (begin
+      (v5-zero! tA 12) (v5-copy! (car FA) tA (car (cdr FA)))
+      (v5-zero! tB 12) (limb-set! tB 0 k)
+      (v5-zero! q 12) (v5-zero! r 10)
+      (v5-divmod! tA tB q r nbs s one)
+      (limbs->str q (if (> (v5-strip q 8) 0) (v5-strip q 8) 1)))))
+
+;; F × (k−1) for small k
+(define (p5-mulk F k)
+  (loop ((i 1) (acc F))
+    (if (>= i k) acc (recur (+ i 1) (li-add acc F)))))
+
+;; equal-split credit: F over cells [p0..p1] (last takes remainder),
+;; grow FG<side>:i += (F_i << 64) // LQ_i. LQ=0 cells forfeit (pool
+;; keeps F in escrow — under-credit only). p0..p1 inclusive, ≤ span.
+(define (p5-credit! side F p0 p1)
+  (let ((k (+ (- p1 p0) 1)))
+    (let ((Fi (p5-quotk F k)))
+      (loop ((i p0))
+        (if (> i p1)
+            0
+            (let ((fi (if (= i p1)
+                          (li-sub F (p5-mulk Fi (- k 1)))
+                          Fi)))
+              (begin
+                (p5-put (str-cat "6|FG" (str-cat side (str-cat ":" (to-string i))))
+                        (li-add (p5-bz (str-cat "6|FG" (str-cat side (str-cat ":" (to-string i)))))
+                                (p5-feegrow fi (p5-bz (p5-lqkey i)))))
+                (recur (+ i 1)))))))))
 
 ;; shrink IMIN upward to the first nonzero cell (≤4096 probes); 0 if none
 (define (p5-shrink-imin lo hi)
@@ -414,8 +511,10 @@
 ;; Loops return ONE packed string.
 ;;
 ;; walk arm for neg=1 (down): returns "acc|rm" packed, puts P/S.
-(define (p5-swarm-dn s p xbook ybook v)
-  (let* ((imin (p5-imin))
+(define (p5-swarm-dn s p xbook ybook v feep?)
+  (let* ((F (if feep? (p5-shr8 v) "0"))
+         (v (if feep? (li-sub v F) v))
+         (imin (p5-imin))
          (gmin (p5-G imin))
          (res (loop ((pp p) (ss s) (acc "0") (rm v) (v0 v))
                  (if (= (li-cmp rm "0") 0)
@@ -459,11 +558,19 @@
           (p5-put "6|X" xnew)
           (p5-put "6|Y" (li-add ybook yin))
           (p5-put "6|LAST" msg)
+          (if feep?
+              (begin
+                (p5-credit! "Y" F (str->num (p5-bz "6|P")) p)
+                (p5-put "6|FEEY" (li-add (p5-bz "6|FEEY") F))
+                0)
+              0)
           msg)))))
 
 ;; walk arm for neg=0 (up): returns "acc|rm" packed, puts P/S.
-(define (p5-swarm-up s p xbook ybook v)
-  (let* ((imax (p5-imax))
+(define (p5-swarm-up s p xbook ybook v feep?)
+  (let* ((F (if feep? (p5-shr8 v) "0"))
+         (v (if feep? (li-sub v F) v))
+         (imax (p5-imax))
          (gmax (p5-G (+ imax 1)))
          (res (loop ((pp p) (ss s) (acc "0") (rm v) (v0 v))
                  (if (= (li-cmp rm "0") 0)
@@ -505,6 +612,12 @@
           (p5-put "6|Y" ynew)
           (p5-put "6|X" (li-add xbook xin))
           (p5-put "6|LAST" msg)
+          (if feep?
+              (begin
+                (p5-credit! "X" F p (str->num (p5-bz "6|P")))
+                (p5-put "6|FEEX" (li-add (p5-bz "6|FEEX") F))
+                0)
+              0)
           msg)))))
 
 (define (p5-swap)
@@ -521,8 +634,8 @@
     (if (= (li-cmp v "0") 0)
         "swap-zero"
     (if (= neg 1)
-        (p5-swarm-dn s p xbook ybook v)
-        (p5-swarm-up s p xbook ybook v)))))))))))))
+        (p5-swarm-dn s p xbook ybook v 0)
+        (p5-swarm-up s p xbook ybook v 0)))))))))))))
 ;; ── custody (arc C2a): swap leg only ───────────────────────────────────
 ;; NEP-141 entry: predecessor must be 6|TOKX or 6|TOKY; msg side-tags the
 ;; operation ("sw"). 6|X/6|Y are flow ledgers (both rise on every swap),
@@ -609,8 +722,8 @@
           (p5-put "6|OUT" "D")
           (p5-put "6|REM" "D")
           (p5-put "6|ESCX" (li-add (p5-bz "6|ESCX") amt))
-          ;; up sells X for Y (p5-swap: v>0 = sell x)
-          (p5-swarm-up s p xbook ybook amt)
+          ;; up sells X for Y (fee path)
+          (p5-swarm-up s p xbook ybook amt 1)
           (p5-leg-decide sender amt "6|X" "6|ESCX" "6|ESCY" ps0 pl0 "6|TOKY")))))))))))
 
 ;; sell Y for X — mirror of p5-swap-x (out-leg from 6|ESCX on 6|TOKX)
@@ -629,8 +742,8 @@
           (p5-put "6|OUT" "D")
           (p5-put "6|REM" "D")
           (p5-put "6|ESCY" (li-add (p5-bz "6|ESCY") amt))
-          ;; down sells Y for X (p5-swap: v<0 = sell y)
-          (p5-swarm-dn s p xbook ybook amt)
+          ;; down sells Y for X (fee path)
+          (p5-swarm-dn s p xbook ybook amt 1)
           (p5-leg-decide sender amt "6|Y" "6|ESCY" "6|ESCX" ps0 pl0 "6|TOKX")))))))))))
 
 ;; shared leg decision — reads 6|OUT/6|REM via bz (v4 pattern: NO
@@ -653,6 +766,9 @@
               (p5-put "6|S" ps0)
               (p5-put ekey (li-sub (p5-bz ekey) amt))
               (near/return amt))
+            ;; fee path: the walker ran on v_eff = amt − F, so REM is the
+            ;; remainder OF v_eff — amt − REM retains exactly F + walked
+            ;; (skim stays escrowed, LP-claimable via FG; raw==ESCX holds).
             (let ((c (li-sub amt (p5-bz "6|REM"))))
               (begin
                 (p5-put ekey (li-sub (p5-bz ekey) c))
@@ -787,6 +903,25 @@
       (p5-reqy (+ i 1) b (p5-G (+ i 1)) d
                (li-add acc (p5-dy d s (p5-G (+ i 1)))))))
 
+;; accruef fold (Aggregate_Accrual verbatim): owed_fee =
+;; Σ (FG_i − FS_i) × d >> 64 — per-cell floor ⇒ under-credit only.
+;; Then FS_i ← FG_i: the residual position earns from current growth.
+;; Known v1 under-credit (pool-favoring): a top-up mint resets the
+;; whole key's snapshots, forfeiting pre-top-up accrual.
+(define (p5-feefold who a b d side)
+  (loop ((i a) (s "0"))
+    (if (> i b)
+        s
+        (let ((fg (p5-bz (str-cat "6|FG" (str-cat side
+                     (str-cat ":" (to-string i))))))
+              (fs (p5-bz (p5-fsk side who a b i))))
+          (begin
+            ;; FS_i ← FG_i NOW: the residual position earns from current
+            ;; growth. Delta uses the PRE-reset fs (read-before-write).
+            (p5-put (p5-fsk side who a b i) fg)
+            (recur (+ i 1)
+              (li-add s (p5-mulshr64 (li-sub fg fs) d))))))))
+
 ;; complete a matched two-leg mint: BOTH sides' d stays escrowed (the
 ;; deposited tokens back the position — burn claims pay from them);
 ;; write the position (exact op-mint core), consume exactly d, refund
@@ -799,9 +934,18 @@
       (if (> i b)
           0
           (let ((k (p5-lqkey i)))
-            (begin (p5-put k (li-add (p5-bz k) d)) (recur (+ i 1))))))
+            (begin
+              (p5-put k (li-add (p5-bz k) d))
+              (p5-put (p5-fskey sender a b i)
+                      (p5-bz (str-cat "6|FGX:" (to-string i))))
+              (p5-put (p5-fskeyy sender a b i)
+                      (p5-bz (str-cat "6|FGY:" (to-string i))))
+              (recur (+ i 1))))))
     (p5-put (p5-poskey sender a b)
             (li-add (p5-bz (p5-poskey sender a b)) d))
+    (p5-put (str-cat "6|FSP:" (str-cat sender
+              (str-cat ":" (str-cat (to-string a)
+                (str-cat ":" (to-string b)))))) "1")
     (if (< a (str->num (p5-bz "6|IMIN")))
         (p5-put "6|IMIN" (to-string a))
         0)
@@ -946,15 +1090,23 @@
         (p5-respan!)
         (p5-put (p5-poskey who a b)
                 (li-sub (p5-bz (p5-poskey who a b)) d))
-        ;; owed = the required amount, capped at the escrow float
-        (let ((cx (p5-req-cap rx "6|ESCX")))
-        (let ((cy (p5-req-cap ry "6|ESCY")))
+        ;; fee fold (accruef) — LP trading fees, capped at the float;
+        ;; raw folds persist in 6|FWX/6|FWY for callers/tests.
+        (let ((fx (p5-feefold who a b d "X")))
+        (let ((fy (p5-feefold who a b d "Y")))
+        (begin
+          (p5-put "6|FWX" fx)
+          (p5-put "6|FWY" fy)
+        ;; owed = required + fees, each capped at the escrow float
+        (let ((cx (p5-req-cap (li-add rx fx) "6|ESCX")))
+        (let ((cy (p5-req-cap (li-add ry fy) "6|ESCY")))
         (let ((kx (str-cat "6|OWX:" who))
               (ky (str-cat "6|OWY:" who)))
           (begin
             (p5-put kx (li-add (p5-bz kx) cx))
             (p5-put ky (li-add (p5-bz ky) cy))
-            (str-cat "burnc-ok:" (str-cat cx (str-cat ":" cy))))))))))))))))
+            (str-cat "burnc-ok:" (str-cat cx (str-cat ":" cy)))))))))))))))))))
+
 
 ;; required-amount custody: owed = min(req, escrow float) — insolvency
 ;; guard only. req is token-denominated (same closed form at mint and
@@ -1044,7 +1196,15 @@
       (str-cat ":ESCX:" (p5-bz "6|ESCX"))
       (str-cat ":ESCY:" (p5-bz "6|ESCY"))
       (str-cat ":TOKX:" (p5-bz "6|TOKX"))
-      (str-cat ":TOKY:" (p5-bz "6|TOKY")))))
+      (str-cat ":TOKY:" (p5-bz "6|TOKY"))
+      (str-cat ":FEEX:" (p5-bz "6|FEEX"))
+      (str-cat ":FEEY:" (p5-bz "6|FEEY")))))
+
+;; read-only fee view: one cell's growth pair. ZERO writes.
+(define (p5-fg)
+  (let ((i (json-get-str "i" (near/input))))
+    (str-cat "fgx:" (str-cat (p5-bz (str-cat "6|FGX:" i))
+               (str-cat ":fgy:" (p5-bz (str-cat "6|FGY:" i)))))))
 
 ;; oracle op: pure quote — same closed form, ZERO state writes (the
 ;; driver's differential oracle target; also swap_rel's s'-projection).
@@ -1113,8 +1273,9 @@
     (if (str= op "view") (p5-view)
     (if (str= op "escrow") (p5-escrow)
     (if (str= op "state") (p5-state)
+    (if (str= op "fg") (p5-fg)
     (if (str= op "g") (p5-G (str->num (json-get-str "i" (near/input))))
-        "unknown-op"))))))))))))))))
+        "unknown-op")))))))))))))))))
 
 (export "_run" p5-run)
 (export "ft_on_transfer" p5-on-transfer)
