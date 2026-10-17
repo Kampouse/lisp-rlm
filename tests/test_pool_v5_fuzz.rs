@@ -93,6 +93,9 @@ impl Oracle {
             json.push_str(&format!(",\"lq_{i}\":\"{l}\""));
         }
         json.push_str("}\n");
+        self.stdin
+            .write_all(json.as_bytes())
+            .expect("write oracle stdin");
         self.stdin.flush().unwrap();
         let mut line = String::new();
         self.stdout.read_line(&mut line).unwrap();
@@ -221,9 +224,11 @@ fn parse_view(v: &str) -> (u128, i64, i64, i64, Vec<(i64, u128)>) {
 }
 
 fn parse_last(v: &str) -> Option<&str> {
-    v.split(':')
-        .find(|p| p.starts_with("LAST"))
-        .map(|p| p.split_once(':').map(|(_, r)| r).unwrap_or(""))
+    // LAST value itself contains ':' (swap-out:<amt>:rem:<rm>); it is framed
+    // by :LAST: ... :ESCX: in the p5-state string.
+    let start = v.split(":LAST:").nth(1)?;
+    let end = start.split(":ESCX:").next()?;
+    Some(end)
 }
 
 fn sp_head(v: &str) -> String {
@@ -340,7 +345,7 @@ fn pool_v5_fuzz_differential() {
 
         for i in 0..OPS {
             let r = next() % 100;
-            let mut swap_amt: Option<(u128, &str)> = None;
+            let mut swap_amt: Option<(u128, &str, bool)> = None;
             if i < 4 || r < 30 {
                 let lo = -((next() % 8) as i64) - 1;
                 let hi = (next() % 8) as i64 + 1;
@@ -370,10 +375,10 @@ fn pool_v5_fuzz_differential() {
                         who
                     ));
                 }
-            } else if r < 65 {
+            } else if r < 60 {
                 let amt: u128 = 1_000_000_000_000_000_000_000_000
                     + (next() % 999) as u128 * 1_000_000_000_000_000_000_000_000;
-                swap_amt = Some((amt, "y"));
+                swap_amt = Some((amt, "y", true));
                 let _ = m.ret(&m.cross(
                     "toky.tst",
                     "ft_transfer_call",
@@ -382,10 +387,10 @@ fn pool_v5_fuzz_differential() {
                     ),
                     "trader.tst",
                 ));
-            } else {
+            } else if r < 90 {
                 let amt: u128 = 1_000_000_000_000_000_000_000
                     + (next() % 999) as u128 * 1_000_000_000_000_000_000_000;
-                swap_amt = Some((amt, "x"));
+                swap_amt = Some((amt, "x", true));
                 let _ = m.ret(&m.cross(
                     "tokx.tst",
                     "ft_transfer_call",
@@ -394,29 +399,39 @@ fn pool_v5_fuzz_differential() {
                     ),
                     "trader.tst",
                 ));
+            } else {
+                // gross parity swap (op "swap", feep?=0): sign picks direction
+                let amt: u128 = 1_000_000_000_000_000_000_000
+                    + (next() % 999) as u128 * 1_000_000_000_000_000_000_000;
+                let down = next() % 2 == 0;
+                let vstr = if down {
+                    format!("-{amt}")
+                } else {
+                    format!("{amt}")
+                };
+                // sell Y walks down (oracle op "y"), sell X walks up ("x")
+                let side = if down { "y" } else { "x" };
+                swap_amt = Some((amt, side, false));
+                let _ = m.op(&format!("{{\"op\":\"swap\",\"v\":\"{vstr}\"}}"));
             }
 
             let state = m.state();
             let last = parse_last(&state);
             let (s, p, imin, imax, lq) = parse_view(&state);
 
-            if last == Some("swap-out:y") {
-                let amt = swap_amt.map(|(a, _)| a).unwrap_or(0);
-                let want = oracle.ask("y", prev_s, prev_p, imin, imax, amt, 8, &lq, true);
+            // A swap happened iff LAST carries a swap-out message; the side
+            // and fee flag come from the op we just issued (LAST itself does
+            // not encode the side).
+            let swapped = last.map(|l| l.starts_with("swap-out:")).unwrap_or(false);
+            if swapped {
+                let (amt, side, fee) = swap_amt
+                    .map(|(a, sd, f)| (a, sd, f))
+                    .unwrap_or((0, "y", true));
+                let want = oracle.ask(side, prev_s, prev_p, imin, imax, amt, 8, &lq, fee);
                 assert_eq!(
                     (s, p),
                     (want.s, want.p),
-                    "seed {seed} op {i}: swap-y S/P mismatch\n  contract: {s}:{p}\n  oracle:   {want_s}:{want_p}",
-                    want_s = want.s,
-                    want_p = want.p
-                );
-            } else if last == Some("swap-out:x") {
-                let amt = swap_amt.map(|(a, _)| a).unwrap_or(0);
-                let want = oracle.ask("x", prev_s, prev_p, imin, imax, amt, 8, &lq, true);
-                assert_eq!(
-                    (s, p),
-                    (want.s, want.p),
-                    "seed {seed} op {i}: swap-x S/P mismatch\n  contract: {s}:{p}\n  oracle:   {want_s}:{want_p}",
+                    "seed {seed} op {i}: swap-{side} S/P mismatch\n  contract: {s}:{p}\n  oracle:   {want_s}:{want_p}",
                     want_s = want.s,
                     want_p = want.p
                 );
