@@ -1166,6 +1166,29 @@
       (str-cat "rx:" (str-cat (p5-reqx a b ga d "0")
                  (str-cat ":ry:" (p5-reqy a b ga d "0"))))))))))
 
+;; op "reg" { } — self-registration gate for claim payouts. NEP-141
+;; transfers to an unregistered account FAIL on-chain; a failed claim
+;; payout costs a full reversal round-trip and (before the pay signal
+;; fix) surfaced as a silent "0". Gate before netting: not registered ⇒
+;; abort "not-registered" with owed+escrow untouched. Self-only (the
+;; caller pays their own storage key — no griefer-funded registry).
+;; Swap/mint payouts need no gate: the sender just did ft_transfer_call,
+;; which NEP-141 only accepts from registered accounts.
+(define (p5-register)
+  (let ((who (json-get-str "who" (near/input))))
+    (if (< (str-len who) 1)
+        ;; predecessor is ProhibitedInView — view-mode callers pass who
+        ;; explicitly; tx callers may too (fallback to predecessor)
+        (let ((w2 (near/predecessor_account_id)))
+          (p5-reg! w2))
+        (p5-reg! who))))
+
+(define (p5-reg! who)
+  (let ((k (str-cat "6|REG:" who)))
+    (if (nil? (near/load-bytes k))
+        (begin (p5-put k "1") (str-cat "reg-ok:" who))
+        (str-cat "reg-ok:" who))))
+
 ;; op "claim" {"t"} — pay one owed token per receipt. Failure ⇒ p5-pay
 ;; "cx"/"cy" restores owed + escrow (single-leg reversal, C2a pattern).
 ;; Token is case-normalized ("X"/"Y" accepted — a live 2026-10-17 tx sent
@@ -1184,6 +1207,8 @@
   (let ((tkey (if (str= tok "y") "6|TOKY" "6|TOKX")))
   (let ((k (if (str= tok "y") "cy" "cx"))
         (v (p5-bz w)))
+    (if (nil? (near/load-bytes (str-cat "6|REG:" who)))
+        "not-registered"
     (if (= (li-cmp v "0") 0)
         "no-owed"
         (begin
@@ -1203,7 +1228,7 @@
                     (json-set "{}" "k" k) "r" who) "o" v)
                     "w" w) "e" e)
                   "0" 5000000000000))
-              "claim-sent")))))))))
+              "claim-sent"))))))))))
 
 (define (p5-claim)
   (let ((who (near/predecessor_account_id)))
@@ -1384,10 +1409,11 @@
     (if (str= op "escrow") (p5-escrow)
     (if (str= op "state") (p5-state)
     (if (str= op "fg") (p5-fg)
+    (if (str= op "reg") (p5-register)
     (if (str= op "owed") (p5-owed)
     (if (str= op "positions") (p5-positions)
     (if (str= op "g") (p5-G (str->num (json-get-str "i" (near/input))))
-        "unknown-op")))))))))))))))))))
+        "unknown-op"))))))))))))))))))))
 
 (export "_run" p5-run)
 (export "ft_on_transfer" p5-on-transfer)

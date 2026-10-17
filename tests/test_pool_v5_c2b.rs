@@ -300,6 +300,13 @@ fn pool_v5_c2b_mint_burn_custody() {
         "liquidity burned"
     );
 
+    // ── reg gate: alice self-registers (claims are gated since 2026-10-17;
+    // an unregistered claimer gets "not-registered" with owed untouched) ──
+    assert_eq!(
+        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"reg\"}", "alice.tst")),
+        "reg-ok:alice.tst"
+    );
+
     // ── claim X: happy path pays the owed slice ──
     assert_eq!(
         m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"claim\",\"t\":\"x\"}", "alice.tst")),
@@ -491,6 +498,14 @@ fn pool_v5_c2b_partial_burn_outsized_lq() {
         (D1 - D2).to_string(),
         "residue intact - this read used to trap the shrink probe"
     );
+
+    // ── reg gate for this fixture's claimer ──
+    assert!(m
+        .ret(&m.cross("pool.tst", "_run", "{\"op\":\"reg\"}", "alice.tst"))
+        .starts_with("reg-ok:"));
+    assert!(m
+        .ret(&m.cross("pool.tst", "_run", "{\"op\":\"reg\"}", "bob.tst"))
+        .starts_with("reg-ok:"));
 
     // claims pay the partial-burn slice
     assert_eq!(

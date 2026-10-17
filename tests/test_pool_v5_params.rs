@@ -328,6 +328,28 @@ fn pool_v5_params_and_views() {
         "P4: burned band drops out, live band remains"
     );
 
+    // ── reg gate (claims are gated): unregistered ⇒ refused, owed intact ──
+    assert_eq!(
+        m.ret(&m.pool_op("{\"op\":\"claim\",\"t\":\"x\"}")),
+        "not-registered",
+        "unregistered claimer refused (owner account never registered)"
+    );
+    assert_eq!(
+        m.ret(&m.pool_op(&format!("{{\"op\":\"owed\",\"who\":\"alice.tst\"}}"))),
+        format!("owed:{owx}:{owy}"),
+        "refusal left owed untouched"
+    );
+    assert_eq!(
+        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"reg\"}", "alice.tst")),
+        "reg-ok:alice.tst",
+        "self-registration"
+    );
+    // double reg is a no-op (idempotent)
+    assert_eq!(
+        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"reg\"}", "alice.tst")),
+        "reg-ok:alice.tst"
+    );
+
     // ── claim pays out; owed view returns to zero ──
     let cx = m.ret(&m.cross(
         "pool.tst",
