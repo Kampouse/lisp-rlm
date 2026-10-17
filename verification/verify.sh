@@ -82,6 +82,10 @@ verify semantics/lisp_ir/LispIR.CompilerSpec4.fst
 verify semantics/lisp_ir/LispIR.CompilerCorrectness.fst
 verify_split semantics/lisp_ir/LispIR.PerExpr3.fst
 
+# Layer 4b: CLMM kernel arithmetic laws (no lisp-ir deps; pos two64, op_Multiply house style)
+echo "--- Layer 4b: CLMM arithmetic ---"
+verify clmm/CLMM.Fee.fst
+
 # Layer 5: Tests
 echo "--- Layer 5: Tests ---"
 for f in tests/*.fst; do
