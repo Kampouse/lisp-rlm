@@ -2,8 +2,8 @@
 # Verify all F* modules for lisp-rlm in dependency order
 set -e
 FSTAR=/Users/asil/.opam/fstar/bin/fstar.exe
-FSTAR_FLAGS="-c --include semantics/lisp --include semantics/lisp_ir --include tests --split_queries always"
-FSTAR_FLAGS_SPLIT="-c --include semantics/lisp --include semantics/lisp_ir --include tests --fuel 16 --ifuel 4 --split_queries always"
+FSTAR_FLAGS="-c --include semantics/lisp --include semantics/lisp_ir --include tests --include clmm --split_queries always"
+FSTAR_FLAGS_SPLIT="-c --include semantics/lisp --include semantics/lisp_ir --include tests --include clmm --fuel 16 --ifuel 4 --split_queries always"
 
 PASS=0
 FAIL=0
@@ -85,6 +85,7 @@ verify_split semantics/lisp_ir/LispIR.PerExpr3.fst
 # Layer 4b: CLMM kernel arithmetic laws (no lisp-ir deps; pos two64, op_Multiply house style)
 echo "--- Layer 4b: CLMM arithmetic ---"
 verify clmm/CLMM.Fee.fst
+verify clmm/CLMM.Walk.fst
 
 # Layer 5: Tests
 echo "--- Layer 5: Tests ---"
