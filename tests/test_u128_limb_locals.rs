@@ -145,8 +145,8 @@ fn run(method: &str, args: &str) -> (String, bool) {
         .expect("near-mock spawn");
     let all = format!(
         "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+        normalize_num(&String::from_utf8_lossy(&out.stdout)),
+        normalize_num(&String::from_utf8_lossy(&out.stderr))
     );
     let val = all
         .lines()
@@ -291,4 +291,27 @@ fn zz_print_gas_actuals() {
     // informational: fib limb-locals gas (asserted < 0.5 in the test above)
     let (v, _) = run("fib", "{}");
     eprintln!("FIB185_ACTUAL: {v}");
+}
+
+/// The near-mock's \u{1f4c4} printer comma-groups digit runs (human_num,
+/// 7d2b3cb1). Strip the grouping so asserts written against raw digits keep
+/// working. Commas inside non-digit contexts are preserved.
+fn normalize_num(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b',' {
+            let before = out.as_bytes().last().map_or(false, |c| c.is_ascii_digit());
+            let after = bytes.get(i + 1).map_or(false, |c| c.is_ascii_digit());
+            if before && after {
+                i += 1;
+                continue;
+            }
+        }
+        let ch = s[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }

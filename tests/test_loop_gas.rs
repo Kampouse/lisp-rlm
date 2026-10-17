@@ -125,18 +125,30 @@ fn run(method: &str, args: &str) -> Out {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+    // mock formats big numbers with ',' and gas as "N.NN Tgas burnt"
+    // (no "gas:" prefix) — strip commas, take the first whitespace token
     let value = all
         .lines()
         .rev()
-        .find(|l| l.contains('📄'))
-        .unwrap_or(&all)
-        .to_string();
+        .find(|l| l.contains('\u{1f4c4}'))
+        .map(|l| l.replace(",", ""))
+        .unwrap_or_else(|| all.clone());
     let gas = all
         .lines()
         .find(|l| l.contains("Tgas burnt"))
         .and_then(|l| l.split("gas:").nth(1))
         .and_then(|g| g.split("Tgas").next())
         .and_then(|g| g.trim().parse::<f64>().ok())
+        .or_else(|| {
+            all.lines()
+                .find(|l| l.contains("Tgas burnt"))
+                .and_then(|l| {
+                    l.split_whitespace()
+                        .find(|t| t.contains("Tgas"))
+                        .map(|t| t.replace("Tgas", ""))
+                })
+                .and_then(|t| t.trim().parse::<f64>().ok())
+        })
         .unwrap_or(0.0);
     Out { value, gas }
 }
@@ -295,7 +307,7 @@ export function thr(v: string): string {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        let val = all.lines().rev().find(|l| l.contains('📄')).unwrap_or(&all);
+        let val = all.lines().rev().find(|l| l.contains('\u{1f4c4}')).unwrap_or(&all);
         assert!(val.contains(want), "thr({v}): {val}");
     }
 }
@@ -344,7 +356,7 @@ export function mutatingLoopKeepsSemantics(): string {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        let val = all.lines().rev().find(|l| l.contains('📄')).unwrap_or(&all);
+        let val = all.lines().rev().find(|l| l.contains('\u{1f4c4}')).unwrap_or(&all);
         assert!(val.contains(want), "{m}: {val}");
     }
 }

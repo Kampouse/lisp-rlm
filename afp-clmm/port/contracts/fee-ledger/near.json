@@ -1,0 +1,7 @@
+{
+ "name": "fee-ledger",
+ "src": "src/main.lisp",
+ "account": "fl.clmm.test.near",
+ "network": "local",
+ "output": "target/fee-ledger.wasm"
+}

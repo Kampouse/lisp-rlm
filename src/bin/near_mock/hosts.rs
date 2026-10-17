@@ -452,8 +452,9 @@ pub(crate) fn build_env_linker(
                     }
                 } else {
                     htrace!(
-                        "  → storage_read not found [{}]",
-                        String::from_utf8_lossy(key)
+                        "  → storage_read not found [{}] hex={:02x?}",
+                        String::from_utf8_lossy(key),
+                        &key[..key.len().min(16)]
                     );
                     // production charges the read base + trie walk even on
                     // miss; guest key was still read → read_memory too

@@ -22,8 +22,27 @@ escrow:           ## escrow leg: regenerate twins, compile, scenarios + mutation
 	cd scenarios/ts/lp-keyed && rm -f state.bin && $(NM) scenario s.json
 	python3 proof/mutate_escrow.py
 
+accrual:          ## accrual leg: regenerate twins, compile, fixture-wired scenarios
+	python3 generators/gen_accrual.py
+	python3 generators/gen_accrual_vectors.py
+	cd contracts/accrual/accrual && $(NC) build .
+	cd contracts/accrual/accrual/ts && $(NC) build .
+	cd scenarios/lisp/accrual-smoke && rm -f state.bin && $(NM) scenario s.json
+	cd scenarios/ts/accrual-ts && rm -f state.bin && $(NM) scenario s.json
+
 build-ts:         ## compile all TS twins (13 pool twins + escrow-ts)
 	python3 generators/build_ts.py
+
+accrual-mount:    ## fee-ledger mount harness (PS accumulator, skim+solvency pins)
+	cd contracts/accrual-mount && python3 gen_scenario.py
+	cd contracts/accrual-mount && $(NC) build .
+	cd scenarios/lisp/accrual-mount && rm -f state.bin && $(NM) scenario s.json
+
+accrual-mount-v4: ## fee-ledger mount WIRED into clmm_pool_v4 (H1-H4, real FT legs)
+	cd contracts/accrual-mount && python3 gen_accrual_v4.py
+	cd contracts/accrual-mount && $(NC) build v4-pool
+	cd contracts/escrow/ft && $(NC) build .
+	cd scenarios/lisp/accrual-mount-v4 && rm -f state.bin && $(NM) scenario s.json
 
 regenerate:       ## regenerate lisp contracts + TS twins from constants
 	python3 generators/gen.py && python3 generators/gen3.py && python3 generators/gen_ts.py && python3 generators/gen_escrow.py

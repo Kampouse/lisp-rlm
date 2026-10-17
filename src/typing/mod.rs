@@ -1,6 +1,7 @@
 pub mod checker;
 pub mod gas_fill;
 pub mod probe;
+pub mod storage_prov;
 pub mod types;
 
 pub use checker::check_pure_block;

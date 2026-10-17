@@ -1,0 +1,7 @@
+{
+ "name": "v4pool",
+ "src": "src/main.built.lisp",
+ "account": "pool.accrual.test.near",
+ "network": "local",
+ "output": "target/v4pool.wasm"
+}

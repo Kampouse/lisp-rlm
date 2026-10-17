@@ -44,7 +44,7 @@ fees · **4** = N-pool composition (generalization).
 ## The escrow leg (`make escrow`)
 
 The platform layer under the pools, ported from
-`afp-clmm/escrow/CLMM_Escrow.thy` (strict Isabelle: `reachable_conservation`
+`afp-clmm/proof/CLMM_Escrow.thy` (strict Isabelle: `reachable_conservation`
 — after every reachable step `Σ e:bal:* + e:reserve = e:in − e:out`, no
 hypotheses). One generator (`generators/gen_escrow.py`) emits BOTH twins
 from a single op table transcribed 1:1 from the theory's `apply_op` —

@@ -72,18 +72,17 @@ fn test_json_extract_compiles() {
 //
 // 2026-10-07: these used to shell out to ./target/debug/near-compile — a
 // binary that never existed (the near compiler is `compile`), so all three
-// were permanently red on a clean checkout. Fixed: resolve the binary from
-// CARGO_TARGET_DIR when set (non-default target dir), else ./target — the
-// same contract tests/test_compile_cli.rs::bin() now follows.
+// were permanently red on a clean checkout.
+// 2026-10-16: the follow-up manual target_debug() join broke the same way
+// under `cargo test --release` (release runs never build target/debug/compile,
+// so the probe was red on any release-only checkout). Switched to the
+// canonical TASK-DX-AGREE item-4 contract: CARGO_BIN_EXE_<name> always
+// points at the bin cargo built for THIS test run — same fix pattern as
+// tests/test_compile_cli.rs::bin().
 //
 // 2-arg json-get pins live in tests/differential.rs (both engines must
 // agree) — arg order unified 2026-10-07: (json-get <json> "key").
 use std::process::Command;
-
-fn target_debug() -> std::path::PathBuf {
-    let dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "./target".into());
-    std::path::PathBuf::from(dir).join("debug")
-}
 
 fn near_json_probe(body: &str, args_json: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -93,7 +92,7 @@ fn near_json_probe(body: &str, args_json: &str) -> String {
     let wasm = format!("/tmp/__json_probe_{id}.wasm");
     let src = format!("(define (run x) {})\n", body);
     std::fs::write(&lisp, &src).unwrap();
-    let out = Command::new(target_debug().join("compile"))
+    let out = Command::new(env!("CARGO_BIN_EXE_compile"))
         .args([&lisp, "-o", &wasm])
         .output()
         .expect("compile (build it: cargo build --bin compile --bin near-mock)");
@@ -102,7 +101,7 @@ fn near_json_probe(body: &str, args_json: &str) -> String {
         "compile failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let out = Command::new(target_debug().join("near-mock"))
+    let out = Command::new(env!("CARGO_BIN_EXE_near-mock"))
         .args([&wasm, "_run", args_json])
         .output()
         .expect("near-mock (build it: cargo build --bin compile --bin near-mock)");

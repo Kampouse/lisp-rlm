@@ -433,6 +433,19 @@ impl WasmEmitter {
             }
             "if" => {
                 let mut v = Vec::new();
+                // if: HARD ARITY CAP (2026-10-15) — mirrors infer_if in the type
+                // checker. The emitter reads at most (cond then else); a misplaced
+                // close-paren that mis-nests a let*/begin body under the if lands
+                // here with extra args, which were SILENTLY DROPPED — flipping which
+                // arm runs while the code still compiles (the CLMM v5 swap-arc bug
+                // class). Fail loudly instead.
+                if a.len() > 3 {
+                    return Err(format!(
+                        "if: expected (if cond then [else]), got {} positional forms — \
+                         a misplaced ')' likely nested extra forms under the if",
+                        a.len()
+                    ));
+                }
                 // cond fast path (2026-09-14, gas): numeric comparison conds
                 // branch directly on the raw i32 — skip the Bool re-tag +
                 // truthiness dispatch (same rationale as the while fast path)
@@ -1096,7 +1109,28 @@ impl WasmEmitter {
                 // assignments must be all-numeric for the fast path to be
                 // sound — a non-numeric assignment demotes it
                 let val_is_num = self.expr_is_numeric(&a[1]);
-                let mut v = self.expr(&a[1])?;
+                // Value-define demotion (2026-10-15, exec-a b58 probes): the
+                // first `set!` on a top-level `let` materializes it as a
+                // function local — but that used to happen AFTER the RHS was
+                // emitted, so a self-referencing RHS (`C = C + 1`) read the
+                // name while neither the local nor the define's read path
+                // could see it → "undefined variable 'C'". Fix: demote
+                // BEFORE the RHS, seeding the local from the define's value
+                // (matches the interpreter's letrec binding — the memoized
+                // define call yields the initialized value).
+                let demoted_define = self.locals.get(n).is_none()
+                    && !self.captured_map.contains_key(n)
+                    && !self.limb_slots.contains_key(n)
+                    && self.value_defines.contains(n);
+                let idx = self.local_idx(n);
+                let mut v = Vec::new();
+                if demoted_define {
+                    if let Some(pos) = self.funcs.iter().position(|f| &f.name == n) {
+                        v.push(Instruction::Call(USER_BASE | pos as u32));
+                        v.push(Instruction::LocalSet(idx));
+                    }
+                }
+                v.extend(self.expr(&a[1])?);
                 if let Some(&offset) = self.captured_map.get(n) {
                     // Captured variable — write back to closure heap slot
                     // so mutations are visible across calls and shared references.
@@ -1116,7 +1150,6 @@ impl WasmEmitter {
                     };
                     v.push(Instruction::I64Store(ma));
                 } else {
-                    let idx = self.local_idx(n);
                     v.push(Instruction::LocalSet(idx));
                     if val_is_num {
                         self.numeric_locals.insert(n.clone());

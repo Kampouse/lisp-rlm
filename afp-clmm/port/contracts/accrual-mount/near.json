@@ -1,0 +1,7 @@
+{
+ "name": "acm",
+ "src": "src/main.built.lisp",
+ "account": "acm.test.near",
+ "network": "local",
+ "output": "target/acm.wasm"
+}

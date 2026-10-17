@@ -2,6 +2,52 @@ theory Aggregate_Accrual
   imports Aggregate_Book
 begin
 
+section \<open>Fixed-point division helpers (64-bit scale)\<close>
+
+text \<open>Every truncating division in the fee layers goes through one of
+these two helpers. The floor form is for owed/capacity quantities
+(rounding down can only charge less); the ceil form is for
+usage/debit quantities (fail-closed: rounding up can only charge
+more, never less). The 2^64 denominator is baked in here so all
+layers share one scale constant -- the same-literal-everywhere
+discipline that keeps fixed-point contracts consistent.\<close>
+
+definition div_floor64 :: "nat \<Rightarrow> nat" where
+  "div_floor64 x = x div 2^64"
+
+definition div_ceil64 :: "nat \<Rightarrow> nat" where
+  "div_ceil64 x = (x + 2^64 - 1) div 2^64"
+
+lemma div_floor64_eq:
+  "div_floor64 x = x div 2^64"
+  by (simp add: div_floor64_def)
+
+lemma div_ceil64_eq:
+  "div_ceil64 x = (x + 2^64 - 1) div 2^64"
+  by (simp add: div_ceil64_def)
+
+text \<open>Direction laws: floor never exceeds, ceil never falls short.\<close>
+
+lemma div_floor64_le_mult:
+  "div_floor64 x * 2^64 \<le> x"
+proof -
+  have dm: "x = div_floor64 x * 2^64 + x mod 2^64"
+    by (simp add: div_floor64_def div_mult_mod_eq)
+  have lt: "x mod 2^64 < 2^64" by simp
+  show "div_floor64 x * 2^64 \<le> x" using dm lt by arith
+qed
+
+lemma div_ceil64_ge_mult:
+  "x \<le> div_ceil64 x * 2^64"
+proof -
+  have dm: "(x + 2^64 - 1) div 2^64 * 2^64
+      + (x + 2^64 - 1) mod 2^64 = x + 2^64 - 1"
+    by (rule div_mult_mod_eq)
+  have lt: "(x + 2^64 - 1) mod 2^64 < 2^64" by simp
+  show "x \<le> div_ceil64 x * 2^64"
+    unfolding div_ceil64_def using dm lt by arith
+qed
+
 section \<open>Fee-growth accrual within the charged aggregate book\<close>
 
 text \<open>Gap-1 bridge (layer 1 meets layer 2): per-position OWED is the

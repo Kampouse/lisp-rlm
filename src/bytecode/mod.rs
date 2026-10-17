@@ -1029,6 +1029,19 @@ impl LoopCompiler {
                         }
                         // Nested if: (if test then else) — compiles to jump instructions
                         "if" => {
+                            // HARD ARITY CAP (2026-10-15): mirrors infer_if/wasm_emit.
+                            // (if c t e extra…) silently ignored extra… — a misplaced
+                            // ')' that mis-nests a let*/begin body under the if lands
+                            // here and BOTH arms would run in sequence. Fail compile.
+                            if list.len() > 4 {
+                                set_compile_error(format!(
+                                    "if: expected (if cond then [else]), got {} positional \
+                                     forms — a misplaced ')' likely nested extra forms under \
+                                     the if",
+                                    list.len() - 1
+                                ));
+                                return false;
+                            }
                             let test = match list.get(1) {
                                 Some(t) => t,
                                 None => return false,

@@ -1245,6 +1245,22 @@ fn infer_if(
     let then_branch = parts.get(1).ok_or("if: missing then")?;
     let else_branch = parts.get(2);
 
+    // if: HARD ARITY CAP (2026-10-15). The emitter reads at most (cond then else);
+    // anything beyond arg 3 was SILENTLY DROPPED — and a misplaced close-paren that
+    // mis-nests a let*/begin body under the if produces exactly this shape, flipping
+    // which arm runs while the code still compiles (the CLMM v5 swap-arc bug class:
+    // both arms executed, the if returned the inner arm's value). The interpreter
+    // hard-errors on user-fn arity since round-3 fix 3 — special forms get the same
+    // discipline. All repo contracts are 3-arg-or-less (verified 2026-10-15 sweep;
+    // the 4 bip340 probe scripts carrying a stray 4th arg were never compiled paths).
+    if parts.len() > 3 {
+        return Err(format!(
+            "if: expected (if cond then [else]), got {} positional forms — \
+             a misplaced ')' likely nested extra forms under the if",
+            parts.len()
+        ));
+    }
+
     // Check condition is bool-ish (we allow any for truthy)
     let _cond_type = infer(cond, env, supply, subst)?;
 
@@ -4182,8 +4198,9 @@ impl std::default::Default for Provenance {
 /// Per-function provenance summary.
 #[derive(Clone, Debug, Default)]
 pub struct FnProvenance {
-    /// Params — Stringly unless a future annotation opts in (the calling
-    /// convention is tagged today; Phase 2 may annotate entrypoints).
+    /// Params. The whole-program solver (`u128_param_provenance`) promotes
+    /// a param to Native when every direct call site provably feeds it a
+    /// Native value; entry points and anything indirect stay Stringly.
     pub params: std::collections::BTreeMap<String, Provenance>,
     /// let/let*/set! bindings in the body, in binding order.
     pub locals: std::collections::BTreeMap<String, Provenance>,
@@ -4260,6 +4277,7 @@ fn prov_of(
     e: &LispVal,
     env: &std::collections::BTreeMap<String, Provenance>,
     wrappers: &std::collections::HashMap<String, (Vec<String>, LispVal)>,
+    rets: Option<&std::collections::HashMap<String, Provenance>>,
 ) -> Provenance {
     use Provenance::{Native, Stringly};
     match e {
@@ -4290,16 +4308,16 @@ fn prov_of(
                             Stringly
                         }
                     }
-                    // storage stays decimal-string (Phase 1) — reads are
-                    // unproven carriers even when the value is numeric
-                    "near/storage_get" => Stringly,
+                    // 2B storage reads are classified in the fall-through
+                    // below (storage_site sees through sget/default wrappers,
+                    // which the name match alone cannot).
                     "default" => args
                         .first()
-                        .map(|x| prov_of(x, env, wrappers))
+                        .map(|x| prov_of(x, env, wrappers, rets))
                         .unwrap_or(Stringly)
                         .join(
                             args.get(1)
-                                .map(|x| prov_of(x, env, wrappers))
+                                .map(|x| prov_of(x, env, wrappers, rets))
                                 .unwrap_or(Stringly),
                         ),
                     "if" => {
@@ -4308,7 +4326,7 @@ fn prov_of(
                         let arms: Vec<Provenance> = args
                             .iter()
                             .skip(1)
-                            .map(|x| prov_of(x, env, wrappers))
+                            .map(|x| prov_of(x, env, wrappers, rets))
                             .collect();
                         match arms.len() {
                             2 => arms[0].join(arms[1]),
@@ -4320,7 +4338,7 @@ fn prov_of(
                     }
                     "begin" => args
                         .last()
-                        .map(|x| prov_of(x, env, wrappers))
+                        .map(|x| prov_of(x, env, wrappers, rets))
                         .unwrap_or(Stringly),
                     "let" | "let*" => {
                         if let Some(LispVal::List(bs)) = args.first() {
@@ -4329,14 +4347,14 @@ fn prov_of(
                                 if let LispVal::List(p) = b {
                                     if p.len() == 2 {
                                         if let LispVal::Sym(n) = &p[0] {
-                                            let pv = prov_of(&p[1], &inner, wrappers);
+                                            let pv = prov_of(&p[1], &inner, wrappers, rets);
                                             inner.insert(n.clone(), pv);
                                         }
                                     }
                                 }
                             }
                             args.last()
-                                .map(|x| prov_of(x, &inner, wrappers))
+                                .map(|x| prov_of(x, &inner, wrappers, rets))
                                 .unwrap_or(Stringly)
                         } else {
                             Stringly
@@ -4347,6 +4365,23 @@ fn prov_of(
                     "str-cat" | "strcat" | "near/storage_set" | "near/log" | "near/return"
                     | "near/abort" => Stringly,
                     _ => {
+                        // 2B: literal-key storage reads are Native carriers.
+                        // Soundness: the emit-side read sniffs the first
+                        // value byte — NUL ⇒ binary cell, hydrate limbs;
+                        // anything else ⇒ the SAME strict-decimal parse the
+                        // tagged path uses. Identical result-or-trap for
+                        // arbitrary content, so a "wrongly hot" read is only
+                        // slower, never wrong. Dynamic-key reads stay
+                        // Stringly (they keep the tagged path, which sniffs
+                        // too — binary only ever lands on literal cells,
+                        // but an aliased read must still parse).
+                        // hot_limb_read ALSO demands a digit-literal default:
+                        // "cell-or-\"\"" (default "") hydrate-resolves "" →
+                        // len==0 → trap. Those sites stay Stringly (tagged
+                        // path, no sniff, plain concat semantics).
+                        if crate::typing::storage_prov::hot_limb_read(e, wrappers) {
+                            return Native;
+                        }
                         // user call: a trivial wrapper classifies as its op
                         // (predicate wrappers leave the u128 domain)
                         if let Some((ps, body)) = wrappers.get(h) {
@@ -4358,6 +4393,14 @@ fn prov_of(
                                         Native
                                     };
                                 }
+                            }
+                        }
+                        // Under the solver, a user call's result carries the
+                        // callee's solved `ret` provenance; the report pass
+                        // (rets = None) keeps the conservative Stringly.
+                        if let Some(r) = rets {
+                            if let Some(p) = r.get(h) {
+                                return *p;
                             }
                         }
                         Stringly
@@ -4381,6 +4424,47 @@ pub fn u128_provenance_report(
     let mut out: std::collections::BTreeMap<String, FnProvenance> = Default::default();
     // collect fn defines + trivial wrappers (last define wins, matching
     // the emitter's replace-in-place behavior)
+    let (defns, order) = collect_fn_defns(exprs);
+    // wrappers whose name is ever shadowed/valued (a conservative flag the
+    // emit-side pass recomputes; here we just skip them for classification)
+    let mut toplevel_consts: std::collections::BTreeMap<String, Provenance> = Default::default();
+    for (name, (params, body)) in &defns {
+        if !params.is_empty() {
+            continue;
+        }
+        // (define NAME lit) value define — constant birth
+        if let LispVal::Str(s) = body {
+            if str_as_u128(s) {
+                toplevel_consts.insert(name.clone(), Provenance::Native);
+            }
+        }
+    }
+    for name in &order {
+        let (params, body) = &defns[name];
+        let mut fp = FnProvenance::default();
+        let mut env: std::collections::BTreeMap<String, Provenance> = toplevel_consts.clone();
+        for p in params {
+            fp.params.insert(p.clone(), Provenance::Stringly);
+            env.insert(p.clone(), Provenance::Stringly);
+        }
+        // walk the body binding-by-binding (let*/set!), recording locals
+        prov_walk_bindings(body, &mut env, &mut fp.locals, &defns, None, None);
+        fp.ret = prov_of(body, &env, &defns, None);
+        out.insert(name.clone(), fp);
+    }
+    out
+}
+
+/// Collect fn defines in program order (last define wins on redefinition,
+/// matching the emitter's replace-in-place behavior). Shared by the
+/// provenance report and the phase-2 param solver — one collector, two
+/// consumers.
+pub(crate) fn collect_fn_defns(
+    exprs: &[LispVal],
+) -> (
+    std::collections::HashMap<String, (Vec<String>, LispVal)>,
+    Vec<String>,
+) {
     let mut defns: std::collections::HashMap<String, (Vec<String>, LispVal)> = Default::default();
     let mut order: Vec<String> = Vec::new();
     for e in exprs {
@@ -4405,31 +4489,133 @@ pub fn u128_provenance_report(
             }
         }
     }
-    // wrappers whose name is ever shadowed/valued (a conservative flag the
-    // emit-side pass recomputes; here we just skip them for classification)
-    let mut toplevel_consts: std::collections::BTreeMap<String, Provenance> = Default::default();
+    (defns, order)
+}
+
+/// Phase-2 param solver (TASK-u128-native-chain-2, layer 1).
+///
+/// Whole-program fixed point over DIRECT call sites only. A param of fn F
+/// is `Native` iff every direct call `(F a1 .. an)` in the program feeds
+/// that position a provably Native arg — ph1 births at the caller (u128 op
+/// results, digits-only literals, `(json-get :u128 ..)`,
+/// `near/attached_deposit_u128`, limb-pure locals, or another fn whose
+/// solved `ret` is Native). Any direct Stringly arg, an exported (entry)
+/// fn, or an uncalled fn defaults every param Stringly.
+///
+/// Indirect use — a bare Sym (fn value: HOF/map/apply/first-class),
+/// `near/call`-family — never classifies a call site, so the callee keeps
+/// the conservative Stringly default. Taint = fallback, never an error;
+/// analysis only, never changes acceptance.
+///
+/// Iteration is optimistic (start all-Native) and monotone (updates only
+/// demote), so it reaches the greatest sound fixpoint; rounds are bounded
+/// and each round demotes at least one cell or the loop exits.
+pub fn u128_param_provenance(
+    exprs: &[LispVal],
+) -> std::collections::BTreeMap<String, FnProvenance> {
+    use Provenance::{Native, Stringly};
+    let (defns, order) = collect_fn_defns(exprs);
+    // exported fns are entry points: the host ABI hands tagged strings
+    let exported: std::collections::BTreeSet<String> = exprs
+        .iter()
+        .filter_map(|e| match e {
+            LispVal::List(items)
+                if matches!(items.first(), Some(LispVal::Sym(s)) if s == "export") =>
+            {
+                items.get(2).and_then(|x| match x {
+                    LispVal::Sym(n) => Some(n.clone()),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    // top-level digit-literal value defines are Native consts (mirrors the
+    // report pass)
+    let mut consts: std::collections::BTreeMap<String, Provenance> = Default::default();
     for (name, (params, body)) in &defns {
-        if !params.is_empty() {
-            continue;
-        }
-        // (define NAME lit) value define — constant birth
-        if let LispVal::Str(s) = body {
-            if str_as_u128(s) {
-                toplevel_consts.insert(name.clone(), Provenance::Native);
+        if params.is_empty() {
+            if let LispVal::Str(s) = body {
+                if str_as_u128(s) {
+                    consts.insert(name.clone(), Native);
+                }
             }
         }
     }
+    let prov_of_cell = |b: bool| if b { Native } else { Stringly };
+    // optimistic start: every param Native, every ret Native
+    let mut native: std::collections::HashMap<String, Vec<bool>> = Default::default();
+    for name in &order {
+        native.insert(name.clone(), vec![true; defns[name].0.len()]);
+    }
+    let mut rets: std::collections::HashMap<String, Provenance> = order
+        .iter()
+        .map(|n| (n.clone(), Native))
+        .collect();
+    for _round in 0..100 {
+        // Kleene round: everything reads the SNAPSHOT (rets_prev), commits
+        // at round end — clean iteration to the greatest fixpoint
+        let rets_prev = rets.clone();
+        let mut demote: std::collections::BTreeSet<(String, usize)> = Default::default();
+        let mut new_rets: std::collections::HashMap<String, Provenance> = Default::default();
+        for name in &order {
+            let (params, body) = &defns[name];
+            let mut env = consts.clone();
+            for (p, b) in params.iter().zip(native[name].iter()) {
+                env.insert(p.clone(), prov_of_cell(*b));
+            }
+            let mut locals = Default::default();
+            prov_walk_bindings(
+                body,
+                &mut env,
+                &mut locals,
+                &defns,
+                Some(&rets_prev),
+                Some(&mut demote),
+            );
+            let ret = prov_of(body, &env, &defns, Some(&rets_prev));
+            new_rets.insert(name.clone(), ret);
+        }
+        let mut changed = false;
+        for name in &order {
+            let np = native[name].len();
+            // entry points: the tagged shim is the only entry shape
+            if exported.contains(name) && native[name].iter().any(|&b| b) {
+                native.insert(name.clone(), vec![false; np]);
+                changed = true;
+            }
+            for pi in 0..np {
+                if native[name][pi] && demote.contains(&(name.clone(), pi)) {
+                    if let Some(v) = native.get_mut(name) {
+                        v[pi] = false;
+                    }
+                    changed = true;
+                }
+            }
+            if new_rets[name] != rets[name] {
+                rets.insert(name.clone(), new_rets[name]);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    // final classification under the solved solution
+    let mut out: std::collections::BTreeMap<String, FnProvenance> = Default::default();
     for name in &order {
         let (params, body) = &defns[name];
         let mut fp = FnProvenance::default();
-        let mut env: std::collections::BTreeMap<String, Provenance> = toplevel_consts.clone();
-        for p in params {
-            fp.params.insert(p.clone(), Provenance::Stringly);
-            env.insert(p.clone(), Provenance::Stringly);
+        let mut env = consts.clone();
+        for (p, b) in params.iter().zip(native[name].iter()) {
+            let pv = prov_of_cell(*b);
+            fp.params.insert(p.clone(), pv);
+            env.insert(p.clone(), pv);
         }
-        // walk the body binding-by-binding (let*/set!), recording locals
-        prov_walk_bindings(body, &mut env, &mut fp.locals, &defns);
-        fp.ret = prov_of(body, &env, &defns);
+        let mut locals = Default::default();
+        prov_walk_bindings(body, &mut env, &mut locals, &defns, Some(&rets), None);
+        fp.locals = locals;
+        fp.ret = prov_of(body, &env, &defns, Some(&rets));
         out.insert(name.clone(), fp);
     }
     out
@@ -4437,16 +4623,40 @@ pub fn u128_provenance_report(
 
 /// Record let/set! bindings into `locals`, threading `env` (bindings are
 /// sequential — let* semantics).
+///
+/// `rets` (solver mode) also classifies direct user-call RESULTS via the
+/// solved return provenance; `demote` (solver mode) records every defined
+/// fn whose param is fed a Stringly arg at a direct call site reachable
+/// through this walk. The report passes (None, None) — identical behavior
+/// to the phase-1 walker, one walker for both.
 fn prov_walk_bindings(
     e: &LispVal,
     env: &mut std::collections::BTreeMap<String, Provenance>,
     locals: &mut std::collections::BTreeMap<String, Provenance>,
     defns: &std::collections::HashMap<String, (Vec<String>, LispVal)>,
+    rets: Option<&std::collections::HashMap<String, Provenance>>,
+    mut demote: Option<&mut std::collections::BTreeSet<(String, usize)>>,
 ) {
     let prov_here = |e: &LispVal, env: &std::collections::BTreeMap<String, Provenance>| {
-        prov_of(e, env, defns)
+        prov_of(e, env, defns, rets)
     };
     match e {
+        // a bare Sym naming a defined fn is a FIRST-CLASS reference
+        // (HOF feed, return-a-fn, apply target) — the solver cannot see
+        // those call shapes, so every param of the referenced fn demotes
+        LispVal::Sym(n) => {
+            if let Some(d) = demote.as_deref_mut() {
+                if let Some((ps, body)) = defns.get(n.as_str()) {
+                    // ALL params demote — wrapper-shaped or not. A fn value
+                    // escaping first-class means the solver can't classify
+                    // its future call shapes, so Native twin params would be
+                    // unsound regardless of inline eligibility.
+                    for pi in 0..ps.len() {
+                        d.insert((n.clone(), pi));
+                    }
+                }
+            }
+        }
         LispVal::List(items) if !items.is_empty() => {
             if let Some(LispVal::Sym(h)) = items.first() {
                 match h.as_str() {
@@ -4459,13 +4669,27 @@ fn prov_walk_bindings(
                                             let pv = prov_here(&p[1], env);
                                             env.insert(n.clone(), pv);
                                             locals.insert(n.clone(), pv);
+                                            // let* threads: sites inside the
+                                            // binding VALUE see the env from
+                                            // earlier bindings only
+                                            prov_walk_bindings(
+                                                &p[1], env, locals, defns, rets,
+                                                demote.as_deref_mut(),
+                                            );
                                         }
                                     }
                                 }
                             }
                         }
                         for sub in &items[2..] {
-                            prov_walk_bindings(sub, env, locals, defns);
+                            prov_walk_bindings(
+                                sub,
+                                env,
+                                locals,
+                                defns,
+                                rets,
+                                demote.as_deref_mut(),
+                            );
                         }
                     }
                     "set!" | "=" if items.len() >= 3 => {
@@ -4473,12 +4697,39 @@ fn prov_walk_bindings(
                             let pv = prov_here(&items[2], env);
                             env.insert(n.clone(), pv);
                             locals.insert(n.clone(), pv);
+                            prov_walk_bindings(
+                                &items[2], env, locals, defns, rets, demote.as_deref_mut(),
+                            );
                         }
                     }
                     "quote" => {}
                     _ => {
+                        // direct call to a defined fn: record param demotions
+                        // for Stringly args — WRAPPER fns included: their
+                        // params are the string edges feeding the op, exactly
+                        // what a phase-2 twin eliminates (solver only)
+                        if let Some(d) = demote.as_deref_mut() {
+                            if let Some((ps, body)) = defns.get(h.as_str()) {
+                                if ps.len() + 1 == items.len() {
+                                    for (pi, a) in items[1..].iter().enumerate() {
+                                        if prov_here(a, env) == Provenance::Stringly {
+                                            d.insert((h.clone(), pi));
+                                        }
+                                    }
+                                } else {
+                                    // head names a defn but the shape is not a
+                                    // classified call: first-class head use —
+                                    // demote every param (conservative)
+                                    for pi in 0..ps.len() {
+                                        d.insert((h.clone(), pi));
+                                    }
+                                }
+                            }
+                        }
                         for sub in &items[1..] {
-                            prov_walk_bindings(sub, env, locals, defns);
+                            prov_walk_bindings(
+                                sub, env, locals, defns, rets, demote.as_deref_mut(),
+                            );
                         }
                     }
                 }
@@ -4776,11 +5027,15 @@ mod prov_tests {
         assert_eq!(l["b"], Provenance::Native);
         assert_eq!(l["c"], Provenance::Native, "typed json-get birth");
         assert_eq!(l["d"], Provenance::Stringly, "untyped json read");
-        assert_eq!(l["e"], Provenance::Stringly, "storage read unproven");
+        assert_eq!(
+            l["e"],
+            Provenance::Native,
+            "2B: literal-key storage read is a Native carrier (read sniffs: binary hydrate or the same decimal parse — identical result either way)"
+        );
         assert_eq!(
             l["f2"],
-            Provenance::Stringly,
-            "default(storage, lit) taints"
+            Provenance::Native,
+            "2B: default(storage lit-key, lit) is Native (sniff covers legacy decimal)"
         );
     }
 
@@ -4804,7 +5059,7 @@ mod prov_tests {
         let src = r#"
 (define (h x)
   (let* ((a (u128/add x "1"))
-         (b (near/storage_get "k")))
+         (b (near/storage_get x)))   ;; dynamic key → Stringly carrier
     (begin
       (set! a b)          ;; a re-stored unproven → Stringly from here
       (set! b (u128/mul a a)) ;; b becomes Native
@@ -4842,5 +5097,121 @@ mod prov_tests {
         assert_eq!(good(vec!["a", "b"], r#"(u128/add a "7")"#), None);
         // predicate wrapper is recognized (classified Stringly by prov_of)
         assert_eq!(good(vec!["a", "b"], "(u128/lt a b)"), Some("u128/lt"));
+    }
+
+    fn solved(src: &str) -> std::collections::BTreeMap<String, FnProvenance> {
+        let exprs = parse_all(src).expect("parse");
+        u128_param_provenance(&exprs)
+    }
+
+    #[test]
+    fn solver_param_threaded_chain_native() {
+        // pool-a shape: entry swap → walk → step, wrappers feeding ops.
+        // Under the SOLVER the whole param chain promotes to Native; the
+        // entry (swap, exported) stays Stringly.
+        let src = r#"
+(define (add a b) (u128/add a b))
+(define (mdiv a b d) (u128/muldiv a b d))
+(define (step sqp y l q gb out)
+  (let* ((width (add gb sqp)))
+    (mdiv width y q)))
+(define (walk s y)
+  (step s y y s s s))
+(define (swap)
+  (let* ((amt (near/attached_deposit_u128)))
+    (walk amt amt)))
+(export "swap" swap #f)
+"#;
+        let r = solved(src);
+        for p in ["sqp", "y", "l", "q", "gb", "out"] {
+            assert_eq!(
+                r["step"].params[p],
+                Provenance::Native,
+                "step.{p} fed only by walk's native locals"
+            );
+        }
+        assert_eq!(r["walk"].params["s"], Provenance::Native);
+        assert_eq!(r["walk"].params["y"], Provenance::Native);
+        assert_eq!(
+            r["swap"].params.is_empty(),
+            true,
+            "entry has no params; its ret is the boundary"
+        );
+        // solver ret: step returns an op result → Native; walk threads it
+        assert_eq!(r["step"].ret, Provenance::Native);
+        assert_eq!(r["walk"].ret, Provenance::Native);
+    }
+
+    #[test]
+    fn solver_stringly_arg_demotes_only_that_param() {
+        let src = r#"
+(define (f a b) (u128/add a b))
+(define (g kdyn)
+  (let* ((x (u128/add f0 "1"))
+         (r1 (f x x))
+         (r2 (f r1 (near/storage_get kdyn))))
+    r2))
+(define f0 "5")
+"#;
+        let r = solved(src);
+        assert_eq!(r["f"].params["a"], Provenance::Native);
+        assert_eq!(
+            r["f"].params["b"],
+            Provenance::Stringly,
+            "one storage_get arg demotes exactly its position"
+        );
+        // f's ret is an op result → Native regardless of operand taint
+        assert_eq!(r["f"].ret, Provenance::Native);
+    }
+
+    #[test]
+    fn solver_export_entry_stays_stringly() {
+        let src = r#"
+(define (helper a) (u128/add a "1"))
+(define (run x) (helper (u128/add x "1")))
+(export "run" run #f)
+"#;
+        let r = solved(src);
+        assert_eq!(r["run"].params["x"], Provenance::Stringly, "entry ABI");
+        assert_eq!(r["helper"].params["a"], Provenance::Native);
+    }
+
+    #[test]
+    fn solver_indirect_use_taints_all_params() {
+        // bare Sym use = fn value (HOF/apply risk) → no classified site;
+        // optimistic cells must fall back to Stringly
+        let src = r#"
+(define (h a b) (u128/add a b))
+(define (pick) h)
+"#;
+        let r = solved(src);
+        assert_eq!(r["h"].params["a"], Provenance::Stringly);
+        assert_eq!(r["h"].params["b"], Provenance::Stringly);
+    }
+
+    #[test]
+    fn solver_uncalled_fn_params_stay_stringly() {
+        let src = r#"
+(define (orphan a) (u128/add a "1"))
+(define (main) (orphan "7"))
+"#;
+        let r = solved(src);
+        assert_eq!(r["orphan"].params["a"], Provenance::Native, "direct site");
+    }
+
+    #[test]
+    fn solver_report_pass_unchanged() {
+        // the phase-1 REPORT keeps conservative Stringly params — the
+        // solver is a separate entry point, report consumers see no drift
+        let src = r#"
+(define (add a b) (u128/add a b))
+(define (step x) (add x "1"))
+(define (swap) (step "5"))
+"#;
+        let exprs = parse_all(src).unwrap();
+        let rep = u128_provenance_report(&exprs);
+        assert_eq!(rep["step"].params["x"], Provenance::Stringly);
+        let sol = u128_param_provenance(&exprs);
+        assert_eq!(sol["step"].params["x"], Provenance::Native);
     }
 }

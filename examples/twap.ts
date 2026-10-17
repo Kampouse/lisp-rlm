@@ -51,22 +51,36 @@ function executorOf(id: string): string {
   return near.storageGet(id + "|ex") ?? "";
 }
 
+// ── call shapes — typed interface params. Optional string props lower
+// to nil-on-miss near/json_get_str, so the `?? fallback` below is real
+// coalescing at the JSON boundary, not hand-parsed strings.
+//
+// create args: pool, token_out, recipient, n_slices, interval_h,
+//   start_h, grace_h, min_out_per_slice, min_avg_out, fee_bps_cap
+// funds: attached yocto = total_in (escrowed by this contract)
+
+interface CreateArgs { pool?: string; token_out?: string; recipient?: string
+  n_slices?: string; interval_h?: string; start_h?: string; grace_h?: string
+  min_out_per_slice?: string; min_avg_out?: string; fee_bps_cap?: string }
+interface OrderIdArgs { order_id?: string }
+interface SliceCbArgs { order?: string; k?: string; amt?: string }
+
 // ── create ──
 // args: pool, token_out, recipient, n_slices, interval_h, start_h,
 //       grace_h, min_out_per_slice, min_avg_out, fee_bps_cap
 // funds: attached yocto = total_in (escrowed by this contract)
 
-export function create(): string {
-  const pool = near.jsonGetStr("pool") ?? "";
-  const tokenOut = near.jsonGetStr("token_out") ?? "";
-  const recipient = near.jsonGetStr("recipient") ?? "";
-  const total = near.jsonGetStr("n_slices") ?? "0";
-  const interval = near.jsonGetStr("interval_h") ?? "0";
-  const start = near.jsonGetStr("start_h") ?? "0";
-  const grace = near.jsonGetStr("grace_h") ?? "0";
-  const minOut = near.jsonGetStr("min_out_per_slice") ?? "0";
-  const minAvg = near.jsonGetStr("min_avg_out") ?? "0";
-  const feeCap = near.jsonGetStr("fee_bps_cap") ?? FEE_BPS;
+export function create(args: CreateArgs): string {
+  const pool = args.pool ?? "";
+  const tokenOut = args.token_out ?? "";
+  const recipient = args.recipient ?? "";
+  const total = args.n_slices ?? "0";
+  const interval = args.interval_h ?? "0";
+  const start = args.start_h ?? "0";
+  const grace = args.grace_h ?? "0";
+  const minOut = args.min_out_per_slice ?? "0";
+  const minAvg = args.min_avg_out ?? "0";
+  const feeCap = args.fee_bps_cap ?? FEE_BPS;
   const deposit = near.attachedDepositU128();
   const h = near.blockHeight();
 
@@ -123,8 +137,8 @@ export function create(): string {
 // ── tick — the permissionless engine ──
 // One call advances the order by ONE slice (swap or expiry).
 
-export function tick(): string {
-  const id = near.jsonGetStr("order_id") ?? "";
+export function tick(args: OrderIdArgs): string {
+  const id = args.order_id ?? "";
   const h = near.blockHeight();
   const executor = near.predecessorAccountId();
   const seller = readField(id, "seller", "");
@@ -200,9 +214,9 @@ function tickSwap(id: string, cursor: string, executor: string): string {
 // keep their meaning, and the only producer of a stale receipt on-chain
 // is a double-ticking executor — its own receipt failing is desired.
 
-export function on_slice(): string {
-  const id = near.jsonGetStr("order") ?? "";
-  const k = near.jsonGetStr("k") ?? "0";
+export function on_slice(args: SliceCbArgs): string {
+  const id = args.order ?? "";
+  const k = args.k ?? "0";
   const cursorNow = readField(id, "nx", "0");
   if (k !== cursorNow) {
     near.abort("ERR_STALE");
@@ -246,8 +260,8 @@ export function on_slice(): string {
 
 // ── cancel — seller only, before the first slice is due ──
 
-export function cancel(): string {
-  const id = near.jsonGetStr("order_id") ?? "";
+export function cancel(args: OrderIdArgs): string {
+  const id = args.order_id ?? "";
   const who = near.predecessorAccountId();
   const h = near.blockHeight();
   const seller = readField(id, "seller", "");
@@ -277,8 +291,8 @@ export function cancel(): string {
 // refunds accrued expired slice_in to the seller; status carries the
 // min_avg_out verdict. Callable once nx == ns.
 
-export function finalize(): string {
-  const id = near.jsonGetStr("order_id") ?? "";
+export function finalize(args: OrderIdArgs): string {
+  const id = args.order_id ?? "";
   const seller = readField(id, "seller", "");
   if (seller === "") {
     near.abort("ERR_NO_ORDER");
@@ -306,8 +320,8 @@ export function finalize(): string {
 
 // ── view ──
 
-export function get_order(): string {
-  const id = near.jsonGetStr("order_id") ?? "";
+export function get_order(args: OrderIdArgs): string {
+  const id = args.order_id ?? "";
   const seller = readField(id, "seller", "");
   if (seller === "") {
     return "null";

@@ -56,6 +56,9 @@ use try_catch::TryFrame;
 pub mod call_dict;
 pub mod call_outlayer;
 pub mod call_predicate;
+pub mod write_through;
+pub mod u128_twins;
+pub mod u128_storage;
 pub mod compile;
 pub mod int_emit;
 pub mod wasm_link;
@@ -483,8 +486,8 @@ pub(crate) const HOST_FUNCS: &[(&str, &[ValType], &[ValType])] = &[
     (
         "promise_yield_resume",
         &[ValType::I64, ValType::I64, ValType::I64, ValType::I64],
-        &[ValType::I64],
-    ), // 83
+        &[ValType::I32],
+    ), // 83 — near-sdk 5 ABI (bool result); call site extends to i64
     // Validator
     (
         "validator_stake",
@@ -611,6 +614,17 @@ pub(crate) const CACHE_SLOTS: i64 = 64;
 pub(crate) const CACHE_KEY_CAP: i64 = 64; // max cached key length; longer keys read uncached
 pub(crate) const CACHE_STRIDE: i64 = 88; // key_ptr | key_len | value_tagged | key-bytes copy
 const CACHE_END: u32 = 136_720; // 131080 + 64*88 = 136712, 8-aligned pad
+/// ── P3 write-through coalescing (2026-10-13) ──
+/// Dirty bitmap: 64 bytes at [136720, 136784), one byte per cache slot —
+/// bit i set ⇒ slot i holds a NOT-YET-HOSTED write (set by storage_set /
+/// splice writes when they upsert the memo table). The export-boundary
+/// flush walk (`__h_wt_flush`) replays only dirty slots via storage_write,
+/// clearing bits as it goes. Tombstone byte 0xFF in slot+0 key-ptr marks a
+/// removed key (storage_remove on a dirty/unwritten slot ⇒ host remove now
+/// + slot invalidated; on a clean slot ⇒ host remove now, no tombstone
+/// needed since the read cache no longer shadows it).
+pub(crate) const WT_DIRTY_BASE: i64 = 136_720;
+const WT_DIRTY_END: u32 = 136_784; // 136720 + 64
                                 // ── Handle table for memory-safe struct access ──
 const HANDLE_COUNT_ADDR: i64 = 48; // 8-byte slot: number of allocated handles
 const HANDLE_TABLE_BASE: i64 = 49152; // base of handle table (1024 entries × 16 bytes = 16KB)
@@ -685,9 +699,21 @@ pub struct WasmEmitter {
     pub(crate) list_ptr_counter: u32, // unique temp per (list ...) site — nested dynamic lists each need their OWN __lst_ptr local
     pub(crate) str_cat_depth: u32,    // nesting depth for str-cat local isolation
     pub(crate) fuzz_mode: bool, // if true, export wrappers store tagged values (no untag, no value_return)
+    /// P3 write-through storage coalescing: storage_set upserts the memo
+    /// table (dirty bit) instead of host-writing; __h_wt_flush replays dirty
+    /// slots at every export boundary. Off in fuzz/wasi modes.
+    pub(crate) wt_write_through: bool,
+    /// Function-table index of the synthesized __h_wt_flush helper (set on
+    /// first need), and whether any upsert site was emitted (boundary flush).
+    pub(crate) wt_flush_fn: Option<u32>,
+    pub(crate) wt_used: bool,
     pub(crate) u128h: Option<U128Helpers>, // string-based u128 helper func indices (lazily synthesized)
     pub(crate) fn_int_annotations: std::collections::HashMap<String, (usize, bool)>, // name → (n int params, ret int)
     pub(crate) raw_twins: std::collections::HashMap<String, u32>, // fn name → raw twin func idx
+    /// u128 phase 2A: name → (twin func idx, per-param limb-kind flags).
+    /// Routing consults this at every direct user-call site; a twin killed
+    /// at compile time is removed, routing falls to the tagged fn.
+    pub(crate) u128_twins: std::collections::HashMap<String, (u32, Vec<bool>, bool)>,
     /// fn name → pretty-printed source form (defines + lambdas), for the
     /// symbolication sidecar (.wasm.map) consumed by `near-mock symbolicate`.
     pub(crate) fn_sources: std::collections::HashMap<String, String>,
@@ -747,6 +773,19 @@ pub struct WasmEmitter {
     pub(crate) limb_eligible: std::collections::HashSet<String>,
     pub(crate) limb_slots: std::collections::HashMap<String, (u32, u32)>,
     pub(crate) limb_call_count: u32,
+    /// u128 native-chain 2B: when true, literal-key storage reads are
+    /// treated as Native carriers (sniff-hydrate reads; binary writes for
+    /// limb-borne values). Set from the program shape at pipeline start.
+    pub(crate) storage_reads_hot: bool,
+    // 2B: set by emit_u128_val's hot-cell sniff around its expr() call — the
+    // inner storage_get arm must return the RAW cell (limbs hydrate it with
+    // zero parses); the normalizer stands down while this is set.
+    pub(crate) b2b_limb_read_active: bool,
+    /// Source-level fn defns (params, body) of the program being compiled —
+    /// lets emit-side passes use the SHARED storage_site resolver to see
+    /// through sget/sput-style wrappers. Filled at pipeline start.
+    pub(crate) src_wrapper_defns:
+        std::cell::RefCell<std::collections::HashMap<String, (Vec<String>, LispVal)>>,
     /// u128 Level 1.5 parse-cache (2026-09-15): tagged string locals
     /// (bigint params, storage-read locals) re-parsed their decimal string
     /// on EVERY u128-op use (~140 Mgas/use). Runtime memo per local name:
@@ -788,8 +827,19 @@ impl WasmEmitter {
             funcs: Vec::new(),
             memory_pages: 64,
             exports: Vec::new(),
+            wt_write_through: false,
+            wt_flush_fn: None,
+            wt_used: false,
             data_segments: Vec::new(),
-            next_data_offset: 256,
+            // Data segments (interned literals) start ABOVE every host scratch buffer —
+            // TEMP_MEM(64), AMOUNT_MEM(256), STORAGE_BUF(8192), INPUT_BUF(16384),
+            // RETURN_BUF(32768), BORSH_BUF(36864), INPUT_CACHE(40960), JSON_SCAN_BUF(57344),
+            // handle table [49152,65536), STDOUT (65536), STDIN_LEN (98304) — and BELOW
+            // HEAP_START (200000) where the runtime bump allocator begins. Literals used
+            // to start at 256, so any host scratch write (e.g. promise_result's register
+            // copy at TEMP_MEM) could overwrite interned strings mid-string — observed on
+            // mainnet as a job record reading back with empty fields after promiseResult.
+            next_data_offset: 139_264,
             host_needed: HashSet::new(),
             gas_local: None,
             needs_frame: false,
@@ -809,10 +859,14 @@ impl WasmEmitter {
             u128h: None,
             fn_int_annotations: std::collections::HashMap::new(),
             raw_twins: std::collections::HashMap::new(),
+            u128_twins: std::collections::HashMap::new(),
             fn_sources: std::collections::HashMap::new(),
             source_forms: Vec::new(),
             borsh_schemas: HashMap::new(),
             storage_get_count: 0,
+            storage_reads_hot: false,
+            b2b_limb_read_active: false,
+            src_wrapper_defns: std::cell::RefCell::new(Default::default()),
             u128_call_count: 0,
             http_post_call_count: 0,
             env_get_count: 0,
@@ -1460,6 +1514,39 @@ impl WasmEmitter {
         } else {
             self.memory_pages = p;
         }
+    }
+
+    /// Group consecutive same-type extra locals into (count, type) entries
+    /// for the code section. Single source shared by emit_define and the
+    /// u128 param-twin compiler (was inline-only in emit_define).
+    pub(crate) fn group_local_entries(
+        param_count: usize,
+        total: usize,
+        ltm: &[ValType],
+    ) -> Vec<(u32, ValType)> {
+        if total <= param_count {
+            return vec![];
+        }
+        let mut entries = Vec::new();
+        let mut i = param_count;
+        while i < total {
+            let ty = if i < ltm.len() { ltm[i] } else { ValType::I64 };
+            let mut count = 1u32;
+            while (i + count as usize) < total {
+                let next_ty = if (i + count as usize) < ltm.len() {
+                    ltm[i + count as usize]
+                } else {
+                    ValType::I64
+                };
+                if next_ty != ty {
+                    break;
+                }
+                count += 1;
+            }
+            entries.push((count, ty));
+            i += count as usize;
+        }
+        entries
     }
     pub fn add_export(&mut self, fn_: &str, en: &str, is_view: bool) {
         // Replace existing export with same name to avoid duplicate export errors

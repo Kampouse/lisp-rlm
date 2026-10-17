@@ -1,0 +1,27 @@
+chapter AFP
+
+(* Single-session proof tree: the AFP-derived escrow shell, the fee-ledger
+   theories, and the composition bridge live in ONE session over ONE heap.
+   The bridge imports the LIVE theories directly -- there are no snapshots
+   and no session-tree seams; drift between copies is impossible by
+   construction. STRICT: any `sorry` fails the build.
+   Build everything: isabelle build -D proof -d theory *)
+session "CLMM_Proof" = "Concentrated_Liquidity_Market_Making_Operations" +
+  options [timeout = 1800]
+  theories
+    CLMM_Saturation
+    CLMM_Curve
+    CLMM_Escrow
+    CLMM_Route
+    Aggregate_Book
+    Aggregate_Accrual
+    User_Ledger
+    CLMM_Fee_Slack
+    CLMM_Fee_Slack_Fixed
+    CLMM_Dynamic
+    CLMM_Reachable
+    CLMM_Fee_Attack
+    Pool_Ledger
+    CLMM_Fee_Vectors
+    CLMM_Bridge
+    CLMM_Coverage

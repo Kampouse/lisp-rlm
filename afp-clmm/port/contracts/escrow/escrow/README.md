@@ -5,7 +5,7 @@ file (`make regenerate` keeps the tree byte-identical).
 
 ## The law
 
-`afp-clmm/escrow/CLMM_Escrow.thy` (strict Isabelle, 0 sorries) defines
+`afp-clmm/proof/CLMM_Escrow.thy` (strict Isabelle, 0 sorries) defines
 `apply_op` over ops Deposit / Withdraw / SwapIn / SwapOut / LpOpen /
 LpRemove and proves `reachable_conservation` with no hypotheses: after
 every reachable step

@@ -73,17 +73,23 @@ fn cios_shape_mul() {
     let _ = std::fs::remove_file(st);
     // (a=0x123456, b=0x9abcde)
     let r = call(st, "mul3", r#"{"a":1193046,"b":10133662}"#);
+    let r = normalize_num(&r);
     assert!(r.contains("📄 281993103348"), "mul3 #1: {r}");
     let r = call(st, "mul3", r#"{"a":65535,"b":65535}"#);
+    let r = normalize_num(&r);
     assert!(r.contains("📄 655340001"), "mul3 #2: {r}");
     let r = call(st, "mul3", r#"{"a":16777215,"b":16777215}"#);
+    let r = normalize_num(&r);
     assert!(r.contains("📄 6554150240001"), "mul3 #3: {r}");
     let r = call(st, "mul3", r#"{"a":0,"b":12345}"#);
+    let r = normalize_num(&r);
     assert!(r.contains("📄 0"), "mul3 #4: {r}");
     // early returns in the entry (before the loops)
     let r = call(st, "mul3", r#"{"a":-1,"b":5}"#);
+    let r = normalize_num(&r);
     assert!(r.contains("📄 -1"), "mul3 neg a: {r}");
     let r = call(st, "mul3", r#"{"a":5,"b":-2}"#);
+    let r = normalize_num(&r);
     assert!(r.contains("📄 -2"), "mul3 neg b: {r}");
 }
 
@@ -122,4 +128,27 @@ fn nested_return_skips_later_writes() {
         r.contains("📄 before"),
         "storage after a nested return must stay 'before': {r}"
     );
+}
+
+/// The near-mock's \u{1f4c4} printer comma-groups digit runs (human_num,
+/// 7d2b3cb1). Strip the grouping so asserts written against raw digits keep
+/// working. Commas inside non-digit contexts are preserved.
+fn normalize_num(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b',' {
+            let before = out.as_bytes().last().map_or(false, |c| c.is_ascii_digit());
+            let after = bytes.get(i + 1).map_or(false, |c| c.is_ascii_digit());
+            if before && after {
+                i += 1;
+                continue;
+            }
+        }
+        let ch = s[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }

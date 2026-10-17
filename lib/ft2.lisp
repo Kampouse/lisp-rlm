@@ -39,7 +39,7 @@
           (let ((amt (json-get-str "amt" inp)))
             (if (str= (num-ok? amt) "0")
                 (near/return "bad-amt")
-                (if (> (li-cmp (li-add (bz "sup") amt) "1000000") 0)
+                (if (> (li-cmp (li-add (bz "sup") amt) "1000000000000000000000000000000") 0)
                     (near/return "cap")
                     (begin
                       (add-bal to amt)

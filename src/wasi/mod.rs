@@ -811,6 +811,36 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
     em.p2_mode = true;
     em.no_proc_exit = true; // wit-component adapter handles exit
     sync_p2_memory_pages(&mut em);
+    // Pre-scan: register all function names BEFORE emitting any body — mirrors
+    // pipeline_from_exprs' forward-reference pass. Without it, a define whose
+    // body calls a function defined LATER in the file fails with
+    // "unknown function" (the P2 path emitted defines strictly in source
+    // order; the near-target path pre-registers and never had this issue).
+    for e in &exprs {
+        if let crate::types::LispVal::List(items) = e {
+            if items.len() >= 3 {
+                if let (crate::types::LispVal::Sym(s), crate::types::LispVal::List(sig)) =
+                    (&items[0], &items[1])
+                {
+                    if s == "define" && !sig.is_empty() {
+                        if let crate::types::LispVal::Sym(name) = &sig[0] {
+                            if !em.funcs.iter().any(|f| &f.name == name) {
+                                let param_count = sig.len() - 1;
+                                em.funcs.push(crate::wasm_emit::FuncDef {
+                                    name: name.clone(),
+                                    param_count,
+                                    local_count: 0,
+                                    instrs: Vec::new(),
+                                    local_entries: None,
+                                    custom_type: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     for e in &exprs {
         if let crate::types::LispVal::List(items) = e {
             if items.is_empty() {
@@ -2788,8 +2818,10 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     // URL (all hoisted into http_post_urls), sentinel 143 can resolve to an
     // internal wasi:http POST fn instead of the outlayer:api/host import —
     // letting the component run under plain wasi:http runtimes.
-    let bridge_native_post =
-        em.http_post_call_count > 0 && em.http_post_urls.len() as u32 == em.http_post_call_count;
+    // count increments ONLY on literal-URL posts (dynamic delegates to the host import
+    // before this counter). urls is deduped, so len() can be < count with all-literal calls
+    // (same URL from multiple functions). The old equality check falsely disabled the bridge.
+    let bridge_native_post = em.http_post_call_count > 0;
     if bridge_native_post {
         used_ol_indices.remove(&21); // http-post-dynamic import no longer needed
     }
