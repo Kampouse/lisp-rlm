@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0d1117; font-family:-apple-system,'Segoe UI',Roboto,sans-serif; color:#e6edf3; display:flex; justify-content:center; padding:24px; }
+  .card { background:#161b22; border:1px solid #30363d; border-radius:16px; padding:24px; width:480px; }
+  .hdr { display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
+  .pair { font-size:18px; font-weight:700; }
+  .range { font-size:12px; color:#8b949e; background:#21262d; padding:3px 10px; border-radius:99px; }
+  .status { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background:#f85149; }
+  .tag { font-size:11px; color:#8b949e; margin-bottom:16px; line-height:1.5 }
+  .tag b { color:#d29922; font-weight:600; }
+  .pnlbig { font-size:26px; font-weight:800; margin-bottom:2px; font-family:ui-monospace,Menlo,monospace; }
+  .pos { color:#3fb950; } .neg { color:#f85149; }
+  .pnlfull { font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#8b949e; margin-bottom:18px; }
+  .bar { height:10px; border-radius:6px; overflow:hidden; display:flex; margin:14px 0 4px; }
+  .bar .x { background:#58a6ff; } .bar .y { background:#d29922; }
+  .barlbl { display:flex; justify-content:space-between; font-size:11px; color:#8b949e; margin-bottom:16px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:18px; }
+  .cell { background:#0d1117; border:1px solid #21262d; border-radius:10px; padding:10px 12px; }
+  .lbl { font-size:11px; color:#8b949e; text-transform:uppercase; letter-spacing:.5px; }
+  .val { font-family:ui-monospace,Menlo,monospace; font-size:14px; font-weight:700; margin-top:2px; }
+  .valsmall { font-family:ui-monospace,Menlo,monospace; font-size:9.5px; color:#8b949e; margin-top:3px; word-break:break-all; }
+  .vs { background:#0d1117; border:1px solid #21262d; border-radius:10px; padding:12px; }
+  .vsrow { display:flex; justify-content:space-between; font-size:13px; padding:3px 0; }
+  .vsrow .k { color:#8b949e; }
+  .vsrow .v { font-family:ui-monospace,Menlo,monospace; font-size:12px; text-align:right; word-break:break-all; }
+  .ilbar { height:6px; background:#21262d; border-radius:4px; margin-top:10px; }
+  .ilfill { height:100%; border-radius:4px; background:linear-gradient(90deg,#f85149,#d29922); width:50%; }
+  .exit { margin-top:12px; background:#0d1117; border:1px solid #30363d; border-radius:10px; padding:12px; }
+  .exit .lbl { margin-bottom:4px; }
+  .exit .v { font-family:ui-monospace,Menlo,monospace; font-size:12px; word-break:break-all; line-height:1.6; }
+  .foot { margin-top:16px; font-size:10.5px; color:#484f58; text-align:center; line-height:1.6; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="hdr">
+    <div class="pair">🟣 TOKEN-X / TOKEN-Y</div>
+    <div class="range"><span class="status"></span>below range · ticks −1 … +1</div>
+  </div>
+  <div class="tag">unitless test tokens — <b>raw atoms, no decimals</b> · value lines marked in Y-atoms at pool price<br>1 X-atom trades at boot for 2⁶⁴ = 18,446,744,073,709,551,616 Y-atoms</div>
+
+  <div class="pnlbig neg">−1.460 × 10²⁸ Y-atoms</div>
+  <div class="pnlfull">net PnL = fees − IL = −14,599,625,031,247,269,717,898,928,931</div>
+
+  <div class="grid">
+    <div class="cell">
+      <div class="lbl">Position value V</div>
+      <div class="val">1.4997 × 10²⁸</div>
+      <div class="valsmall">14,997,375,354,847,174,368,708,100,056 Y-atoms</div>
+    </div>
+    <div class="cell">
+      <div class="lbl">Re-mint cost HODL</div>
+      <div class="val">2.9997 × 10²⁸</div>
+      <div class="valsmall">29,997,000,386,094,442,967,363,442,285 Y-atoms</div>
+    </div>
+    <div class="cell">
+      <div class="lbl">Unclaimed fees</div>
+      <div class="val pos">+3.99999… × 10²⁶</div>
+      <div class="valsmall">399,999,999,999,998,880,756,413,298 Y-atoms</div>
+    </div>
+    <div class="cell">
+      <div class="lbl">Deposited at mint</div>
+      <div class="val">813,090,648 X<br>+ 1.49996 × 10²⁸ Y</div>
+      <div class="valsmall">14,999,625,031,247,268,598,655,342,229 Y-atoms</div>
+    </div>
+  </div>
+
+  <div class="bar"><div class="x" style="width:100%"></div><div class="y" style="width:0%"></div></div>
+  <div class="barlbl"><span>100% X — 813,090,648 atoms</span><span>0 Y — price below range</span></div>
+
+  <div class="vs">
+    <div class="vsrow"><span class="k">Impermanent loss</span><span class="v neg">−50.01% (−5001 bp)</span></div>
+    <div class="ilbar"><div class="ilfill"></div></div>
+    <div class="vsrow" style="margin-top:10px"><span class="k">Fees vs IL gap</span><span class="v">2.67% covered</span></div>
+    <div class="vsrow"><span class="k">Invariant</span><span class="v pos">V + fees − HODL = pnl ✓ (atom-exact)</span></div>
+  </div>
+
+  <div class="exit">
+    <div class="lbl">Burn (exit) quote — burnc would pay alice</div>
+    <div class="v">813,090,648 X-atoms<br>+ 15,399,625,031,247,267,479,411,755,527 Y-atoms (fees included)</div>
+  </div>
+
+  <div class="foot">every number = one free op "pnl" view call · zero writes · custody escrows both deposit extrema at mint<br>decimals + $ display belong in your frontend, not the contract · probe2 14/14 · probe3 burnc-exact · branch lp-pnl-view @ 16da0465</div>
+</div>
+</body>
+</html>
