@@ -1244,6 +1244,18 @@
     (let ((k (json-get-str "k" inp)))
       (p5-bz (str-cat "6|" k)))))
 
+(define (p5-lq-chunk)
+  (let ((lo (p5-imin)))
+  (let ((hi (p5-imax)))
+    (loop ((i lo) (acc ""))
+      (if (> i hi) acc
+          (let ((v (p5-bz (p5-lqkey i))))
+            (recur (+ i 1)
+              (if (= (li-cmp v "0") 0) acc
+                  (str-cat acc
+                    (str-cat ":LQ:"
+                      (str-cat (to-string i) (str-cat "|" v))))))))))))
+
 (define (p5-view)
   (let ((s (p5-bz "6|S")))
   (let ((pp (p5-bz "6|P")))
@@ -1256,7 +1268,8 @@
   (let ((t3 (str-cat t2 (str-cat ":X:" x))))
   (let ((t4 (str-cat t3 (str-cat ":Y:" y))))
   (let ((t5 (str-cat t4 (str-cat ":IMIN:" imn))))
-    (str-cat t5 (str-cat ":IMAX:" imx))))))))))))))
+  (let ((t6 (str-cat t5 (str-cat ":IMAX:" imx))))
+    (str-cat t6 (p5-lq-chunk)))))))))))))))
 
 ;; read-only custody view: the escrow ledger pair in one call — the exact
 ;; keys external auditors reconcile against raw ft_balance_of. ZERO writes.

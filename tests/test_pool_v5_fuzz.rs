@@ -167,18 +167,15 @@ impl Mock {
     fn state(&self) -> String {
         self.op("{\"op\":\"state\"}")
     }
-    fn lq(&self, i: i64) -> u128 {
-        let r = self.op(&format!("{{\"op\":\"get\",\"k\":\"LQ:{i}\"}}"));
-        r.parse().unwrap_or(0)
-    }
 }
 
-/// Extract S,P,IMIN,IMAX from a p5-view string.
-fn parse_view(v: &str) -> (u128, i64, i64, i64) {
+/// Extract S,P,IMIN,IMAX and per-cell LQ from a p5-view string.
+fn parse_view(v: &str) -> (u128, i64, i64, i64, Vec<(i64, u128)>) {
     let mut s = 0u128;
     let mut p = 0i64;
     let mut imin = 0i64;
     let mut imax = 0i64;
+    let mut lq = Vec::new();
     let parts: Vec<&str> = v.split(':').collect();
     for chunk in parts.chunks(2) {
         if chunk.len() != 2 {
@@ -186,31 +183,39 @@ fn parse_view(v: &str) -> (u128, i64, i64, i64) {
         }
         let key = chunk[0].trim();
         let val = chunk[1].trim();
-        match key {
-            "S" => {
-                if let Ok(x) = val.parse() {
-                    s = x;
+        if key == "LQ" {
+            if let Some((idx, amt)) = val.split_once('|') {
+                if let (Ok(i), Ok(a)) = (idx.parse(), amt.parse()) {
+                    lq.push((i, a));
                 }
             }
-            "P" => {
-                if let Ok(x) = val.parse() {
-                    p = x;
+        } else {
+            match key {
+                "S" => {
+                    if let Ok(x) = val.parse() {
+                        s = x;
+                    }
                 }
-            }
-            "IMIN" => {
-                if let Ok(x) = val.parse() {
-                    imin = x;
+                "P" => {
+                    if let Ok(x) = val.parse() {
+                        p = x;
+                    }
                 }
-            }
-            "IMAX" => {
-                if let Ok(x) = val.parse() {
-                    imax = x;
+                "IMIN" => {
+                    if let Ok(x) = val.parse() {
+                        imin = x;
+                    }
                 }
+                "IMAX" => {
+                    if let Ok(x) = val.parse() {
+                        imax = x;
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
-    (s, p, imin, imax)
+    (s, p, imin, imax, lq)
 }
 
 fn parse_last(v: &str) -> Option<&str> {
@@ -391,16 +396,7 @@ fn pool_v5_fuzz_differential() {
 
             let state = m.state();
             let last = parse_last(&state);
-            let (s, p, imin, imax) = parse_view(&state);
-            let mut lq = Vec::new();
-            if imin <= imax {
-                for i in imin..=imax {
-                    let v = m.lq(i);
-                    if v != 0 {
-                        lq.push((i, v));
-                    }
-                }
-            }
+            let (s, p, imin, imax, lq) = parse_view(&state);
 
             if last == Some("swap-out:y") {
                 let amt = swap_amt.map(|(a, _)| a).unwrap_or(0);
