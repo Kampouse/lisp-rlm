@@ -12,7 +12,23 @@ concatenate via script, never multi-arg).
 
 FT: `cat lib/limb_math.lisp lib/clmm_core.lisp lib/ft2.lisp` → same.
 
-## Testnet deploy (current: pool.clmm5-51fe5a.testnet)
+## Testnet deploy (current: pool3.clmm5-51fe5a.testnet)
+
+2026-10-18 pool reset: fresh `pool3.clmm5-51fe5a.testnet` on the post-fix
+wasm. Birth state all-zero; seeded 5e25 X/Y; minted d=1e26 on [-8,8]
+(rx 4601 / ry 84997877655924663434914); smoke swap 1e21 X -> used
+3906250000000002433, and 6|ESC == ft_balance_of(pool3) EXACTLY on both
+sides after the partial refund (ledger == custody from birth).
+
+Tombstones (do not reuse):
+- pool.clmm5-51fe5a.testnet - drifted ledger (X +2.5e19, Y +1.97e21
+  phantom), carries ~1e29 unclaimable tokens (owed 0). `near delete` is
+  rejected by testnet (ActionError kind {account_id}); state archived at
+  /tmp/old_pool_state.txt, phantom numbers in the note below.
+- pool2.clmm5-51fe5a.testnet - pre-redeploy staging CLONE of the old pool:
+  same 5e28 escrow values baked into storage. Deploying over it does NOT
+  clear stale 6| keys - init leaves ESCX/ESCY polluted. ALWAYS check raw
+  view_state (prefix 6|) before reusing an account for a fresh pool.
 
     # 1. build (above)
     # 2. deploy — near CLI asks confirmation; echo y | it
