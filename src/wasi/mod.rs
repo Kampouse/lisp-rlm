@@ -3991,7 +3991,7 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     // duplicated header-capture style? No — plain body read (settle leg).
     {
         let mut hf = Function::new([
-            (10u32, ValType::I32), // locals 9..18 scratch
+            (15u32, ValType::I32), // locals 9..23 (20..23 = shadow copies of params 5..8)
         ]);
         // Fixed data segment for the with-header core's default headers.
         // Layout (byte offsets from WITH_HDR_SEG_BASE):
@@ -4012,15 +4012,28 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
             seg.extend_from_slice(&24i32.to_le_bytes());
             seg.extend_from_slice(&(WITH_HDR_SEG_BASE + 40).to_le_bytes());
             seg.extend_from_slice(&16i32.to_le_bytes());
+            seg.extend_from_slice(b"/");           // 72: fallback path
+            seg.extend_from_slice(&[0u8; 7]);      // 73..80: pad to layout
+            seg.extend_from_slice(b"X-Probe");     // 80: probe name (7)
+            seg.extend_from_slice(b"abc123");      // 88: probe value (6)
+            seg.extend_from_slice(&(WITH_HDR_SEG_BASE + 88).to_le_bytes()); // 96: entry ptr
+            seg.extend_from_slice(&6i32.to_le_bytes());                     // 100: entry len
             with_hdr_segments.push((WITH_HDR_SEG_BASE, seg));
         }
-        crate::wasi_http_buffer::emit_http_get_with_header_to_buffer(
+        crate::wasi_http_buffer::emit_http_get_with_header_v2(
             &mut hf,
-            (WITH_HDR_SEG_BASE, 10, WITH_HDR_SEG_BASE + 10, 24),
-            (WITH_HDR_SEG_BASE + 56, 8),
-            (WITH_HDR_SEG_BASE + 34, 6, WITH_HDR_SEG_BASE + 40, 16),
-            (WITH_HDR_SEG_BASE + 64, 8),
+            (WITH_HDR_SEG_BASE, 10, WITH_HDR_SEG_BASE + 10, 24),      // UA
+            (WITH_HDR_SEG_BASE + 56, 1),                              // UA entry (COUNT: 1 x 8-byte tuple)
+            (WITH_HDR_SEG_BASE + 34, 6, WITH_HDR_SEG_BASE + 40, 16),  // Accept
+            (WITH_HDR_SEG_BASE + 64, 1),                              // ACC entry (COUNT: 1)
+            (WITH_HDR_SEG_BASE + 72, 1),                              // fallback "/"
+            (WITH_HDR_SEG_BASE + 72, 1),                              // fallback auth (unreachable)
+            (WITH_HDR_SEG_BASE + 80, 0),                              // capture name: none
         );
+        // DEBUG probe: constant name/value params (baked segment)
+        let probe_name = (WITH_HDR_SEG_BASE + 80, 7);
+        let probe_val = (WITH_HDR_SEG_BASE + 88, 6);
+        let _ = (&probe_name, &probe_val);
         hf.instruction(&Instruction::End);
         codes.function(&hf);
     }

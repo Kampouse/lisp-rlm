@@ -1739,6 +1739,54 @@ fn analyze_outlayer(wasm: &[u8]) -> OutlayerInfo {
                         || opcode == 0x7B
                     {
                         // Numeric i32/i64/f32/f64 operations — no operands
+                    } else if opcode == 0xFC {
+                        // 0xFC-prefixed ops (memory.copy/fill, table ops,
+                        // saturating trunc): subop LEB + per-subop operands.
+                        let (sub, sl) = rleb(wasm, pos);
+                        pos += sl;
+                        match sub {
+                            0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 => {
+                                // i32/i64 trunc_sat: no operands
+                                // (0..7 = wrap/trunc_sat variants)
+                            }
+                            8 => {
+                                // memory.init: data idx + memory idx
+                                let (_, l1) = rleb(wasm, pos);
+                                pos += l1;
+                                pos += 1;
+                            }
+                            9 => {
+                                // data.drop: data idx
+                                let (_, l1) = rleb(wasm, pos);
+                                pos += l1;
+                            }
+                            10 | 11 => {
+                                // memory.copy / memory.fill: 2×/1× memory idx
+                                let n = if sub == 10 { 2 } else { 1 };
+                                for _ in 0..n {
+                                    let (_, l1) = rleb(wasm, pos);
+                                    pos += l1;
+                                }
+                            }
+                            12 => {
+                                // table.init: elem idx + table idx
+                                let (_, l1) = rleb(wasm, pos);
+                                pos += l1;
+                                let (_, l2) = rleb(wasm, pos);
+                                pos += l2;
+                            }
+                            _ => {
+                                // elem.drop / table.copy / table.grow /
+                                // table.size / table.fill: LEB operand(s)
+                                let (_, l1) = rleb(wasm, pos);
+                                pos += l1;
+                                if sub == 14 {
+                                    // table.copy: 2 idx
+                                    let (_, l2) = rleb(wasm, pos);
+                                    pos += l2;
+                                }
+                            }
+                        }
                     }
                     // Skip any unknown opcodes — this is a best-effort scanner
                 }
@@ -1748,6 +1796,15 @@ fn analyze_outlayer(wasm: &[u8]) -> OutlayerInfo {
         }
         pos += sz;
     }
+
+    // NOTE: the instruction-level call scan above is fragile — any
+    // multi-byte opcode it does not fully decode (0xFC prefixes,
+    // f32/f64 consts, memory.size/grow, ...) desyncs it, and the
+    // resulting bogus "called" set drops canon-lifts the core needs,
+    // producing an invalid component. Treat every outlayer import as
+    // called; the extra lifts are cheap and correctness wins.
+    let called: std::collections::HashSet<usize> =
+        (0..outlayer_names_in_order.len()).collect();
 
     OutlayerInfo {
         names,

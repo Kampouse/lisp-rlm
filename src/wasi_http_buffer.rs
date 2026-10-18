@@ -195,7 +195,7 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
         func.instruction(&cl(FN_FIELDS_SET));
     }
 
-    func.instruction(&lg(5));
+    func.instruction(&lg(5)); // fields handle (ctor stored it in 5)
     func.instruction(&cl(FN_CONSTRUCTOR_OUTGOING_REQUEST));
     func.instruction(&ls(6)); // request handle
 
@@ -487,7 +487,15 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&ld(SCRATCH_READ_RESULT + 8));
     func.instruction(&ls(14)); // chunk_len
 
-    // Bulk copy chunk to resp_buf using memory.copy (dst, src, len)
+    // Capacity guard: if chunk <= remaining (CAP - total), copy it and
+    // loop; else copy only the remaining bytes and break (buffer full).
+    func.instruction(&lg(14));
+    func.instruction(&cst(1_048_576));
+    func.instruction(&lg(13));
+    func.instruction(&Instruction::I32Sub);
+    func.instruction(&Instruction::I32LeU);
+    func.instruction(&Instruction::If(BlockType::Empty));
+    // chunk fits: copy + accumulate + loop
     func.instruction(&lg(2)); // dst = resp_buf base
     func.instruction(&lg(13)); // + total_len offset
     func.instruction(&Instruction::I32Add);
@@ -505,7 +513,24 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&Instruction::I32Add);
     func.instruction(&ls(13));
 
-    func.instruction(&Instruction::Br(0)); // loop back for more chunks
+    func.instruction(&Instruction::Br(1)); // continue loop (depth: If=0, Loop=1)
+    func.instruction(&Instruction::End); // end if (fits)
+    // chunk exceeds remaining: copy the remainder, total = CAP, break.
+    func.instruction(&lg(2));
+    func.instruction(&lg(13));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&cst(0)); // load chunk data ptr
+    func.instruction(&ld(SCRATCH_READ_RESULT + 4));
+    func.instruction(&cst(1_048_576));
+    func.instruction(&lg(13));
+    func.instruction(&Instruction::I32Sub); // remaining
+    func.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
+    func.instruction(&cst(1_048_576));
+    func.instruction(&ls(13)); // total = CAP
+    func.instruction(&Instruction::Br(2)); // break outer (depth: If=0, Loop=1, Block=2)
     func.instruction(&Instruction::End); // loop ends
     func.instruction(&Instruction::End); // block ends
     func.instruction(&Instruction::End); // responder block ends
@@ -518,125 +543,197 @@ pub fn emit_http_get_to_buffer(func: &mut Function, data: &HttpDataSegments) {
 }
 
 /// Dynamic-URL GET with a runtime request header (x402 settle leg).
-/// Params: 0=url_ptr, 1=url_len, 2=buf_ptr, 3=buf_len, 4=len_ptr,
-///         5=hdr_name_ptr, 6=hdr_name_len, 7=hdr_val_ptr, 8=hdr_val_len.
-/// Result: i32 error disc (0 = ok). Body → (buf, len_ptr); the caller
-/// builds the tagged string. Header name/value/one-entry list are copied
-/// into the buf tail (buf+64K-1024/-512/-768) because caller scratch is
-/// transient. Max body: 62KB (tail reserved).
-pub fn emit_http_get_with_header_to_buffer(
+/// Clone of emit_http_get_to_buffer: UA/Accept from fixed segment
+/// tuples; ONE extra fields.set driven by runtime params 5..8
+/// (name ptr/len, value ptr/len), sanitized (&0x7F - P2 string bytes
+/// carry a spurious |0x80). Fallback path/auth = static "/" segment.
+pub fn emit_http_get_with_header_v2(
     func: &mut Function,
     ua: (i32, i32, i32, i32),       // UA name ptr/len, value ptr/len
-    ua_entry: (i32, i32),           // 8-byte list-entry addr, len=8
+    ua_entry: (i32, i32),           // 8-byte list entry (ptr, len)
     accept: (i32, i32, i32, i32),   // Accept name ptr/len, value ptr/len
     accept_entry: (i32, i32),
+    fallback_path: (i32, i32),      // static "/" segment (ptr, len)
+    fallback_auth: (i32, i32),      // no-slash fallback auth (unreachable)
+    capture_name: (i32, i32),       // response capture name (len 0 = none)
 ) {
     let cst = |v: i32| Instruction::I32Const(v);
     let lg = |i: u32| Instruction::LocalGet(i);
     let ls = |i: u32| Instruction::LocalSet(i);
     let cl = |i: u32| Instruction::Call(i);
-    let st = |off: i32| Instruction::I32Store(MemArg { offset: off as u64, align: 2, memory_index: 0 });
-    let ld = |off: i32| Instruction::I32Load(MemArg { offset: off as u64, align: 2, memory_index: 0 });
-    let st8 = |off: i32| Instruction::I32Store8(MemArg { offset: off as u64, align: 0, memory_index: 0 });
+    let st = |off: i32| {
+        Instruction::I32Store(MemArg {
+            offset: off as u64,
+            align: 2,
+            memory_index: 0,
+        })
+    };
+    let ld = |off: i32| {
+        Instruction::I32Load(MemArg {
+            offset: off as u64,
+            align: 2,
+            memory_index: 0,
+        })
+    };
 
-    // Locals 9.. = scratch (mirror the capture core's numbering):
-    // 9=req,10=resp,11=ibody,12=stream,13=total,14=chunk,15=copytmp,
-    // 16=fields-handle,17/18/19=hdr scratch
-    // fields ctor
-    func.instruction(&cl(FN_CONSTRUCTOR_FIELDS));
-    func.instruction(&ls(16)); // fields handle in 16 (this variant has no
-                               // separate local-5: keep dynamic-parse
-                               // locals free)
-    // copy hdr name → buf+64K-1024, val → buf+64K-512 (clamped 500)
-    func.instruction(&lg(2));
-    func.instruction(&cst(65536 - 1024));
-    func.instruction(&Instruction::I32Add);
+    // CRITICAL: shadow-copy params 5..8 BEFORE anything else —
+    // local 5 is CLOBBERED by the fields ctor below (fn163's
+    // local 5 = fields handle). Locals 20..23 = hdr name ptr/len,
+    // val ptr/len. (Copying after the ctor stored the handle = 1
+    // into the "name ptr" shadow — the bogus-ptr bug.)
     func.instruction(&lg(5));
+    func.instruction(&ls(20));
     func.instruction(&lg(6));
-    func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-    // val clamp: min(val_len, 500)
-    func.instruction(&lg(8));
-    func.instruction(&cst(500));
-    func.instruction(&lg(8));
-    func.instruction(&cst(500));
-    func.instruction(&Instruction::I32GtU);
-    func.instruction(&Instruction::Select);
-    func.instruction(&ls(17)); // clamped val len
-    func.instruction(&lg(2));
-    func.instruction(&cst(65536 - 512));
-    func.instruction(&Instruction::I32Add);
+    func.instruction(&ls(21));
     func.instruction(&lg(7));
-    func.instruction(&lg(17));
-    func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-    // build 1-entry list at buf+64K-768: (val_ptr_le, val_len_le)
-    func.instruction(&lg(2));
-    func.instruction(&cst(65536 - 768));
-    func.instruction(&Instruction::I32Add);
-    func.instruction(&lg(2));
-    func.instruction(&cst(65536 - 512));
-    func.instruction(&Instruction::I32Add);
-    func.instruction(&st(0)); // [list+0] = val_ptr
-    func.instruction(&lg(2));
-    func.instruction(&cst(65536 - 768));
-    func.instruction(&Instruction::I32Add);
-    func.instruction(&lg(17));
-    func.instruction(&st(4)); // [list+4] = val_len
-    // fields.set(fields, name_ptr, name_len, list_ptr, 1, ret_area)
-    func.instruction(&lg(16));
-    func.instruction(&lg(2));
-    func.instruction(&cst(65536 - 1024));
-    func.instruction(&Instruction::I32Add);
-    func.instruction(&lg(6));
-    func.instruction(&lg(2));
-    func.instruction(&cst(65536 - 768));
-    func.instruction(&Instruction::I32Add);
-    func.instruction(&cst(1));
-    func.instruction(&cst(SCRATCH_WRITE_RESULT));
-    func.instruction(&cl(FN_FIELDS_SET));
-    func.instruction(&lg(16));
+    func.instruction(&ls(22));
+    func.instruction(&lg(8));
+    func.instruction(&ls(23));
+
+            // Fields ctor → fields handle in local 5
+    func.instruction(&cl(FN_CONSTRUCTOR_FIELDS));
+    func.instruction(&ls(5));
+
+
+    // Set headers: UA + Accept from fixed segments; runtime header
+    // (name/val copied into the buf tail by the caller-preceding
+    // copy block below) — list len = ENTRY COUNT (1), not bytes.
+    func.instruction(&lg(5)); // fields handle (self)
     func.instruction(&cst(ua.0));
     func.instruction(&cst(ua.1));
     func.instruction(&cst(ua_entry.0));
     func.instruction(&cst(ua_entry.1));
     func.instruction(&cst(SCRATCH_WRITE_RESULT));
     func.instruction(&cl(FN_FIELDS_SET));
-    func.instruction(&lg(16));
+
+    func.instruction(&lg(5));
     func.instruction(&cst(accept.0));
     func.instruction(&cst(accept.1));
     func.instruction(&cst(accept_entry.0));
     func.instruction(&cst(accept_entry.1));
     func.instruction(&cst(SCRATCH_WRITE_RESULT));
     func.instruction(&cl(FN_FIELDS_SET));
-    // request ctor takes ownership of fields
-    func.instruction(&lg(16));
-    func.instruction(&cl(FN_CONSTRUCTOR_OUTGOING_REQUEST));
-    func.instruction(&ls(9)); // request handle
 
-    // method/scheme (static, same as capture core)
-    func.instruction(&lg(9));
-    func.instruction(&cst(0)); // option none (GET)
+    // Runtime header: skip entirely when name_len == 0 (param 6).
+    // Copy name → buf+62K, val → buf+63K; one-entry list at buf+63.5K.
+    func.instruction(&Instruction::Block(BlockType::Empty));
+    func.instruction(&lg(21));
+    func.instruction(&Instruction::I32Eqz);
+    func.instruction(&Instruction::BrIf(0));
+    // name copy: dst = buf + 65536-1024, src = local20, len = local21
+    func.instruction(&lg(2));
+    func.instruction(&cst(32768));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&lg(20));
+    func.instruction(&lg(21));
+    func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    // sanitize name bytes: strip bytes >= 0x80 (high bit) to 0x20
+    func.instruction(&cst(0));
+    func.instruction(&ls(18)); // i = 0
+    func.instruction(&Instruction::Block(BlockType::Empty));
+    func.instruction(&Instruction::Loop(BlockType::Empty));
+    func.instruction(&lg(18));
+    func.instruction(&lg(21));
+    func.instruction(&Instruction::I32GeU);
+    func.instruction(&Instruction::BrIf(1));
+    func.instruction(&lg(2));
+    func.instruction(&cst(32768));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&lg(18));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&Instruction::I32Load8U(MemArg { offset: 0, align: 0, memory_index: 0 }));
+    func.instruction(&cst(128));
+    func.instruction(&Instruction::I32GeU);
+    func.instruction(&Instruction::If(BlockType::Empty));
+    func.instruction(&lg(2));
+    func.instruction(&cst(32768));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&lg(18));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&cst(0x20));
+    func.instruction(&Instruction::I32Store8(MemArg { offset: 0, align: 0, memory_index: 0 }));
+    func.instruction(&Instruction::End);
+    func.instruction(&lg(18));
+    func.instruction(&cst(1));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&ls(18));
+    func.instruction(&Instruction::Br(0));
+    func.instruction(&Instruction::End);
+    func.instruction(&Instruction::End);
+    // val copy: dst = buf + 65536-512, src = local22, len = min(local23, 500)
+    // select returns a if cond≠0: a=500 (clamped), b=len, cond=len>500
+    func.instruction(&cst(500));
+    func.instruction(&lg(23));
+    func.instruction(&lg(23));
+    func.instruction(&cst(500));
+    func.instruction(&Instruction::I32GtU);
+    func.instruction(&Instruction::Select);
+    func.instruction(&ls(17)); // clamped val len
+    func.instruction(&lg(2));
+    func.instruction(&cst(33024));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&lg(22));
+    func.instruction(&lg(17));
+    func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    // one-entry list at buf + 65536-768: (val_ptr, val_len)
+    func.instruction(&lg(2));
+    func.instruction(&cst(33536));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&lg(2));
+    func.instruction(&cst(33024));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&st(0));
+    func.instruction(&lg(2));
+    func.instruction(&cst(33536));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&lg(17));
+    func.instruction(&st(4));
+    // fields.set(fields, name=buf+62K/name_len, entry=buf+63.5K, COUNT=1)
+    func.instruction(&lg(5));
+    func.instruction(&lg(2));
+    func.instruction(&cst(32768));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&lg(21));
+    func.instruction(&lg(2));
+    func.instruction(&cst(33536));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&cst(1)); // list COUNT: 1 entry
+    func.instruction(&cst(SCRATCH_WRITE_RESULT));
+    func.instruction(&cl(FN_FIELDS_SET));
+    func.instruction(&Instruction::End); // guard block
+
+    // Request ctor: fields handle in local 5
+    func.instruction(&lg(5));
+    func.instruction(&cl(FN_CONSTRUCTOR_OUTGOING_REQUEST));
+    func.instruction(&ls(6)); // request handle
+
+    // Set method=GET
+    func.instruction(&lg(6));
+    func.instruction(&cst(0)); // option none
     func.instruction(&cst(0));
     func.instruction(&cst(0));
     func.instruction(&cl(FN_SET_METHOD));
     func.instruction(&Instruction::Drop);
-    func.instruction(&lg(9));
+
+    // Set scheme=HTTPS
+    func.instruction(&lg(6));
     func.instruction(&cst(1)); // option some
-    func.instruction(&cst(1)); // HTTPS
+    func.instruction(&cst(1)); // variant index 1 = HTTPS
     func.instruction(&cst(0));
     func.instruction(&cst(0));
     func.instruction(&cl(FN_SET_SCHEME));
     func.instruction(&Instruction::Drop);
 
-    // dynamic authority/path parse (same algorithm as the capture core,
-    // locals 13=i, 14=auth_len — free here)
+    // ALWAYS dynamic: parse "https://authority/path" from url
+    // (locals 13=i, 14=auth_len, 15/16 scratch)
     func.instruction(&cst(8));
     func.instruction(&ls(13));
     func.instruction(&lg(1));
     func.instruction(&cst(8));
     func.instruction(&Instruction::I32Sub);
     func.instruction(&ls(14));
-    func.instruction(&Instruction::Block(BlockType::Empty));
-    func.instruction(&Instruction::Loop(BlockType::Empty));
+    func.instruction(&Instruction::Block(BlockType::Empty)); // $done
+    func.instruction(&Instruction::Loop(BlockType::Empty)); // $scan
     func.instruction(&lg(13));
     func.instruction(&lg(1));
     func.instruction(&Instruction::I32GeU);
@@ -661,7 +758,8 @@ pub fn emit_http_get_with_header_to_buffer(
     func.instruction(&Instruction::Br(0));
     func.instruction(&Instruction::End);
     func.instruction(&Instruction::End);
-    func.instruction(&lg(9));
+    // authority = url+8, auth_len
+    func.instruction(&lg(6));
     func.instruction(&cst(1));
     func.instruction(&lg(0));
     func.instruction(&cst(8));
@@ -669,14 +767,14 @@ pub fn emit_http_get_with_header_to_buffer(
     func.instruction(&lg(14));
     func.instruction(&cl(FN_SET_AUTHORITY));
     func.instruction(&Instruction::Drop);
-    // path: with slash → from the slash (leading / kept), else "/"
+    // path: dynamic slash → url+8+auth_len+1; else fallback "/"
     func.instruction(&lg(14));
     func.instruction(&cst(8));
     func.instruction(&Instruction::I32Add);
     func.instruction(&lg(1));
     func.instruction(&Instruction::I32LtU);
     func.instruction(&Instruction::If(BlockType::Empty));
-    func.instruction(&lg(9));
+    func.instruction(&lg(6));
     func.instruction(&cst(1));
     func.instruction(&lg(0));
     func.instruction(&cst(8));
@@ -691,31 +789,211 @@ pub fn emit_http_get_with_header_to_buffer(
     func.instruction(&cl(FN_SET_PATH_WITH_QUERY));
     func.instruction(&Instruction::Drop);
     func.instruction(&Instruction::Else);
-    func.instruction(&lg(9));
+    func.instruction(&lg(6));
     func.instruction(&cst(1));
-    func.instruction(&cst(0x7f10000)); // static "/" — see below, patched by caller
-    func.instruction(&cst(1));
+    func.instruction(&cst(fallback_path.0));
+    func.instruction(&cst(fallback_path.1));
     func.instruction(&cl(FN_SET_PATH_WITH_QUERY));
     func.instruction(&Instruction::Drop);
     func.instruction(&Instruction::End);
 
-    // body/finish/future/subscribe/poll/get/response/stream/read loop —
-    // identical to the capture core but with local mapping:
-    // req=9, resp=10, ibody=11, stream=12, total=13, chunk=14.
-    // (emitted by the shared tail builder below)
-    emit_get_response_tail(func, 9);
-    // DEBUG: len_ptr = (total<<8) | (url_len & 0xFF) — learn both
+    // Body → handle at +4
+    func.instruction(&lg(6));
+    func.instruction(&cst(SCRATCH_BODY_RESULT));
+    func.instruction(&cl(FN_OUTGOING_REQUEST_BODY));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_BODY_RESULT + 4));
+    func.instruction(&ls(7)); // outgoing-body handle
+
+    // Finish
+    func.instruction(&lg(7));
+    func.instruction(&cst(0));
+    func.instruction(&cst(0));
+    func.instruction(&cst(SCRATCH_WRITE_RESULT));
+    func.instruction(&cl(FN_OUTGOING_BODY_FINISH));
+
+    // Responder block
+    func.instruction(&Instruction::Block(BlockType::Empty));
+    func.instruction(&lg(6));
+    func.instruction(&cst(0));
+    func.instruction(&cst(0));
+    func.instruction(&cst(SCRATCH_FUTURE_RESULT));
+    func.instruction(&cl(FN_HANDLE));
+    func.instruction(&cst(0));
+    func.instruction(&ls(13));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_FUTURE_RESULT));
+    func.instruction(&cst(0));
+    func.instruction(&Instruction::I32Ne);
+    func.instruction(&Instruction::BrIf(0));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_FUTURE_RESULT + 8));
+    func.instruction(&ls(8)); // future handle
+
+    func.instruction(&lg(8));
+    func.instruction(&cl(FN_FUTURE_SUBSCRIBE));
+    func.instruction(&ls(9)); // pollable
+
+    func.instruction(&cst(SCRATCH_POLLABLES));
+    func.instruction(&lg(9));
+    func.instruction(&st(0));
+    func.instruction(&cst(SCRATCH_POLLABLES));
+    func.instruction(&cst(1));
+    func.instruction(&cst(SCRATCH_POLL_RESULT));
+    func.instruction(&cl(FN_POLL));
+    func.instruction(&lg(9));
+    func.instruction(&cl(FN_DROP_POLLABLE));
+
+    func.instruction(&lg(8));
+    func.instruction(&cst(SCRATCH_RESPONSE_RESULT));
+    func.instruction(&cl(FN_FUTURE_GET));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_RESPONSE_RESULT + 24));
+    func.instruction(&ls(10)); // incoming-response handle
+
+    // Header capture (best-effort, len-0 name = skip)
+    func.instruction(&lg(10));
+    func.instruction(&cl(FN_INCOMING_RESPONSE_HEADERS));
+    func.instruction(&ls(16));
+    func.instruction(&lg(16));
+    func.instruction(&cst(capture_name.0));
+    func.instruction(&cst(capture_name.1));
+    func.instruction(&cst(SCRATCH_WRITE_RESULT));
+    func.instruction(&cl(FN_FIELDS_GET));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_WRITE_RESULT));
+    func.instruction(&ls(18)); // entries ptr
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_WRITE_RESULT + 4));
+    func.instruction(&ls(17)); // count
+    func.instruction(&cst(0));
+    func.instruction(&ls(19)); // value len = 0 default
+    func.instruction(&Instruction::Block(BlockType::Empty));
+    func.instruction(&lg(17));
+    func.instruction(&Instruction::I32Eqz);
+    func.instruction(&Instruction::BrIf(0));
+    func.instruction(&lg(18));
+    func.instruction(&Instruction::I32Load(MemArg { offset: 0, align: 2, memory_index: 0 }));
+    func.instruction(&ls(19)); // val_ptr
+    func.instruction(&lg(18));
+    func.instruction(&Instruction::I32Load(MemArg { offset: 4, align: 2, memory_index: 0 }));
+    func.instruction(&ls(17)); // val_len
+    func.instruction(&lg(17));
+    func.instruction(&cst(2048));
+    func.instruction(&lg(17));
+    func.instruction(&cst(2048));
+    func.instruction(&Instruction::I32GtU);
+    func.instruction(&Instruction::Select);
+    func.instruction(&ls(17));
+    func.instruction(&lg(2));
+    func.instruction(&cst(65536 - 2048));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&lg(19));
+    func.instruction(&lg(17));
+    func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    func.instruction(&lg(4));
+    func.instruction(&Instruction::I32Const(4));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&lg(17));
+    func.instruction(&st(0));
+    func.instruction(&Instruction::End);
+    func.instruction(&lg(16));
+    func.instruction(&cl(FN_DROP_FIELDS));
+
+    // Consume → body → stream
+    func.instruction(&lg(10));
+    func.instruction(&cst(SCRATCH_IBODY_RESULT));
+    func.instruction(&cl(FN_INCOMING_RESPONSE_CONSUME));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_IBODY_RESULT + 4));
+    func.instruction(&ls(11));
+    func.instruction(&lg(11));
+    func.instruction(&cst(SCRATCH_STREAM_RESULT));
+    func.instruction(&cl(FN_INCOMING_BODY_STREAM));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_STREAM_RESULT + 4));
+    func.instruction(&ls(12)); // input-stream
+
+    // Read loop until EOF
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&ls(13)); // total
+    func.instruction(&Instruction::Block(BlockType::Empty));
+    func.instruction(&Instruction::Loop(BlockType::Empty));
+    func.instruction(&lg(12));
+    func.instruction(&Instruction::I64Const(65536));
+    func.instruction(&cst(SCRATCH_READ_RESULT));
+    func.instruction(&cl(FN_INPUT_STREAM_BLOCKING_READ));
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT));
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&Instruction::I32Ne);
+    func.instruction(&Instruction::BrIf(1));
+    func.instruction(&Instruction::I32Const(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT + 8));
+    func.instruction(&Instruction::I32Eqz);
+    func.instruction(&Instruction::BrIf(1));
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT + 8));
+    func.instruction(&ls(14)); // chunk_len
+    // Capacity guard (resp_buf = HTTP_MAX_RESPONSE): copy min(chunk,
+    // remaining); if chunk > remaining, copy remainder and EOF-break.
+    func.instruction(&lg(14));
+    func.instruction(&cst(1_048_576));
+    func.instruction(&lg(13));
+    func.instruction(&Instruction::I32Sub);
+    func.instruction(&Instruction::I32LeU);
+    func.instruction(&Instruction::If(BlockType::Empty));
+    func.instruction(&lg(2));
+    func.instruction(&lg(13));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT + 4));
+    func.instruction(&lg(14));
+    func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    func.instruction(&lg(13));
+    func.instruction(&lg(14));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&ls(13));
+    func.instruction(&Instruction::Br(1)); // continue loop (If=0, Loop=1)
+    func.instruction(&Instruction::End); // end if (fits)
+    func.instruction(&lg(2));
+    func.instruction(&lg(13));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT + 4));
+    func.instruction(&cst(1_048_576));
+    func.instruction(&lg(13));
+    func.instruction(&Instruction::I32Sub);
+    func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    func.instruction(&cst(1_048_576));
+    func.instruction(&ls(13)); // total = CAP
+    func.instruction(&Instruction::Br(2)); // break outer (If=0, Loop=1, Block=2)
+    func.instruction(&Instruction::End);
+    func.instruction(&Instruction::End);
+    func.instruction(&Instruction::End); // responder block
+
+    // total at len_ptr
     func.instruction(&lg(4));
     func.instruction(&lg(13));
-    func.instruction(&cst(8));
-    func.instruction(&Instruction::I32Shl);
-    func.instruction(&lg(1));
-    func.instruction(&cst(0xFF));
-    func.instruction(&Instruction::I32And);
-    func.instruction(&Instruction::I32Or);
     func.instruction(&st(0));
-    func.instruction(&cst(0));
+    func.instruction(&Instruction::I32Const(0));
 }
+
+/// Dynamic-URL GET with a runtime request header (x402 settle leg).
+/// Params: 0=url_ptr, 1=url_len, 2=buf_ptr, 3=buf_len, 4=len_ptr,
+///         5=hdr_name_ptr, 6=hdr_name_len, 7=hdr_val_ptr, 8=hdr_val_len.
+/// Result: i32 error disc (0 = ok). Body → (buf, len_ptr); the caller
+/// builds the tagged string. Header name/value/one-entry list are copied
+/// into the buf tail (buf+64K-1024/-512/-768) because caller scratch is
+/// transient. Max body: 62KB (tail reserved).
+
+/// Dynamic-URL GET with a runtime request header (x402 settle leg).
+/// Params: 0=url_ptr, 1=url_len, 2=buf_ptr, 3=buf_len, 4=len_ptr,
+///         5=hdr_name_ptr, 6=hdr_name_len, 7=hdr_val_ptr, 8=hdr_val_len.
+/// Result: i32 error disc (0 = ok). Body → (buf, len_ptr); the caller
+/// builds the tagged string. Header name/value/one-entry list are copied
+/// into the buf tail (buf+64K-1024/-512/-768) because caller scratch is
+/// transient. Max body: 62KB (tail reserved).
 
 /// Shared response-side tail: body read loop into (buf local 2, len →
 /// local 4) for the dynamic GET variants. req_handle_local = request
@@ -812,6 +1090,15 @@ fn emit_get_response_tail(func: &mut Function, req_local: u32) {
     func.instruction(&cst(0));
     func.instruction(&ld(SCRATCH_READ_RESULT + 8));
     func.instruction(&ls(14));
+    // Clamp chunk to remaining capacity (resp_buf = HTTP_MAX_RESPONSE):
+    // local 14 = min(chunk, CAP - total); drop the read (continue) if 0.
+    func.instruction(&lg(14));
+    func.instruction(&cst(1_048_576));
+    func.instruction(&lg(13));
+    func.instruction(&Instruction::I32Sub);
+    func.instruction(&Instruction::I32LeU);
+    func.instruction(&Instruction::If(BlockType::Empty));
+    // chunk <= remaining: copy it
     func.instruction(&lg(2));
     func.instruction(&lg(13));
     func.instruction(&Instruction::I32Add);
@@ -823,7 +1110,21 @@ fn emit_get_response_tail(func: &mut Function, req_local: u32) {
     func.instruction(&lg(14));
     func.instruction(&Instruction::I32Add);
     func.instruction(&ls(13));
-    func.instruction(&Instruction::Br(0));
+    func.instruction(&Instruction::Br(1)); // continue loop (If=0, Loop=1)
+    func.instruction(&Instruction::End); // end if
+    // chunk > remaining: copy only the remaining bytes, then EOF-break.
+    func.instruction(&lg(2));
+    func.instruction(&lg(13));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&cst(0));
+    func.instruction(&ld(SCRATCH_READ_RESULT + 4));
+    func.instruction(&cst(1_048_576));
+    func.instruction(&lg(13));
+    func.instruction(&Instruction::I32Sub); // remaining
+    func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    func.instruction(&cst(1_048_576));
+    func.instruction(&ls(13)); // total = CAP
+    func.instruction(&Instruction::Br(2)); // break outer (If=0, Loop=1, Block=2)
     func.instruction(&Instruction::End);
     func.instruction(&Instruction::End);
     func.instruction(&Instruction::End); // responder block
@@ -1042,13 +1343,22 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&ld(SCRATCH_READ_RESULT + 4));
     func.instruction(&ls(17)); // chunk_data_ptr
 
+    // Capacity guard (buf = HTTP_MAX_RESPONSE): if chunk <= remaining
+    // (CAP - total), copy it and loop; else copy only remaining and
+    // break with total = CAP (graceful truncation, no OOB trap).
+    func.instruction(&lg(19));
+    func.instruction(&cst(1_048_576));
+    func.instruction(&lg(15));
+    func.instruction(&Instruction::I32Sub);
+    func.instruction(&Instruction::I32LeU);
+    func.instruction(&Instruction::If(BlockType::Empty));
     // Bulk copy chunk to buf_ptr using memory.copy (dst, src, len)
     func.instruction(&lg(4)); // dst = buf_ptr base (param 4)
     func.instruction(&lg(15)); // + total_len offset
     func.instruction(&Instruction::I32Add);
     func.instruction(&cst(0)); // load chunk data ptr
     func.instruction(&ld(SCRATCH_READ_RESULT + 4));
-    func.instruction(&lg(16)); // len = chunk_len
+    func.instruction(&lg(19)); // len = chunk_len
     func.instruction(&Instruction::MemoryCopy {
         src_mem: 0,
         dst_mem: 0,
@@ -1056,11 +1366,28 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
 
     // total_len += chunk_len
     func.instruction(&lg(15));
-    func.instruction(&lg(16));
+    func.instruction(&lg(19));
     func.instruction(&Instruction::I32Add);
     func.instruction(&ls(15)); // update total_len
 
-    func.instruction(&Instruction::Br(0)); // continue read loop
+    func.instruction(&Instruction::Br(1)); // continue loop (If=0, Loop=1)
+    func.instruction(&Instruction::End); // end if (fits)
+    // chunk exceeds remaining: copy only remaining, total = CAP, break.
+    func.instruction(&lg(4));
+    func.instruction(&lg(15));
+    func.instruction(&Instruction::I32Add);
+    func.instruction(&cst(0)); // load chunk data ptr
+    func.instruction(&ld(SCRATCH_READ_RESULT + 4));
+    func.instruction(&cst(1_048_576));
+    func.instruction(&lg(15));
+    func.instruction(&Instruction::I32Sub); // remaining
+    func.instruction(&Instruction::MemoryCopy {
+        src_mem: 0,
+        dst_mem: 0,
+    });
+    func.instruction(&cst(1_048_576));
+    func.instruction(&ls(15)); // total = CAP
+    func.instruction(&Instruction::Br(2)); // break outer (If=0, Loop=1, Block=2)
     func.instruction(&Instruction::End); // loop
     func.instruction(&Instruction::End); // block
     func.instruction(&Instruction::End); // responder block

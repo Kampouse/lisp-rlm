@@ -189,9 +189,190 @@ impl WasmEmitter {
                 if !self.wasi_mode {
                     return Err("http-get-with-header is only available on OutLayer (WASI) target".into());
                 }
+                // Runtime (non-literal) url/value -> dynamic core
+                // (sentinel 170): runtime strings carry a real (ptr,len);
+                // only literals lack a pointer (len<<32 with no addr).
+                let lit = |x: &crate::types::LispVal| matches!(x, crate::types::LispVal::Str(_));
+                if !lit(&a[0]) || !lit(&a[2]) {
+                    // Runtime url or value -> dynamic with-header core
+                    // (sentinel 170). Runtime strings carry a real
+                    // (ptr,len); literals have no pointer, so they must
+                    // go through the static-registered path below.
+                    let ma4d = wasm_encoder::MemArg { offset: 0, align: 2, memory_index: 0 };
+                    let ret_d: i32 = crate::wasi_http::OL_RET_AREA_BASE;
+                    let buf_d: i32 = crate::wasi_http::SENTINEL_BUF;
+                    let cap_d: i32 = crate::wasi_http::SENTINEL_BUF_SIZE;
+                    let mut d = Vec::new();
+                    // untag helper: (i64 tagged) -> (i32 ptr, i32 len).
+                    // Eval the arg EXACTLY ONCE into a scratch i64
+                    // local, then extract ptr (lo32 of v>>3) and len
+                    // (hi32 of v>>3) from the local. A second eval of
+                    // the arg re-runs the expression (e.g. strCat) and
+                    // its fresh allocation invalidates the first eval's
+                    // pointer — that double-eval produced name ptr=1.
+                    let scratch = self.local_idx("untag_scratch");
+                    macro_rules! untag {
+                        ($d:expr, $arg:expr) => {{
+                            let mut ev = self.expr($arg)?;
+                            $d.append(&mut ev);
+                            $d.push(Instruction::LocalSet(scratch));
+                            $d.push(Instruction::LocalGet(scratch));
+                            $d.push(Instruction::I64Const(3));
+                            $d.push(Instruction::I64ShrU);
+                            $d.push(Instruction::I64Const(0xFFFFFFFF));
+                            $d.push(Instruction::I64And);
+                            $d.push(Instruction::I32WrapI64);
+                            $d.push(Instruction::LocalGet(scratch));
+                            $d.push(Instruction::I64Const(3));
+                            $d.push(Instruction::I64ShrU);
+                            $d.push(Instruction::I64Const(32));
+                            $d.push(Instruction::I64ShrU);
+                            $d.push(Instruction::I32WrapI64);
+                        }};
+                    };
+                    untag!(d, &a[0]); // url
+                    d.push(Instruction::I32Const(buf_d));
+                    d.push(Instruction::I32Const(cap_d));
+                    d.push(Instruction::I32Const(ret_d + 8)); // len_ptr
+                    // Literal header name/value -> bake into a data
+                    // segment and pass const (ptr,len). Runtime
+                    // (computed) strings -> untag the i64 tag.
+                    // NOTE: literal Str tags carry a placeholder ptr
+                    // (observed ptr=1) — the dynamic arm does not
+                    // register literal bytes, so they MUST be baked.
+                    let dyn_seg_base: i32 = 139_800;
+                    let mut dyn_seg: Vec<u8> = Vec::new();
+                    let mut dyn_off = dyn_seg_base;
+                    let arg_pair = |a: &crate::types::LispVal,
+                                    dyn_seg: &mut Vec<u8>,
+                                    dyn_off: &mut i32|
+                     -> (Instruction<'static>, Instruction<'static>) {
+                        match a {
+                            crate::types::LispVal::Str(v) => {
+                                let ptr = *dyn_off;
+                                dyn_seg.extend_from_slice(v.as_bytes());
+                                *dyn_off += v.len() as i32;
+                                (Instruction::I32Const(ptr), Instruction::I32Const(v.len() as i32))
+                            }
+                            _ => {
+                                let mut ev = self.expr(a).expect("arg eval");
+                                ev.push(Instruction::LocalSet(scratch));
+                                let mut out = vec![Instruction::LocalGet(scratch)];
+                                out.push(Instruction::I64Const(3));
+                                out.push(Instruction::I64ShrU);
+                                out.push(Instruction::I64Const(0xFFFFFFFF));
+                                out.push(Instruction::I64And);
+                                out.push(Instruction::I32WrapI64);
+                                out.push(Instruction::LocalGet(scratch));
+                                out.push(Instruction::I64Const(3));
+                                out.push(Instruction::I64ShrU);
+                                out.push(Instruction::I64Const(32));
+                                out.push(Instruction::I64ShrU);
+                                out.push(Instruction::I32WrapI64);
+                                // ptr pushed; pop it, push len, push ptr
+                                // (we need len LAST): rebuild order
+                                out.pop();
+                                let len_part = vec![
+                                    Instruction::LocalGet(scratch),
+                                    Instruction::I64Const(3),
+                                    Instruction::I64ShrU,
+                                    Instruction::I64Const(32),
+                                    Instruction::I64ShrU,
+                                    Instruction::I32WrapI64,
+                                ];
+                                // emit: ptr, len in that order
+                                let ptr_part = vec![Instruction::LocalGet(scratch)];
+                                let mut seq = Vec::new();
+                                seq.extend(ev); // set scratch (without the LocalSet? ev includes it)
+                                seq.extend(len_part);
+                                seq.extend(ptr_part);
+                                (Instruction::Nop, Instruction::Nop) // placeholder, unused
+                            }
+                        }
+                    };
+                    let _ = arg_pair;
+                    // name arg:
+                    match &a[1] {
+                        crate::types::LispVal::Str(v) => {
+                            let ptr = dyn_off;
+                            dyn_seg.extend_from_slice(v.as_bytes());
+                            dyn_off += v.len() as i32;
+                            d.push(Instruction::I32Const(ptr));
+                            d.push(Instruction::I32Const(v.len() as i32));
+                        }
+                        _ => {
+                            let mut ev = self.expr(&a[1])?;
+                            d.append(&mut ev);
+                            d.push(Instruction::LocalSet(scratch));
+                            // ptr first, then len (canonical arg order)
+                            d.push(Instruction::LocalGet(scratch));
+                            d.push(Instruction::I64Const(3));
+                            d.push(Instruction::I64ShrU);
+                            d.push(Instruction::I64Const(0xFFFFFFFF));
+                            d.push(Instruction::I64And);
+                            d.push(Instruction::I32WrapI64);
+                            d.push(Instruction::LocalGet(scratch));
+                            d.push(Instruction::I64Const(3));
+                            d.push(Instruction::I64ShrU);
+                            d.push(Instruction::I64Const(32));
+                            d.push(Instruction::I64ShrU);
+                            d.push(Instruction::I32WrapI64);
+                        }
+                    }
+                    // value arg:
+                    match &a[2] {
+                        crate::types::LispVal::Str(v) => {
+                            let ptr = dyn_off;
+                            dyn_seg.extend_from_slice(v.as_bytes());
+                            dyn_off += v.len() as i32;
+                            d.push(Instruction::I32Const(ptr));
+                            d.push(Instruction::I32Const(v.len() as i32));
+                        }
+                        _ => {
+                            let mut ev = self.expr(&a[2])?;
+                            d.append(&mut ev);
+                            d.push(Instruction::LocalSet(scratch));
+                            // ptr first, then len (canonical arg order)
+                            d.push(Instruction::LocalGet(scratch));
+                            d.push(Instruction::I64Const(3));
+                            d.push(Instruction::I64ShrU);
+                            d.push(Instruction::I64Const(0xFFFFFFFF));
+                            d.push(Instruction::I64And);
+                            d.push(Instruction::I32WrapI64);
+                            d.push(Instruction::LocalGet(scratch));
+                            d.push(Instruction::I64Const(3));
+                            d.push(Instruction::I64ShrU);
+                            d.push(Instruction::I64Const(32));
+                            d.push(Instruction::I64ShrU);
+                            d.push(Instruction::I32WrapI64);
+                        }
+                    }
+                    if !dyn_seg.is_empty() {
+                        self.data_segments.push((dyn_seg_base as u32, dyn_seg));
+                    }
+                    d.push(Instruction::Call(170));
+                    d.push(Instruction::Drop);
+                    d.push(Instruction::I32Const(ret_d + 8)); // len_ptr
+                    d.push(Instruction::I32Load(wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 2,
+                        memory_index: 0,
+                    }));
+                    d.push(Instruction::I64ExtendI32U);
+                    d.push(Instruction::I64Const(32));
+                    d.push(Instruction::I64Shl);
+                    d.push(Instruction::I32Const(buf_d));
+                    d.push(Instruction::I64ExtendI32U);
+                    d.push(Instruction::I64Or);
+                    d.push(Instruction::I64Const(3));
+                    d.push(Instruction::I64Shl);
+                    d.push(Instruction::I64Const(TAG_STR));
+                    d.push(Instruction::I64Or);
+                    return Ok(d);
+                }
                 let url = match &a[0] {
                     crate::types::LispVal::Str(u) => u.clone(),
-                    _ => return Err("http-get-with-header: url must be a string literal".into()),
+                    _ => unreachable!(),
                 };
                 let hdr_name = match &a[1] {
                     crate::types::LispVal::Str(n) => n.clone(),
