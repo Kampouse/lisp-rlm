@@ -103,6 +103,19 @@ attach self-refunds.
 - FastNEAR: mainnet only. `rpc.fastnear.com` testnet serves a stale tip
   (≈53M blocks behind, UNKNOWN_ACCOUNT on real accounts).
 
+## TS frontend twin (byte-parity)
+
+`fixtures/clmm_v5.ts` = BigInt twin of the pool's observable semantics
+(grid G, dy/dx solvers, swarm arms, leg-decide escrow law, get_state
+wire format incl. the LQ:<i>|<v> cell enumeration). Gate:
+`python3 scripts/clmm_v5_ts_parity.py` — same op sequences through
+near-mock (real wasm) and the twin under tsx; byte-diff of RET/STATE
+lines. Green = 4 scenarios / 54 lines byte-exact (2026-10-18).
+Harness seam notes: RET lines are ft2 post-resolve `used:<kept>`
+(pool raw return = the refund amount); committed-ness in the swarm
+arms is `rm != v0`, not exit branch; get_state enumerates only NONZERO
+LQ cells in [IMIN..IMAX].
+
 ## Evidence artifacts (this repo)
 
 - tests/test_pool_v5_fuzz.rs — differential vs Isabelle OCaml oracle
