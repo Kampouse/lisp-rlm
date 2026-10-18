@@ -13,7 +13,7 @@ interface Op {
   op: string;
   toka?: string; tokb?: string; fee_shift?: string; s0?: string;
   tok?: string; amt?: string;
-  d?: string; lo?: number; hi?: number; rx?: string; ry?: string;
+  d?: string; lo?: number; hi?: number; rx?: string; ry?: string; mo?: string;
 }
 
 function used(raw: string, amt: string): string {
@@ -42,7 +42,7 @@ async function main(): Promise<void> {
         break;
       }
       case "swap": {
-        const raw = o.tok === "x" ? p.swapX(o.amt!) : p.swapY(o.amt!);
+        const raw = o.tok === "x" ? p.swapX(o.amt!, o.mo) : p.swapY(o.amt!, o.mo);
         ret = "used:" + used(raw, o.amt!);
         break;
       }

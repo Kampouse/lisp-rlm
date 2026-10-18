@@ -70,6 +70,18 @@ SCENARIOS = {
         {"op": "swap", "tok": "x", "amt": SWAP_BIG},
         {"op": "swap", "tok": "y", "amt": SWAP_BIG},
     ],
+    # mo guard: swap 1 aborts (mo = exact out + 1 ⇒ ERR_MO, full refund incl.
+    # fee); swap 2 with mo == exact out succeeds — proving the quote-law
+    # value is achievable and the abort left zero state damage.
+    "min_out": [
+        {"op": "init", "toka": "tokx.tst", "tokb": "toky.tst", "fee_shift": "8", "s0": S0},
+        {"op": "seed", "tok": "x", "amt": SEED},
+        {"op": "seed", "tok": "y", "amt": SEED},
+        {"op": "mint", "d": D, "lo": -8, "hi": 8, "rx": None, "ry": None},
+        {"op": "quote", "amt": SKIM},
+        {"op": "swap", "tok": "x", "amt": SWAP, "mo": "Q+1"},
+        {"op": "swap", "tok": "x", "amt": SWAP, "mo": "Q"},
+    ],
 }
 
 
@@ -132,8 +144,20 @@ def mock_lines(wasm: str, ft: str, tmp: str, ops: list) -> list:
             ret = r1 + "," + r2
         elif o["op"] == "swap":
             tok = "tokx.tst" if o["tok"] == "x" else "toky.tst"
+            msg = '{"a":"swap"}'
+            if o.get("mo") is not None:
+                if o["mo"] in ("Q", "Q+1"):
+                    # resolve the exact-out floor from a probe quote on the
+                    # fee-skimmed walk input (same law the quote leg pins)
+                    amt = int(o["amt"])
+                    v = str(amt - (amt >> 8))
+                    qret = cross("pool.tst", "quote",
+                                 {"v": v if o["tok"] == "x" else "-" + v})
+                    out = qret.split(":")[1]
+                    o["mo"] = str(int(out) + 1) if o["mo"] == "Q+1" else out
+                msg = '{"a":"swap","mo":"' + o["mo"] + '"}'
             ret = cross(tok, "ft_transfer_call",
-                        {"receiver_id": "pool.tst", "amount": o["amt"], "msg": '{"a":"swap"}'})
+                        {"receiver_id": "pool.tst", "amount": o["amt"], "msg": msg})
         elif o["op"] == "req":
             ret = cross("pool.tst", "position_requirements",
                         {"d": o["d"], "a": str(o["lo"]), "b": str(o["hi"])})

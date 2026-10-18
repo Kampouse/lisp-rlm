@@ -742,7 +742,7 @@
             (near/return amt)
             (if (str= (near/predecessor_account_id) (p5-bz "6|TOKX"))
                 (if (str= (json-get-str "a" (json-get-str "msg" inp)) "swap")
-                    (p5-swap-x sender amt)
+                    (p5-swap-x sender amt (json-get-str "mo" (json-get-str "msg" inp)))
                     (if (str= (json-get-str "a" (json-get-str "msg" inp)) "seed")
                         (begin
                           ;; pool-owned float, no position (bootstrap for
@@ -754,7 +754,7 @@
                             (p5-mint-leg sender amt))))
                 (if (str= (near/predecessor_account_id) (p5-bz "6|TOKY"))
                     (if (str= (json-get-str "a" (json-get-str "msg" inp)) "swap")
-                        (p5-swap-y sender amt)
+                        (p5-swap-y sender amt (json-get-str "mo" (json-get-str "msg" inp)))
                         (if (str= (json-get-str "a" (json-get-str "msg" inp)) "seed")
                             (begin
                               (p5-put "6|ESCY" (li-add (p5-bz "6|ESCY") amt))
@@ -767,7 +767,7 @@
 ;; sell X for Y: escrow intake, walk via the same core as op "swap", then
 ;; promise the out-leg from 6|ESCY. Chain result (p5-pay's return) is what
 ;; ft2's resolve refunds.
-(define (p5-swap-x sender amt)
+(define (p5-swap-x sender amt mo)
   (let ((s (p5-bz "6|S")))
   (let ((p (str->num (p5-bz "6|P"))))
   (let ((xbook (p5-bz "6|X")))
@@ -785,10 +785,10 @@
           (p5-put "6|ESCX" (li-add (p5-bz "6|ESCX") amt))
           ;; up sells X for Y (fee path)
           (p5-swarm-up s p xbook ybook amt 1)
-          (p5-leg-decide sender amt "6|X" "6|ESCX" "6|ESCY" ps0 pl0 "6|TOKY")))))))))))
+          (p5-leg-decide sender amt "6|X" "6|ESCX" "6|ESCY" ps0 pl0 "6|TOKY" mo)))))))))))
 
 ;; sell Y for X — mirror of p5-swap-x (out-leg from 6|ESCX on 6|TOKX)
-(define (p5-swap-y sender amt)
+(define (p5-swap-y sender amt mo)
   (let ((s (p5-bz "6|S")))
   (let ((p (str->num (p5-bz "6|P"))))
   (let ((xbook (p5-bz "6|X")))
@@ -805,7 +805,7 @@
           (p5-put "6|ESCY" (li-add (p5-bz "6|ESCY") amt))
           ;; down sells Y for X (fee path)
           (p5-swarm-dn s p xbook ybook amt 1)
-          (p5-leg-decide sender amt "6|Y" "6|ESCY" "6|ESCX" ps0 pl0 "6|TOKX")))))))))))
+          (p5-leg-decide sender amt "6|Y" "6|ESCY" "6|ESCX" ps0 pl0 "6|TOKX" mo)))))))))))
 
 ;; shared leg decision — reads 6|OUT/6|REM via bz (v4 pattern: NO
 ;; return-string parsing inside receipts):
@@ -814,7 +814,14 @@
 ;;     intake-book delta + P/S + escrow, refund all;
 ;;   else ⇒ release the refund slice (-rm; consumed c stays escrowed),
 ;;     full reversal (X/Y/P/S + escrow -rm) on payout failure.
-(define (p5-leg-decide sender amt ibook ekey okey ps0 pl0 tokkey)
+;; mo = optional min-out floor from the swap msg ("mo": "<amount>").
+;; Empty/absent ⇒ no guard (byte-identical to pre-mo behavior). When set
+;; and the walk's out < mo, p5-fail aborts the WHOLE receipt: every write
+;; in this transaction — escrow credit, books, P/S, fee credit — reverts,
+;; and ft2's resolve sees an empty chain result ⇒ full refund INCLUDING
+;; the fee slice. Sentinel/degenerate paths run before the guard and keep
+;; their refund-all semantics.
+(define (p5-leg-decide sender amt ibook ekey okey ps0 pl0 tokkey mo)
   (let ((out (p5-bz "6|OUT")))
     (if (str= out "D")
         (begin
@@ -834,10 +841,18 @@
             ;; the pool's intake-side float, backs owed); the REFUND slice
             ;; leaves via ft2's resolve (sub-bal recv rm) — the ledger must
             ;; release it here or it overstates custody by rm - c.
-            (let ((c (li-sub amt (p5-bz "6|REM"))))
-              (begin
-                (p5-put ekey (li-sub (p5-bz ekey) (p5-bz "6|REM")))
-                (p5-payout sender out (p5-bz "6|REM") c ps0 pl0 ekey okey tokkey)))))))
+            ;; NOTE: mo parsed by li-cmp only — str->num is u64 and would
+            ;; trap on any real token amount; mo "0"/absent ⇒ guard inert
+            ;; (out < 0 is impossible). Canonical decimal expected.
+            (if (and (> (str-len mo) 0) (< (li-cmp out mo) 0))
+                ;; min-out violated: abort the whole receipt — every write
+                ;; in this leg (escrow credit, books, P/S, fee) reverts and
+                ;; ft2's resolve sees an empty result ⇒ full refund incl. fee
+                (p5-fail "ERR_MO")
+                (let ((c (li-sub amt (p5-bz "6|REM"))))
+                  (begin
+                    (p5-put ekey (li-sub (p5-bz ekey) (p5-bz "6|REM")))
+                    (p5-payout sender out (p5-bz "6|REM") c ps0 pl0 ekey okey tokkey))))))))
 
 ;; promise the out-leg, then the pay callback. Chain result = pay's return.
 ;; oe = the OUT-side escrow key (drained on payout success).

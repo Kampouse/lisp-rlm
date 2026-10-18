@@ -253,9 +253,10 @@ export class Pool {
   //   out == 0 degenerate: undo intake book delta + P/S + escrow (−amt);
   //     LAST stays as the arm wrote it ("swap-out:0:rem:0"); used = 0.
   //   not committed (sentinel): undo escrow only; used = 0.
-  swapX(amt: string): string {
+  swapX(amt: string, mo?: string): string {
     if (this.bz("6|TOKX") === "") return amt;
     if (BigInt(amt) === 0n) return amt;
+    const snap = mo ? new Map(this.s) : null; // abort ⇒ full revert
     const s0 = this.bz("6|S"), p0 = BigInt(this.bz("6|P"));
     const xbook = this.bz("6|X"), ybook = this.bz("6|Y");
     this.put("6|ESCX", this.li_add(this.bz("6|ESCX"), amt));
@@ -275,6 +276,13 @@ export class Pool {
       this.put("6|S", s0);
       return amt; // full refund
     }
+    // min-out floor (msg "mo"): out < mo ⇒ ERR_MO abort — the contract's
+    // p5-fail reverts EVERY write (escrow, books, P/S, fee) and ft2's
+    // resolve sees an empty result ⇒ full refund incl. fee
+    if (snap && BigInt(out) < BigInt(mo!)) {
+      this.s = snap;
+      return amt;
+    }
     // commit (escrow law: release the refund slice, keep the consumed)
     this.put("6|ESCX", this.li_sub(this.bz("6|ESCX"), rem));
     this.put("6|ESCY", this.li_sub(this.bz("6|ESCY"), out));
@@ -286,9 +294,10 @@ export class Pool {
   }
 
   // Y-attach mirror: swarm-down, out-leg from 6|ESCX, fees → FEEY
-  swapY(amt: string): string {
+  swapY(amt: string, mo?: string): string {
     if (this.bz("6|TOKX") === "") return amt;
     if (BigInt(amt) === 0n) return amt;
+    const snap = mo ? new Map(this.s) : null; // abort ⇒ full revert
     const s0 = this.bz("6|S"), p0 = BigInt(this.bz("6|P"));
     const xbook = this.bz("6|X"), ybook = this.bz("6|Y");
     this.put("6|ESCY", this.li_add(this.bz("6|ESCY"), amt));
@@ -306,6 +315,11 @@ export class Pool {
       this.put("6|P", p0.toString());
       this.put("6|S", s0);
       return amt; // full refund
+    }
+    // min-out floor (see swapX)
+    if (snap && BigInt(out) < BigInt(mo!)) {
+      this.s = snap;
+      return amt;
     }
     this.put("6|ESCY", this.li_sub(this.bz("6|ESCY"), rem));
     this.put("6|ESCX", this.li_sub(this.bz("6|ESCX"), out));
