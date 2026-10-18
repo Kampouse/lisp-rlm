@@ -97,6 +97,14 @@ span to revive X-in.
 
 ## Prod checklist (pre-mainnet)
 
+- INVARIANT: no code path may ever WRITE 6|SIMSWAP. The exec sim arms
+  (mint/burn unescrowed) are dead on any live chain because only the
+  near-mock `state import` seeds that key. Do not remove the arms
+  (shipped wasm must equal the tested/suites/parity wasm); do not add
+  a writer (would open an unescrowed token path on mainnet).
+
+## Prod checklist (pre-mainnet)
+
 - [ ] Finding A fixed: burn authority (+ kernel premise + negative tests)
 - [x] Finding B resolved: donate = `ft_transfer_call` nested
       `msg={"a":"donate","i":…}` only; no exec donate arm (2026-10-18)
