@@ -465,15 +465,20 @@
 ;; burn_rel d a b — authority + per-cell non-negativity + support + span
 (define (p5-burn)
   (let* ((inp (near/input))
+         (who (near/predecessor_account_id))
          (d (json-get-str "d" inp))
          (a (str->num (json-get-str "a" inp)))
          (b (str->num (json-get-str "b" inp))))
     ;; thy burn_rel: guards = range, per-cell 0 ≤ lq' i, nonzero support,
-    ;; span bounds. No authority predicate exists in the relation — the
-    ;; pos-key check the v4 skeleton carried was beyond the proof and is
-    ;; dropped (spec-parity; positions remain mint-side bookkeeping).
+    ;; span bounds. Authority lives ABOVE the relation (access control, not
+    ;; pool math — cf. auth_burn_rel in CLMM_Dynamic.thy): the caller must
+    ;; own ≥ d at [a,b] per the POS custody keys, mirroring p5-burnc.
+    ;; v4 carried this check; it was dropped as "beyond the proof" and the
+    ;; 2026-10-17 audit flagged the result as a griefing vector (Finding A).
     (if (or (< b a) (> (- b a) 64))
         (p5-fail "ERR_RANGE")
+    (if (< (li-cmp (p5-bz (p5-poskey who a b)) d) 0)
+        (p5-fail "ERR_AUTH")
     ;; per-cell guard ∀i∈[a,b]. lq i ≥ d  (relation: 0 ≤ lq' i)
     (if (= (loop ((i a))
                  (if (> i b) 1
@@ -491,11 +496,15 @@
                 (begin
                   (p5-put k (li-sub (p5-bz k) d))
                   (recur (+ i 1))))))
+        ;; custody: the caller's POS position shrinks by d (burnc parity —
+        ;; burn consumes the caller's own liquidity, not the cell ledger's)
+        (p5-put (p5-poskey who a b)
+                (li-sub (p5-bz (p5-poskey who a b)) d))
         ;; support: shrink edges exactly — the thy span is IMIN/IMAX
         ;; themselves; walk inward to the first/last nonzero cell, 0/0
         ;; when the span emptied (oracle: support None ≡ bounds 0/0).
         (p5-respan!)
-        (str-cat "burn-ok:" d)))))))
+        (str-cat "burn-ok:" d))))))))
 
 ;; donate_rel v i — lq i += v, nothing else
 (define (p5-donate)
