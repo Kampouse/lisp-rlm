@@ -80,6 +80,21 @@ receipt reverted). Compiler static gate: one call closure's gas literals
 cap at 300 Tgas (250T attach + 30T resolve fits; 300T does not). Unused
 attach self-refunds.
 
+## Swap msg: min-out guard (2026-10-18, commit 38a8cfa5, tx 9G92swR5 redeploy)
+
+Swap msgs take optional `"mo":"<amount>"`: after the walk, `out < mo`
+⇒ ERR_MO — p5-fail aborts the whole receipt (escrow, books, P/S AND the
+fee slice all revert; ft2 resolve sees empty result ⇒ full refund).
+Absent/"0" mo = pre-mo behavior byte-identical. mo compared limb-exact
+(li-cmp); canonical decimal expected. Verified on-chain pool3:
+mo=exact+1 ⇒ state byte-identical after (tx GRV2M1C6…); mo=exact ⇒
+commits (tx HeFNWBhj…); ESC==ft_balance_of holds after both.
+
+Range note: pool3 X-side range is EXHAUSTED (live swap pushed P to
+top, IMAX+1). Up-swaps (X-in) now refund-all by design — degenerate
+revert branch. Trade the Y side or mint a position above the current
+span to revive X-in.
+
 ## Prod checklist (pre-mainnet)
 
 - [ ] Finding A fixed: burn authority (+ kernel premise + negative tests)
