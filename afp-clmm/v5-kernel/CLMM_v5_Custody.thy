@@ -358,4 +358,79 @@ qed
    claims drain the total, so a settled burnc is provably covered at
    burn time (law 4) with the aggregate ledger in lockstep (law 3). *)
 
+
+(* ─── Swap-with-refund composition (2026-10-18, contract b535cae4) ───
+
+A committed partial-fill swap is TWO machine events: the intake
+[EIn (SSwap g f) amt] (g = walked amount, f = fee + rem) followed by
+ERefund rem. leg-decide releases exactly the refund slice from the
+intake escrow (esc += amt at the arm, esc -= rem at the commit), so
+the composite nets: esc +fee, book +walked, held +(amt - rem), paid
++rem. Full-keep is the rem = 0 corner. Uncommitted/degenerate legs and
+mo-guard aborts (out < mo ⇒ p5-fail on the whole receipt) are ZERO
+events - guard failure = identity, the model's stated policy. *)
+
+definition swap_events :: "nat \<Rightarrow> nat \<Rightarrow> nat \<Rightarrow> ev list" where
+  "swap_events amt fee rem =
+     [EIn (SSwap (amt - fee - rem) (fee + rem)) amt, ERefund rem]"
+
+theorem swap_net:
+  assumes le: "fee + rem \<le> amt"
+  shows "crun s (swap_events amt fee rem) =
+    s\<lparr>esc := oadd (esc s) ''E'' fee,
+            book := oadd (book s) ''E'' (amt - fee - rem),
+            held := held s + (amt - rem),
+            intake := intake s + amt,
+            paid := paid s + rem\<rparr>"
+proof (cases "amt = 0")
+  case True
+  then have z: "fee + rem = 0" using le by simp
+  then show ?thesis using True by (simp add: swap_events_def ext)
+next
+  case False
+  have g: "amt - fee - rem + (fee + rem) = amt" using le by simp
+  have guard: "\<not> (amt = 0 \<or> amt - fee - rem + (fee + rem) \<noteq> amt)"
+    using False g by simp
+  have hr: "rem \<le> esc s ''E'' + (fee + rem)" by simp
+  have hh: "rem \<le> held s + amt" using le by simp
+  have hf1: "\<not> (esc s ''E'' + (fee + rem) < rem)" by simp
+  have hf2: "\<not> (held s + amt < rem)" using le by simp
+  show ?thesis using guard hf1 hf2 by (simp add: swap_events_def ext)
+qed
+
+theorem swap_run_funded:
+  assumes fund: "esc_1 s + book_1 s \<le> held s" and le: "fee + rem \<le> amt"
+  shows "esc_1 (crun s (swap_events amt fee rem))
+         + book_1 (crun s (swap_events amt fee rem))
+         \<le> held (crun s (swap_events amt fee rem))"
+proof -
+  from le have g: "amt - fee - rem + fee = amt - rem" by simp
+  have t1: "esc s ''E'' + fee + (book s ''E'' + (amt - fee - rem))
+          = esc s ''E'' + book s ''E'' + (amt - rem)" using g by linarith
+  show ?thesis using fund swap_net[OF le] t1
+    by (simp add: esc_1_def book_1_def)
+qed
+
+theorem swap_run_hp:
+  assumes hp: "held s + paid s = intake s" and le: "fee + rem \<le> amt"
+  shows "held (crun s (swap_events amt fee rem))
+         + paid (crun s (swap_events amt fee rem))
+         = intake (crun s (swap_events amt fee rem))"
+proof -
+  from le have g: "amt - rem + rem = amt" by simp
+  show ?thesis using hp swap_net[OF le] g by simp
+qed
+
+theorem swap_run_owed_eq:
+  assumes eq: "owed s ''E'' = otot s" and le: "fee + rem \<le> amt"
+  shows "owed (crun s (swap_events amt fee rem)) ''E''
+         = otot (crun s (swap_events amt fee rem))"
+  using eq swap_net[OF le] by simp
+
+(* Full-keep corner (rem = 0): the refund leg is a no-op, so the run
+   reduces to the intake alone - the pre-b535cae4 model case. *)
+lemma swap_full_keep_run:
+  "crun s (swap_events amt fee 0) = cstep (EIn (SSwap (amt - fee) fee) amt) s"
+  by (simp add: swap_events_def)
+
 end
