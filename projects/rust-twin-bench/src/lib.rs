@@ -6,7 +6,7 @@ use near_sdk::env;
 use near_sdk::{near, Gas, NearToken, Promise, PromiseOrValue, PromiseResult};
 
 const ARGS: &str = "{\"source\":{\"WasmUrl\":{\"url\":\"https://raw.githubusercontent.com/Kampouse/lisp-rlm/main/examples/btc_avg_json.wasm\",\"hash\":\"0eeb1b8747d5080e1d69f26603c61576ddb51793323ca8f9b518eb28ebae116d\",\"build_target\":\"wasm32-wasip2\"}},\"resource_limits\":{\"max_instructions\":10000000000,\"max_memory_mb\":128,\"max_execution_seconds\":30},\"input_data\":\"{}\",\"response_format\":\"Text\"}";
-const OUTLAYER: &str = "outlayer.testnet";
+const OUTLAYER: &str = "outlayerlocal.testnet";
 const DEPOSIT_YOCTO: u128 = 10_000_000_000_000_000_000_000; // 0.01 NEAR
 
 fn get_str(key: &str) -> String {

@@ -32,8 +32,9 @@ const FILL_BASE: i128 = 1_000_000_000_000;
 const FILL_PER_HOST: i128 = 10_000_000_000;
 /// Safety headroom over the static floor (replay margin measured < 1.5x).
 const FILL_HEADROOM: i128 = 2;
-/// Defensive cap: NEAR's per-transaction gas limit.
-const FILL_CAP: i128 = 300_000_000_000_000;
+/// Defensive cap: NEAR per-transaction attach limit (docs.near.org/protocol/
+/// transactions/gas: "A single transaction can attach at most 1000 Tgas").
+const FILL_CAP: i128 = 1_000_000_000_000_000;
 
 /// Expand every `(gas default)` in-place. Hard error on any `default` we
 /// cannot provably fill (remote callee, undefined local method, non-literal

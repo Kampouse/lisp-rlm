@@ -2481,8 +2481,8 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
 /// never a proof: fires as a warning, never a hard error.
 const CB_FLOOR_BASE: i128 = 1_000_000_000_000; // 1 Tgas: receive + exec any receipt
 const CB_FLOOR_PER_HOST: i128 = 10_000_000_000; // 10 Ggas per host op (>= realistic mins)
-/// Mainnet per-transaction prepaid gas cap.
-const GAS_TX_CAP: i128 = 300_000_000_000_000; // 300 Tgas
+/// Per-transaction attach cap per docs (1000 Tgas, docs.near.org gas page).
+const GAS_TX_CAP: i128 = 1_000_000_000_000_000; // 1000 Tgas
 const U128_MAX_DEC: &str = "340282366920938463463374607431768211455";
 
 /// (expected_arity, gas_slot, amount_slot) in emitter coords.
