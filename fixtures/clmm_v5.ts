@@ -316,6 +316,112 @@ export class Pool {
     return rem; // refund = remainder
   }
 
+  // ── p5-quote: zero-write preview, NO fee skim (caller pre-skims) ──
+  // "q:<out>:rm:<rm>"; negative v (down) strips its sign first
+  quote(vSigned: string): string {
+    const neg = vSigned.startsWith("-");
+    const v = neg ? vSigned.slice(1) : vSigned;
+    if (BigInt(v) === 0n) return "q:0:0";
+    const s = this.bz("6|S"), p = BigInt(this.bz("6|P"));
+    return neg ? this.qarmDn(s, p, v) : this.qarmUp(s, p, v);
+  }
+  private qarmUp(s: string, p: bigint, v: string): string {
+    const imax = BigInt(this.bz("6|IMAX"));
+    const gmax = this.G(Number(imax) + 1);
+    let q = p, ss = BigInt(s), acc = 0n, rm = BigInt(v);
+    for (;;) {
+      if (rm === 0n || ss >= gmax || q >= imax + 1n)
+        return "q:" + acc.toString() + ":rm:" + rm.toString();
+      const L = this.bz("6|LQ:" + q);
+      const gh = this.G(Number(q) + 1);
+      const dx = BigInt(this.dx(L, ss.toString(), gh.toString()));
+      if (dx <= rm) {
+        acc += dx === 0n ? 0n : BigInt(this.dy(L, ss.toString(), gh.toString()));
+        rm -= dx;
+        q += 1n; ss = gh;
+        continue;
+      }
+      const s2 = BigInt(this.sfdx(L, ss.toString(), rm.toString()));
+      return "q:" + (acc + BigInt(this.dy(L, ss.toString(), s2.toString()))).toString() + ":rm:0";
+    }
+  }
+  private qarmDn(s: string, p: bigint, v: string): string {
+    const imin = BigInt(this.bz("6|IMIN"));
+    const gmin = this.G(Number(imin));
+    let q = p, ss = BigInt(s), acc = 0n, rm = BigInt(v);
+    for (;;) {
+      if (rm === 0n || ss <= gmin || q <= imin)
+        return "q:" + acc.toString() + ":rm:" + rm.toString();
+      const L = this.bz("6|LQ:" + q);
+      const gl = this.G(Number(q) - 1);
+      const dyi = BigInt(this.dyi(L, ss.toString(), gl.toString()));
+      if (dyi <= rm) {
+        acc += dyi === 0n ? 0n : BigInt(this.dxo(L, ss.toString(), gl.toString()));
+        rm -= dyi;
+        q -= 1n; ss = gl;
+        continue;
+      }
+      const s2 = BigInt(this.sfdyi(L, ss.toString(), rm.toString()));
+      return "q:" + (acc + BigInt(this.dxo(L, ss.toString(), s2.toString()))).toString() + ":rm:0";
+    }
+  }
+
+  // ── safe frontend API: the raw wire formats become private details ──
+
+  // preview a real swap of `amt`: fee skim first (the raw quote walks the
+  // gross amount), then the walk. out is exact — quote(amt−fee).out equals
+  // the executed swap's LAST out.
+  quoteSwap(amt: string, dir: "x" | "y"): { out: string; refunded: string; kept: string; fee: string } {
+    const fee = BigInt(this.shr8(amt));
+    const q = this.quote(dir === "x" ? (BigInt(amt) - fee).toString() : "-" + (BigInt(amt) - fee).toString());
+    const [out, rm] = q.slice(2).split(":rm:");
+    const kept = BigInt(amt) - BigInt(rm);
+    return { out, refunded: rm, kept: kept.toString(), fee: fee.toString() };
+  }
+
+  // trap 1: the chain result of a swap leg is "used:<kept>" — kept, NOT
+  // spent. Never show `used` as the spent amount.
+  static parseSwapResult(amt: string, usedStr: string): { kept: string; refunded: string } {
+    const kept = BigInt(usedStr.replace("used:", ""));
+    return { kept: kept.toString(), refunded: (BigInt(amt) - kept).toString() };
+  }
+
+  // trap 3: get_state enumerates only NONZERO LQ cells — parseState
+  // materializes the full zero-filled ladder over [IMIN..IMAX] so callers
+  // can never misindex the orderbook by assuming dense or sparse arrays.
+  static parseState(s: string): {
+    S: string; P: string; X: string; Y: string; imin: number; imax: number;
+    last: string; escx: string; escy: string; shift: string; feex: string; feey: string;
+    ticks: { tick: number; lq: string }[];
+  } {
+    const kv = new Map<string, string>();
+    const ticks: { tick: number; lq: string }[] = [];
+    const re = /(-?\d+)\|(\d+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(s)) !== null) ticks.push({ tick: Number(m[1]), lq: m[2] });
+    // LAST embeds colons ("swap-out:<out>:rem:<rem>") — extract it first,
+    // then pair the remaining colon-delimited K:V fields
+    const lastM = /LAST:(swap-out:\d+:rem:\d+|0)(:|$)/.exec(s);
+    const last = lastM ? lastM[1] : "0";
+    const rest = s.replace(/LAST:(swap-out:\d+:rem:\d+|0)/, "LASTX");
+    const parts = rest.split(":");
+    for (let i = 0; i + 1 < parts.length; i += 2) {
+      if (parts[i] === "LQ") continue; // "<tick>|<lq>" pair — handled above
+      kv.set(parts[i], parts[i + 1]);
+    }
+    const g = (k: string): string => kv.get(k) ?? "";
+    const imin = Number(g("IMIN")), imax = Number(g("IMAX"));
+    const byTick = new Map(ticks.map(t => [t.tick, t.lq]));
+    const ladder: { tick: number; lq: string }[] = [];
+    for (let i = imin; i <= imax; i++) ladder.push({ tick: i, lq: byTick.get(i) ?? "0" });
+    return {
+      S: g("S"), P: g("P"), X: g("X"), Y: g("Y"),
+      imin, imax, last, escx: g("ESCX"), escy: g("ESCY"),
+      shift: g("SHIFT") || "8", feex: g("FEEX"), feey: g("FEEY"),
+      ticks: ladder,
+    };
+  }
+
   getState(): string {
     // p5-state: S:P:X:Y:IMIN:IMAX then :LQ:<i>|<v> for every NONZERO cell
     // in [IMIN..IMAX], then :LAST:ESCX:ESCY:TOKX:TOKY:SHIFT:FEEX:FEEY.

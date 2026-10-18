@@ -49,6 +49,9 @@ async function main(): Promise<void> {
       case "req":
         ret = p.positionRequirements(o.d!, o.lo!, o.hi!);
         break;
+      case "quote":
+        ret = p.quote(o.amt!);
+        break;
       default:
         ret = "unknown-op";
     }

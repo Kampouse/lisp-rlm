@@ -25,6 +25,8 @@ SEED = str(5 * 10**25)
 FUND = str(10**30)
 SWAP = str(10**21)
 SWAP_BIG = str(10**23)
+SKIM = str(10**21 - (10**21 >> 8))          # swap amt minus fee — quote(skim) law
+SKIM2 = str(10**22 - (10**22 >> 8))
 
 # scenarios: name → ops. rx=None ⇒ harness resolves via position_requirements
 # on the mock first, then feeds the resolved amounts to both engines.
@@ -35,6 +37,7 @@ SCENARIOS = {
         {"op": "seed", "tok": "y", "amt": SEED},
         {"op": "req", "d": D, "lo": -8, "hi": 8},
         {"op": "mint", "d": D, "lo": -8, "hi": 8, "rx": None, "ry": None},
+        {"op": "quote", "amt": SKIM},
         {"op": "swap", "tok": "x", "amt": SWAP},
         {"op": "req", "d": D, "lo": 0, "hi": 8},
     ],
@@ -51,8 +54,11 @@ SCENARIOS = {
         {"op": "seed", "tok": "x", "amt": SEED},
         {"op": "seed", "tok": "y", "amt": SEED},
         {"op": "mint", "d": D, "lo": -8, "hi": 8, "rx": None, "ry": None},
+        {"op": "quote", "amt": "-" + SKIM},
         {"op": "swap", "tok": "y", "amt": SWAP},
+        {"op": "quote", "amt": "-" + SKIM2},
         {"op": "swap", "tok": "y", "amt": str(10**22)},
+        {"op": "quote", "amt": SKIM},
         {"op": "swap", "tok": "x", "amt": SWAP},
     ],
     "overshoot": [
@@ -131,6 +137,8 @@ def mock_lines(wasm: str, ft: str, tmp: str, ops: list) -> list:
         elif o["op"] == "req":
             ret = cross("pool.tst", "position_requirements",
                         {"d": o["d"], "a": str(o["lo"]), "b": str(o["hi"])})
+        elif o["op"] == "quote":
+            ret = cross("pool.tst", "quote", {"v": o["amt"]})
         lines.append("RET:" + ret)
         st = cross("pool.tst", "get_state", {})
         st = re.sub(r":TOKX:[^:]*:TOKY:[^:]*:", ":TOKX:T:TOKY:T:", st)
@@ -165,9 +173,18 @@ def main() -> None:
         if diffs:
             i, a, b = diffs[0]
             fails.append(f"{name}: first diff at line {i}\n  mock: {a[:220]}\n  twin: {b[:220]}")
-        else:
-            total += len(ml)
-            print(f"{name}: {len(ml)} lines byte-exact OK")
+            continue
+        # law: quote(skim(amt)) out == executed swap's LAST out — per engine
+        for eng, ls in (("mock", ml), ("twin", tl)):
+            for i in range(len(ls) - 2):
+                if ls[i].startswith("RET:q:") and ls[i + 2].startswith("STATE:") \
+                        and "LAST:swap-out:" in ls[i + 2]:
+                    qout = ls[i][6:].split(":rm:")[0]
+                    sout = ls[i + 2].split("LAST:swap-out:")[1].split(":rem:")[0]
+                    if qout != sout:
+                        fails.append(f"{name} [{eng}]: quote/swap law broken: {qout} != {sout}")
+        total += len(ml)
+        print(f"{name}: {len(ml)} lines byte-exact OK")
     print()
     if fails:
         for f in fails:
