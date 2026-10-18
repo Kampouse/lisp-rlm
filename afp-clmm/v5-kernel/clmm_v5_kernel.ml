@@ -1,4 +1,25 @@
-module CLMM_v5_Kernel = struct
+module CLMM_v5_Kernel : sig
+  type int
+  type num
+  type nat
+  val g : int -> int
+  val dx_in : int -> int -> int -> int
+  val dy_in : int -> int -> int -> int
+  val isqrt : int -> int
+  val dx_out : int -> int -> int -> int
+  val dy_out : int -> int -> int -> int
+  val fee_eff : int -> int -> int
+  val s_for_dy_in : int -> int -> int -> int
+  val s_for_dx_in : int -> int -> int -> int
+  val quote_x_in_fee :
+    (int -> int) -> int -> int -> int -> int -> int -> int -> int * (int * int)
+  val quote_y_in_fee :
+    (int -> int) -> int -> int -> int -> int -> int -> int -> int * (int * int)
+  val quote_x_in_gross :
+    (int -> int) -> int -> int -> int -> int -> int -> int -> int * (int * int)
+  val quote_y_in_gross :
+    (int -> int) -> int -> int -> int -> int -> int -> int -> int * (int * int)
+end = struct
 
 type int = Int_of_integer of Z.t;;
 
@@ -234,8 +255,7 @@ let rec walk_dn
                              (minus_nat fuel one_nata) (plus_int acc dxo)
                              (minus_int rem dyi)
                       else (let s2a = s_for_dy_in l s rem in
-                             (plus_int acc (dx_out l s s2a),
-                               (s2a, minus_int p one_inta)))))));;
+                             (plus_int acc (dx_out l s s2a), (s2a, p)))))));;
 
 let rec modulo_integer k l = snd (divmod_integer k l);;
 

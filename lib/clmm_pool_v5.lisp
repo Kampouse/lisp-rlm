@@ -572,9 +572,13 @@
                               v0)
                        (let ((s2 (p5-sfdyi L ss rm)))
                          (begin
-                           ;; s2 lands strictly inside the cell BELOW pp
-                           ;; ([G(gl), G(pp))) — thy P' = lower_tick(s').
-                           (p5-put "6|P" (to-string (- pp 1)))
+                           ;; s2 lands strictly INSIDE cell pp: the full-cell
+                           ;; dyi exceeded rm, else the branch above hopped —
+                           ;; so gl < s2 ≤ ss < G(pp). The active cell is the
+                           ;; one CONTAINING the new price ⇒ P stays pp.
+                           ;; (Old pp-1 stranded P one cell below S and froze
+                           ;; later up-walks — seeds 16/34, 2026-10-17.)
+                           (p5-put "6|P" (to-string pp))
                            (p5-put "6|S" s2)
                            (str-cat (li-add acc (p5-dxo L ss s2))
                                     (str-cat "|" "0")))))))))))

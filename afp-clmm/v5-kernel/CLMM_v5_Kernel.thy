@@ -84,7 +84,13 @@ fun walk_dn :: "(int => int) => int => int => int => nat => int => int => int * 
           in if dyi <= rem
              then walk_dn LQ S2 (P - 1) imin fuel (acc + dxo) (rem - dyi)
              else let S2' = S_for_dy_in L S rem
-                  in (acc + dx_out L S S2', S2', P - 1))"
+                  in (acc + dx_out L S S2', S2', P))"
+(* Partial down-consumption: S2' lies strictly inside cell P
+   ([G(P-1), G(P))) because the full-cell dy_in exceeded the remainder —
+   otherwise the branch above would have hopped. The active cell is the
+   cell CONTAINING the new price, so P is unchanged. (The previous
+   P - 1 stranded P one cell below S and froze subsequent up-walks:
+   seeds 16/34 differential finding, 2026-10-17.) *)
 
 fun walk_up :: "(int => int) => int => int => int => nat => int => int => int * int * int" where
   "walk_up LQ S P imax 0 acc rem = (acc, S, P)"

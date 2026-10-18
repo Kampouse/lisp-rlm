@@ -428,6 +428,12 @@ fn pool_v5_fuzz_differential() {
                     .map(|(a, sd, f)| (a, sd, f))
                     .unwrap_or((0, "y", true));
                 let want = oracle.ask(side, prev_s, prev_p, imin, imax, amt, 8, &lq, fee);
+                if std::env::var("FUZZ_TRACE").is_ok() {
+                    eprintln!(
+                        "[trace] op {i} swap-{side} fee {fee} amt {amt}\n  prev {prev_s}:{prev_p}\n  view  {s}:{p} imin {imin} imax {imax}\n  lq {lq:?}\n  want  {}:{}",
+                        want.s, want.p
+                    );
+                }
                 assert_eq!(
                     (s, p),
                     (want.s, want.p),
