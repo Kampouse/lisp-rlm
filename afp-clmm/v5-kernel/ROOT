@@ -2,3 +2,4 @@ session "CLMM_v5_Kernel" = "HOL" +
   sessions "HOL-Library"
   theories
     CLMM_v5_Kernel
+    CLMM_v5_Custody
