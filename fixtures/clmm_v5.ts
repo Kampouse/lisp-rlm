@@ -405,7 +405,8 @@ export class Pool {
   // can never misindex the orderbook by assuming dense or sparse arrays.
   static parseState(s: string): {
     S: string; P: string; X: string; Y: string; imin: number; imax: number;
-    last: string; escx: string; escy: string; shift: string; feex: string; feey: string;
+    last: string; escx: string; escy: string; tokx: string; toky: string;
+    shift: string; feex: string; feey: string;
     ticks: { tick: number; lq: string }[];
   } {
     const kv = new Map<string, string>();
@@ -431,9 +432,25 @@ export class Pool {
     return {
       S: g("S"), P: g("P"), X: g("X"), Y: g("Y"),
       imin, imax, last, escx: g("ESCX"), escy: g("ESCY"),
+      tokx: g("TOKX"), toky: g("TOKY"),
       shift: g("SHIFT") || "8", feex: g("FEEX"), feey: g("FEEY"),
       ticks: ladder,
     };
+  }
+
+  // ── live client constructor: hydrate the twin from a real get_state ──
+  static fromState(s: string): Pool {
+    const st = Pool.parseState(s);
+    const p = new Pool();
+    const put = (k: string, v: string): void => { p.s.set(k, v); };
+    put("6|S", st.S); put("6|P", st.P); put("6|X", st.X); put("6|Y", st.Y);
+    put("6|IMIN", String(st.imin)); put("6|IMAX", String(st.imax));
+    put("6|ESCX", st.escx); put("6|ESCY", st.escy);
+    put("6|TOKX", st.tokx); put("6|TOKY", st.toky);
+    put("6|SHIFT", st.shift); put("6|FEEX", st.feex); put("6|FEEY", st.feey);
+    put("6|LAST", st.last);
+    for (const t of st.ticks) put("6|LQ:" + t.tick, t.lq);
+    return p;
   }
 
   getState(): string {
