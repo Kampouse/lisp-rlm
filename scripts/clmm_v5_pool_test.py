@@ -103,6 +103,14 @@ class Oracle:
         self.lq = {}            # point -> L (sparse; missing = 0)
         self.x = 0
         self.y = 0
+        # Finding A authority ledger: POS[(who,a,b)] — what the caller may
+        # burn. (who = the mock signer "alice"; the battery is single-owner.)
+        self.pos = {}
+        # The pool CARRIES its walk pointer in storage (6|P); it never
+        # re-derives P from S. The oracle mirrors the ledger: swaps move
+        # self._p; mint/burn/donate never touch it (the contract has no
+        # 6|P write outside the swap arms + init).
+        self._p = 0
 
     def support(self):
         nz = sorted(i for i, v in self.lq.items() if v != 0)
@@ -120,28 +128,12 @@ class Oracle:
         return self.lq.get(i, 0)
 
     def p(self):
-        """P = lower_tick: largest grid point with G(p) ≤ s.
-        s is always within [G(imin), G(imax+1)) — swap walks clamp at the span
-        edges — so search the support neighborhood, not ±PMAX (each extreme
-        _G is a million-digit bigint pow)."""
-        sp = self.support()
-        if sp is None:
-            lo, hi = -2, 2
-        else:
-            hi = sp[1] + 2
-            # s may sit far BELOW the span after burns shrink support under it;
-            # exponential probe downward (each G is cached, ticks stay small in
-            # practice; the probe doubles until G(lo) ≤ s or PMAX floor).
-            lo = sp[0]
-            while lo > -PMAX and G(lo) > self.s:
-                lo = max(-PMAX, lo * 2 - sp[0] - 8)
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            if G(mid) <= self.s:
-                lo = mid
-            else:
-                hi = mid - 1
-        return lo
+        """The pool's WALK POINTER (6|P): carried in storage, never
+        re-derived from S. Swaps move it (partial branch pins P inside
+        the cell; full hops walk it); mint/burn/donate NEVER touch it —
+        the contract has no 6|P write outside the swap arms + init."""
+        return self._p
+
 
     def quote(self, v):
         """swap_rel projection: (out, rem). up: v>0 sells x. down: v<0."""
@@ -154,7 +146,7 @@ class Oracle:
             gmax = G(sp[1] + 1)
             if os.environ.get("V5_TRACE"):
                 print(f"[quote up v={v} s={self.s} sp={sp}]", file=sys.stderr)
-            s, p, acc, rm = self.s, self.p(), 0, v
+            s, p, acc, rm = self.s, self._p, 0, v
             _guard = 0
             while rm > 0 and s < gmax:
                 _guard += 1
@@ -219,20 +211,24 @@ class Oracle:
     class Reject(Exception):
         pass
 
-    def mint(self, d, a, b):
+    def mint(self, d, a, b, who="alice"):
         if b < a or b - a > 64 or d <= 0:
             raise Oracle.Reject
         for i in range(a, b + 1):
             self.lq[i] = self.cell(i) + d
+        self.pos[(who, a, b)] = self.pos.get((who, a, b), 0) + d
 
-    def burn(self, d, a, b):
+    def burn(self, d, a, b, who="alice"):
         if b < a or b - a > 64:
             raise Oracle.Reject
+        if self.pos.get((who, a, b), 0) < d:
+            raise Oracle.Reject   # Finding A: authority = own POS >= d
         for i in range(a, b + 1):
             if self.cell(i) < d:
                 raise Oracle.Reject
         for i in range(a, b + 1):
             self.lq[i] = self.cell(i) - d
+        self.pos[(who, a, b)] = self.pos.get((who, a, b), 0) - d
 
     def donate(self, v, i):
         if v < 0:
@@ -256,7 +252,7 @@ class Oracle:
         if v > 0:
             sp = self.support()
             gmax = G(sp[1] + 1)
-            s, p = self.s, self.p()
+            s, p = self.s, self._p
             rm = v
             while rm > 0 and s < gmax:
                 L = self.cell(p)
@@ -281,7 +277,7 @@ class Oracle:
         else:
             sp = self.support()
             gmin = G(sp[0])
-            s, p = self.s, self.p()
+            s, p = self.s, self._p
             rm = -v
             while rm > 0 and s > gmin:
                 L = self.cell(p)
@@ -312,6 +308,18 @@ class Pool:
         self.wasm = wasm
         self.state = state
         self.n = 0
+
+    def import_key(self, key, value):
+        """Merge-seed one storage key into pool state (Finding C prod-gate)."""
+        import base64
+        rows = [{"account": "pool",
+                 "key": base64.b64encode(key.encode()).decode(),
+                 "value": base64.b64encode(value.encode()).decode()}]
+        r = subprocess.run([MOCK, "state", "import", self.state, "-"],
+                           input=json.dumps(rows), capture_output=True,
+                           text=True, timeout=60)
+        if r.returncode != 0:
+            raise RuntimeError(f"state import failed: {r.stdout} {r.stderr}")
 
     def call(self, op, args, signer="alice", expect_ok=True):
         manifest = f"pool={self.wasm}"
@@ -396,7 +404,7 @@ def main():
     def check(tag):
         """full-state equality: oracle vs contract storage."""
         if os.environ.get("V5_TRACE"):
-            print(f"[check {tag}] oracle s={o.s} p={o.p()} imin={o.imin()} imax={o.imax()} "
+            print(f"[check {tag}] oracle   s={o.s} p={o.p()} imin={o.imin()} imax={o.imax()} "
                   f"lq={ {k: v for k, v in sorted(o.lq.items()) if v} }", file=sys.stderr)
         rows = pool_rows(state)
         def gv(k, d="0"):
@@ -407,6 +415,8 @@ def main():
         cs = int(gv("S")); cp = int(gv("P"))
         cx = int(gv("X")); cy = int(gv("Y"))
         cmin = int(gv("IMIN")); cmax = int(gv("IMAX"))
+        if os.environ.get("V5_TRACE"):
+            print(f"[check {tag}] CONTRACT s={cs} p={cp} imin={cmin} imax={cmax}")
         olq = {i: v for i, v in o.lq.items() if v != 0}
         clq = {}
         for k, v in rows.items():
@@ -432,6 +442,17 @@ def main():
     if rc != 0:
         fails.append("init failed")
     check("boot")
+    # Finding C prod-gate: init never writes 6|SIMSWAP — verify the gross
+    # arm is dead, then arm it for this sim run via direct state import.
+    rc, out = pool.call("swap", {"v": "1000"})
+    if out != "ERR_SIM_ONLY":
+        fails.append(f"prod-gate: gross swap not gated: {out}")
+    pool.import_key("6|SIMSWAP", "1")
+    # Finding B: custody donate rides ft_transfer_call msg="don:<i>" —
+    # the _run variant no longer exists (dispatch answers unknown-op).
+    rc, out = pool.call("donate", {"v": "1", "i": "0"}, expect_ok=False)
+    if out != "unknown-op":
+        fails.append(f"prod-gate: _run donate still alive: {out}")
 
     rng = random.Random(args.seed)
 
@@ -446,7 +467,6 @@ def main():
         ("e7 swap up crossing", "swap", {"v": str(10**16)}),
         ("e8 burn too much (reject)", "burn", {"d": str(10**13), "a": "-2", "b": "2"}),
         ("e9 burn half", "burn", {"d": str(10**12), "a": "-2", "b": "2"}),
-        ("e10 donate", "donate", {"v": str(10**10), "i": "0"}),
         ("e11 swap zero", "swap", {"v": "0"}),
     ]
     for tag, op, margs in EDGE:
@@ -465,8 +485,6 @@ def main():
                 o.burn(int(margs["d"]), int(margs["a"]), int(margs["b"]))
             except Oracle.Reject:
                 pass
-        elif op == "donate":
-            o.donate(int(margs["v"]), int(margs["i"]))
         check(tag)
 
     # quote-vs-swap parity at the edge battery's e4 point is implicit in
@@ -509,13 +527,6 @@ def main():
                 except Oracle.Reject:
                     if rc == 0:
                         fails.append(f"f{t} burn should reject: {out}")
-        elif roll < 0.52:
-            i = rng.randint(-4, 6)
-            v = rng.randint(0, 10**11)
-            if os.environ.get("V5_TRACE"):
-                print(f"[donate {v} @ {i}]", file=sys.stderr)
-            pool.call("donate", {"v": str(v), "i": str(i)})
-            o.donate(v, i)
         else:
             mag = rng.choice([10**10, 10**13, 10**15, 10**17, 10**19])
             v = rng.randint(1, mag) * rng.choice([1, -1])

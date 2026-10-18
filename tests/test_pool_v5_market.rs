@@ -327,7 +327,32 @@ fn pool_v5_market_two_sided_sim() {
         18_446_754_882_618_868_780,
         "state reversal: S pinned at the fee-shifted restore point"
     );
-    assert_eq!(key_i128(&m, "P"), 0, "state reversal: P restored");
+    // P is the walker's STOP pointer and is direction-dependent: an
+    // up-walk stores the partial cell it halted in; a down-walk stores
+    // the last boundary it crossed (contract convention, kernel-locked,
+    // differential-seed green). A round trip therefore need not return
+    // P to the boot bit. What IS pinned: the price — S above, and here
+    // S must sit back in the BOOT cell [G(0), G(1)) (G via the
+    // contract's own `g` view op), with P within one cell of boot.
+    {
+        let p_post = key_i128(&m, "P");
+        assert!(p_post == 0 || p_post == 1, "P within one cell of boot, got {p_post}");
+        let s_post = key_i128(&m, "S");
+        let g0: i128 = m
+            .ret(&m.pool_op("{\"op\":\"g\",\"i\":\"0\"}"))
+            .trim_start_matches("g:")
+            .parse()
+            .expect("G(0) view");
+        let g1: i128 = m
+            .ret(&m.pool_op("{\"op\":\"g\",\"i\":\"1\"}"))
+            .trim_start_matches("g:")
+            .parse()
+            .expect("G(1) view");
+        assert!(
+            s_post >= g0 && s_post < g1,
+            "S restored into the boot cell: G(0)={g0} <= S={s_post} < G(1)={g1}"
+        );
+    }
     assert_eq!(
         bal(&m, "tokx.tst", "pool.tst") - pool_x0,
         190_126_456,

@@ -50,7 +50,7 @@ unchanged, matching the layering. Negative tests:
 `refund_reject_paths`-style probe + fuzz harness burn path now runs as the
 position owner.
 
-### B — `donate` is open (LOW-MED, design decision)
+### B — `donate` was open (LOW-MED — RESOLVED 2026-10-18)
 Anyone can credit LQ at any cell — including cells outside the current
 support (widens IMIN/IMAX). No funds required. Griefing vector: inflate LQ
 at a dead cell to widen the walk span (gas cost for walkers) or dilute fee
@@ -59,7 +59,14 @@ yes. Cheapest hardening: require `donate` funds to arrive via
 `ft_transfer_call msg=donate:<i>` so LQ only grows against escrowed tokens
 (burnc's float cap already assumes this discipline).
 
-### C — `_run swap` (gross) moves books without token escrow (MED)
+**Resolution (2026-10-18): the `_run` donate arm is DELETED.** Donations
+ride `ft_on_transfer` with `msg="don:<i>"` (`p5-donate-leg`): predecessor
+must be a pool token, amount is the donation, garbage/unparseable/zero ⇒
+full refund with zero state change — LQ only grows against escrowed
+tokens. The dispatch answers `unknown-op` for `_run {"op":"donate"}`
+(pinned by the Python edge battery).
+
+### C — `_run swap` (gross) moved books without token escrow (MED — RESOLVED 2026-10-18)
 The gross swap op debits no token contract — it trusts the caller sent
 tokens in the SAME tx? It does not: there is no way to attach a NEP-141
 transfer to `_run`. Audit of `p5-swap` (op path) shows it walks P/S and
@@ -70,6 +77,15 @@ op it must be view-only; if it is meant to settle trades it must be fed by
 prod; if settle-path, either wire it to ft_on_transfer or remove the `_run`
 variant from prod (keep for the differential harness which uses it as the
 oracle-vs-contract gross channel — but then PROD wasm should drop it).
+
+**Resolution (2026-10-18): runtime-gated sim-only.** The gross arm fires
+ONLY when storage key `6|SIMSWAP` = "1"; otherwise it returns
+`ERR_SIM_ONLY` with zero state change. `init` never writes that key and
+no op can write it, so on any live deploy the arm is permanently dead —
+near-mock drivers (differential, edge battery) seed it via `state
+import` and keep the oracle channel. Negative tests pin the gate: the
+fuzz + invariants suites and the Python battery all assert `ERR_SIM_ONLY`
+BEFORE arming.
 
 ### D — `init` squatting (LOW, runbook item)
 `init` is first-caller-wins. Deploy runbook: call `init` immediately in the
@@ -104,9 +120,10 @@ the payout promise (reentrancy-safe single-threaded receipts) ✓.
 
 1. (prod-blocker) Finding A: add authority to burn + kernel premise;
    negative test in fuzz + differential.
-2. (decision) Finding B: donate funding rule.
-3. (decision) Finding C: gross swap = sim-only (make it view) or wire to
-   ft_on_transfer; keep `_run` variant only in the harness build.
+2. RESOLVED Finding B (2026-10-18): donate = `ft_transfer_call
+   msg="don:<i>"` only; `_run` arm deleted.
+3. RESOLVED Finding C (2026-10-18): gross `_run swap` runtime-gated on
+   6|SIMSWAP (never set in prod); sim harness arms via state import.
 4. (runbook) D: init-in-same-batch; document.
 5. (prod) E/F/G: no action.
 6. (prod) pause switch: optional `6|PAUSE` checked in on-transfer/claim;

@@ -36,8 +36,9 @@
 ;; grd_max = G(IMAX+1). Swap clamped to the span = maximal swap_rel
 ;; instance; remainder refunded (a smaller v is still a valid swap_rel).
 ;;
-;; C1 SCOPE: _run-only. Books 6|X/6|Y move ONLY in swaps
-;; (consumed in / quoted out, exact).
+;; C1 SCOPE: gross `_run swap` is PROD-GATED on 6|SIMSWAP (sim-only arm;
+;; near-mock state import seeds it, init never does) — books 6|X/6|Y move
+;; against real tokens only via ft_on_transfer.
 ;; C2a (committed eeeb50eb): swap custody on the v4/NEP-141 pattern.
 ;; ft_on_transfer accepts TOKX/TOKY deposits: msg "seed" credits the pool
 ;; float (ESCX/ESCY — out-leg funding; escrow inflow mirrors the intake
@@ -506,22 +507,6 @@
         (p5-respan!)
         (str-cat "burn-ok:" d))))))))
 
-;; donate_rel v i — lq i += v, nothing else
-(define (p5-donate)
-  (let* ((inp (near/input))
-         (v (json-get-str "v" inp))
-         (i (str->num (json-get-str "i" inp)))
-         (k (p5-lqkey i)))
-    (begin
-      (p5-put k (li-add (p5-bz k) v))
-      (if (< i (str->num (p5-bz "6|IMIN")))
-          (p5-put "6|IMIN" (to-string i))
-          0)
-      (if (> i (str->num (p5-bz "6|IMAX")))
-          (p5-put "6|IMAX" (to-string i))
-          0)
-      (str-cat "donate-ok:" v))))
-
 ;; ── swap: swap_rel v P s P' s', clamped to the span ────────────────────
 ;; direction up: v > 0, sell x (input X ≤ v) → out Y.
 ;; direction down: v < 0, sell y → out X.
@@ -657,22 +642,34 @@
               0)
           msg)))))
 
+;; PROD-GATED (Finding C, 2026-10-18): the gross arm moves books/P/S with
+;; no token attached — sim-settling. Live it fires ONLY when 6|SIMSWAP is
+;; set; init NEVER writes that key and no op can, so the prod arm is
+;; permanently dead. near-mock drivers (differential, edge battery)
+;; seed 6|SIMSWAP="1" via `state import` and keep the oracle channel.
 (define (p5-swap)
-  (let ((inp (near/input)))
-  (let ((v (json-get-str "v" inp)))
-  (let ((neg (if (str= (str-slice v 0 1) "-") 1 0)))
-  (let ((v (if (= neg 1) (str-slice v 1 (str-len v)) v)))
-  (let ((s (p5-bz "6|S")))
-  (let ((p (str->num (p5-bz "6|P"))))
-  (let ((xbook (p5-bz "6|X")))
-  (let ((ybook (p5-bz "6|Y")))
-    (if (= (str-len (p5-bz "6|TOKX")) 0)
-        "ERR_INIT"
-    (if (= (li-cmp v "0") 0)
-        "swap-zero"
-    (if (= neg 1)
-        (p5-swarm-dn s p xbook ybook v 0)
-        (p5-swarm-up s p xbook ybook v 0)))))))))))))
+  ;; PROD-GATE (Finding C, 2026-10-18): the gross arm moves books/P/S with
+  ;; no token attached — sim-settle. Live it fires ONLY when 6|SIMSWAP="1";
+  ;; init never writes that key and no op can, so the prod arm is dead.
+  ;; near-mock drivers (differential + edge battery) seed it via state
+  ;; import and keep the oracle channel.
+  (if (str= (p5-bz "6|SIMSWAP") "1")
+      (let ((inp (near/input)))
+      (let ((v (json-get-str "v" inp)))
+      (let ((neg (if (str= (str-slice v 0 1) "-") 1 0)))
+      (let ((v (if (= neg 1) (str-slice v 1 (str-len v)) v)))
+      (let ((s (p5-bz "6|S")))
+      (let ((p (str->num (p5-bz "6|P"))))
+      (let ((xbook (p5-bz "6|X")))
+      (let ((ybook (p5-bz "6|Y")))
+        (if (= (str-len (p5-bz "6|TOKX")) 0)
+            "ERR_INIT"
+        (if (= (li-cmp v "0") 0)
+            "swap-zero"
+        (if (= neg 1)
+            (p5-swarm-dn s p xbook ybook v 0)
+            (p5-swarm-up s p xbook ybook v 0))))))))))))
+      "ERR_SIM_ONLY"))
 ;; ── custody (arc C2a): swap leg only ───────────────────────────────────
 ;; NEP-141 entry: predecessor must be 6|TOKX or 6|TOKY; msg side-tags the
 ;; operation ("sw"). 6|X/6|Y are flow ledgers (both rise on every swap),
@@ -714,6 +711,30 @@
               (str-slice s start e)
               (recur (+ k 1) (+ e 1)))))))
 
+;; donate_rel v i — lq i += v, nothing else. CUSTODY (Finding B fix,
+;; 2026-10-18): donations ride ft_transfer_call msg "don:<i>" (predecessor
+;; = a pool token, amount validated) so LQ only grows against escrowed
+;; tokens; the _run variant is gone. v = amt, i = parsed from msg; failure
+;; to parse ⇒ full refund, zero state.
+(define (p5-donate-leg amt)
+  (let ((msg (json-get-str "msg" (near/input))))
+  (let ((rest (if (> (str-len msg) 4) (str-slice msg 4 (str-len msg)) "")))
+  (let ((ok (p5-num-ok? rest)))
+  (let ((i (str->num rest)))
+    (if (or (= ok "0")
+            (= (str-len rest) 0)
+            (= (li-cmp amt "0") 0))
+        (near/return amt)
+    (let ((k (p5-lqkey i)))
+      (begin
+        (p5-put k (li-add (p5-bz k) amt))
+        (if (< i (str->num (p5-bz "6|IMIN")))
+            (p5-put "6|IMIN" (to-string i))
+            0)
+        (if (> i (str->num (p5-bz "6|IMAX")))
+            (p5-put "6|IMAX" (to-string i))
+            0)
+        (near/return "0")))))))))
 (define (p5-on-transfer)
   (let ((inp (near/input)))
     (let ((sender (json-get-str "sender_id" inp)))
@@ -729,7 +750,9 @@
                           ;; swap out-legs; mint custody escrows its own)
                           (p5-put "6|ESCX" (li-add (p5-bz "6|ESCX") amt))
                           (near/return "0"))
-                        (p5-mint-leg sender amt)))
+                        (if (str= (str-slice (json-get-str "msg" inp) 0 3) "don")
+                            (p5-donate-leg amt)
+                            (p5-mint-leg sender amt))))
                 (if (str= (near/predecessor_account_id) (p5-bz "6|TOKY"))
                     (if (str= (json-get-str "msg" inp) "sw")
                         (p5-swap-y sender amt)
@@ -737,7 +760,9 @@
                             (begin
                               (p5-put "6|ESCY" (li-add (p5-bz "6|ESCY") amt))
                               (near/return "0"))
-                            (p5-mint-leg sender amt)))
+                            (if (str= (str-slice (json-get-str "msg" inp) 0 3) "don")
+                                (p5-donate-leg amt)
+                                (p5-mint-leg sender amt))))
                     (near/return amt))))))))
 
 ;; sell X for Y: escrow intake, walk via the same core as op "swap", then
@@ -1430,7 +1455,6 @@
     (if (str= op "burnc") (p5-burnc)
     (if (str= op "claim") (p5-claim)
     (if (str= op "req") (p5-req)
-    (if (str= op "donate") (p5-donate)
     (if (str= op "swap") (p5-swap)
     (if (str= op "quote") (p5-quote)
     (if (str= op "get") (p5-get)
@@ -1442,7 +1466,7 @@
     (if (str= op "owed") (p5-owed)
     (if (str= op "positions") (p5-positions)
     (if (str= op "g") (p5-G (str->num (json-get-str "i" (near/input))))
-        "unknown-op"))))))))))))))))))))
+        "unknown-op")))))))))))))))))))
 
 (export "_run" p5-run)
 (export "ft_on_transfer" p5-on-transfer)

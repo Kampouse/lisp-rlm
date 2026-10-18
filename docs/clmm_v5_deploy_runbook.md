@@ -35,8 +35,11 @@ Never leave a fresh account un-inited.
 ## Prod checklist (pre-mainnet)
 
 - [ ] Finding A fixed: burn authority (+ kernel premise + negative tests)
-- [ ] Finding B decided: donate funding rule
-- [ ] Finding C decided: gross swap sim-only or wired to ft_on_transfer
+- [x] Finding B resolved: donate = `ft_transfer_call msg="don:<i>"` only;
+      `_run` arm deleted (2026-10-18)
+- [x] Finding C resolved: gross `_run swap` gated on `6|SIMSWAP` — never
+      written by any live path; sim drivers arm it via near-mock `state
+      import` (2026-10-18)
 - [ ] deploy key → 2-of-3 multisig
 - [ ] ft2 → production NEP-141 with storage stakes (1NEAR bindings)
 - [ ] optional: 6|PAUSE switch checked in on-transfer + claim

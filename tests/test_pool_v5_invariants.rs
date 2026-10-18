@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -23,6 +23,47 @@ fn bin(name: &str) -> PathBuf {
     let p = repo_root().join("target/release").join(name);
     assert!(p.exists(), "{name} missing — cargo build --release first");
     p
+}
+
+fn b64e(s: &str) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let b = s.as_bytes();
+    let mut out = String::new();
+    for chunk in b.chunks(3) {
+        let n =
+            chunk.iter().fold(0u32, |a, &x| (a << 8) | x as u32) << (8 * (3 - chunk.len()) as u32);
+        for k in (0..4).rev() {
+            if k < 3 - chunk.len() as u32 {
+                out.push('=');
+            } else {
+                out.push(T[((n >> (6 * k)) & 63) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
+/// Seed one storage key on `acct` (Finding C prod-gate arming for sim runs).
+fn import_key(state: &Path, acct: &str, key: &str, val: &str) {
+    use std::io::Write as _;
+    let row = format!(
+        "[{{\"account\":\"{acct}\",\"key\":\"{}\",\"value\":\"{}\"}}]",
+        b64e(key),
+        b64e(val)
+    );
+    let mut child = Command::new(bin("near-mock"))
+        .args(["state", "import", state.to_str().unwrap(), "-"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("spawn near-mock state import");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(row.as_bytes())
+        .unwrap();
+    let st = child.wait().expect("state import wait");
+    assert!(st.success(), "state import failed: {row}");
 }
 
 fn compile(files: &[&str], out: &Path) {
@@ -198,7 +239,7 @@ fn pool_v5_invariants() {
                 ft_wasm.display(),
                 ft_wasm.display()
             ),
-            state,
+            state: state.clone(),
         };
 
         assert_eq!(m.ret(&m.cross("tokx.tst", "new", "{}", OWNER)), "ok");
@@ -207,6 +248,11 @@ fn pool_v5_invariants() {
             m.op("{\"op\":\"init\",\"toka\":\"tokx.tst\",\"tokb\":\"toky.tst\",\"fee_shift\":\"8\",\"s0\":\"18446744073709551616\"}"),
             "init-ok"
         );
+        // Finding C prod-gate: verify the gross arm is DEAD before arming
+        // (no 6|SIMSWAP key ⇒ ERR_SIM_ONLY, no walk, no state change), then
+        // arm it for this sim run via a direct state import.
+        assert_eq!(m.op("{\"op\":\"swap\",\"v\":\"1000\"}"), "ERR_SIM_ONLY");
+        import_key(&state, "pool.tst", "6|SIMSWAP", "1");
 
         const LP_FUND: u128 = 100_000_000_000_000_000_000_000_000_000;
         const TRADER_FUND: u128 = 150_000_000_000_000_000_000_000_000_000;
