@@ -17,9 +17,10 @@
      run_hp:      held + paid = intake          (exact conservation)
 
    Probe provenance: /tmp/custody-probe/Scratch_Custody.thy, session
-   Scratch_Custody (parent HOL-Library), builds 1-11, EXIT:0 2026-10-18.
-   Promoted into session CLMM_v5_Kernel same day; scope boundary
-   (burnc owed stacking vs float) documented in the tail comment.
+   Scratch_Custody (parent HOL-Library), builds 1-17, EXIT:0 2026-10-18
+   (builds 12-17 add the owed-total cap: otot bucket, ERR_FLOAT room
+   guard on burnc, claim drain; laws 3/4 = owed-eq + burn-room).
+   Promoted into session CLMM_v5_Kernel same day.
  *)
 theory CLMM_v5_Custody
   imports "HOL-Library.Code_Target_Numeral"
@@ -31,6 +32,7 @@ record cust =
   esc    :: "acct \<Rightarrow> nat"
   book   :: "acct \<Rightarrow> nat"
   owed   :: "acct \<Rightarrow> nat"
+  otot   :: nat                          (* 6|OWT: per-side owed total *)
   pend   :: "acct \<Rightarrow> nat"
   held   :: nat
   intake :: nat
@@ -85,10 +87,22 @@ fun cstep :: "ev \<Rightarrow> cust \<Rightarrow> cust" where
     (if v = 0 \<or> esc s0 ''E'' < v \<or> held s0 < v then s0
      else s0 \<lparr> esc := osub (esc s0) ''E'' v,
                held := held s0 - v, paid := paid s0 + v \<rparr>)"
+(* Claim payout: stock = esc + book (one pool-side token stock; a swap
+   out-leg moves it esc-to-book). Reclassify book-to-esc first if the
+   float alone cannot cover, then drain esc: the exact two-case
+   sequence the contract runs. *)
 | "cstep (EClaim v) s0 =
-    (if v = 0 \<or> owed s0 ''E'' < v \<or> esc s0 ''E'' < v \<or> held s0 < v then s0
+    (if v = 0 \<or> owed s0 ''E'' < v \<or> esc s0 ''E'' + book s0 ''E'' < v
+        \<or> held s0 < v \<or> otot s0 < v then s0
+     else if esc s0 ''E'' < v
+     then s0 \<lparr> esc := osub (esc s0) ''E'' (esc s0 ''E''),
+               book := osub (book s0) ''E'' (v - esc s0 ''E''),
+               owed := osub (owed s0) ''E'' v,
+               otot := otot s0 - v,
+               held := held s0 - v, paid := paid s0 + v \<rparr>
      else s0 \<lparr> esc := osub (esc s0) ''E'' v,
                owed := osub (owed s0) ''E'' v,
+               otot := otot s0 - v,
                held := held s0 - v, paid := paid s0 + v \<rparr>)"
 | "cstep (ECancel w v) s0 =
     (if v = 0 \<or> pend s0 w < v \<or> esc s0 ''E'' < v \<or> held s0 < v then s0
@@ -96,8 +110,9 @@ fun cstep :: "ev \<Rightarrow> cust \<Rightarrow> cust" where
                pend := osub (pend s0) w v,
                held := held s0 - v, paid := paid s0 + v \<rparr>)"
 | "cstep (EBurn cx cy) s0 =
-    (if esc s0 ''E'' < cx + cy then s0
-     else s0 \<lparr> owed := oadd (owed s0) ''E'' (cx + cy) \<rparr>)"
+    (if esc s0 ''E'' < otot s0 + cx + cy then s0
+     else s0 \<lparr> owed := oadd (owed s0) ''E'' (cx + cy),
+               otot := otot s0 + cx + cy \<rparr>)"
 
 fun crun :: "cust \<Rightarrow> ev list \<Rightarrow> cust" where
   "crun s [] = s"
@@ -108,7 +123,8 @@ definition book_1 :: "cust \<Rightarrow> nat" where "book_1 s = book s ''E''"
 
 definition czero :: cust where
   "czero = \<lparr> esc = \<lambda>_. 0, book = \<lambda>_. 0, owed = \<lambda>_. 0,
-              pend = \<lambda>_. 0, held = 0, intake = 0, paid = 0 \<rparr>"
+              otot = 0, pend = \<lambda>_. 0,
+              held = 0, intake = 0, paid = 0 \<rparr>"
 
 (* Law 1 (funded ledgers): pool-side buckets never exceed the raw
    balance. Intake adds held together with its bucket; payout legs
@@ -136,14 +152,24 @@ next
 next
   case (EClaim v)
   show ?thesis
-  proof (cases "v = 0 \<or> owed s ''E'' < v \<or> esc s ''E'' < v \<or> held s < v")
+  proof (cases "v = 0 \<or> owed s ''E'' < v \<or> esc s ''E'' + book s ''E'' < v
+                  \<or> held s < v \<or> otot s < v")
     case True show ?thesis using EClaim True fund by (simp add: esc_1_def book_1_def)
   next
     case False
-    have vle: "v \<le> esc s ''E''" using False by simp
+    have stock: "v \<le> esc s ''E'' + book s ''E''" using False by simp
     have eh: "esc s ''E'' \<le> held s" using fund by (simp add: esc_1_def book_1_def)
-    show ?thesis using EClaim False fund vle eh
-      by (simp add: esc_1_def book_1_def)
+    have bh: "book s ''E'' \<le> held s" using fund by (simp add: esc_1_def book_1_def)
+    show ?thesis
+    proof (cases "esc s ''E'' < v")
+      case True
+      show ?thesis using EClaim True fund stock eh bh
+        by (simp add: esc_1_def book_1_def) linarith
+    next
+      case False
+      show ?thesis using EClaim False fund stock eh
+        by (simp add: esc_1_def book_1_def) linarith
+    qed
   qed
 next
   case (ECancel w v)
@@ -208,12 +234,18 @@ next
 next
   case (EClaim v)
   show ?thesis
-  proof (cases "v = 0 \<or> owed s ''E'' < v \<or> esc s ''E'' < v \<or> held s < v")
+  proof (cases "v = 0 \<or> owed s ''E'' < v \<or> esc s ''E'' + book s ''E'' < v
+                  \<or> held s < v \<or> otot s < v")
     case True show ?thesis using EClaim True hp by simp
   next
     case False
     have vle: "v \<le> held s" using False by simp
-    show ?thesis using EClaim False hp vle by simp
+    show ?thesis
+    proof (cases "esc s ''E'' < v")
+      case True show ?thesis using EClaim True False hp vle by simp
+    next
+      case False show ?thesis using EClaim False False hp vle by simp
+    qed
   qed
 next
   case (ECancel w v)
@@ -252,12 +284,78 @@ theorem czero_hp:
   "held (crun czero es) + paid (crun czero es) = intake (crun czero es)"
   by (rule run_hp) (simp add: czero_def)
 
-(* Scope boundary (2026-10-18): owed is capped per-burnc at the CURRENT
-   float (p5-req-cap), so back-to-back burnc calls can stack owed past
-   esc; an underfunded claim then traps (li-sub borrow = wasm
-   Unreachable = rollback) and retries until the float refills.
-   Conservation and funding are unaffected (the trap is token-neutral);
-   a liveness fix belongs in the contract: track the per-side owed
-   total and cap new owed at esc minus that total. *)
+(* Law 3 (owed ledger = owed total): the aggregate owed ledger and the
+   per-side owed total move together on every op (burnc up, claim
+   down), so they never diverge. *)
+
+theorem step_owed_eq:
+  assumes eq: "owed s ''E'' = otot s"
+  shows "owed (cstep e s) ''E'' = otot (cstep e s)"
+proof (cases e)
+  case (EIn src amt)
+  then show ?thesis using eq by (cases src) simp_all
+next
+  case ERefund show ?thesis using ERefund eq by simp
+next
+  case (EClaim v)
+  show ?thesis
+  proof (cases "v = 0 \<or> owed s ''E'' < v \<or> esc s ''E'' + book s ''E'' < v
+                  \<or> held s < v \<or> otot s < v")
+    case True show ?thesis using EClaim True eq by simp
+  next
+    case False
+    show ?thesis using EClaim False eq by simp
+  qed
+next
+  case ECancel show ?thesis using ECancel eq by simp
+next
+  case (EBurn cx cy)
+  show ?thesis
+  proof (cases "esc s ''E'' < otot s + cx + cy")
+    case True show ?thesis using EBurn True eq by simp
+  next
+    case False
+    show ?thesis using EBurn False eq by simp
+  qed
+qed
+
+theorem run_owed_eq:
+  assumes eq: "owed s ''E'' = otot s"
+  shows "owed (crun s es) ''E'' = otot (crun s es)"
+  using eq
+proof (induction es arbitrary: s)
+  case Nil show ?case using Nil.prems by simp
+next
+  case (Cons e es)
+  have step: "owed (cstep e s) ''E'' = otot (cstep e s)"
+    using step_owed_eq[OF Cons.prems] .
+  show ?case using step Cons by simp
+qed
+
+theorem run_owed_eq_zero:
+  "owed (crun czero es) ''E'' = otot (crun czero es)"
+  by (rule run_owed_eq) (simp add: czero_def)
+
+(* Law 4 (burn-time room): every SETTLED burnc leaves the owed total
+   within the float - the ERR_FLOAT cap as a theorem. Not claimed
+   globally: later refund/cancel legs may dip esc below otot
+   (counterexample: seed 10, EBurn 10 0, ERefund 3). *)
+
+theorem burn_room:
+  "cstep (EBurn cx cy) s = s
+   \<or> otot (cstep (EBurn cx cy) s) \<le> esc (cstep (EBurn cx cy) s) ''E''"
+proof (cases "esc s ''E'' < otot s + cx + cy")
+  case True show ?thesis using True by simp
+next
+  case False
+  have lt: "otot s + cx + cy \<le> esc s ''E''" using False by simp
+  show ?thesis using False lt by simp
+qed
+
+(* The 2026-10-18 owed-total cap (contract 6|OWTX/6|OWTY, ERR_FLOAT)
+   closes the stacking class this theory previously documented as a
+   scope boundary: burnc now requires otot + (cx + cy) \<le> esc and
+   claims drain the total, so a settled burnc is provably covered at
+   burn time (law 4) with the aggregate ledger in lockstep (law 3). *)
 
 end

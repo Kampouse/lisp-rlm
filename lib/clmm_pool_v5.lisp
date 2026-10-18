@@ -914,7 +914,16 @@
                             (li-sub (p5-bz (json-get-str "w" inp))
                                     (json-get-str "d" inp)))
                           (near/return "0"))
-                        (near/return "0")))))))
+                        ;; cx/cy success: owed/escrow were netted at claim
+                        ;; time - drain the side's owed total so burnc's
+                        ;; room guard sees the freed float room
+                        (begin
+                          (p5-put (if (str= (json-get-str "k" inp) "cx")
+                                      "6|OWTX" "6|OWTY")
+                                  (li-sub (p5-bz (if (str= (json-get-str "k" inp) "cx")
+                                                     "6|OWTX" "6|OWTY"))
+                                          (json-get-str "o" inp)))
+                          (near/return "0"))))))))
       (near/return "forbidden")))
 
 ;; ── custody (arc C2b): mint/burn legs ──────────────────────────────────
@@ -1176,16 +1185,34 @@
         (let ((fx (p5-feefold who a b d "X")))
         (let ((fy (p5-feefold who a b d "Y")))
         (begin
+          ;; owed-total solvency guard (2026-10-18): owed += req+fees must
+          ;; stay within the pool's per-side holdings (esc float + input
+          ;; book - a swap's out-leg moves X from float to book, so the
+          ;; float ALONE is the wrong backing; the old req-cap silently
+          ;; shorted LPs on exactly that case). 6|OWTX/TY are the per-side
+          ;; owed totals; claim success drains them pro-rata.
+          (if (or (< (li-cmp (li-sub (li-add (p5-bz "6|ESCX")
+                                          (p5-bz "6|X"))
+                                   (p5-bz "6|OWTX"))
+                             (li-add rx fx)) 0)
+                  (< (li-cmp (li-sub (li-add (p5-bz "6|ESCY")
+                                          (p5-bz "6|Y"))
+                                   (p5-bz "6|OWTY"))
+                             (li-add ry fy)) 0))
+              (p5-fail "ERR_FLOAT")
+              0)
           (p5-put "6|FWX" fx)
           (p5-put "6|FWY" fy)
-        ;; owed = required + fees, each capped at the escrow float
-        (let ((cx (p5-req-cap (li-add rx fx) "6|ESCX")))
-        (let ((cy (p5-req-cap (li-add ry fy) "6|ESCY")))
+        ;; owed = required + fees (float room pre-checked above)
+        (let ((cx (li-add rx fx)))
+        (let ((cy (li-add ry fy)))
         (let ((kx (str-cat "6|OWX:" who))
               (ky (str-cat "6|OWY:" who)))
           (begin
             (p5-put kx (li-add (p5-bz kx) cx))
             (p5-put ky (li-add (p5-bz ky) cy))
+            (p5-put "6|OWTX" (li-add (p5-bz "6|OWTX") cx))
+            (p5-put "6|OWTY" (li-add (p5-bz "6|OWTY") cy))
             (str-cat "burnc-ok:" (str-cat cx (str-cat ":" cy)))))))))))))))))))
 
 
@@ -1247,12 +1274,27 @@
   (let ((e (if (str= tok "y") "6|ESCY" "6|ESCX")))
   (let ((tkey (if (str= tok "y") "6|TOKY" "6|TOKX")))
   (let ((k (if (str= tok "y") "cy" "cx"))
+        (ib (if (str= tok "y") "6|Y" "6|X"))
         (v (p5-bz w)))
     (if (nil? (near/load-bytes (str-cat "6|REG:" who)))
         "not-registered"
     (if (= (li-cmp v "0") 0)
         "no-owed"
+    ;; payout stock check (2026-10-18): the float and the input book are
+    ;; the same pool-side token stock (a swap out-leg moves X float->book),
+    ;; so cover = esc + book. Shortfall is reclassified book->float before
+    ;; the debit; a failed payout restores owed + esc symmetrically (pay
+    ;; cx/cy), leaving the reclassification in place - stock-neutral.
+    ;; Underfunded stock (refund legs can dip it) => refuse, retry after
+    ;; refill - burnc's solvency guard makes this rare.
+    (if (< (li-cmp (li-add (p5-bz e) (p5-bz ib)) v) 0)
+        "underfunded"
         (begin
+          (if (< (li-cmp (p5-bz e) v) 0)
+              (begin
+                (p5-put ib (li-sub (p5-bz ib) (li-sub v (p5-bz e))))
+                (p5-put e v))
+              0)
           (p5-put w "0")
           (p5-put e (li-sub (p5-bz e) v))
           (let ((p (near/promise_batch_create (p5-bz tkey))))
@@ -1269,7 +1311,7 @@
                     (json-set "{}" "k" k) "r" who) "o" v)
                     "w" w) "e" e)
                   "0" 5000000000000))
-              "claim-sent"))))))))))
+              "claim-sent")))))))))))
 
 (define (p5-claim)
   (let ((who (near/predecessor_account_id)))

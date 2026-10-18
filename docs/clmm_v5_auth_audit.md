@@ -19,7 +19,7 @@ Method: manual read of every entry + predecessor/signer check. Line numbers at a
 | `reg` | open (self-reg; who fallback = predecessor) | ✓ registration is permissionless by design; no storage stake (testnet ft2 — prod ft needs 1NEAR storage binding, NOTE) |
 | `mint` (via `_run`? NO — mints ride `ft_transfer_call` → `ft_on_transfer` → `p5-mint-leg`; `_run mint` = `p5-mint` bookkeeping leg used by C2b two-leg protocol) | who = predecessor; req flow pins amounts | ✓ |
 | `burn` | **who-bounds: NO authority predicate — documented as spec-parity (thy burn_rel has no authority term); burn subtracts d from LQ cells [a,b] and shrinks support.** | ⚠️ FINDING A — see below |
-| `burnc` | burns position POS key and credits owed, capped at escrow float | tied to `p5-burn` authority (Finding A) |
+| `burnc` | burns position POS key and credits owed; owed-total solvency guard (`esc + book` per side, `6|OWTX/6|OWTY`, `ERR_FLOAT` — 2026-10-18) | tied to `p5-burn` authority (Finding A) |
 | `claim` | who = predecessor; owed ≥ 1; REG required | ✓ |
 | `req` | open quote leg of the two-leg mint | ✓ (no funds move) |
 | `donate` | **open: anyone can add v to LQ at any cell i** | ⚠️ FINDING B — see below |
@@ -57,7 +57,7 @@ at a dead cell to widen the walk span (gas cost for walkers) or dilute fee
 share. Probably acceptable (donations are gifts), but should be a conscious
 yes. Cheapest hardening: require `donate` funds to arrive via
 `ft_transfer_call msg=donate:<i>` so LQ only grows against escrowed tokens
-(burnc's float cap already assumes this discipline).
+(burnc's owed-total solvency guard, 2026-10-18: owed can never stack past the pool's per-side holdings (esc float + input book — a swap out-leg moves X float→book), so a registered claim cannot trap underfunded; the old req-cap silently shorted LPs on exactly that case).
 
 **Resolution (2026-10-18): the `_run` donate arm is DELETED.** Donations
 ride `ft_on_transfer` with `msg="don:<i>"` (`p5-donate-leg`): predecessor
