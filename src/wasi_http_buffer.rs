@@ -660,31 +660,32 @@ pub fn emit_http_get_with_header_v2(
     func.instruction(&Instruction::Br(0));
     func.instruction(&Instruction::End);
     func.instruction(&Instruction::End);
-    // val copy: dst = buf + 65536-512, src = local22, len = min(local23, 500)
-    // select returns a if cond≠0: a=500 (clamped), b=len, cond=len>500
-    func.instruction(&cst(500));
+    // val copy: dst = buf + 65536-3072, src = local22, len = min(local23, 3072)
+    // (x402 PAYMENT-SIGNATURE b64 needs ~2KB; old cap 500 truncated it)
+    // select returns a if cond≠0: a=3072 (clamped), b=len, cond=len>3072
+    func.instruction(&cst(3072));
     func.instruction(&lg(23));
     func.instruction(&lg(23));
-    func.instruction(&cst(500));
+    func.instruction(&cst(3072));
     func.instruction(&Instruction::I32GtU);
     func.instruction(&Instruction::Select);
     func.instruction(&ls(17)); // clamped val len
     func.instruction(&lg(2));
-    func.instruction(&cst(33024));
+    func.instruction(&cst(29696));
     func.instruction(&Instruction::I32Add);
     func.instruction(&lg(22));
     func.instruction(&lg(17));
     func.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
-    // one-entry list at buf + 65536-768: (val_ptr, val_len)
+    // one-entry list at buf + 65536-512: (val_ptr, val_len)
     func.instruction(&lg(2));
-    func.instruction(&cst(33536));
+    func.instruction(&cst(32256));
     func.instruction(&Instruction::I32Add);
     func.instruction(&lg(2));
-    func.instruction(&cst(33024));
+    func.instruction(&cst(29696));
     func.instruction(&Instruction::I32Add);
     func.instruction(&st(0));
     func.instruction(&lg(2));
-    func.instruction(&cst(33536));
+    func.instruction(&cst(32256));
     func.instruction(&Instruction::I32Add);
     func.instruction(&lg(17));
     func.instruction(&st(4));
