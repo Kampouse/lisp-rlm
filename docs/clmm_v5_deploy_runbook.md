@@ -46,6 +46,24 @@ oracle seeds 1/2/3/16/34 clean (2026-10-18).
 
 Never leave a fresh account un-inited.
 
+## Live-state note (2026-10-18, ledger-drift audit)
+
+The pre-fix contract committed `esc -= c` while ft2's resolve debited the
+pool's token balance by the refund `rm`: every partial-refund swap drifted
+6|ESC upward by `rm - c`. The live pool carries that historical drift:
+X +24,999,385,093,740,232,477,352 (0.00005% of esc), Y
++1,967,122,200,601,467,270,311,285,842 (3.75% of esc). Accepted (testnet;
+the stock guard is lenient by exactly that much). Post-fix legs add zero
+new drift - verified on-chain: leg ESCX delta == used exactly, drift
+bit-identical before/after (b535cae4). The Isabelle machine's ESwap models
+the full-keep case only; extending it with a refund step is follow-up.
+
+ft2's ft_transfer_call attaches 250 Tgas to receiver.ft_on_transfer: 100T
+was too tight for the ABI-era on_transfer walk (burned its whole budget,
+receipt reverted). Compiler static gate: one call closure's gas literals
+cap at 300 Tgas (250T attach + 30T resolve fits; 300T does not). Unused
+attach self-refunds.
+
 ## Prod checklist (pre-mainnet)
 
 - [ ] Finding A fixed: burn authority (+ kernel premise + negative tests)
