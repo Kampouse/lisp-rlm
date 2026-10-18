@@ -289,7 +289,10 @@ fn pool_v5_custody_swap_and_reversal() {
         "payout == quoted out"
     );
     assert_eq!(bal(&m, "tokx.tst", "alice.tst"), FLOAT * 2 - consumed);
-    assert_eq!(escrow(&m, "ESCX"), FLOAT + qrm, "ESCX +rm (resolve refund)");
+    // intake escrow keeps only the CONSUMED slice: the refund slice leaves
+    // the pool's token custody at ft2 resolve (sub-bal recv rm), so the
+    // ledger must match the pool's true ft_balance_of custody.
+    assert_eq!(escrow(&m, "ESCX"), FLOAT + consumed, "ESCX +consumed (refund left via resolve)");
     assert_eq!(escrow(&m, "ESCY"), FLOAT - qout, "ESCY drained by out");
 
     let view_after = m.ret(&m.pool_op("{\"op\":\"view\"}"));
@@ -310,7 +313,7 @@ fn pool_v5_custody_swap_and_reversal() {
         view_after,
         "books/P/S reverted on payout failure"
     );
-    assert_eq!(escrow(&m, "ESCX"), FLOAT + (SWAP - consumed));
+    assert_eq!(escrow(&m, "ESCX"), FLOAT + consumed);
     assert_eq!(escrow(&m, "ESCY"), FLOAT - qout);
     assert_eq!(bal(&m, "toky.tst", "alice.tst"), qout);
 }

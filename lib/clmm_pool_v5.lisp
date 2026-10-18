@@ -812,7 +812,7 @@
 ;;   sentinel ⇒ walker moved nothing: undo escrow, refund all;
 ;;   out == 0 ⇒ degenerate (intake consumed, output floored): undo the
 ;;     intake-book delta + P/S + escrow, refund all;
-;;   else ⇒ consume intake escrow (-c), promise the out-leg; p5-pay owns
+;;   else ⇒ release the refund slice (-rm; consumed c stays escrowed),
 ;;     full reversal (X/Y/P/S + escrow -rm) on payout failure.
 (define (p5-leg-decide sender amt ibook ekey okey ps0 pl0 tokkey)
   (let ((out (p5-bz "6|OUT")))
@@ -830,9 +830,13 @@
             ;; fee path: the walker ran on v_eff = amt − F, so REM is the
             ;; remainder OF v_eff — amt − REM retains exactly F + walked
             ;; (skim stays escrowed, LP-claimable via FG; raw==ESCX holds).
+            ;; intake escrow keeps the CONSUMED slice (c = F + walked —
+            ;; the pool's intake-side float, backs owed); the REFUND slice
+            ;; leaves via ft2's resolve (sub-bal recv rm) — the ledger must
+            ;; release it here or it overstates custody by rm - c.
             (let ((c (li-sub amt (p5-bz "6|REM"))))
               (begin
-                (p5-put ekey (li-sub (p5-bz ekey) c))
+                (p5-put ekey (li-sub (p5-bz ekey) (p5-bz "6|REM")))
                 (p5-payout sender out (p5-bz "6|REM") c ps0 pl0 ekey okey tokkey)))))))
 
 ;; promise the out-leg, then the pay callback. Chain result = pay's return.
@@ -878,7 +882,7 @@
                     (p5-put "6|P" (json-get-str "pl" inp))
                     (p5-put "6|S" (json-get-str "ps" inp))
                     (p5-put (json-get-str "e" inp)
-                      (li-sub (p5-bz (json-get-str "e" inp)) (json-get-str "m" inp)))
+                      (li-sub (p5-bz (json-get-str "e" inp)) (json-get-str "c" inp)))
                     (near/return (li-add (json-get-str "c" inp) (json-get-str "m" inp))))
                   (if (str= (json-get-str "k" inp) "mk")
                       ;; mint-cancel refund failed: restore NOTHING — the

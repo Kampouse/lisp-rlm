@@ -310,18 +310,19 @@ fn refund_executed_swap_keeps_used_refunds_rem() {
     let esc_before = m.op("{\"op\":\"escrow\"}", "owner");
     let amt: u128 = 5_000_000_000_000_000_000_000_000;
     let res = m.chain_result("toky.tst", "{\"a\":\"swap\"}", &amt.to_string(), "trader.tst");
-    let rem: u128 = res
+    let kept: u128 = res
         .trim_start_matches("used:")
         .parse()
-        .expect("R4: executed swap must return the remainder");
+        .expect("R4: executed swap must return the kept amount");
     assert!(
-        rem < amt,
-        "R4: rem must be < amount when the walk consumed input"
+        kept < amt,
+        "R4: kept must be < amount when the walk consumed input"
     );
 
     let esc_after = m.op("{\"op\":\"escrow\"}", "owner");
-    // ESCY grew by used (rem rides resolve)
-    let used = amt - rem;
+    // ESCY grows by the consumed slice (the refund leaves pool custody at
+    // ft2 resolve: sub-bal recv rem)
+    let refunded = amt - kept;
     let (bx, by) = esc_after
         .strip_prefix("ESCX:")
         .unwrap()
@@ -334,8 +335,8 @@ fn refund_executed_swap_keeps_used_refunds_rem() {
         .unwrap();
     let dy: u128 = by.parse::<u128>().unwrap() - by0.parse::<u128>().unwrap();
     assert_eq!(
-        dy, used,
-        "R4: ESCY delta must equal used (rem already credited to trader)"
+        dy, kept,
+        "R4: ESCY delta must equal the consumed slice (rem left via resolve)"
     );
     assert!(bx.parse::<u128>().unwrap() > 0, "R4: X book grew (payout)");
 

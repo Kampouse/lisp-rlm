@@ -390,16 +390,16 @@ fn pool_v5_invariants() {
                 // A rejected transfer (insufficient, etc.) prints no
                 // 📄 used:<n> at all — then the swap was a no-op: skip it
                 // (stale LAST from an earlier swap must NOT be trusted).
-                // When it did execute: consumed part (`used`) folds into the
-                // books; the rem (amt−used) stays in the ESC ledger as
-                // in-flight refund float (trader is made whole token-side).
+                // When it did execute: consumed part (`used`) folds into
+                // the books AND stays as the intake-side escrow float; the
+                // rem leaves the pool's token custody at ft2 resolve.
                 if let Some(used_s) = out.strip_prefix("used:") {
                     let used: u128 = used_s.parse().unwrap();
                     if used > 0 {
                         let o = extract_swap_out(&last).unwrap_or_else(|| {
                             panic!("seed {seed} op {i}: executed swap without LAST")
                         });
-                        esc_y += amt - used;
+                        esc_y += used;
                         esc_x -= o;
                     }
                 }
@@ -416,15 +416,16 @@ fn pool_v5_invariants() {
                 ));
                 let last = m.op("{\"op\":\"state\"}");
                 // Same contract as the swap-y branch: rejected transfers
-                // (no 📄 used:) are no-ops; executed swaps fold `used` into
-                // the books and leave the rem as in-flight ESC float.
+                // (no 📄 used:) are no-ops; executed swaps keep only the
+                // consumed slice escrowed — the rem leaves custody at
+                // ft2 resolve.
                 if let Some(used_s) = out.strip_prefix("used:") {
                     let used: u128 = used_s.parse().unwrap();
                     if used > 0 {
                         let paid = extract_swap_out(&last).unwrap_or_else(|| {
                             panic!("seed {seed} op {i}: executed swap without LAST")
                         });
-                        esc_x += amt - used;
+                        esc_x += used;
                         esc_y -= paid;
                     }
                 }
