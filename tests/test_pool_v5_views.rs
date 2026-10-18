@@ -80,7 +80,7 @@ impl Mock {
     }
 
     fn pool_op(&self, json: &str) -> String {
-        self.cross("pool.tst", "_run", json, "owner")
+        self.cross("pool.tst", "exec", json, "owner")
     }
 
     /// last 📄 line (the RETURN value): first whitespace token, comma-stripped
@@ -102,6 +102,47 @@ impl Mock {
     }
 }
 
+fn b64e(s: &str) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let b = s.as_bytes();
+    let mut out = String::new();
+    for chunk in b.chunks(3) {
+        let n =
+            chunk.iter().fold(0u32, |a, &x| (a << 8) | x as u32) << (8 * (3 - chunk.len()) as u32);
+        for k in (0..4).rev() {
+            if k < 3 - chunk.len() as u32 {
+                out.push('=');
+            } else {
+                out.push(T[((n >> (6 * k)) & 63) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
+/// Seed one storage key on `acct` (SIMSWAP arming for exec reads).
+fn import_key(state: &Path, acct: &str, key: &str, val: &str) {
+    use std::io::Write as _;
+    let row = format!(
+        "[{{\"account\":\"{acct}\",\"key\":\"{}\",\"value\":\"{}\"}}]",
+        b64e(key),
+        b64e(val)
+    );
+    let mut child = Command::new(bin("near-mock"))
+        .args(["state", "import", state.to_str().unwrap(), "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn near-mock state import");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(row.as_bytes())
+        .unwrap();
+    let st = child.wait().expect("state import wait");
+    assert!(st.success(), "state import failed: {row}");
+}
+
 #[test]
 fn pool_v5_view_ops_fresh_surface() {
     let dir = repo_root().join("target/test-c2b");
@@ -119,6 +160,8 @@ fn pool_v5_view_ops_fresh_surface() {
         manifest: format!("pool.tst={}", pool_wasm.display()),
         state,
     };
+        import_key(&m.state, "pool.tst", "6|SIMSWAP", "1");
+
 
     assert_eq!(
         m.ret(&m.pool_op("{\"op\":\"init\",\"toka\":\"tokx.tst\",\"tokb\":\"toky.tst\"}")),

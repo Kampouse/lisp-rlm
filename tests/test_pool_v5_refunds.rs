@@ -90,18 +90,18 @@ impl Mock {
         self.ret(&self.raw(
             tok,
             "ft_transfer_call",
-            &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"{msg}\"}}"),
+            &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"{}\"}}", msg.replace('"', "\\\"")),
             who,
         ))
         .unwrap_or_default()
     }
     fn op(&self, json: &str, who: &str) -> String {
-        self.ret(&self.raw("pool.tst", "_run", json, who))
+        self.ret(&self.raw("pool.tst", "exec", json, who))
             .unwrap_or_default()
     }
     /// Abort-bearing output (near/abort prints on stderr, no 📄 line).
     fn op_raw(&self, json: &str, who: &str) -> String {
-        self.raw("pool.tst", "_run", json, who)
+        self.raw("pool.tst", "exec", json, who)
     }
 }
 
@@ -127,6 +127,8 @@ fn setup(seed_liquidity: bool, tag: &str) -> Mock {
         ),
         state,
     };
+        import_key(&m.state, "pool.tst", "6|SIMSWAP", "1");
+
     assert_eq!(
         m.ret(&m.raw("tokx.tst", "new", "{}", "owner")),
         Some("ok".into())
@@ -172,9 +174,9 @@ fn setup(seed_liquidity: bool, tag: &str) -> Mock {
         const S: u128 = 50_000_000_000_000_000_000_000_000_000;
         let esc0 = m.op("{\"op\":\"escrow\"}", "owner");
         // seed returns 0 (kept) — the seed float, no position
-        let r1 = m.chain_result("tokx.tst", "seed", &S.to_string(), "alice.tst");
+        let r1 = m.chain_result("tokx.tst", "{\"a\":\"seed\"}", &S.to_string(), "alice.tst");
         assert_eq!(r1, format!("used:{S}"), "seed keeps the full amount");
-        let r2 = m.chain_result("toky.tst", "seed", &S.to_string(), "alice.tst");
+        let r2 = m.chain_result("toky.tst", "{\"a\":\"seed\"}", &S.to_string(), "alice.tst");
         assert_eq!(r2, format!("used:{S}"), "seed keeps the full amount");
         let esc1 = m.op("{\"op\":\"escrow\"}", "owner");
         assert_ne!(esc0, esc1, "seed must grow the escrow float");
@@ -185,7 +187,7 @@ fn setup(seed_liquidity: bool, tag: &str) -> Mock {
         );
         let body = req.trim_start_matches("rx:");
         let (rx, ry) = body.split_once(":ry:").expect("req shape");
-        let msg = "m:30000000000000000000000000000:-2:2";
+        let msg = "{\"a\":\"mint\",\"d\":\"30000000000000000000000000000\",\"lo\":\"-2\",\"hi\":\"2\"}";
         assert!(m
             .chain_result("tokx.tst", msg, rx, "bob.tst")
             .starts_with("used:"));
@@ -197,6 +199,47 @@ fn setup(seed_liquidity: bool, tag: &str) -> Mock {
 }
 
 const AMT: &str = "1000000000000000000000000";
+
+fn b64e(s: &str) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let b = s.as_bytes();
+    let mut out = String::new();
+    for chunk in b.chunks(3) {
+        let n =
+            chunk.iter().fold(0u32, |a, &x| (a << 8) | x as u32) << (8 * (3 - chunk.len()) as u32);
+        for k in (0..4).rev() {
+            if k < 3 - chunk.len() as u32 {
+                out.push('=');
+            } else {
+                out.push(T[((n >> (6 * k)) & 63) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
+/// Seed one storage key on `acct` (SIMSWAP arming for exec reads).
+fn import_key(state: &Path, acct: &str, key: &str, val: &str) {
+    use std::io::Write as _;
+    let row = format!(
+        "[{{\"account\":\"{acct}\",\"key\":\"{}\",\"value\":\"{}\"}}]",
+        b64e(key),
+        b64e(val)
+    );
+    let mut child = Command::new(bin("near-mock"))
+        .args(["state", "import", state.to_str().unwrap(), "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn near-mock state import");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(row.as_bytes())
+        .unwrap();
+    let st = child.wait().expect("state import wait");
+    assert!(st.success(), "state import failed: {row}");
+}
 
 #[test]
 fn refund_reject_paths() {
@@ -214,7 +257,7 @@ fn refund_reject_paths() {
     let before = m.op("{\"op\":\"escrow\"}", "owner");
     // Unregistered ⇒ on-transfer keeps 0 ("used:0"); ft_resolve_transfer
     // then refunds amount − kept = FULL amount to the sender.
-    let res = m.chain_result("toky.tst", "sw", AMT, "stranger.tst");
+    let res = m.chain_result("toky.tst", "{\"a\":\"swap\"}", AMT, "stranger.tst");
     assert_eq!(
         res, "used:0",
         "R1: unregistered must keep nothing (full refund via resolve)"
@@ -226,7 +269,7 @@ fn refund_reject_paths() {
     );
 
     // ── R2: zero amount ⇒ kept 0 (nothing to refund), escrow untouched ──
-    let res = m.chain_result("toky.tst", "sw", "0", "trader.tst");
+    let res = m.chain_result("toky.tst", "{\"a\":\"swap\"}", "0", "trader.tst");
     assert_eq!(res, "used:0", "R2: zero-amount keeps nothing");
     assert_eq!(
         m.op("{\"op\":\"escrow\"}", "owner"),
@@ -235,7 +278,7 @@ fn refund_reject_paths() {
     );
 
     // ── R3: registered, funded, but NO liquidity ⇒ empty walk, full refund ──
-    let res = m.chain_result("toky.tst", "sw", AMT, "trader.tst");
+    let res = m.chain_result("toky.tst", "{\"a\":\"swap\"}", AMT, "trader.tst");
     assert_eq!(
         res, "used:0",
         "R3: empty walk (out=0) must keep nothing (full refund via resolve)"
@@ -266,7 +309,7 @@ fn refund_executed_swap_keeps_used_refunds_rem() {
     let m = setup(true, "exec");
     let esc_before = m.op("{\"op\":\"escrow\"}", "owner");
     let amt: u128 = 5_000_000_000_000_000_000_000_000;
-    let res = m.chain_result("toky.tst", "sw", &amt.to_string(), "trader.tst");
+    let res = m.chain_result("toky.tst", "{\"a\":\"swap\"}", &amt.to_string(), "trader.tst");
     let rem: u128 = res
         .trim_start_matches("used:")
         .parse()

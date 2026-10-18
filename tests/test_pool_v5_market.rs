@@ -89,7 +89,7 @@ impl Mock {
     }
 
     fn pool_op(&self, json: &str) -> String {
-        self.cross("pool.tst", "_run", json, "owner")
+        self.cross("pool.tst", "exec", json, "owner")
     }
 
     /// last 📄 line (the RETURN value): first whitespace token, comma-stripped
@@ -141,7 +141,7 @@ fn swap(m: &Mock, tok: &str, who: &str, amt: u128) -> String {
     m.cross(
         tok,
         "ft_transfer_call",
-        &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"sw\"}}"),
+        &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"{{\\\"a\\\":\\\"swap\\\"}}\"}}"),
         who,
     )
 }
@@ -156,6 +156,47 @@ fn snap(m: &Mock, label: &str) {
         key_i128(m, "X"),
         key_i128(m, "Y"),
     );
+}
+
+fn b64e(s: &str) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let b = s.as_bytes();
+    let mut out = String::new();
+    for chunk in b.chunks(3) {
+        let n =
+            chunk.iter().fold(0u32, |a, &x| (a << 8) | x as u32) << (8 * (3 - chunk.len()) as u32);
+        for k in (0..4).rev() {
+            if k < 3 - chunk.len() as u32 {
+                out.push('=');
+            } else {
+                out.push(T[((n >> (6 * k)) & 63) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
+/// Seed one storage key on `acct` (SIMSWAP arming for exec reads).
+fn import_key(state: &Path, acct: &str, key: &str, val: &str) {
+    use std::io::Write as _;
+    let row = format!(
+        "[{{\"account\":\"{acct}\",\"key\":\"{}\",\"value\":\"{}\"}}]",
+        b64e(key),
+        b64e(val)
+    );
+    let mut child = Command::new(bin("near-mock"))
+        .args(["state", "import", state.to_str().unwrap(), "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn near-mock state import");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(row.as_bytes())
+        .unwrap();
+    let st = child.wait().expect("state import wait");
+    assert!(st.success(), "state import failed: {row}");
 }
 
 #[test]
@@ -182,6 +223,8 @@ fn pool_v5_market_two_sided_sim() {
         ),
         state,
     };
+        import_key(&m.state, "pool.tst", "6|SIMSWAP", "1");
+
 
     const D: u128 = 100_000_000_000_000_000_000_000_000_000_000; // LP units (1e32)
     const FUND: u128 = 250_000_000_000_000_000_000_000_000_000; // 2.5e29 per mint
@@ -221,13 +264,13 @@ fn pool_v5_market_two_sided_sim() {
     let rx: u128 = rx_s.parse().expect("rx");
     let ry: u128 = ry_s.parse().expect("ry");
     println!("  req: rx={rx} ry={ry}");
-    let mint_msg = format!("m:{D}:{LO}:{HI}");
+    let mint_msg = format!("{{\"a\":\"mint\",\"d\":\"{D}\",\"lo\":\"{LO}\",\"hi\":\"{HI}\"}}");
     let leg = |tok: &str, amt: u128| {
         m.cross(
             tok,
             "ft_transfer_call",
             &format!(
-                "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"{mint_msg}\"}}"
+                "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"{}\"}}", mint_msg.replace('"', "\\\"")
             ),
             "alice.tst",
         )
@@ -254,7 +297,7 @@ fn pool_v5_market_two_sided_sim() {
         m.ret(&m.cross(
             "tokx.tst",
             "ft_transfer_call",
-            &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{SEED_X}\",\"msg\":\"seed\"}}"),
+            &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{SEED_X}\",\"msg\":\"{{\\\"a\\\":\\\"seed\\\"}}\"}}"),
             "alice.tst"
         )),
         format!("used:{SEED_X}"),
@@ -264,7 +307,7 @@ fn pool_v5_market_two_sided_sim() {
         m.ret(&m.cross(
             "toky.tst",
             "ft_transfer_call",
-            &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{SEED_Y}\",\"msg\":\"seed\"}}"),
+            &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{SEED_Y}\",\"msg\":\"{{\\\"a\\\":\\\"seed\\\"}}\"}}"),
             "alice.tst"
         )),
         format!("used:{SEED_Y}"),

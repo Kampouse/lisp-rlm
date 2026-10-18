@@ -44,7 +44,10 @@ fn compile(concat: &[&str], out: &Path) {
         normalize_num(&String::from_utf8_lossy(&o.stdout)),
         normalize_num(&String::from_utf8_lossy(&o.stderr))
     );
-    assert!(o.status.success() && all.contains("✅"), "compile failed: {all}");
+    assert!(
+        o.status.success() && all.contains("✅"),
+        "compile failed: {all}"
+    );
 }
 
 struct Mock {
@@ -72,7 +75,14 @@ impl Mock {
     }
 
     /// like `cross` but forces receipt N to fail (payout-fault testing)
-    fn cross_fail(&self, contract: &str, method: &str, args: &str, signer: &str, n: usize) -> String {
+    fn cross_fail(
+        &self,
+        contract: &str,
+        method: &str,
+        args: &str,
+        signer: &str,
+        n: usize,
+    ) -> String {
         let out = Command::new(bin("near-mock"))
             .arg("cross")
             .arg(&self.state)
@@ -93,7 +103,7 @@ impl Mock {
     }
 
     fn pool_op(&self, json: &str) -> String {
-        self.cross("pool.tst", "_run", json, "owner")
+        self.cross("pool.tst", "exec", json, "owner")
     }
 
     /// last 📄 line (the RETURN value): first whitespace token, comma-stripped
@@ -116,13 +126,59 @@ impl Mock {
 }
 
 fn bal(m: &Mock, tok: &str, who: &str) -> u128 {
-    let out = m.cross(tok, "ft_balance_of", &format!("{{\"account_id\":\"{who}\"}}"), "owner");
+    let out = m.cross(
+        tok,
+        "ft_balance_of",
+        &format!("{{\"account_id\":\"{who}\"}}"),
+        "owner",
+    );
     m.ret(&out).replace(',', "").parse().expect("balance int")
 }
 
 fn escrow(m: &Mock, k: &str) -> u128 {
     let out = m.pool_op(&format!("{{\"op\":\"get\",\"k\":\"{k}\"}}"));
     m.ret(&out).replace(',', "").parse().expect("escrow int")
+}
+
+fn b64e(s: &str) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let b = s.as_bytes();
+    let mut out = String::new();
+    for chunk in b.chunks(3) {
+        let n =
+            chunk.iter().fold(0u32, |a, &x| (a << 8) | x as u32) << (8 * (3 - chunk.len()) as u32);
+        for k in (0..4).rev() {
+            if k < 3 - chunk.len() as u32 {
+                out.push('=');
+            } else {
+                out.push(T[((n >> (6 * k)) & 63) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
+/// Seed one storage key on `acct` (SIMSWAP arming for exec reads).
+fn import_key(state: &Path, acct: &str, key: &str, val: &str) {
+    use std::io::Write as _;
+    let row = format!(
+        "[{{\"account\":\"{acct}\",\"key\":\"{}\",\"value\":\"{}\"}}]",
+        b64e(key),
+        b64e(val)
+    );
+    let mut child = Command::new(bin("near-mock"))
+        .args(["state", "import", state.to_str().unwrap(), "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn near-mock state import");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(row.as_bytes())
+        .unwrap();
+    let st = child.wait().expect("state import wait");
+    assert!(st.success(), "state import failed: {row}");
 }
 
 #[test]
@@ -149,6 +205,8 @@ fn pool_v5_custody_swap_and_reversal() {
         ),
         state,
     };
+        import_key(&m.state, "pool.tst", "6|SIMSWAP", "1");
+
 
     const L: u128 = 500_000_000_000_000_000_000_000_000; // position d, ±2 cells
     const FLOAT: u128 = 50_000_000_000_000_000_000_000_000_000; // pool float per side
@@ -193,7 +251,7 @@ fn pool_v5_custody_swap_and_reversal() {
         let used = m.ret(&m.cross(
             tok,
             "ft_transfer_call",
-            &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{FLOAT}\",\"msg\":\"seed\"}}"),
+            &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{FLOAT}\",\"msg\":\"{{\\\"a\\\":\\\"seed\\\"}}\"}}"),
             "pool.tst",
         ));
         assert_eq!(used, format!("used:{FLOAT}"), "seed {tok} fully consumed");
@@ -218,14 +276,18 @@ fn pool_v5_custody_swap_and_reversal() {
     let used = m.ret(&m.cross(
         "tokx.tst",
         "ft_transfer_call",
-        &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{SWAP}\",\"msg\":\"sw\"}}"),
+        &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{SWAP}\",\"msg\":\"{{\\\"a\\\":\\\"swap\\\"}}\"}}"),
         "alice.tst",
     ));
     let consumed: u128 = used.trim_start_matches("used:").parse().expect("used int");
     // trader pays SWAP - rm (walker remainder), receives out
     assert_eq!(consumed, SWAP - qrm, "consumed == intake - remainder");
 
-    assert_eq!(bal(&m, "toky.tst", "alice.tst"), qout, "payout == quoted out");
+    assert_eq!(
+        bal(&m, "toky.tst", "alice.tst"),
+        qout,
+        "payout == quoted out"
+    );
     assert_eq!(bal(&m, "tokx.tst", "alice.tst"), FLOAT * 2 - consumed);
     assert_eq!(escrow(&m, "ESCX"), FLOAT + qrm, "ESCX +rm (resolve refund)");
     assert_eq!(escrow(&m, "ESCY"), FLOAT - qout, "ESCY drained by out");
@@ -236,7 +298,7 @@ fn pool_v5_custody_swap_and_reversal() {
     let used2 = m.ret(&m.cross_fail(
         "toky.tst",
         "ft_transfer_call",
-        &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{SWAP}\",\"msg\":\"sw\"}}"),
+        &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{SWAP}\",\"msg\":\"{{\\\"a\\\":\\\"swap\\\"}}\"}}"),
         "alice.tst",
         0,
     ));

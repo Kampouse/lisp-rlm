@@ -20,8 +20,22 @@ FT: `cat lib/limb_math.lisp lib/clmm_core.lisp lib/ft2.lisp` → same.
     # 3. verify state survived (state persists across code swap; keys 6|*)
     curl -s -X POST https://rpc.testnet.near.org -H 'Content-Type: application/json' \
       -d '{"jsonrpc":"2.0","id":1,"method":"query","params":{"request_type":"call_function",
-           "account_id":"pool.clmm5-51fe5a.testnet","method_name":"_run",
-           "args_base64":"'"$(printf '{"op":"state"}' | base64)"'","finality":"final"}}'
+           "account_id":"pool.clmm5-51fe5a.testnet","method_name":"get_state",
+           "args_base64":"'"$(printf '{}' | base64)"'","finality":"final"}}'
+
+## ABI (2026-10-18 redesign — matches this wasm, not the currently deployed one)
+
+15 exports: `exec` (SIMSWAP-gated sim door), `ft_on_transfer`, `pay`
+(chain-imposed), `init` `burn` `collect` `register`
+`position_requirements` (mutating verbs), `quote` `get_state`
+`get_positions` `get_owed` `get_escrow` `get_fg` `grid` (read-only).
+
+`ft_transfer_call` msgs are JSON nested inside the `"msg"` field (ft2
+splices raw): `{"a":"seed"}`, `{"a":"swap"}`, `{"a":"mint","d":…,"lo":…,"hi":…}`,
+`{"a":"cancel"}`, `{"a":"donate","i":…}`. Garbage => full refund.
+
+Build: trio concat -> 181,588 bytes. Suites: 8/8 Rust (12 tests) +
+oracle seeds 1/2/3/16/34 clean (2026-10-18).
 
 ## Init policy (Finding D)
 
@@ -35,11 +49,11 @@ Never leave a fresh account un-inited.
 ## Prod checklist (pre-mainnet)
 
 - [ ] Finding A fixed: burn authority (+ kernel premise + negative tests)
-- [x] Finding B resolved: donate = `ft_transfer_call msg="don:<i>"` only;
-      `_run` arm deleted (2026-10-18)
-- [x] Finding C resolved: gross `_run swap` gated on `6|SIMSWAP` — never
-      written by any live path; sim drivers arm it via near-mock `state
-      import` (2026-10-18)
+- [x] Finding B resolved: donate = `ft_transfer_call` nested
+      `msg={"a":"donate","i":…}` only; no exec donate arm (2026-10-18)
+- [x] Finding C resolved: the whole `exec` dispatcher gated on `6|SIMSWAP`
+      — never written by any live path; sim drivers arm it via near-mock
+      `state import` (2026-10-18)
 - [ ] deploy key → 2-of-3 multisig
 - [ ] ft2 → production NEP-141 with storage stakes (1NEAR bindings)
 - [ ] optional: 6|PAUSE switch checked in on-transfer + claim

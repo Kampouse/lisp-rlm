@@ -126,7 +126,7 @@ impl Mock {
             .unwrap_or_default()
     }
     fn op_as(&self, json: &str, who: &str) -> String {
-        self.ret(&self.cross("pool.tst", "_run", json, who))
+        self.ret(&self.cross("pool.tst", "exec", json, who))
     }
     fn op(&self, json: &str) -> String {
         self.op_as(json, "owner")
@@ -242,16 +242,17 @@ fn pool_v5_invariants() {
             state: state.clone(),
         };
 
+
         assert_eq!(m.ret(&m.cross("tokx.tst", "new", "{}", OWNER)), "ok");
         assert_eq!(m.ret(&m.cross("toky.tst", "new", "{}", OWNER)), "ok");
         assert_eq!(
-            m.op("{\"op\":\"init\",\"toka\":\"tokx.tst\",\"tokb\":\"toky.tst\",\"fee_shift\":\"8\",\"s0\":\"18446744073709551616\"}"),
+            m.ret(&m.cross("pool.tst", "init", "{\"toka\":\"tokx.tst\",\"tokb\":\"toky.tst\",\"fee_shift\":\"8\",\"s0\":\"18446744073709551616\"}", "owner")),
             "init-ok"
         );
         // Finding C prod-gate: verify the gross arm is DEAD before arming
         // (no 6|SIMSWAP key ⇒ ERR_SIM_ONLY, no walk, no state change), then
         // arm it for this sim run via a direct state import.
-        assert_eq!(m.op("{\"op\":\"swap\",\"v\":\"1000\"}"), "ERR_SIM_ONLY");
+        assert_eq!(m.op("{\"op\":\"swap\",\"v\":\"1000\"}"), "sim-only");
         import_key(&state, "pool.tst", "6|SIMSWAP", "1");
 
         const LP_FUND: u128 = 100_000_000_000_000_000_000_000_000_000;
@@ -288,7 +289,7 @@ fn pool_v5_invariants() {
                 "tokx.tst",
                 "ft_transfer_call",
                 &format!(
-                    "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{SEED_XY}\",\"msg\":\"seed\"}}"
+                    "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{SEED_XY}\",\"msg\":\"{{\\\"a\\\":\\\"seed\\\"}}\"}}"
                 ),
                 "alice.tst"
             ))
@@ -298,7 +299,7 @@ fn pool_v5_invariants() {
                 "toky.tst",
                 "ft_transfer_call",
                 &format!(
-                    "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{SEED_XY}\",\"msg\":\"seed\"}}"
+                    "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{SEED_XY}\",\"msg\":\"{{\\\"a\\\":\\\"seed\\\"}}\"}}"
                 ),
                 "alice.tst"
             ))
@@ -344,17 +345,17 @@ fn pool_v5_invariants() {
                     if let Some((rx_s, ry_s)) = body.split_once(":ry:") {
                         if let (Ok(rx), Ok(ry)) = (rx_s.parse::<u128>(), ry_s.parse::<u128>()) {
                             if rx <= LP_FUND && ry <= LP_FUND {
-                                let msg = format!("m:{d}:{lo}:{hi}");
+                                let msg = format!("{{\"a\":\"mint\",\"d\":\"{d}\",\"lo\":\"{lo}\",\"hi\":\"{hi}\"}}");
                                 let o1 = m.ret(&m.cross(
                                     "tokx.tst",
                                     "ft_transfer_call",
-                                    &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{rx}\",\"msg\":\"{msg}\"}}"),
+                                    &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{rx}\",\"msg\":\"{}\"}}", msg.replace('"', "\\\"")),
                                     who,
                                 ));
                                 let o2 = m.ret(&m.cross(
                                     "toky.tst",
                                     "ft_transfer_call",
-                                    &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{ry}\",\"msg\":\"{msg}\"}}"),
+                                    &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{ry}\",\"msg\":\"{}\"}}", msg.replace('"', "\\\"")),
                                     who,
                                 ));
                                 // mint legs complete iff both used the full
@@ -381,7 +382,7 @@ fn pool_v5_invariants() {
                     "toky.tst",
                     "ft_transfer_call",
                     &format!(
-                        "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"sw\"}}"
+                        "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"{{\\\"a\\\":\\\"swap\\\"}}\"}}"
                     ),
                     TRADER,
                 ));
@@ -409,7 +410,7 @@ fn pool_v5_invariants() {
                     "tokx.tst",
                     "ft_transfer_call",
                     &format!(
-                        "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"sw\"}}"
+                        "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"{{\\\"a\\\":\\\"swap\\\"}}\"}}"
                     ),
                     TRADER,
                 ));

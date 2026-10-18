@@ -1,36 +1,48 @@
 # CLMM v5 Auth & Upgradability Audit — 2026-10-17
 
-Scope: `lib/clmm_pool_v5.lisp` (HEAD), entry points `_run`, `ft_on_transfer`, `pay`.
+Scope: `lib/clmm_pool_v5.lisp` (HEAD), entry points `exec`, `ft_on_transfer`,
+`pay` (chain-imposed) + 12 verb exports (below). ABI redesign 2026-10-18.
 Method: manual read of every entry + predecessor/signer check. Line numbers at audit time.
 
-## Entry points
+## Entry points (post-ABI 2026-10-18)
 
 | Export | Function | Caller gate |
 |---|---|---|
-| `_run` | `p5-run` | anyone (dispatch below) |
+| `exec` | `p5-exec` | anyone, but gated on `6|SIMSWAP=1` → returns `"sim-only"` otherwise (sim/harness door — never written by any live path) |
 | `ft_on_transfer` | `p5-on-transfer` | predecessor MUST be 6|TOKX or 6|TOKY, else full refund ✓ |
 | `pay` | `p5-pay` | predecessor MUST be self (promise callback) ✓ |
+| `init` `burn` `collect` `register` `position_requirements` | verb forms of the mutating ops | same authority checks as below, no SIMSWAP gate |
+| `quote` `get_state` `get_positions` `get_owed` `get_escrow` `get_fg` `grid` | read-only verbs | open ✓ |
 
-## `_run` op-by-op
+## On-transfer msg ABI
+
+`ft_transfer_call` nests the user msg: ft2 splices it RAW into the pool's
+`ft_on_transfer` input as the `"msg"` field, so the pool parses
+`(json-get-str <k> (json-get-str "msg" (near/input)))`. Actions
+(nested inside `"msg"`): `{"a":"seed"}`, `{"a":"swap"}`,
+`{"a":"mint","d":…,"lo":…,"hi":…}`, `{"a":"cancel"}`,
+`{"a":"donate","i":…}`. Garbage ⇒ full refund, zero state change.
+
+## `exec` op-by-op (sim door — all ops behind the `6|SIMSWAP` gate)
 
 | op | authority check | verdict |
 |---|---|---|
 | `init` | only when `6|TOKX` unset ("already-initialized" otherwise) | ✓ one-shot; but ANYONE can take the empty slot if they call first after deploy — deploy runbook must init in the same tx burst as deploy |
 | `reg` | open (self-reg; who fallback = predecessor) | ✓ registration is permissionless by design; no storage stake (testnet ft2 — prod ft needs 1NEAR storage binding, NOTE) |
-| `mint` (via `_run`? NO — mints ride `ft_transfer_call` → `ft_on_transfer` → `p5-mint-leg`; `_run mint` = `p5-mint` bookkeeping leg used by C2b two-leg protocol) | who = predecessor; req flow pins amounts | ✓ |
+| `mint` (via `exec`? NO — mints ride `ft_transfer_call` → `ft_on_transfer` → `p5-mint-leg`; `exec mint` = `p5-mint` bookkeeping leg used by C2b two-leg protocol) | who = predecessor; req flow pins amounts | ✓ |
 | `burn` | **who-bounds: NO authority predicate — documented as spec-parity (thy burn_rel has no authority term); burn subtracts d from LQ cells [a,b] and shrinks support.** | ⚠️ FINDING A — see below |
 | `burnc` | burns position POS key and credits owed; owed-total solvency guard (`esc + book` per side, `6|OWTX/6|OWTY`, `ERR_FLOAT` — 2026-10-18) | tied to `p5-burn` authority (Finding A) |
 | `claim` | who = predecessor; owed ≥ 1; REG required | ✓ |
 | `req` | open quote leg of the two-leg mint | ✓ (no funds move) |
 | `donate` | **open: anyone can add v to LQ at any cell i** | ⚠️ FINDING B — see below |
-| `swap` (gross, `_run`) | open; requires REG + caller-side funds? — `_run swap` debits NO token: it walks books + P/S and moves s only? → see Finding C | ⚠️ FINDING C |
+| `swap` (gross, `exec`) | open; requires REG + caller-side funds? — `exec swap` debits NO token: it walks books + P/S and moves s only? → see Finding C | ⚠️ FINDING C |
 | `quote`/`get`/`view`/`escrow`/`state`/`fg`/`owed`/`positions`/`g` | read-only | ✓ |
-| `pay` via `_run`? | not in dispatch | ✓ |
+| `pay` via `exec`? | not in dispatch | ✓ |
 
 ## Findings
 
 ### A — `burn` had no authority predicate (HIGH — **FIXED 2026-10-17**)
-`_run {"op":"burn","d":…,"a":…,"b":…}` subtracts `d` from every LQ cell in
+`exec {"op":"burn","d":…,"a":…,"b":…}` subtracts `d` from every LQ cell in
 [a,b] with only the per-cell `LQ_i ≥ d` guard. Anyone can burn *someone
 else's* liquidity (per-cell guard only needs the GLOBAL cell balance to
 cover d, not the caller's own position). `burnc` then converts a position
@@ -59,22 +71,22 @@ yes. Cheapest hardening: require `donate` funds to arrive via
 `ft_transfer_call msg=donate:<i>` so LQ only grows against escrowed tokens
 (burnc's owed-total solvency guard, 2026-10-18: owed can never stack past the pool's per-side holdings (esc float + input book — a swap out-leg moves X float→book), so a registered claim cannot trap underfunded; the old req-cap silently shorted LPs on exactly that case).
 
-**Resolution (2026-10-18): the `_run` donate arm is DELETED.** Donations
-ride `ft_on_transfer` with `msg="don:<i>"` (`p5-donate-leg`): predecessor
+**Resolution (2026-10-18): the `exec` donate arm is DELETED.** Donations
+ride `ft_on_transfer` with nested `msg={"a":"donate","i":…}` (`p5-donate-leg`): predecessor
 must be a pool token, amount is the donation, garbage/unparseable/zero ⇒
 full refund with zero state change — LQ only grows against escrowed
-tokens. The dispatch answers `unknown-op` for `_run {"op":"donate"}`
+tokens. The dispatch answers `unknown-op` for `exec {"op":"donate"}`
 (pinned by the Python edge battery).
 
-### C — `_run swap` (gross) moved books without token escrow (MED — RESOLVED 2026-10-18)
+### C — `exec swap` (gross) moved books without token escrow (MED — RESOLVED 2026-10-18)
 The gross swap op debits no token contract — it trusts the caller sent
 tokens in the SAME tx? It does not: there is no way to attach a NEP-141
-transfer to `_run`. Audit of `p5-swap` (op path) shows it walks P/S and
+transfer to `exec`. Audit of `p5-swap` (op path) shows it walks P/S and
 updates 6|X/6|Y flow ledgers but touches no escrow — the book entries are
 used by burns to distribute fees. If gross swap is meant as a *simulate*
 op it must be view-only; if it is meant to settle trades it must be fed by
 `ft_transfer_call msg=gross` like the custody path. Clarify intent before
-prod; if settle-path, either wire it to ft_on_transfer or remove the `_run`
+prod; if settle-path, either wire it to ft_on_transfer or remove the `exec`
 variant from prod (keep for the differential harness which uses it as the
 oracle-vs-contract gross channel — but then PROD wasm should drop it).
 
@@ -121,8 +133,8 @@ the payout promise (reentrancy-safe single-threaded receipts) ✓.
 1. (prod-blocker) Finding A: add authority to burn + kernel premise;
    negative test in fuzz + differential.
 2. RESOLVED Finding B (2026-10-18): donate = `ft_transfer_call
-   msg="don:<i>"` only; `_run` arm deleted.
-3. RESOLVED Finding C (2026-10-18): gross `_run swap` runtime-gated on
+   nested msg `{"a":"donate","i":…}` only; `exec` arm deleted.
+3. RESOLVED Finding C (2026-10-18): gross `exec swap` runtime-gated on
    6|SIMSWAP (never set in prod); sim harness arms via state import.
 4. (runbook) D: init-in-same-batch; document.
 5. (prod) E/F/G: no action.

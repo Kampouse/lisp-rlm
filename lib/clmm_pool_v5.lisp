@@ -717,8 +717,7 @@
 ;; tokens; the _run variant is gone. v = amt, i = parsed from msg; failure
 ;; to parse ⇒ full refund, zero state.
 (define (p5-donate-leg amt)
-  (let ((msg (json-get-str "msg" (near/input))))
-  (let ((rest (if (> (str-len msg) 4) (str-slice msg 4 (str-len msg)) "")))
+  (let ((rest (json-get-str "i" (json-get-str "msg" (near/input)))))
   (let ((ok (p5-num-ok? rest)))
   (let ((i (str->num rest)))
     (if (or (= ok "0")
@@ -734,7 +733,7 @@
         (if (> i (str->num (p5-bz "6|IMAX")))
             (p5-put "6|IMAX" (to-string i))
             0)
-        (near/return "0")))))))))
+        (near/return "0"))))))))
 (define (p5-on-transfer)
   (let ((inp (near/input)))
     (let ((sender (json-get-str "sender_id" inp)))
@@ -742,25 +741,25 @@
         (if (str= (p5-num-ok? amt) "0")
             (near/return amt)
             (if (str= (near/predecessor_account_id) (p5-bz "6|TOKX"))
-                (if (str= (json-get-str "msg" inp) "sw")
+                (if (str= (json-get-str "a" (json-get-str "msg" inp)) "swap")
                     (p5-swap-x sender amt)
-                    (if (str= (json-get-str "msg" inp) "seed")
+                    (if (str= (json-get-str "a" (json-get-str "msg" inp)) "seed")
                         (begin
                           ;; pool-owned float, no position (bootstrap for
                           ;; swap out-legs; mint custody escrows its own)
                           (p5-put "6|ESCX" (li-add (p5-bz "6|ESCX") amt))
                           (near/return "0"))
-                        (if (str= (str-slice (json-get-str "msg" inp) 0 3) "don")
+                        (if (str= (json-get-str "a" (json-get-str "msg" inp)) "donate")
                             (p5-donate-leg amt)
                             (p5-mint-leg sender amt))))
                 (if (str= (near/predecessor_account_id) (p5-bz "6|TOKY"))
-                    (if (str= (json-get-str "msg" inp) "sw")
+                    (if (str= (json-get-str "a" (json-get-str "msg" inp)) "swap")
                         (p5-swap-y sender amt)
-                        (if (str= (json-get-str "msg" inp) "seed")
+                        (if (str= (json-get-str "a" (json-get-str "msg" inp)) "seed")
                             (begin
                               (p5-put "6|ESCY" (li-add (p5-bz "6|ESCY") amt))
                               (near/return "0"))
-                            (if (str= (str-slice (json-get-str "msg" inp) 0 3) "don")
+                            (if (str= (json-get-str "a" (json-get-str "msg" inp)) "donate")
                                 (p5-donate-leg amt)
                                 (p5-mint-leg sender amt))))
                     (near/return amt))))))))
@@ -1049,8 +1048,8 @@
 ;; slice via an escrow-backed ft_transfer_call (failure ⇒ p5-pay "mk"
 ;; re-credits the escrow).
 (define (p5-mint-leg sender amt)
-  (let ((msg (json-get-str "msg" (near/input))))
-    (if (str= msg "c")
+  (let ((act (json-get-str "a" (json-get-str "msg" (near/input)))))
+    (if (str= act "cancel")
         (let ((rec (p5-bz (str-cat "6|PM:" sender))))
           (if (or (str= rec "") (str= rec "0"))
               (near/return amt)
@@ -1076,11 +1075,11 @@
                             (json-set "{}" "k" "mk") "r" sender)
                             "d" esc) "w" ek1) "t" "6|TOKX")
                           "0" 5000000000000)))))))))
-        (if (not (= (byte-at msg 0) 109))
+        (if (not (str= act "mint"))
             (near/return amt)
-            (let ((d (p5-fld msg 1 58)))
-            (let ((a (str->num (p5-fld msg 2 58))))
-            (let ((b (str->num (p5-fld msg 3 58))))
+            (let ((d (json-get-str "d" (json-get-str "msg" (near/input)))))
+            (let ((a (str->num (json-get-str "lo" (json-get-str "msg" (near/input))))))
+            (let ((b (str->num (json-get-str "hi" (json-get-str "msg" (near/input))))))
               ;; NOTE: no pend guard here — a pending record IS the leg-2
               ;; trigger; same-side re-entry dies in ERR_MISMATCH below
               ;; (byte check), and completion clears the record.
@@ -1489,8 +1488,12 @@
         (p5-qarm-dn s p v)
         (p5-qarm-up s p v))))))))))
 
-(define (p5-run)
+;; harness door: gross ops + raw-key reads, SIMSWAP-gated. Prod answers
+;; "sim-only" -- public ABI = verb exports + ft_on_transfer msgs.
+(define (grid) (p5-G (str->num (json-get-str "i" (near/input)))))
+(define (p5-exec)
   (let ((op (json-get-str "op" (near/input))))
+    (if (str= (p5-bz "6|SIMSWAP") "1")
     (if (str= op "init") (p5-init)
     (if (str= op "mint") (p5-mint)
     (if (str= op "burn") (p5-burn)
@@ -1508,8 +1511,22 @@
     (if (str= op "owed") (p5-owed)
     (if (str= op "positions") (p5-positions)
     (if (str= op "g") (p5-G (str->num (json-get-str "i" (near/input))))
-        "unknown-op")))))))))))))))))))
-
-(export "_run" p5-run)
+        "unknown-op")))))))))))))))))
+    "sim-only")))
+;; public ABI: verb exports + chain-imposed doors (ft_on_transfer
+;; carries ALL inbound money; pay resolves payout promises).
+(export "exec" p5-exec)
+(export "init" p5-init)
+(export "burn" p5-burnc)
+(export "collect" p5-claim)
+(export "register" p5-register)
+(export "position_requirements" p5-req)
+(export "quote" p5-quote)
+(export "get_state" p5-state)
+(export "get_positions" p5-positions)
+(export "get_owed" p5-owed)
+(export "get_escrow" p5-escrow)
+(export "get_fg" p5-fg)
+(export "grid" grid)
 (export "ft_on_transfer" p5-on-transfer)
 (export "pay" p5-pay)

@@ -323,13 +323,15 @@ class Pool:
 
     def call(self, op, args, signer="alice", expect_ok=True):
         manifest = f"pool={self.wasm}"
-        args2 = dict(args)
-        args2["op"] = op
+        if op == "init":
+            method, payload = "init", dict(args)
+        else:
+            method, payload = "exec", {**args, "op": op}
         env = dict(os.environ)
         env["NEAR_MOCK_SIGNER"] = signer
         r = subprocess.run(
-            [MOCK, "cross", self.state, manifest, "pool", "_run",
-             json.dumps(args2)],
+            [MOCK, "cross", self.state, manifest, "pool", method,
+             json.dumps(payload)],
             capture_output=True, text=True, env=env, timeout=120)
         out = r.stdout + r.stderr
         if expect_ok and r.returncode != 0:
@@ -445,14 +447,14 @@ def main():
     # Finding C prod-gate: init never writes 6|SIMSWAP — verify the gross
     # arm is dead, then arm it for this sim run via direct state import.
     rc, out = pool.call("swap", {"v": "1000"})
-    if out != "ERR_SIM_ONLY":
-        fails.append(f"prod-gate: gross swap not gated: {out}")
+    if out != "sim-only":
+        fails.append(f"prod-gate: exec not gated: {out}")
     pool.import_key("6|SIMSWAP", "1")
     # Finding B: custody donate rides ft_transfer_call msg="don:<i>" —
-    # the _run variant no longer exists (dispatch answers unknown-op).
+    # the exec donate arm does not exist (dispatch answers unknown-op).
     rc, out = pool.call("donate", {"v": "1", "i": "0"}, expect_ok=False)
     if out != "unknown-op":
-        fails.append(f"prod-gate: _run donate still alive: {out}")
+        fails.append(f"prod-gate: exec donate still alive: {out}")
 
     rng = random.Random(args.seed)
 

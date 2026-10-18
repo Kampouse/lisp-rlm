@@ -204,7 +204,7 @@ impl Mock {
             .unwrap_or_default()
     }
     fn op(&self, json: &str) -> String {
-        self.ret(&self.cross("pool.tst", "_run", json, "owner"))
+        self.ret(&self.cross("pool.tst", "exec", json, "owner"))
     }
     fn view(&self) -> String {
         self.op("{\"op\":\"view\"}")
@@ -314,11 +314,12 @@ fn pool_v5_fuzz_differential() {
             state: state.clone(),
         };
 
+
         assert!(m.ret(&m.cross("tokx.tst", "new", "{}", "owner")) == "ok");
         assert!(m.ret(&m.cross("toky.tst", "new", "{}", "owner")) == "ok");
         // Finding C prod-gate: verify the gross arm is DEAD before arming
         // (no 6|SIMSWAP key ⇒ ERR_SIM_ONLY, no walk, no state change).
-        assert_eq!(m.op("{\"op\":\"swap\",\"v\":\"1000\"}"), "ERR_SIM_ONLY");
+        assert_eq!(m.op("{\"op\":\"swap\",\"v\":\"1000\"}"), "sim-only");
         import_key(&state, "pool.tst", "6|SIMSWAP", "1");
         assert_eq!(m.op("{\"op\":\"init\",\"toka\":\"tokx.tst\",\"tokb\":\"toky.tst\",\"fee_shift\":\"8\",\"s0\":\"18446744073709551616\"}"), "init-ok");
 
@@ -337,7 +338,7 @@ fn pool_v5_fuzz_differential() {
                 );
             }
             assert!(m
-                .ret(&m.cross("pool.tst", "_run", "{\"op\":\"reg\"}", who))
+                .ret(&m.cross("pool.tst", "exec", "{\"op\":\"reg\"}", who))
                 .starts_with("reg-ok"));
         }
         for tok in ["tokx.tst", "toky.tst"] {
@@ -359,7 +360,7 @@ fn pool_v5_fuzz_differential() {
                 "tokx.tst",
                 "ft_transfer_call",
                 &format!(
-                    "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{SEED_X}\",\"msg\":\"seed\"}}"
+                    "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{SEED_X}\",\"msg\":\"{{\\\"a\\\":\\\"seed\\\"}}\"}}"
                 ),
                 "alice.tst"
             ))
@@ -369,7 +370,7 @@ fn pool_v5_fuzz_differential() {
                 "toky.tst",
                 "ft_transfer_call",
                 &format!(
-                    "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{SEED_Y}\",\"msg\":\"seed\"}}"
+                    "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{SEED_Y}\",\"msg\":\"{{\\\"a\\\":\\\"seed\\\"}}\"}}"
                 ),
                 "alice.tst"
             ))
@@ -405,17 +406,17 @@ fn pool_v5_fuzz_differential() {
                 let rx: u128 = rx_s.parse().unwrap();
                 let ry: u128 = ry_s.parse().unwrap();
                 if rx <= LP_FUND && ry <= LP_FUND {
-                    let msg = format!("m:{d}:{lo}:{hi}");
+                    let msg = format!("{{\"a\":\"mint\",\"d\":\"{d}\",\"lo\":\"{lo}\",\"hi\":\"{hi}\"}}");
                     let _lx = m.ret(&m.cross(
                         "tokx.tst",
                         "ft_transfer_call",
-                        &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{rx}\",\"msg\":\"{msg}\"}}"),
+                        &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{rx}\",\"msg\":\"{}\"}}", msg.replace('"', "\\\"")),
                         who
                     ));
                     let _ly = m.ret(&m.cross(
                         "toky.tst",
                         "ft_transfer_call",
-                        &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{ry}\",\"msg\":\"{msg}\"}}"),
+                        &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{ry}\",\"msg\":\"{}\"}}", msg.replace('"', "\\\"")),
                         who
                     ));
                 }
@@ -427,7 +428,7 @@ fn pool_v5_fuzz_differential() {
                     "toky.tst",
                     "ft_transfer_call",
                     &format!(
-                        "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"sw\"}}"
+                        "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"{{\\\"a\\\":\\\"swap\\\"}}\"}}"
                     ),
                     "trader.tst",
                 ));
@@ -439,7 +440,7 @@ fn pool_v5_fuzz_differential() {
                     "tokx.tst",
                     "ft_transfer_call",
                     &format!(
-                        "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"sw\"}}"
+                        "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"{{\\\"a\\\":\\\"swap\\\"}}\"}}"
                     ),
                     "trader.tst",
                 ));

@@ -42,6 +42,7 @@ fn compile(concat: &[&str], out: &Path) {
     std::fs::write(&tmp, src).unwrap();
     let o = Command::new(bin("near-compile"))
         .arg(&tmp)
+        .arg("-o")
         .arg(out)
         .output()
         .expect("run near-compile");
@@ -108,7 +109,7 @@ impl Mock {
     }
 
     fn pool_op(&self, json: &str) -> String {
-        self.cross("pool.tst", "_run", json, "owner")
+        self.cross("pool.tst", "exec", json, "owner")
     }
 
     /// last 📄 line (the RETURN value): first whitespace token, comma-stripped
@@ -145,6 +146,47 @@ fn escrow(m: &Mock, k: &str) -> u128 {
     m.ret(&out).parse().expect("escrow int")
 }
 
+fn b64e(s: &str) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let b = s.as_bytes();
+    let mut out = String::new();
+    for chunk in b.chunks(3) {
+        let n =
+            chunk.iter().fold(0u32, |a, &x| (a << 8) | x as u32) << (8 * (3 - chunk.len()) as u32);
+        for k in (0..4).rev() {
+            if k < 3 - chunk.len() as u32 {
+                out.push('=');
+            } else {
+                out.push(T[((n >> (6 * k)) & 63) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
+/// Seed one storage key on `acct` - SIMSWAP arming for exec reads.
+fn import_key(state: &Path, acct: &str, key: &str, val: &str) {
+    use std::io::Write as _;
+    let row = format!(
+        "[{{\"account\":\"{acct}\",\"key\":\"{}\",\"value\":\"{}\"}}]",
+        b64e(key),
+        b64e(val)
+    );
+    let mut child = Command::new(bin("near-mock"))
+        .args(["state", "import", state.to_str().unwrap(), "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn near-mock state import");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(row.as_bytes())
+        .unwrap();
+    let st = child.wait().expect("state import wait");
+    assert!(st.success(), "state import failed: {row}");
+}
+
 #[test]
 fn pool_v5_c2b_mint_burn_custody() {
     let dir = repo_root().join("target/test-c2b");
@@ -179,9 +221,10 @@ fn pool_v5_c2b_mint_burn_custody() {
     assert_eq!(m.ret(&m.cross("tokx.tst", "new", "{}", "owner")), "ok");
     assert_eq!(m.ret(&m.cross("toky.tst", "new", "{}", "owner")), "ok");
     assert_eq!(
-        m.ret(&m.pool_op("{\"op\":\"init\",\"toka\":\"tokx.tst\",\"tokb\":\"toky.tst\"}")),
+        m.ret(&m.cross("pool.tst", "init", "{\"toka\":\"tokx.tst\",\"tokb\":\"toky.tst\"}", "owner")),
         "init-ok"
     );
+    import_key(&m.state, "pool.tst", "6|SIMSWAP", "1");
     for tok in ["tokx.tst", "toky.tst"] {
         assert_eq!(
             m.ret(&m.cross(
@@ -195,9 +238,12 @@ fn pool_v5_c2b_mint_burn_custody() {
     }
 
     // required amounts (S-independent closed form)
-    let req_out = m.ret(&m.pool_op(&format!(
-        "{{\"op\":\"req\",\"d\":\"{D}\",\"a\":\"{A}\",\"b\":\"{B}\"}}"
-    )));
+    let req_out = m.ret(&m.cross(
+        "pool.tst",
+        "position_requirements",
+        &format!("{{\"d\":\"{D}\",\"a\":\"{A}\",\"b\":\"{B}\"}}"),
+        "owner"
+    ));
     let req_body = req_out.trim_start_matches("rx:");
     let (rx_s, ry_s) = req_body
         .split_once(":ry:")
@@ -206,13 +252,14 @@ fn pool_v5_c2b_mint_burn_custody() {
     let ry: u128 = ry_s.parse().expect("ry");
     assert!(rx > 0 && ry > 0, "nonzero reqs at test scale: {req_out}");
 
-    let mint_msg = format!("m:{D}:{A}:{B}");
+    let mint_msg = format!("{{\"a\":\"mint\",\"d\":\"{D}\",\"lo\":\"{A}\",\"hi\":\"{B}\"}}");
     let leg = |tok: &str, amt: u128| {
         m.cross(
             tok,
             "ft_transfer_call",
             &format!(
-                "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"{mint_msg}\"}}"
+                "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"{}\"}}",
+                mint_msg.replace('"', "\\\"")
             ),
             "alice.tst",
         )
@@ -230,7 +277,7 @@ fn pool_v5_c2b_mint_burn_custody() {
     let cf = m.cross_fail(
         "tokx.tst",
         "ft_transfer_call",
-        "{\"receiver_id\":\"pool.tst\",\"amount\":\"0\",\"msg\":\"c\"}",
+        "{\"receiver_id\":\"pool.tst\",\"amount\":\"0\",\"msg\":\"{\\\"a\\\":\\\"cancel\\\"}\"}",
         "alice.tst",
         0,
     );
@@ -251,7 +298,7 @@ fn pool_v5_c2b_mint_burn_custody() {
         m.ret(&m.cross(
             "tokx.tst",
             "ft_transfer_call",
-            "{\"receiver_id\":\"pool.tst\",\"amount\":\"0\",\"msg\":\"c\"}",
+            "{\"receiver_id\":\"pool.tst\",\"amount\":\"0\",\"msg\":\"{\\\"a\\\":\\\"cancel\\\"}\"}",
             "alice.tst",
         )),
         "used:0"
@@ -286,8 +333,8 @@ fn pool_v5_c2b_mint_burn_custody() {
     assert_eq!(
         m.ret(&m.cross(
             "pool.tst",
-            "_run",
-            &format!("{{\"op\":\"burnc\",\"d\":\"{D}\",\"a\":\"{A}\",\"b\":\"{B}\"}}"),
+            "burn",
+            &format!("{{\"d\":\"{D}\",\"a\":\"{A}\",\"b\":\"{B}\"}}"),
             "alice.tst"
         )),
         format!("burnc-ok:{rx}:{ry}")
@@ -303,13 +350,13 @@ fn pool_v5_c2b_mint_burn_custody() {
     // ── reg gate: alice self-registers (claims are gated since 2026-10-17;
     // an unregistered claimer gets "not-registered" with owed untouched) ──
     assert_eq!(
-        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"reg\"}", "alice.tst")),
+        m.ret(&m.cross("pool.tst", "register", "{}", "alice.tst")),
         "reg-ok:alice.tst"
     );
 
     // ── claim X: happy path pays the owed slice ──
     assert_eq!(
-        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"claim\",\"t\":\"x\"}", "alice.tst")),
+        m.ret(&m.cross("pool.tst", "collect", "{\"t\":\"x\"}", "alice.tst")),
         "0",
         "claim consumes the 0-attach leg"
     );
@@ -322,8 +369,8 @@ fn pool_v5_c2b_mint_burn_custody() {
     assert_eq!(
         m.ret(&m.cross_fail(
             "pool.tst",
-            "_run",
-            "{\"op\":\"claim\",\"t\":\"y\"}",
+            "collect",
+            "{\"t\":\"y\"}",
             "alice.tst",
             0
         )),
@@ -341,7 +388,7 @@ fn pool_v5_c2b_mint_burn_custody() {
     // Y branch. Old code matched (str= tok "y") strictly and silently
     // took the X branch instead (OWX already 0 ⇒ "no-owed", Y stuck). ──
     assert_eq!(
-        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"claim\",\"t\":\"Y\"}", "alice.tst")),
+        m.ret(&m.cross("pool.tst", "collect", "{\"t\":\"Y\"}", "alice.tst")),
         "0"
     );
     assert_eq!(escrow(&m, "ESCY"), 0, "uppercase claim drained Y escrow");
@@ -350,14 +397,14 @@ fn pool_v5_c2b_mint_burn_custody() {
 
     // ── lowercase retry after uppercase: clean no-op (no double-pay) ──
     assert_eq!(
-        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"claim\",\"t\":\"y\"}", "alice.tst")),
+        m.ret(&m.cross("pool.tst", "collect", "{\"t\":\"y\"}", "alice.tst")),
         "no-owed"
     );
     assert_eq!(bal(&m, "toky.tst", "alice.tst"), FUND, "still whole");
 
     // ── unknown token rejected (old fall-through paid the X branch) ──
     assert_eq!(
-        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"claim\",\"t\":\"z\"}", "alice.tst")),
+        m.ret(&m.cross("pool.tst", "collect", "{\"t\":\"z\"}", "alice.tst")),
         "bad-token"
     );
     assert_eq!(bal(&m, "toky.tst", "alice.tst"), FUND, "no dust moved");
@@ -433,9 +480,10 @@ fn pool_v5_c2b_partial_burn_outsized_lq() {
     assert_eq!(m.ret(&m.cross("tokx.tst", "new", "{}", "owner")), "ok");
     assert_eq!(m.ret(&m.cross("toky.tst", "new", "{}", "owner")), "ok");
     assert_eq!(
-        m.ret(&m.pool_op("{\"op\":\"init\",\"toka\":\"tokx.tst\",\"tokb\":\"toky.tst\"}")),
+        m.ret(&m.cross("pool.tst", "init", "{\"toka\":\"tokx.tst\",\"tokb\":\"toky.tst\"}", "owner")),
         "init-ok"
     );
+    import_key(&m.state, "pool.tst", "6|SIMSWAP", "1");
     for tok in ["tokx.tst", "toky.tst"] {
         assert_eq!(
             m.ret(&m.cross(
@@ -449,21 +497,26 @@ fn pool_v5_c2b_partial_burn_outsized_lq() {
     }
 
     // mint D1 in two legs (exact attach from the req closed form)
-    let req_out = m.ret(&m.pool_op(&format!(
-        "{{\"op\":\"req\",\"d\":\"{D1}\",\"a\":\"{A}\",\"b\":\"{B}\"}}"
-    )));
+    let req_out = m.ret(&m.cross(
+        "pool.tst",
+        "position_requirements",
+        &format!("{{\"d\":\"{D1}\",\"a\":\"{A}\",\"b\":\"{B}\"}}"),
+        "owner"
+    ));
     let req_body = req_out.trim_start_matches("rx:");
     let (rx1_s, ry1_s) = req_body
         .split_once(":ry:")
         .unwrap_or_else(|| panic!("req shape: {req_out}"));
     let rx1: u128 = rx1_s.parse().expect("rx1");
     let ry1: u128 = ry1_s.parse().expect("ry1");
+    let mint_msg = format!("{{\"a\":\"mint\",\"d\":\"{D1}\",\"lo\":\"{A}\",\"hi\":\"{B}\"}}");
     let leg = |tok: &str, amt: u128| {
         m.cross(
             tok,
             "ft_transfer_call",
             &format!(
-                "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"m:{D1}:{A}:{B}\"}}"
+                "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"{}\"}}",
+                mint_msg.replace('"', "\\\"")
             ),
             "alice.tst",
         )
@@ -480,8 +533,8 @@ fn pool_v5_c2b_partial_burn_outsized_lq() {
     // Old code: str->num overflow => unreachable trap. Must be burnc-ok.
     let burn_out = m.ret(&m.cross(
         "pool.tst",
-        "_run",
-        &format!("{{\"op\":\"burnc\",\"d\":\"{D2}\",\"a\":\"{A}\",\"b\":\"{B}\"}}"),
+        "burn",
+        &format!("{{\"d\":\"{D2}\",\"a\":\"{A}\",\"b\":\"{B}\"}}"),
         "alice.tst",
     ));
     let burn_body = burn_out.trim_start_matches("burnc-ok:");
@@ -501,19 +554,19 @@ fn pool_v5_c2b_partial_burn_outsized_lq() {
 
     // ── reg gate for this fixture's claimer ──
     assert!(m
-        .ret(&m.cross("pool.tst", "_run", "{\"op\":\"reg\"}", "alice.tst"))
+        .ret(&m.cross("pool.tst", "register", "{}", "alice.tst"))
         .starts_with("reg-ok:"));
     assert!(m
-        .ret(&m.cross("pool.tst", "_run", "{\"op\":\"reg\"}", "bob.tst"))
+        .ret(&m.cross("pool.tst", "register", "{}", "bob.tst"))
         .starts_with("reg-ok:"));
 
     // claims pay the partial-burn slice
     assert_eq!(
-        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"claim\",\"t\":\"x\"}", "alice.tst")),
+        m.ret(&m.cross("pool.tst", "collect", "{\"t\":\"x\"}", "alice.tst")),
         "0"
     );
     assert_eq!(
-        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"claim\",\"t\":\"y\"}", "alice.tst")),
+        m.ret(&m.cross("pool.tst", "collect", "{\"t\":\"y\"}", "alice.tst")),
         "0"
     );
     assert_eq!(escrow(&m, "OWX:alice.tst"), 0);
@@ -522,9 +575,9 @@ fn pool_v5_c2b_partial_burn_outsized_lq() {
     // -- full exit of the residue: shrink probes LQ = 9e26 AGAIN --
     let burn2_out = m.ret(&m.cross(
         "pool.tst",
-        "_run",
+        "burn",
         &format!(
-            "{{\"op\":\"burnc\",\"d\":\"{}\",\"a\":\"{A}\",\"b\":\"{B}\"}}",
+            "{{\"d\":\"{}\",\"a\":\"{A}\",\"b\":\"{B}\"}}",
             D1 - D2
         ),
         "alice.tst",
@@ -544,11 +597,11 @@ fn pool_v5_c2b_partial_burn_outsized_lq() {
 
     // final claims
     assert_eq!(
-        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"claim\",\"t\":\"x\"}", "alice.tst")),
+        m.ret(&m.cross("pool.tst", "collect", "{\"t\":\"x\"}", "alice.tst")),
         "0"
     );
     assert_eq!(
-        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"claim\",\"t\":\"y\"}", "alice.tst")),
+        m.ret(&m.cross("pool.tst", "collect", "{\"t\":\"y\"}", "alice.tst")),
         "0"
     );
 

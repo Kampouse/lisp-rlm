@@ -85,7 +85,7 @@ impl Mock {
     }
 
     fn pool_op(&self, json: &str) -> String {
-        self.cross("pool.tst", "_run", json, "owner")
+        self.cross("pool.tst", "exec", json, "owner")
     }
 
     /// last 📄 line (the RETURN value): first whitespace token, comma-stripped
@@ -133,6 +133,47 @@ fn parse_positions(s: &str) -> Vec<(i128, i128, i128)> {
         .collect()
 }
 
+fn b64e(s: &str) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let b = s.as_bytes();
+    let mut out = String::new();
+    for chunk in b.chunks(3) {
+        let n =
+            chunk.iter().fold(0u32, |a, &x| (a << 8) | x as u32) << (8 * (3 - chunk.len()) as u32);
+        for k in (0..4).rev() {
+            if k < 3 - chunk.len() as u32 {
+                out.push('=');
+            } else {
+                out.push(T[((n >> (6 * k)) & 63) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
+/// Seed one storage key on `acct` (SIMSWAP arming for exec reads).
+fn import_key(state: &Path, acct: &str, key: &str, val: &str) {
+    use std::io::Write as _;
+    let row = format!(
+        "[{{\"account\":\"{acct}\",\"key\":\"{}\",\"value\":\"{}\"}}]",
+        b64e(key),
+        b64e(val)
+    );
+    let mut child = Command::new(bin("near-mock"))
+        .args(["state", "import", state.to_str().unwrap(), "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn near-mock state import");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(row.as_bytes())
+        .unwrap();
+    let st = child.wait().expect("state import wait");
+    assert!(st.success(), "state import failed: {row}");
+}
+
 #[test]
 fn pool_v5_params_and_views() {
     let dir = repo_root().join("target/test-params");
@@ -157,6 +198,8 @@ fn pool_v5_params_and_views() {
         ),
         state,
     };
+        import_key(&m.state, "pool.tst", "6|SIMSWAP", "1");
+
 
     // ── boot: custom params — fee_shift 10 (÷1024), s0 = 2^64 (price 1.0) ──
     assert_eq!(m.ret(&m.cross("tokx.tst", "new", "{}", "owner")), "ok");
@@ -169,9 +212,7 @@ fn pool_v5_params_and_views() {
         "P1: init with custom params"
     );
     assert_eq!(
-        m.ret(&m.pool_op(
-            "{\"op\":\"init\",\"toka\":\"tokx.tst\",\"tokb\":\"toky.tst\"}"
-        )),
+        m.ret(&m.pool_op("{\"op\":\"init\",\"toka\":\"tokx.tst\",\"tokb\":\"toky.tst\"}")),
         "already-initialized",
         "P1: init-once holds with params too"
     );
@@ -216,7 +257,7 @@ fn pool_v5_params_and_views() {
             tok,
             "ft_transfer_call",
             &format!(
-                "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"m:{D}:{lo}:{hi}\"}}"
+                "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"{{\\\"a\\\":\\\"mint\\\",\\\"d\\\":\\\"{D}\\\",\\\"lo\\\":\\\"{lo}\\\",\\\"hi\\\":\\\"{hi}\\\"}}\"}}"
             ),
             "alice.tst",
         )
@@ -240,13 +281,21 @@ fn pool_v5_params_and_views() {
             tok,
             "ft_transfer_call",
             &format!(
-                "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"m:{d2}:{lo}:{p}\"}}"
+                "{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"{{\\\"a\\\":\\\"mint\\\",\\\"d\\\":\\\"{d2}\\\",\\\"lo\\\":\\\"{lo}\\\",\\\"hi\\\":\\\"{p}\\\"}}\"}}"
             ),
             "alice.tst",
         )
     };
-    assert_eq!(m.ret(&leg2("tokx.tst", rx2)), format!("used:{rx2}"), "leg2 x");
-    assert_eq!(m.ret(&leg2("toky.tst", ry2)), format!("used:{ry2}"), "leg2 y");
+    assert_eq!(
+        m.ret(&leg2("tokx.tst", rx2)),
+        format!("used:{rx2}"),
+        "leg2 x"
+    );
+    assert_eq!(
+        m.ret(&leg2("toky.tst", ry2)),
+        format!("used:{ry2}"),
+        "leg2 y"
+    );
 
     // ── P2: shift-10 skim — Y-sell of 1.024e29 ⇒ FEEY = 1e26 EXACT
     //      (default ÷256 would skim 4e26 — this pin fails on default) ──
@@ -255,7 +304,7 @@ fn pool_v5_params_and_views() {
     let out = m.cross(
         "toky.tst",
         "ft_transfer_call",
-        &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"sw\"}}"),
+        &format!("{{\"receiver_id\":\"pool.tst\",\"amount\":\"{amt}\",\"msg\":\"{{\\\"a\\\":\\\"swap\\\"}}\"}}"),
         "alice.tst",
     );
     assert!(m.ret(&out).starts_with("used:"), "swap leg executed");
@@ -301,7 +350,7 @@ fn pool_v5_params_and_views() {
     //    authority: caller must own the position — sign as alice ──
     let bc = m.ret(&m.cross(
         "pool.tst",
-        "_run",
+        "exec",
         &format!("{{\"op\":\"burnc\",\"d\":\"{D}\",\"a\":\"{lo}\",\"b\":\"{hi}\"}}"),
         "alice.tst",
     ));
@@ -340,27 +389,27 @@ fn pool_v5_params_and_views() {
         "refusal left owed untouched"
     );
     assert_eq!(
-        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"reg\"}", "alice.tst")),
+        m.ret(&m.cross("pool.tst", "exec", "{\"op\":\"reg\"}", "alice.tst")),
         "reg-ok:alice.tst",
         "self-registration"
     );
     // double reg is a no-op (idempotent)
     assert_eq!(
-        m.ret(&m.cross("pool.tst", "_run", "{\"op\":\"reg\"}", "alice.tst")),
+        m.ret(&m.cross("pool.tst", "exec", "{\"op\":\"reg\"}", "alice.tst")),
         "reg-ok:alice.tst"
     );
 
     // ── claim pays out; owed view returns to zero ──
     let cx = m.ret(&m.cross(
         "pool.tst",
-        "_run",
+        "exec",
         "{\"op\":\"claim\",\"t\":\"x\"}",
         "alice.tst",
     ));
     assert_eq!(cx, "0", "claim x consumed the receipt");
     let cy = m.ret(&m.cross(
         "pool.tst",
-        "_run",
+        "exec",
         "{\"op\":\"claim\",\"t\":\"Y\"}",
         "alice.tst",
     ));
@@ -389,6 +438,8 @@ fn pool_v5_legacy_defaults_untouched() {
         manifest: format!("pool.tst={}", pool_wasm.display()),
         state,
     };
+        import_key(&m.state, "pool.tst", "6|SIMSWAP", "1");
+
 
     // P6: bare init (the pre-param call shape) ⇒ S = 2^64, SHIFT unset
     assert_eq!(
@@ -400,7 +451,11 @@ fn pool_v5_legacy_defaults_untouched() {
         "18446744073709551616",
         "P6: s0 default = 2^64 (price 1.0)"
     );
-    assert_eq!(m.key("SHIFT"), "", "P6: SHIFT unset — p5-shf falls back to 8");
+    assert_eq!(
+        m.key("SHIFT"),
+        "",
+        "P6: SHIFT unset — p5-shf falls back to 8"
+    );
     assert!(
         m.ret(&m.pool_op("{\"op\":\"state\"}"))
             .ends_with(":SHIFT:8:FEEX:0:FEEY:0"),
