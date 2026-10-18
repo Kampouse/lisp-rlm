@@ -85,7 +85,7 @@
                     (near/promise_batch_action_function_call p "ft_on_transfer"
                       (json-set (json-set (json-set "{}" "sender_id" sender) "amount" amt)
                                 "msg" (json-get-str "msg" inp))
-                      "0" 100000000000000)
+                      "0" 250000000000000)
                     (near/promise_return
                       (near/promise_then p (near/current_account_id) "ft_resolve_transfer"
                         (json-set (json-set (json-set "{}" "sender_id" sender) "receiver_id" recv) "amount" amt)
