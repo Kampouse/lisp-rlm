@@ -4001,7 +4001,13 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         //   40: "application/json" (16)
         //   56: UA entry  (val_off=10, val_len=24)  8B
         //   64: ACC entry (val_off=40, val_len=16)  8B
-        const WITH_HDR_SEG_BASE: i32 = 139_600;
+        // Base MUST sit above the user literal zone (next_data_offset
+        // starts at 139_264 and grows with program literals — at 139_600
+        // a program with >336 bytes of literals overwrote this segment
+        // => canonical list-OOB trap on the with-header GET). 160KB is
+        // far above any realistic literal zone and nowhere near the
+        // buf/ret area at the 128MB top.
+        const WITH_HDR_SEG_BASE: i32 = 160_000;
         {
             let mut seg = Vec::with_capacity(72);
             seg.extend_from_slice(b"User-Agent");

@@ -230,19 +230,57 @@ impl WasmEmitter {
                             $d.push(Instruction::I32WrapI64);
                         }};
                     };
-                    untag!(d, &a[0]); // url
-                    d.push(Instruction::I32Const(buf_d));
-                    d.push(Instruction::I32Const(cap_d));
-                    d.push(Instruction::I32Const(ret_d + 8)); // len_ptr
+                    // URL: literal -> bake into the dyn segment (const
+                    // ptr,len); runtime -> untag. A literal URL tag
+                    // carries a placeholder ptr — untagging it feeds
+                    // the core a garbage URL (canonical list-OOB lift
+                    // trap; found: exec-b literal URL + runtime val).
                     // Literal header name/value -> bake into a data
                     // segment and pass const (ptr,len). Runtime
                     // (computed) strings -> untag the i64 tag.
                     // NOTE: literal Str tags carry a placeholder ptr
                     // (observed ptr=1) — the dynamic arm does not
                     // register literal bytes, so they MUST be baked.
-                    let dyn_seg_base: i32 = 139_800;
+                    // The bake zone is allocated ABOVE every literal
+                    // interned SO FAR (next_data_offset), and
+                    // next_data_offset is bumped past it so literals
+                    // interned later never overlap the baked bytes —
+                    // fixed base 139_800 collided with exec literals
+                    // (PAYMENT-SIGNATURE interned AT 139800 was
+                    // clobbered to "PAYMENT-SIGNAT0" at runtime).
+                    // Bake zone = current data-alloc top (above every
+                    // literal interned so far); bump next_data_offset
+                    // past it so literals interned later never overlap
+                    // the baked bytes. Fixed base 139_800 collided with
+                    // exec literals (PAYMENT-SIGNATURE interned AT
+                    // 139800 was clobbered to "PAYMENT-SIGNAT0").
+                    let dyn_seg_base: i32 = self.next_data_offset as i32;
                     let mut dyn_seg: Vec<u8> = Vec::new();
                     let mut dyn_off = dyn_seg_base;
+                    // URL: literal -> bake (const ptr,len); runtime
+                    // -> untag. A literal URL tag carries a placeholder
+                    // ptr — untagging it feeds the core a garbage URL
+                    // (list-OOB lift trap; exec-b literal URL + runtime
+                    // val was the live failure).
+                    let mut url_baked: Option<(i32, i32)> = None;
+                    match &a[0] {
+                        crate::types::LispVal::Str(u) => {
+                            let ptr = dyn_off;
+                            dyn_seg.extend_from_slice(u.as_bytes());
+                            dyn_off += u.len() as i32;
+                            url_baked = Some((ptr, u.len() as i32));
+                        }
+                        _ => {
+                            untag!(d, &a[0]); // url
+                        }
+                    }
+                    if let Some((ptr, len)) = url_baked {
+                        d.push(Instruction::I32Const(ptr));
+                        d.push(Instruction::I32Const(len));
+                    }
+                    d.push(Instruction::I32Const(buf_d));
+                    d.push(Instruction::I32Const(cap_d));
+                    d.push(Instruction::I32Const(ret_d + 8)); // len_ptr
                     let arg_pair = |a: &crate::types::LispVal,
                                     dyn_seg: &mut Vec<u8>,
                                     dyn_off: &mut i32|
@@ -348,7 +386,14 @@ impl WasmEmitter {
                         }
                     }
                     if !dyn_seg.is_empty() {
+                        let seg_len = dyn_seg.len() as u32;
                         self.data_segments.push((dyn_seg_base as u32, dyn_seg));
+                        // Reserve the bake zone: literals interned after
+                        // this site must land ABOVE the baked bytes.
+                        let new_top = (dyn_seg_base as u32 + seg_len + 7) & !7;
+                        if new_top > self.next_data_offset {
+                            self.next_data_offset = new_top;
+                        }
                     }
                     d.push(Instruction::Call(170));
                     d.push(Instruction::Drop);
