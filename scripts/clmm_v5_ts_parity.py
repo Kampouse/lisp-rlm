@@ -182,8 +182,12 @@ def twin_lines(ops: list) -> list:
 
 def main() -> None:
     tmp = tempfile.mkdtemp(prefix="ts-parity-")
-    wasm = build(["lib/limb_math.lisp", "lib/clmm_v5_kernel.lisp", "lib/clmm_pool_v5.lisp"],
-                 tmp, "pool")
+    # CLMM_POOL_WASM overrides the contract artifact — used to gate the
+    # size-optimized release build (shipped == tested law).
+    wasm = os.environ.get("CLMM_POOL_WASM") or build(
+        ["lib/limb_math.lisp", "lib/clmm_v5_kernel.lisp", "lib/clmm_pool_v5.lisp"],
+        tmp, "pool")
+    print(f"pool wasm: {wasm}")
     ft = build(["lib/limb_math.lisp", "lib/clmm_core.lisp", "lib/ft2.lisp"], tmp, "ft2")
     total = 0
     fails = []
