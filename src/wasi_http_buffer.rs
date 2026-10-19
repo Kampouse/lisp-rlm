@@ -1347,7 +1347,10 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     // Capacity guard (buf = HTTP_MAX_RESPONSE): if chunk <= remaining
     // (CAP - total), copy it and loop; else copy only remaining and
     // break with total = CAP (graceful truncation, no OOB trap).
-    func.instruction(&lg(19));
+    // NOTE: chunk_len lives in local 16. 92e764eb wrote lg(19) here —
+    // local 19 is the REQUEST output-stream HANDLE, so every chunk copied
+    // exactly `handle` bytes (observed: 7-byte body '{"jsonr', handle=7).
+    func.instruction(&lg(16));
     func.instruction(&cst(1_048_576));
     func.instruction(&lg(15));
     func.instruction(&Instruction::I32Sub);
@@ -1359,7 +1362,7 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
     func.instruction(&Instruction::I32Add);
     func.instruction(&cst(0)); // load chunk data ptr
     func.instruction(&ld(SCRATCH_READ_RESULT + 4));
-    func.instruction(&lg(19)); // len = chunk_len
+    func.instruction(&lg(16)); // len = chunk_len
     func.instruction(&Instruction::MemoryCopy {
         src_mem: 0,
         dst_mem: 0,
@@ -1367,7 +1370,7 @@ pub fn emit_http_post_to_buffer(func: &mut Function, data: &HttpDataSegments) {
 
     // total_len += chunk_len
     func.instruction(&lg(15));
-    func.instruction(&lg(19));
+    func.instruction(&lg(16));
     func.instruction(&Instruction::I32Add);
     func.instruction(&ls(15)); // update total_len
 
