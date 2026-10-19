@@ -51,3 +51,12 @@ export function walkStep(): string {
   const prod: string = u256Mul(L, d);
   return u256Shr(prod, 64);
 }
+
+// add: exercise every limb-boundary carry (t* uses add+shl).
+export function add2(a: string, b: string): string {
+  return u256Add(a, b);
+}
+
+export function shlK(a: string, k: number): string {
+  return u256Shl(a, k);
+}

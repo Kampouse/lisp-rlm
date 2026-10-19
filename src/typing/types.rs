@@ -1205,7 +1205,7 @@ impl TcEnv {
                 let str_ty = TcType::Con(TcCon::Str);
                 let int_ty = TcType::Con(TcCon::Int);
                 let bool_ty = TcType::Con(TcCon::Bool);
-                for name in &["u256/mul", "u256/div"] {
+                for name in &["u256/mul", "u256/div", "u256/add"] {
                     env.insert_mono(
                         name.to_string(),
                         TcType::Arrow(
@@ -1229,6 +1229,15 @@ impl TcEnv {
                         Box::new(str_ty.clone()),
                     ),
                 );
+                for name in &["u256/shl"] {
+                    env.insert_mono(
+                        name.to_string(),
+                        TcType::Arrow(
+                            vec![str_ty.clone(), int_ty.clone()],
+                            Box::new(str_ty.clone()),
+                        ),
+                    );
+                }
                 for name in &["u256/lt", "u256/gt", "u256/eq"] {
                     env.insert_mono(
                         name.to_string(),

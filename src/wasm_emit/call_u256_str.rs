@@ -49,6 +49,8 @@ pub(crate) struct U256Helpers {
     pub(crate) mul: u32,
     pub(crate) div: u32,
     pub(crate) shr: u32,
+    pub(crate) add: u32,
+    pub(crate) shl: u32,
     pub(crate) isqrt: u32,
 }
 
@@ -103,6 +105,24 @@ impl WasmEmitter {
             local_entries: None,
             custom_type: None,
         });
+        let add = self.funcs.len() as u32;
+        self.funcs.push(FuncDef {
+            name: "__h_u256_add".into(),
+            param_count: 3,
+            local_count: 13,
+            instrs: Self::h_u256_add(),
+            local_entries: None,
+            custom_type: None,
+        });
+        let shl = self.funcs.len() as u32;
+        self.funcs.push(FuncDef {
+            name: "__h_u256_shl".into(),
+            param_count: 3,
+            local_count: 13,
+            instrs: Self::h_u256_shl(),
+            local_entries: None,
+            custom_type: None,
+        });
         let isqrt = self.funcs.len() as u32;
         self.funcs.push(FuncDef {
             name: "__h_u256_isqrt".into(),
@@ -118,6 +138,8 @@ impl WasmEmitter {
             mul,
             div,
             shr,
+            add,
+            shl,
             isqrt,
         };
         self.u256h = Some(h);
@@ -935,11 +957,15 @@ impl WasmEmitter {
         e(&Instruction::I64Const(63));
         e(&Instruction::I64And);
         e(&Instruction::LocalSet(12)); // bits = k & 63
-        // whole-limb shifts: s = 1..=3
-        for s in 1..=3usize {
+        // whole-limb shifts, binary decomposition (whole is 0..3): shift by
+        // 2 when bit 1 is set, then by 1 when bit 0 is set — the cumulative
+        // total equals whole exactly. (The original `whole >= s` tests fired
+        // ALL of the 1/2/3-limb phases for whole=3, shifting by 6 limbs.)
+        for (s, bit) in [(2usize, 2i64), (1usize, 1i64)] {
             e(&Instruction::LocalGet(11));
-            e(&Instruction::I64Const(s as i64));
-            e(&Instruction::I64GeU);
+            e(&Instruction::I64Const(bit));
+            e(&Instruction::I64And);
+            e(&Instruction::I32WrapI64); // If takes i32
             e(&Instruction::If(BlockType::Empty));
             for j in 0..4usize {
                 if j + s < 4 {
@@ -975,6 +1001,157 @@ impl WasmEmitter {
                 e(&Instruction::I64Const(64));
                 e(&Instruction::I64Add);
                 e(&Instruction::I64Shl);
+                e(&Instruction::I64Or);
+                e(&Instruction::LocalSet((7 + j) as u32));
+                e(&Instruction::End);
+            }
+        }
+        for c in 0..4usize {
+            e(&Instruction::LocalGet(2));
+            e(&Instruction::I64Const(8 * c as i64));
+            e(&Instruction::I64Add);
+            e(&Instruction::I32WrapI64);
+            e(&Instruction::LocalGet((7 + c) as u32));
+            e(&Instruction::I64Store(ma8()));
+        }
+        e(&Instruction::I64Const(TAG_NIL));
+        v
+    }
+
+    // ── add: ripple add A + B -> Q (caller renders) ──
+    // i64 add wraps mod 2^64, so carry detection is wrap-based:
+    //   s1 = v + carry (wrap); carry_ovf = (carry != 0) & (v == u64::MAX)
+    //   s  = s1 + w (wrap);    carry |= s <u s1
+    // Locals: 0..2 ptrs, 3..6 = A limbs, 7..10 = B limbs (become result),
+    //         11 = carry, 12 = s1 scratch
+    fn h_u256_add() -> Vec<Instruction<'static>> {
+        let mut v = vec![];
+        let mut e = |i: &Instruction<'static>| v.push(i.clone());
+        for (p, base) in [(0u32, 3u32), (1, 7)] {
+            for k in 0..4u32 {
+                e(&Instruction::LocalGet(p));
+                if k != 0 {
+                    e(&Instruction::I64Const(8 * k as i64));
+                    e(&Instruction::I64Add);
+                }
+                e(&Instruction::I32WrapI64);
+                e(&Instruction::I64Load(ma8()));
+                e(&Instruction::LocalSet(base + k));
+            }
+        }
+        e(&Instruction::I64Const(0));
+        e(&Instruction::LocalSet(11)); // carry
+        for k in 0..4usize {
+            // s1 = v[k] + carry (wrapping)
+            e(&Instruction::LocalGet((3 + k) as u32));
+            e(&Instruction::LocalGet(11));
+            e(&Instruction::I64Add);
+            e(&Instruction::LocalSet(12));
+            // carry = (carry != 0) & (v[k] == u64::MAX)
+            // (comparisons yield i32 — combine in i32, then extend)
+            e(&Instruction::LocalGet(11));
+            e(&Instruction::I64Const(0));
+            e(&Instruction::I64Ne);
+            e(&Instruction::LocalGet((3 + k) as u32));
+            e(&Instruction::I64Const(-1));
+            e(&Instruction::I64Eq);
+            e(&Instruction::I32And);
+            e(&Instruction::I64ExtendI32U);
+            e(&Instruction::LocalSet(11));
+            // s = s1 + w[k] (wrapping)
+            e(&Instruction::LocalGet(12));
+            e(&Instruction::LocalGet((7 + k) as u32));
+            e(&Instruction::I64Add);
+            e(&Instruction::LocalSet(12));
+            // carry |= s <u s1 (unsigned overflow out of the w addition)
+            e(&Instruction::LocalGet(12));
+            e(&Instruction::LocalGet((7 + k) as u32));
+            e(&Instruction::I64LtU);
+            e(&Instruction::I64ExtendI32U);
+            e(&Instruction::LocalGet(11));
+            e(&Instruction::I64Or);
+            e(&Instruction::LocalSet(11));
+            // result limb = s
+            e(&Instruction::LocalGet(12));
+            e(&Instruction::LocalSet((7 + k) as u32));
+        }
+        for k in 0..4usize {
+            e(&Instruction::LocalGet(2));
+            e(&Instruction::I64Const(8 * k as i64));
+            e(&Instruction::I64Add);
+            e(&Instruction::I32WrapI64);
+            e(&Instruction::LocalGet((7 + k) as u32));
+            e(&Instruction::I64Store(ma8()));
+        }
+        e(&Instruction::I64Const(TAG_NIL));
+        v
+    }
+
+    // ── shl: logical shift left A << k (i64, untagged) -> Q ──
+    // Mirror of shr. Locals: 0=n 1=k 2=dst 3..6=v 7..10=w 11=whole 12=bits
+    fn h_u256_shl() -> Vec<Instruction<'static>> {
+        let mut v = vec![];
+        let mut e = |i: &Instruction<'static>| v.push(i.clone());
+        for (c, l) in [(0i64, 3u32), (8, 4), (16, 5), (24, 6)] {
+            e(&Instruction::LocalGet(0));
+            if c != 0 {
+                e(&Instruction::I64Const(c));
+                e(&Instruction::I64Add);
+            }
+            e(&Instruction::I32WrapI64);
+            e(&Instruction::I64Load(ma8()));
+            e(&Instruction::LocalSet(l));
+        }
+        e(&Instruction::LocalGet(1));
+        e(&Instruction::I64Const(6));
+        e(&Instruction::I64ShrU);
+        e(&Instruction::LocalSet(11)); // whole = k / 64
+        e(&Instruction::LocalGet(1));
+        e(&Instruction::I64Const(63));
+        e(&Instruction::I64And);
+        e(&Instruction::LocalSet(12)); // bits = k & 63
+        // whole-limb shifts: v[j] = v[j - s]. DESCENDING write order — the
+        // source index j-s is below j and must still hold its old value
+        // when read; zeros fill the bottom. Binary decomposition as in shr.
+        for (s, bit) in [(2usize, 2i64), (1usize, 1i64)] {
+            e(&Instruction::LocalGet(11));
+            e(&Instruction::I64Const(bit));
+            e(&Instruction::I64And);
+            e(&Instruction::I32WrapI64); // If takes i32
+            e(&Instruction::If(BlockType::Empty));
+            for j in (0..4usize).rev() {
+                if j >= s {
+                    e(&Instruction::LocalGet((3 + j - s) as u32));
+                } else {
+                    e(&Instruction::I64Const(0));
+                }
+                e(&Instruction::LocalSet((3 + j) as u32));
+            }
+            e(&Instruction::End);
+        }
+        // bit shift: w[j] = (v[j] << bits) | (bits != 0 && j > 0 ?
+        //              v[j-1] >>u (64 - bits) : 0)
+        for j in 0..4usize {
+            e(&Instruction::LocalGet((3 + j) as u32));
+            e(&Instruction::LocalGet(12));
+            e(&Instruction::I64Shl);
+            e(&Instruction::LocalSet((7 + j) as u32));
+            if j > 0 {
+                // bring up v[j-1]'s high bits only when bits != 0
+                // (>>64 wraps to >>0 and smears the whole limb)
+                e(&Instruction::LocalGet(12));
+                e(&Instruction::I64Const(0));
+                e(&Instruction::I64Ne);
+                e(&Instruction::If(BlockType::Empty));
+                e(&Instruction::LocalGet((7 + j) as u32));
+                e(&Instruction::LocalGet((3 + j - 1) as u32));
+                // amount = 64 - bits: [0, bits] Sub = 0-bits (no rev-sub), +64
+                e(&Instruction::I64Const(0));
+                e(&Instruction::LocalGet(12));
+                e(&Instruction::I64Sub);
+                e(&Instruction::I64Const(64));
+                e(&Instruction::I64Add);
+                e(&Instruction::I64ShrU);
                 e(&Instruction::I64Or);
                 e(&Instruction::LocalSet((7 + j) as u32));
                 e(&Instruction::End);
@@ -1369,6 +1546,71 @@ impl WasmEmitter {
                 v.push(Instruction::LocalGet(kloc));
                 v.push(Instruction::I64Const(U256_Q));
                 v.push(Self::call_user(h.shr));
+                v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(U256_Q));
+                v.push(Self::call_user(h.to_str));
+                Ok(v)
+            }
+            "u256/add" => {
+                if a.len() != 2 {
+                    return Err("u256/add: need 2 args".into());
+                }
+                let h = self.ensure_u256_str_helpers();
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.push(Instruction::I64Const(U256_A));
+                v.push(Self::call_user(h.parse));
+                v.push(Instruction::Drop);
+                v.extend(self.expr(&a[1])?);
+                v.push(Instruction::I64Const(U256_B));
+                v.push(Self::call_user(h.parse));
+                v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(U256_A));
+                v.push(Instruction::I64Const(U256_B));
+                v.push(Instruction::I64Const(U256_Q));
+                v.push(Self::call_user(h.add));
+                v.push(Instruction::Drop);
+                v.push(Instruction::I64Const(U256_Q));
+                v.push(Self::call_user(h.to_str));
+                Ok(v)
+            }
+            "u256/shl" => {
+                if a.len() != 2 {
+                    return Err("u256/shl: need 2 args".into());
+                }
+                let h = self.ensure_u256_str_helpers();
+                let gen = self.limb_call_count;
+                self.limb_call_count += 1;
+                let mut saved: Vec<u32> = Vec::new();
+                for w in 0..4 {
+                    saved.push(self.local_idx(&format!("__u256sl{}_{}", gen, w)));
+                }
+                let kloc = self.local_idx(&format!("__u256sk_{}", gen));
+                let mut v = Vec::new();
+                v.extend(self.expr(&a[0])?);
+                v.push(Instruction::I64Const(U256_A));
+                v.push(Self::call_user(h.parse));
+                v.push(Instruction::Drop);
+                for (w, l) in saved.iter().enumerate() {
+                    v.push(Instruction::I64Const(U256_A + 8 * w as i64));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I64Load(ma8()));
+                    v.push(Instruction::LocalSet(*l));
+                }
+                v.extend(self.expr(&a[1])?);
+                v.push(Instruction::I64Const(TAG_BITS));
+                v.push(Instruction::I64ShrU); // untag
+                v.push(Instruction::LocalSet(kloc));
+                for (w, l) in saved.iter().enumerate() {
+                    v.push(Instruction::I64Const(U256_A + 8 * w as i64));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::LocalGet(*l));
+                    v.push(Instruction::I64Store(ma8()));
+                }
+                v.push(Instruction::I64Const(U256_A));
+                v.push(Instruction::LocalGet(kloc));
+                v.push(Instruction::I64Const(U256_Q));
+                v.push(Self::call_user(h.shl));
                 v.push(Instruction::Drop);
                 v.push(Instruction::I64Const(U256_Q));
                 v.push(Self::call_user(h.to_str));

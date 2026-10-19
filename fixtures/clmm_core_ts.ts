@@ -32,6 +32,15 @@ export function tsdx(L: string, S: string, S2: string): string {
   return u256Div(u256Mul(L, d), ss);
 }
 
+// t* — the exact dy-solver constant: ((dy+1)·2^64 − 1) // L.
+// Uses the identity (dy+1)·2^64 − 1 = (dy << 64) + (2^64 − 1), folding the
+// subtraction into an additive constant — no u256 sub needed.
+
+export function tstar(dy: string, L: string): string {
+  const num: string = u256Add(u256Shl(dy, 64), "18446744073709551615");
+  return u256Div(num, L);
+}
+
 export function tsdxo(L: string, S: string, S2: string): string {
   const d: string = u128Sub(S, S2);
   const ss: string = u256Mul(S, S2);

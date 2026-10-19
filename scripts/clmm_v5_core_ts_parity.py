@@ -27,11 +27,22 @@ WRAPPERS = r''';; core-math differential doors
 (define (hdyi) (p5-dyi (json-get-str "L" (near/input)) (json-get-str "S" (near/input)) (json-get-str "S2" (near/input))))
 (define (hdx) (p5-dx (json-get-str "L" (near/input)) (json-get-str "S" (near/input)) (json-get-str "S2" (near/input))))
 (define (hdxo) (p5-dxo (json-get-str "L" (near/input)) (json-get-str "S" (near/input)) (json-get-str "S2" (near/input))))
+(define (hts)
+  (let ((dyb (p5-str6 (json-get-str "dy" (near/input))))
+        (Lb (p5-str6 (json-get-str "L" (near/input))))
+        (tA (buf-alloc 80)) (tB (buf-alloc 80)) (tC (buf-alloc 88))
+        (one (buf-alloc 8))
+        (q (buf-alloc 64)) (r (buf-alloc 64)) (nbs (buf-alloc 64))
+        (s (buf-alloc 400)))
+    (begin
+      (p5-tstar! dyb Lb tA tB tC q r nbs s one)
+      (p5-buf-str q))))
 (export "hG" hG)
 (export "hdy" hdy)
 (export "hdyi" hdyi)
 (export "hdx" hdx)
 (export "hdxo" hdxo)
+(export "hts" hts)
 '''
 
 
@@ -101,6 +112,18 @@ def main():
             if a != b:
                 fails += 1
                 print(f"DIFF {lf} L={L} i1={i1} i2={i2}\n  lisp: {a}\n  ts:   {b}")
+        # t*: dy from the up-move step, then lisp p5-tstar! vs TS tstar.
+        # p5-tstar! holds dy in 4 base-1e9 limbs (max 1e36) — larger dy is
+        # outside the kernel's domain and truncates there; skip those.
+        dy = run(w["ts"], "tsdy", args)
+        if not dy.startswith("TRAP") and len(dy) < 36:
+            argt = '{"dy":"%s","L":"%s"}' % (dy, L)
+            a = run(w["lisp"], "hts", argt)
+            b = run(w["ts"], "tstar", argt)
+            cases += 1
+            if a != b:
+                fails += 1
+                print(f"DIFF tstar L={L} i1={i1} i2={i2} dy={dy}\n  lisp: {a}\n  ts:   {b}")
         if (t + 1) % 25 == 0:
             print(f"  {t+1}/{N} cases, {fails} diffs")
     print(f"cases={cases} fails={fails}")

@@ -7908,6 +7908,8 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 "u256Lt" => "u256/lt".to_string(),
                 "u256Gt" => "u256/gt".to_string(),
                 "u256Eq" => "u256/eq".to_string(),
+                "u256Add" => "u256/add".to_string(),
+                "u256Shl" => "u256/shl".to_string(),
                 _ => head,
             };
             // (2026-10-11, micro_v3) Number(<bigint>) must convert the

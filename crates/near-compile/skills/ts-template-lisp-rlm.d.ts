@@ -152,6 +152,8 @@ declare function u256Isqrt(v: any): string;
 declare function u256Lt(a: any, b: any): boolean;
 declare function u256Gt(a: any, b: any): boolean;
 declare function u256Eq(a: any, b: any): boolean;
+declare function u256Add(a: any, b: any): string; // ripple add, decimal-string domain
+declare function u256Shl(v: any, k: any): string; // logical shift left
 
 // ── the `near` namespace (member passthrough, camelCase auto-snakifies) ─
 
