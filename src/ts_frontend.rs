@@ -111,6 +111,7 @@ fn ts_to_lisp_source_inner(src: &str) -> Result<String, String> {
     USER_FNS.with(|m| m.borrow_mut().clear());
     U128_PURE_FNS.with(|m| m.borrow_mut().clear());
     MONEY_PARAM_FNS.with(|m| m.borrow_mut().clear());
+    EXPORTED_FNS.with(|m| m.borrow_mut().clear());
     let exprs = parse_ts(src)?;
     let mut out = String::new();
     for e in &exprs {
@@ -234,6 +235,14 @@ thread_local! {
     /// `probe(dx: Yocto)`: only transferU128 was a checked sink.
     static MONEY_PARAM_FNS: std::cell::RefCell<Vec<(String, Vec<usize>)>> =
         std::cell::RefCell::new(Vec::new());
+    /// Top-level `export function` names (NEAR mode only — WASI exports
+    /// already take real lisp params). Their entry defines read args from
+    /// JSON (lisp arity 0), so same-module CALLS must route through the
+    /// `__impl_*` twin that carries real params — otherwise every exported
+    /// fn was uncalleable in-module ("arity mismatch: 0 args vs 1 args",
+    /// found by the clmm-v5 TS-core probe 2026-10-19).
+    static EXPORTED_FNS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
     static CONST_FOLDS: std::cell::RefCell<Vec<(String, LispVal)>> =
         const { std::cell::RefCell::new(Vec::new()) };
     /// Top-level `const K = <n-literal>;` names — bigint-shaped identifiers
@@ -601,6 +610,33 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
         collect_user_fns(&p.body, &mut set);
         *m.borrow_mut() = set;
     });
+    // register top-level `export function` names (NEAR mode only): their
+    // entry defines carry lisp arity 0 (JSON-bound params), so call sites
+    // rewrite to the `__impl_*` twin. WASI exports already take real
+    // params and are called by name.
+    if !TS_WASI_MODE.with(|w| w.get()) {
+        EXPORTED_FNS.with(|m| {
+            let mut set = std::collections::HashSet::new();
+            for stmt in &p.body {
+                if let Statement::ExportDeclaration(decl) = stmt {
+                    if let Declaration::FunctionDeclaration(f) = &decl.declaration {
+                        // only param'd exports split into an __impl_* twin;
+                        // zero-param entries are already arity 0 and callers
+                        // target them by name (regression: token.ts
+                        // ft_transfer() → ftTransfer() emitted
+                        // __impl_ftTransfer with no such define —
+                        // test_ts_pool_internal).
+                        if !f.params.items.is_empty() {
+                            if let Some(id) = &f.id {
+                                set.insert(id.name.as_str().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            *m.borrow_mut() = set;
+        });
+    }
     // TypeScript hoists function declarations: a call may textually precede
     // the helper's definition. Lisp requires define-before-use, so we reorder:
     //   1. top-level consts (module-load-time, source order)
@@ -706,8 +742,19 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                         }
                         let (name, defines) = lower_function(f, true)?;
                         let view = name.starts_with("get_");
-                        for d in &defines {
-                            out.push(d.clone());
+                        // The impl twin (defines[0] when the split fired)
+                        // carries real params and must precede any caller:
+                        // hoisted helpers may call exported fns, and lisp
+                        // demands define-before-use — so the impl joins the
+                        // hoisted bucket, the JSON entry stays with the
+                        // export (rule 3 order).
+                        if defines.len() == 2 {
+                            hoisted.push(defines[0].clone());
+                            out.push(defines[1].clone());
+                        } else {
+                            for d in &defines {
+                                out.push(d.clone());
+                            }
                         }
                         // `new` is a reserved word in TypeScript — `new_` is the
                         // dialect's spelling for NEAR's `new` constructor export.
@@ -2022,20 +2069,44 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
             // twin at emit time and everything runs the tagged path, so
             // behavior can only match — never diverge.
             let ret_int = ts_ann_to_lisp(f.return_type.as_ref().map(|v| &**v)) == Some("int");
-            if ret_int && param_names.iter().all(|(_, k)| *k == 1) {
+            // Impl split, generalized (2026-10-19): EVERY exported fn with
+            // params gets a real-param impl define + a thin JSON-reading
+            // entry. Before, only the all-`number`/int raw-twin subset
+            // split — string/bigint-param exports lowered as a 0-arity
+            // inline-let define, so same-module calls failed the checker
+            // ("arity mismatch: 0 args vs 1 args"). Call sites route
+            // through __impl_* via EXPORTED_FNS. The annotation stays
+            // gated on the raw-twin subset so the raw-i64 twin fires
+            // exactly as before; everything else splits bare (same shape
+            // as a helper define — tagged path, fail-closed unchanged).
+            let raw_twin = ret_int && param_names.iter().all(|(_, k)| *k == 1);
+            if !param_names.is_empty() {
                 let impl_name = format!("__impl_{}", name);
                 let mut impl_sig = vec![Sym(impl_name.clone())];
                 for (n, _) in &param_names {
                     impl_sig.push(Sym(n.clone()));
                 }
-                let mut impl_items = vec![Sym("define"), list(impl_sig), Sym("::".to_string())];
-                for _ in &param_names {
+                let mut impl_items = vec![Sym("define"), list(impl_sig)];
+                if raw_twin {
+                    impl_items.push(Sym("::".to_string()));
+                    for _ in &param_names {
+                        impl_items.push(Sym("int".to_string()));
+                    }
+                    impl_items.push(Sym("->".to_string()));
                     impl_items.push(Sym("int".to_string()));
                 }
-                impl_items.push(Sym("->".to_string()));
-                impl_items.push(Sym("int".to_string()));
                 impl_items.push(inner);
                 impl_define = Some(list(impl_items));
+                // registry aliasing: call sites consult MONEY_PARAM_FNS /
+                // U128_PURE_FNS by the POST-rewrite callee name
+                if !money_param_idx.is_empty() {
+                    MONEY_PARAM_FNS.with(|m| {
+                        m.borrow_mut().push((impl_name.clone(), money_param_idx.clone()));
+                    });
+                }
+                if U128_PURE_FNS.with(|m| m.borrow().contains(name.as_str())) {
+                    U128_PURE_FNS.with(|m| m.borrow_mut().insert(impl_name.clone()));
+                }
                 let mut call_items = vec![Sym(impl_name)];
                 for (n, _) in &param_names {
                     call_items.push(Sym(n.clone()));
@@ -7875,6 +7946,12 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                         raw
                     ));
                 }
+            }
+            // same-module calls to exported fns: the entry define has lisp
+            // arity 0 (params are JSON-bound); the real-param impl twin is
+            // the callable (EXPORTED_FNS, populated in lower_program).
+            if EXPORTED_FNS.with(|s| s.borrow().contains(head.as_str())) {
+                head = format!("__impl_{}", head);
             }
             let mut items = vec![Sym(head.clone())];
             for a in &c.arguments {
