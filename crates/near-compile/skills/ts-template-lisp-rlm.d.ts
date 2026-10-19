@@ -140,6 +140,19 @@ declare function mulDiv(a: number, b: number, c: number): number;
 declare function intSqrt(n: number): number;
 declare function u128ToNum(s: string): number;
 
+// ── 256-bit decimal-string ops (u256Mul → u256/mul etc) ─────────────────
+// Everything is a decimal-string u256 except where noted. mul: u128×u128
+// operands coerced from NUM or STR; div is 256/256→256-bit quotient (d=0
+// traps); shr is a LOGICAL shift, k is a plain i64 literal/param; isqrt
+// returns the 128-bit floor sqrt as a u128-layout decimal string.
+declare function u256Mul(a: any, b: any): string;
+declare function u256Div(n: any, d: any): string;
+declare function u256Shr(v: any, k: any): string;
+declare function u256Isqrt(v: any): string;
+declare function u256Lt(a: any, b: any): boolean;
+declare function u256Gt(a: any, b: any): boolean;
+declare function u256Eq(a: any, b: any): boolean;
+
 // ── the `near` namespace (member passthrough, camelCase auto-snakifies) ─
 
 declare const near: {

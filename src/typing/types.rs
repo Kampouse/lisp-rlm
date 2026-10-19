@@ -1200,6 +1200,45 @@ impl TcEnv {
                 "u128/is-zero".into(),
                 TcType::Arrow(vec![str_ty], Box::new(bool_ty)),
             );
+            // ── u256 builtins (256-bit string domain, clmm grid math) ──
+            {
+                let str_ty = TcType::Con(TcCon::Str);
+                let int_ty = TcType::Con(TcCon::Int);
+                let bool_ty = TcType::Con(TcCon::Bool);
+                for name in &["u256/mul", "u256/div"] {
+                    env.insert_mono(
+                        name.to_string(),
+                        TcType::Arrow(
+                            vec![str_ty.clone(), str_ty.clone()],
+                            Box::new(str_ty.clone()),
+                        ),
+                    );
+                }
+                // isqrt: 256-bit value in → 128-bit floor sqrt out
+                env.insert_mono(
+                    "u256/isqrt".to_string(),
+                    TcType::Arrow(vec![str_ty.clone()], Box::new(str_ty.clone())),
+                );
+                // shr's second arg is a tagged number at the call site; the
+                // string typing is the checker-facing contract (TS passes a
+                // number — the frontend untag happens in the emitter).
+                env.insert_mono(
+                    "u256/shr".to_string(),
+                    TcType::Arrow(
+                        vec![str_ty.clone(), int_ty.clone()],
+                        Box::new(str_ty.clone()),
+                    ),
+                );
+                for name in &["u256/lt", "u256/gt", "u256/eq"] {
+                    env.insert_mono(
+                        name.to_string(),
+                        TcType::Arrow(
+                            vec![str_ty.clone(), str_ty.clone()],
+                            Box::new(bool_ty.clone()),
+                        ),
+                    );
+                }
+            }
         }
 
         env

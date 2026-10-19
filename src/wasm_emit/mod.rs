@@ -34,6 +34,7 @@ pub mod call_near_promise;
 pub mod call_near_storage;
 pub mod call_u128;
 pub mod call_u128_str;
+pub mod call_u256_str;
 pub mod const_fold;
 pub mod dynamic_call;
 pub mod gas;
@@ -708,6 +709,7 @@ pub struct WasmEmitter {
     pub(crate) wt_flush_fn: Option<u32>,
     pub(crate) wt_used: bool,
     pub(crate) u128h: Option<U128Helpers>, // string-based u128 helper func indices (lazily synthesized)
+    pub(crate) u256h: Option<call_u256_str::U256Helpers>, // 256-bit string-domain helpers (lazily synthesized)
     pub(crate) fn_int_annotations: std::collections::HashMap<String, (usize, bool)>, // name → (n int params, ret int)
     pub(crate) raw_twins: std::collections::HashMap<String, u32>, // fn name → raw twin func idx
     /// u128 phase 2A: name → (twin func idx, per-param limb-kind flags).
@@ -862,6 +864,7 @@ impl WasmEmitter {
             p2_mode: false,
             no_proc_exit: false,
             u128h: None,
+            u256h: None,
             fn_int_annotations: std::collections::HashMap::new(),
             raw_twins: std::collections::HashMap::new(),
             u128_twins: std::collections::HashMap::new(),

@@ -62,6 +62,10 @@ impl WasmEmitter {
         // family in call_u128 keeps the string-semantics names shadowed — the
         // interpreter ABI is the spec (commit 4b1403e).
         try_domain!(self.call_u128_str(op, a));
+        // 256-bit string domain (clmm grid math, 2026-10-19)
+        if op.starts_with("u256/") {
+            try_domain!(self.call_u256_str(op, a));
+        }
         // Legacy address-based limbs: only names that do NOT collide with the
         // string-based family are reachable (u128/store, u128/load, u128/new,
         // u128/from_yocto, bigint-*, ...).

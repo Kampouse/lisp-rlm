@@ -7899,6 +7899,17 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 head
             };
             let mut head = map_builtin_call(&head);
+            // u256 string-domain builtins (clmm grid math, 2026-10-19)
+            head = match head.as_str() {
+                "u256Mul" => "u256/mul".to_string(),
+                "u256Div" => "u256/div".to_string(),
+                "u256Shr" => "u256/shr".to_string(),
+                "u256Isqrt" => "u256/isqrt".to_string(),
+                "u256Lt" => "u256/lt".to_string(),
+                "u256Gt" => "u256/gt".to_string(),
+                "u256Eq" => "u256/eq".to_string(),
+                _ => head,
+            };
             // (2026-10-11, micro_v3) Number(<bigint>) must convert the
             // u128 value, not parse a string: if the head is str->num and
             // the argument is bigint-shaped, emit u128/to-i64. Previously
