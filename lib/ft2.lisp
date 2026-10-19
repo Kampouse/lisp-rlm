@@ -47,6 +47,20 @@
                       (near/return "ok"))))))
         (near/return "not-owner"))))
 
+(define (f-claim)
+  (let ((who (near/predecessor_account_id)))
+    (let ((k (str-cat "c:" who)))
+      (if (str= (near/storage_read k) "1")
+          (near/abort "ERR_ALREADY_CLAIMED")
+          (let ((amt "1000000000000000000000000000"))
+            (if (> (li-cmp (li-add (bz "sup") amt) "1000000000000000000000000000000") 0)
+                (near/abort "ERR_AIRDROP_EXHAUSTED")
+                (begin
+                  (add-bal who amt)
+                  (near/store-bytes "sup" (li-add (bz "sup") amt))
+                  (near/store-bytes k "1")
+                  (near/return "ok"))))))))
+
 (define (f-balance)
   (near/return (bal (json-get-str "account_id" (near/input)))))
 
@@ -106,6 +120,7 @@
 
 (export "new" f-new)
 (export "mint" f-mint)
+(export "claim" f-claim true)
 (export "ft_balance_of" f-balance true)
 (export "ft_transfer" f-transfer)
 (export "ft_transfer_call" f-transfer-call)
