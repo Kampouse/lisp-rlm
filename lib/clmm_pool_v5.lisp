@@ -241,18 +241,20 @@
     (v5-zero! q 10) (v5-zero! r 10)
     (v5-divmod! tC L q r nbs s one)))
 
-;; S_for_dx: smallest S2 ≥ S with dx_in(L,S,S2) ≤ dx.
-;; Closed form (kernel-proven): L=0 → 2^127 ; else
-;;   D = L + (dx+1)·S ; S2 = ceil((L·S+1)/D) ; min with 2^127, max with S.
+;; S_for_dx: largest S2 ≥ S with dx_in(L,S,S2) ≤ dx  [RENORMALIZED form]
+;; dx_in = L·(S2−S)·2^64 // (S·S2) ≤ dx  ⟺  S2·D < N with
+;;   D = L·2^64 − (dx+1)·S ,  N = L·S·2^64
+;; ⇒ S2 = (N−1) div D  (mirrors sfdyi's −1 form); L=0 or D≤0 (dx ≥ cell
+;;   total, unreachable) → 2^127 ; clamp ≥ S.
 (define (p5-sfdx L S dx)
   (let ((C127 (p5-str6 "340282366920938463463374607431768211456"))
         (Lb (p5-str6 L)) (Sb (p5-str6 S)) (dxb (p5-str6 dx))
-        (tA (buf-alloc 80)) (tB (buf-alloc 80)) (tC (buf-alloc 88))
-        (tD (buf-alloc 80)) (tE (buf-alloc 80)) (one (buf-alloc 8))
+        (tA (buf-alloc 80)) (tB (buf-alloc 88)) (tC (buf-alloc 88))
+        (tD (buf-alloc 88)) (tE (buf-alloc 80)) (one (buf-alloc 8))
         (q (buf-alloc 64)) (r (buf-alloc 64)) (nbs (buf-alloc 64))
         (s (buf-alloc 400)))
     (begin
-      (if (<= (v5-strip Lb 12) 0)
+      (if (or (<= (v5-strip Lb 12) 0) (<= (v5-strip Sb 12) 0))
           (begin (v5-zero! tE 12) (v5-copy! C127 tE 6) 0)
           (begin
             ;; tA = dx+1 (12-limb)
@@ -263,31 +265,37 @@
             ;; tB = (dx+1)·S  (6×6 → 12 limbs)
             (v5-zero! tB 20)
             (limb-mul tA Sb tB 6 12)
-            ;; tB += L
-            (v5-zero! tA 12)
-            (v5-copy! Lb tA 6)
-            (limb-add tB tA tB 12 12)
-            ;; tC = L·S + 1
+            ;; tC = L·2^64  (64 doublings)
             (v5-zero! tC 20)
-            (limb-mul Lb Sb tC 6 6)
-            (limb-set! one 0 1)
-            (limb-add tC one tC 12 1)
-            ;; q = ceil(tC / tB)
-            (v5-zero! q 10) (v5-zero! r 10)
-            (v5-divmod! tC tB q r nbs s one)
-            (if (> (v5-strip r 10) 0)
-                (begin (limb-set! one 0 1) (limb-add q one q 10 1))
-                0)
-            ;; tE = min(2^127, max(S, q))
-            (v5-zero! tE 12)
-            (v5-copy! q tE 10)
-            (if (> (limb-cmp tE C127 10 10) 0)
-                (begin (v5-zero! tE 12) (v5-copy! C127 tE 6))
-                0)
-            (if (< (limb-cmp tE Sb 10 6) 0)
-                (begin (v5-zero! tE 12) (v5-copy! Sb tE 6))
-                0))))
-      (p5-buf-str tE)))
+            (v5-copy! Lb tC 6)
+            (loop ((j 0))
+              (if (>= j 64) 0 (begin (v5-double! tC 20) (recur (+ j 1)))))
+            ;; D = L·2^64 − (dx+1)·S ; D ≤ 0 ⇒ unreachable → 2^127
+            (limb-sub tC tB tC 20 12)
+            (if (<= (v5-strip tC 20) 0)
+                (begin (v5-zero! tE 12) (v5-copy! C127 tE 6) 0)
+                (begin
+                  ;; D = tC (normalize to 12 limbs top-down is fine: value
+                  ;; fits — dx < cell total ⇒ D ≈ L·2^64)
+                  (v5-zero! tB 20)
+                  (v5-copy! tC tB 20)
+                  ;; tD = L·S·2^64
+                  (v5-zero! tD 20)
+                  (limb-mul Lb Sb tD 6 6)
+                  (loop ((j 0))
+                    (if (>= j 64) 0 (begin (v5-double! tD 20) (recur (+ j 1)))))
+                  ;; q = (tD − 1) div D
+                  (limb-set! one 0 1)
+                  (limb-sub tD one tD 20 1)
+                  (v5-zero! q 10) (v5-zero! r 10)
+                  (v5-divmod! tD tB q r nbs s one)
+                  ;; tE = max(S, q)
+                  (v5-zero! tE 12)
+                  (v5-copy! q tE 10)
+                  (if (< (limb-cmp tE Sb 10 6) 0)
+                      (begin (v5-zero! tE 12) (v5-copy! Sb tE 6))
+                      0)))))
+      (p5-buf-str tE))))
 
 ;; S_for_dy_in: smallest S2 ≤ S with dy_in(L,S,S2) ≤ dy
 ;;   = L=0 → 1 ; else max(1, S − t*)
@@ -1116,16 +1124,26 @@
                 ;; first leg (bz never returns "" for a missing key)
                 (if (or (str= rec "") (str= rec "0"))
                     ;; FIRST leg: record + escrow the REQUIRED amount on
-                    ;; this side. EXACT attach only — leg 1's excess could
-                    ;; never ride a refund (only leg 2's chain result goes
-                    ;; through resolve), so sloppy legs are rejected whole
-                    ;; (op "req" gives the caller the exact figure).
+                    ;; this side. C3: attach ≥ req — excess rides the same
+                    ;; resolve refund leg 2 uses (the old "no refund path"
+                    ;; note was wrong: ft2 resolve reads THIS call's
+                    ;; return). Over-attach is how clients ride out the
+                    ;; req-view drift (see the C3 note below).
                     (let ((ga (p5-G a)))
                     (let ((req (if toky?
                                    (p5-reqy a b ga d "0")
-                                   (p5-reqx a b ga d nil))))
-                      (if (not (= (li-cmp amt req) 0))
-                          (p5-fail "ERR_EXACT")
+                                   (p5-reqx a b ga d "0"))))
+                      ;; C3: ≥ req (was EXACT). The on-chain req view can
+                      ;; diverge from the enforcer's fold (proven live:
+                      ;; view said 8.4978…427, enforcer 8.4978…338 — a
+                      ;; chain-vs-mock gap in a non-gated path), and an
+                      ;; EXACT gate turned that into a user-facing
+                      ;; ERR_EXACT wall. Over-attach refunds through the
+                      ;; same resolve path leg 2 uses (ft2 resolve reads
+                      ;; this call's return; pm-success records req, the
+                      ;; excess rides `used`).
+                      (if (< (li-cmp amt req) 0)
+                          (p5-fail "ERR_SHORT")
                           (let ((ek (if toky? "6|ESCY" "6|ESCX")))
                             (begin
                               (p5-put (str-cat "6|PM:" sender)
@@ -1134,7 +1152,7 @@
                                     (str-cat ":" (str-cat (to-string b)
                                       (str-cat ":" (str-cat d (str-cat ":" req)))))))))
                               (p5-put ek (li-add (p5-bz ek) req))
-                              (near/return "0"))))))
+                              (near/return (li-sub amt req)))))))
                     ;; SECOND leg: opposite side, same a/b (d must match
                     ;; too — field 3 — else the two legs split escrow)
                     (if (not (and (= (byte-at rec 0)

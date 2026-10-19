@@ -288,13 +288,27 @@
     (loop ((j 0))
       (if (>= j 64) 0 (begin (v5-halve! out 10) (recur (+ j 1)))))))
 
-;; out <- L·(S−S2) // (S·S2) ; requires S >= S2 >= 1.
+;; out <- L·(S−S2)·2^64 // (S·S2) ; requires S >= S2 >= 1.
+;; (2026-10-19 FIX: X amounts need the same 2^64 renorm as Y — the old
+;;  un-scaled form starved every pool's X side; see price_bridge in
+;;  CLMM_v5_Kernel.thy. The ×2^64 is a single limb-mul by a 3-limb
+;;  constant — the earlier 64× doubling loop blew the gas cap on wide
+;;  position_requirements ranges.)
 (define (v5-dx! L S S2 d P Q out q r nbs s one)
   ;; d = S2 − S (up-convention; callers swap args for dx_out)
   (begin
     (limb-sub S2 S d 6 6)
     (v5-zero! P 12)
     (limb-mul L d P 6 6)
+    ;; ×2^64 via 3-limb constant (18 | 446744073 | 709551616), no aliasing:
+    ;; const in Q → product in r → back to P (16-limb bufs, product ≤ 15 limbs)
+    (v5-zero! Q 12)
+    (limb-set! Q 2 18)
+    (limb-set! Q 1 446744073)
+    (limb-set! Q 0 709551616)
+    (v5-zero! r 10)
+    (limb-mul P Q r 12 3)
+    (v5-copy! r P 15)
     (v5-zero! Q 12)
     (limb-mul S S2 Q 6 6)
     (v5-divmod! P Q out r nbs s one)))

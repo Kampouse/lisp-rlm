@@ -153,6 +153,8 @@ def mock_lines(wasm: str, ft: str, tmp: str, ops: list) -> list:
                     v = str(amt - (amt >> 8))
                     qret = cross("pool.tst", "quote",
                                  {"v": v if o["tok"] == "x" else "-" + v})
+                    if ":" not in qret:
+                        sys.exit(f"mo probe: quote returned {qret!r}")
                     out = qret.split(":")[1]
                     o["mo"] = str(int(out) + 1) if o["mo"] == "Q+1" else out
                 msg = '{"a":"swap","mo":"' + o["mo"] + '"}'

@@ -47,24 +47,66 @@ qed
 definition dy_in :: "int => int => int => int" where
   "dy_in L S S2 = (L * (S - S2)) div two64"
 
+(* X amounts carry the same 2^64 fixed-point renormalization as Y.
+   BUG HISTORY (2026-10-19, pool5 live): dx was `L * (S - S2) div (S * S2)`
+   — right SHAPE in rationals, but S,S2 are 2^64-scaled, so the division by
+   S*S2 ≈ 2^128 swallowed an extra 2^64 (observed live: rx 34 yocto vs
+   ry 850 tokz at parity; X-starved pools, dead Y→X swaps). The bridge
+   lemma below now FAILS if anyone reintroduces a scaling slip. *)
 definition dx_out :: "int => int => int => int" where
-  "dx_out L S S2 = (L * (S - S2)) div (S * S2)"
+  "dx_out L S S2 = (L * (S - S2) * two64) div (S * S2)"
 
 definition dx_in :: "int => int => int => int" where
-  "dx_in L S S2 = (L * (S2 - S)) div (S * S2)"
+  "dx_in L S S2 = (L * (S2 - S) * two64) div (S * S2)"
 
 definition dy_out :: "int => int => int => int" where
   "dy_out L S S2 = (L * (S2 - S)) div two64"
+
+(* ── PRICE BRIDGE ─────────────────────────────────────────────────────
+   The oracle a scaling bug cannot evade (added 2026-10-19 after pool5:
+   dx missed one 2^64 renormalization; every conservation proof still
+   passed because they are conditional on the definitions).
+   In exact rationals with s = S/t64, s2 = S2/t64:
+     dy/L = s − s2            (Y per unit L)
+     dx/L = (s − s2)/(s·s2)   (X per unit L)
+   ⇒ dy/dx = s·s2  =  the geometric-mean price squared. Any fixed-point
+   slip in dx breaks this ratio. Proven over reals; the integer defs are
+   the floors of these (dx_out_floor). *)
+definition two64r :: real where "two64r = real_of_int two64"
+definition dyq :: "real => real => real => real" where
+  "dyq L S S2 = L * (S - S2) / two64r"
+definition dxq :: "real => real => real => real" where
+  "dxq L S S2 = L * (S - S2) * two64r / (S * S2)"
+
+lemma price_bridge:
+  assumes "L > 0" "S > S2" "S > 0" "S2 > 0"
+  shows "dyq L S S2 / dxq L S S2 = S * S2 / (two64r * two64r)"
+proof -
+  have t64: "two64r ~= (0::real)"
+    by (simp add: two64r_def)
+  have nz: "dxq L S S2 ~= (0::real)"
+    using assms t64 by (simp add: dxq_def)
+  have eq: "dyq L S S2 / dxq L S S2
+      = (L * (S - S2) / two64r) * ((S * S2) / (L * (S - S2) * two64r))"
+    using nz t64 by (simp add: dyq_def dxq_def field_split_simps)
+  also have "S * S2 / (two64r * two64r)
+      = (L * (S - S2) / two64r) * ((S * S2) / (L * (S - S2) * two64r))"
+    using assms t64 by (simp add: field_split_simps)
+  finally show ?thesis ..
+qed
 
 definition S_for_dy_in :: "int => int => int => int" where
   "S_for_dy_in L S dy = (if L <= 0 then 1
     else max 1 (S - ((two64 * (dy + 1) - 1) div L)))"
 
+(* inverse of the RENORMALIZED dx_in: dx = L(S2-S)t64/(S*S2) ≤ dx
+   ⟺ S2·(L·t64 − (dx+1)·S) < L·S·t64 ⇒ largest such S2 = (N−1) div D
+   with N = L·S·t64, D = L·t64 − (dx+1)·S (mirrors S_for_dy_in's −1 form);
+   unreachable (D ≤ 0, dx ≥ cell total) ⇒ 2^127; clamped ≥ S *)
 definition S_for_dx_in :: "int => int => int => int" where
-  "S_for_dx_in L S dx = (if L <= 0 | S <= 0 then S
-    else let D = L + (dx + 1) * S; N = L * S + 1;
-             q = N div D
-         in if N mod D = 0 then max S q else max S (q + 1))"
+  "S_for_dx_in L S dx = (if L <= 0 | S <= 0 | L * two64 <= (dx + 1) * S
+    then 340282366920938463463374607431768211456
+    else max S ((L * S * two64 - 1) div (L * two64 - (dx + 1) * S)))"
 
 (* Fee shift *)
 

@@ -82,21 +82,24 @@ export class Pool {
   }
   dyi(L: string, S: string, S2: string): string { return this.dy(L, S2, S); }
   dx(L: string, S: string, S2: string): string {
-    // L·(S2−S) // (S·S2) ; requires S2 ≥ S
+    // L·(S2−S)·2^64 // (S·S2) ; requires S2 ≥ S
+    // (2026-10-19 FIX — matches price_bridge; the un-scaled form starved X)
     const a = BigInt(S2) - BigInt(S);
-    return ((BigInt(L) * a) / (BigInt(S) * BigInt(S2))).toString();
+    const num = BigInt(L) * a * (1n << 64n);
+    return (num / (BigInt(S) * BigInt(S2))).toString();
   }
   dxo(L: string, S: string, S2: string): string { return this.dx(L, S2, S); }
 
-  // ── p5-sfdx: smallest S2 ≥ S with dx_in ≤ dx ──
-  // L=0 → 2^127 ; else S2 = min(2^127, max(S, ceil((L·S+1)/(L+(dx+1)·S))))
+  // ── p5-sfdx: largest S2 ≥ S with dx_in ≤ dx ──
+  // D = L·2^64 − (dx+1)·S ; D ≤ 0 (dx ≥ cell total) → 2^127 ;
+  // else S2 = max(S, (L·S·2^64 − 1) div D)   (mirrors sfdyi's −1 form)
   sfdx(L: string, S: string, dx: string): string {
     const C127 = 340282366920938463463374607431768211456n;
     if (BigInt(L) <= 0n) return C127.toString();
-    const tB = (BigInt(dx) + 1n) * BigInt(S) + BigInt(L);
-    const tC = BigInt(L) * BigInt(S) + 1n;
-    let q = tC / tB;
-    if (tC % tB > 0n) q += 1n;
+    const t64 = 1n << 64n;
+    const tB = BigInt(L) * t64 - (BigInt(dx) + 1n) * BigInt(S);
+    if (tB <= 0n) return C127.toString();
+    const q = (BigInt(L) * BigInt(S) * t64 - 1n) / tB;
     let tE = q;
     if (tE > C127) tE = C127;
     if (tE < BigInt(S)) tE = BigInt(S);
