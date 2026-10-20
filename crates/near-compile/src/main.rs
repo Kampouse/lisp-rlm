@@ -2512,8 +2512,23 @@ fn run_compile(args: &[String]) {
     // (single-file path lacked this — project mode had it since do_build).
     let is_ts = src_path.ends_with(".ts") || src_path.ends_with(".mts");
     let ts_src = if is_ts { Some(src.clone()) } else { None };
+    // P2 target: lower with the WASI variant (exported fns keep REAL
+    // params fed by _start's stdin string). The NEAR-mode lowering rewrites
+    // params to near/json_get_str cache reads — correct for NEAR, but on
+    // OutLayer the input cache is empty (raw stdin, no JSON), so every
+    // string param compiled to "" (found via exec-b "empty merchant
+    // response"). compile_outlayer_p2's own is_ts detection can't fire —
+    // by the time it runs, this text is lisp, not TS.
+    let is_p2_target = args
+        .iter()
+        .any(|a| a == "outlayer-p2" || a == "wasi-p2" || a == "component");
     let src = if is_ts {
-        match lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(&src) {
+        let lower_result = if is_p2_target {
+            lisp_rlm_wasm::ts_frontend::ts_to_lisp_source_wasi(&src)
+        } else {
+            lisp_rlm_wasm::ts_frontend::ts_to_lisp_source(&src)
+        };
+        match lower_result {
             Ok(l) => l,
             Err(e) => {
                 eprintln!("❌ TS lowering error: {}", e);

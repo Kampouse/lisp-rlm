@@ -848,9 +848,15 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
             }
         }
     }
-    if !is_ts && !stripped_ann {
-        crate::clojure::desugar(&mut exprs);
-    }
+    // Desugar for RAW lisp AND for TS-lowered sources alike (2026-10-20):
+    // the TS frontend emits canonical-ish forms but still needs desugar —
+    // skipping it for TS left the P2 emitter reading `payload` (a param
+    // binding) through a stale slot: (str-cat payload "|C") yielded "" for
+    // the param (t_g vs t_i repro — identical IR text, desugar the only
+    // difference). The old guard (`!is_ts && !stripped_ann`) existed
+    // because desugar relocates :: anns the P2 checker rejects; that is
+    // moot now — :: anns are stripped unconditionally above.
+    crate::clojure::desugar(&mut exprs);
     type_check_p2(&exprs)?;
     let mut em = WasmEmitter::new();
     em.wasi_mode = true;
