@@ -1002,21 +1002,28 @@
 ;; required X to add d over [a,b]: sum of dx(d, G(i), G(i+1)) — the
 ;; X-consumption form (up-leg input, ÷ S·S2), rising so S2 > S holds.
 ;; Tail-recursive at fixed depth (≤ 65 = mint span cap).
-(define (p5-reqx a b s d acc)
-  (loop ((i a) (s s) (acc acc))
-    (if (> i b)
-        (str-join "|" (cons (to-string i) (cons s (cons d acc))))
-        (recur (+ i 1) (p5-G (+ i 1)) (cons (to-string (p5-dx d s (p5-G (+ i 1)))) acc)))))
+;; ONE-SIDED GATE (2026-10-20): a cell strictly ABOVE the current cell
+;; needs X only; cells below need Y only; the containing cell needs both.
+;; Uniswap amounts-at-tick — the old code charged BOTH sides for every
+;; range, so an x-only range demanded the quote side too (live bug on
+;; pool4: range [11,25] @ P=9 returned ry ≈ rx).
+(define (p5-reqx i b s d acc)
+  (if (> i b) acc
+      (p5-reqx (+ i 1) b (p5-G (+ i 1)) d
+               (if (>= i (str->num (p5-bz "6|P")))
+                   (li-add acc (p5-dx d s (p5-G (+ i 1))))
+                   acc))))
 
 ;; required Y: sum of dy(d, G(i), G(i+1)) — the Y-consumption form
 ;; (down-leg input, >> 64), rising (dyi over a rising walk would walk
 ;; the pair DOWN into limb-sub underflow — the trap this fixed).
-(define (p5-reqy a b s d acc)
-  (loop ((i a) (s s) (acc acc))
-    (if (> i b)
-        acc
-        (recur (+ i 1) (p5-G (+ i 1))
-               (li-add acc (p5-dy d s (p5-G (+ i 1))))))))
+;; Mirror gate: cells ≤ the current cell contribute Y.
+(define (p5-reqy i b s d acc)
+  (if (> i b) acc
+      (p5-reqy (+ i 1) b (p5-G (+ i 1)) d
+               (if (<= i (str->num (p5-bz "6|P")))
+                   (li-add acc (p5-dy d s (p5-G (+ i 1))))
+                   acc))))
 
 ;; accruef fold (Aggregate_Accrual verbatim): owed_fee =
 ;; Σ (FG_i − FS_i) × d >> 64 — per-cell floor ⇒ under-credit only.
