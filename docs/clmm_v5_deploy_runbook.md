@@ -158,3 +158,15 @@ LQ cells in [IMIN..IMAX].
 - Graduated invariants: buys refund (used:0), sells+graduate trap, no mint verb exists,
   burn-lock armed in the graduation receipt (lock_secs, get_lock > 0). Post-grad pool swap
   trades (LQ minted on all [lo,hi] cells from escrow custody).
+
+## One-sided req gate (added 2026-10-20, commit 4691a29f)
+- `p5-reqx` skips cells < `6|P`; `p5-reqy` skips cells > `6|P`; the containing cell counts
+  BOTH (Uniswap amounts-at-tick). Before the gate every range was charged both sides:
+  an x-only range demanded the quote side too (live on pool4: range [11,25] @ P=9 returned
+  ry ≈ rx).
+- Applies uniformly to the position_requirements view, mint legs (a zero-req leg escrows 0
+  and refunds the whole attach), and burnc (burn re-derives the side split at the CURRENT
+  cell — if price crossed the range, the LP is owed the other side, which is correct).
+- Pre-gate positions: burn now pays the gated split, so a position escrowed under both-side
+  accounting can strand the off-price side in the pool float (testnet-only footgun; pools
+  were re-seedable). Upgrades deployed in place: pool4 9rFchP8t…, pool3 BaWZ6GXZ….
