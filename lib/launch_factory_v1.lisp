@@ -335,8 +335,7 @@
 (define (lf-sweep)
   (let ((who (near/predecessor_account_id)))
     (if (not (and (str= who (lf-bz "LF|CRE"))
-                  (str= (lf-bz "LF|PH") "4")
-                  (> (li-cmp (lf-bz "LF|CX") "0") 0)))
+                  (str= (lf-bz "LF|PH") "4")))
         (lf-fail "ERR_AUTH")
         (let ((p (near/promise_batch_create (lf-bz "LF|POOL"))))
           (begin
