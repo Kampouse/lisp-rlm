@@ -192,10 +192,10 @@
                   (near/promise_batch_action_function_call p "ft_transfer"
                     (json-set (json-set "{}" "receiver_id" who)
                               "amount" amt)
-                    "0" (lf-bond 40000000000000))
+                    "0" 5000000000000)
                   (near/promise_return
                     (near/promise_then p (near/current_account_id) "onref"
-                      (json-set "{}" "r" who) "0" 10000000000000))
+                      (json-set "{}" "r" who) "0" 3000000000000))
                   (near/return "0"))))
             (if (str= k "1")
                 (begin (lf-put "LF|PH" "2") "0")
@@ -212,6 +212,23 @@
   (if (str= (near/predecessor_account_id) (near/current_account_id))
       "refund-ok"
       (lf-fail "ERR_SELF")))
+
+;; ── relegy {amt} — creator retry of a leg-2 that died mid-chain ─────────
+;; PH=3 with the QT balance still held by the factory (the token resolve
+;; refunded it). Re-forwards the stored lo/hi/d as the same mint leg.
+(define (lf-relegy)
+  (let ((inp (near/input)))
+  (let ((who (near/predecessor_account_id)))
+  (let ((amt (json-get-str "amt" inp)))
+    (if (not (and (str= who (lf-bz "LF|CRE"))
+                  (str= (lf-bz "LF|PH") "3")))
+        (lf-fail "ERR_AUTH")
+        (begin
+          (lf-forward (lf-seedmsg (lf-bz "LF|A") (lf-bz "LF|B") (lf-bz "LF|D"))
+                      amt "LF|QT"
+                      (json-set (json-set (json-set "{}"
+                        "k" "2") "r" who) "m" amt))
+          "relegy-ok"))))))
 
 ;; ── allowance ────────────────────────────────────────────────────────────
 ;; floor(D·(now−T0)/(T1−T0)); 0 before the cliff.
@@ -369,5 +386,6 @@
 (export "oncx" lf-oncx)
 (export "oncy" lf-oncy)
 (export "onfin" lf-onfin)
+(export "relegy" lf-relegy)
 (export "sweep" lf-sweep)
 (export "state" lf-state #t)
