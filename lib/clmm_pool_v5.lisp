@@ -1339,7 +1339,7 @@
                 "ft_transfer"
                 (json-set (json-set "{}" "receiver_id" who)
                           "amount" v)
-                "0" 40000000000000)
+                "0" 5000000000000)
               (near/promise_return
                 (near/promise_then p (near/current_account_id)
                   "pay"
