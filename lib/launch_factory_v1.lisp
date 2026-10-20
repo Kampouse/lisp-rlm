@@ -160,7 +160,8 @@
                         "0")))))
             (if (str= (near/predecessor_account_id) (lf-bz "LF|QT"))
                 ;; ── leg Y: completes (PH=2 = leg X confirmed) ──
-                (if (not (and (str= (lf-bz "LF|PH") "2")
+                (if (not (and (or (str= (lf-bz "LF|PH") "2")
+                                  (str= (lf-bz "LF|PH") "3"))
                               (str= a (lf-bz "LF|A"))
                               (str= b (lf-bz "LF|B"))
                               (str= d (lf-bz "LF|D"))))
@@ -213,22 +214,6 @@
       "refund-ok"
       (lf-fail "ERR_SELF")))
 
-;; ── relegy {amt} — creator retry of a leg-2 that died mid-chain ─────────
-;; PH=3 with the QT balance still held by the factory (the token resolve
-;; refunded it). Re-forwards the stored lo/hi/d as the same mint leg.
-(define (lf-relegy)
-  (let ((inp (near/input)))
-  (let ((who (near/predecessor_account_id)))
-  (let ((amt (json-get-str "amt" inp)))
-    (if (not (and (str= who (lf-bz "LF|CRE"))
-                  (str= (lf-bz "LF|PH") "3")))
-        (lf-fail "ERR_AUTH")
-        (begin
-          (lf-forward (lf-seedmsg (lf-bz "LF|A") (lf-bz "LF|B") (lf-bz "LF|D"))
-                      amt "LF|QT"
-                      (json-set (json-set (json-set "{}"
-                        "k" "2") "r" who) "m" amt))
-          "relegy-ok"))))))
 
 ;; ── allowance ────────────────────────────────────────────────────────────
 ;; floor(D·(now−T0)/(T1−T0)); 0 before the cliff.
@@ -386,6 +371,5 @@
 (export "oncx" lf-oncx)
 (export "oncy" lf-oncy)
 (export "onfin" lf-onfin)
-(export "relegy" lf-relegy)
 (export "sweep" lf-sweep)
 (export "state" lf-state #t)
