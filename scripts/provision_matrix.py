@@ -124,14 +124,14 @@ def setup_steps(mint_bob=False):
     return s
 
 
-def mint_step(tok, lo, hi, d, one=False, amount=None):
+def mint_step(tok, lo, hi, d, one=False, amount=None, who=ALICE):
     msg = {"a": "mint", "d": str(d), "lo": lo, "hi": hi}
     if one:
         msg["one"] = "1"
     args = {"receiver_id": "pool.tst",
             "amount": str(amount or ATTACH), "msg": json.dumps(msg)}
     return {"method": "ft_transfer_call", "contract": tok,
-            "as": ALICE, "args": json.dumps(args), "expect": "ok"}
+            "as": who, "args": json.dumps(args), "expect": "ok"}
 
 
 def pos_pin(lo, hi, d):
