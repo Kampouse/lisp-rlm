@@ -825,31 +825,31 @@ pub fn compile_outlayer_p2(source: &str) -> Result<Vec<u8>, String> {
     let resolved = crate::wasm_emit::resolve_modules(source, std::path::Path::new("."))?;
     let exprs = crate::parser::parse_all(&resolved)?;
     let mut exprs = exprs;
-    if !is_ts {
-        crate::clojure::desugar(&mut exprs);
-    } else {
-        // TS-lowered defines carry `:: anns -> ret` advisory annotations the
-        // P2 inference path resolves as a variable — strip them (define
-        // (name params) :: … body) → (define (name params) body).
-        for e in exprs.iter_mut() {
-            if let crate::types::LispVal::List(items) = e {
-                if items.len() >= 3 {
-                    let is_def =
-                        matches!(&items[0], crate::types::LispVal::Sym(s) if s == "define");
-                    let has_ann = matches!(&items[2], crate::types::LispVal::Sym(s) if s == "::");
-                    if is_def && has_ann {
-                        // find the body: last element after the annotation run
-                        items.remove(2); // ::
-                                         // remove annotation syms until the final body remains:
-                                         // signature is (name params) :: ann* -> ret body
-                                         // body = last element; drop everything between.
-                        while items.len() > 3 {
-                            items.remove(2);
-                        }
+    // The single-file CLI lowers .ts with the NEAR-mode frontend BEFORE
+    // dispatch, so this fn may receive lowered lisp carrying `:: anns`
+    // (is_ts detection on text then fails — the double-lowering trap).
+    // Strip :: annotations UNCONDITIONALLY; desugar only for raw lisp.
+    let mut stripped_ann = false;
+    for e in exprs.iter_mut() {
+        if let crate::types::LispVal::List(items) = e {
+            if items.len() >= 3 {
+                let is_def =
+                    matches!(&items[0], crate::types::LispVal::Sym(s) if s == "define");
+                let has_ann = matches!(&items[2], crate::types::LispVal::Sym(s) if s == "::");
+                if is_def && has_ann {
+                    stripped_ann = true;
+                    items.remove(2); // ::
+                    // signature (name params) :: ann* -> ret body — drop
+                    // everything between the signature and the final body.
+                    while items.len() > 3 {
+                        items.remove(2);
                     }
                 }
             }
         }
+    }
+    if !is_ts && !stripped_ann {
+        crate::clojure::desugar(&mut exprs);
     }
     type_check_p2(&exprs)?;
     let mut em = WasmEmitter::new();
