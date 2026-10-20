@@ -1,0 +1,153 @@
+{
+ "name": "curve-v1b",
+ "manifest": "pool.tst=/tmp/lf-mock/pool.wasm,toky.tst=/tmp/lf-mock/ft.wasm,curve.tst=/tmp/lf-mock/curve.wasm",
+ "steps": [
+  {
+   "method": "new",
+   "contract": "toky.tst",
+   "args": "{}",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "init",
+   "contract": "pool.tst",
+   "args": "{\"toka\": \"curve.tst\", \"tokb\": \"toky.tst\", \"lock_secs\": \"3600\", \"curve\": \"curve.tst\", \"s0\": \"583000000000000000\"}",
+   "as": "owner.test.near",
+   "expect": "init-ok"
+  },
+  {
+   "method": "init",
+   "contract": "curve.tst",
+   "args": "{\"qt\": \"toky.tst\", \"pool\": \"pool.tst\", \"sup\": \"1000000000000000000000000000\", \"v\": \"30000000000000000000000000\", \"g\": \"1000000000000000000000000\", \"lo\": \"-69101\", \"hi\": \"-69085\", \"lock\": \"86400\"}",
+   "as": "owner.test.near",
+   "expect": "init-ok"
+  },
+  {
+   "method": "graduate",
+   "contract": "curve.tst",
+   "args": "{}",
+   "as": "trader.tst",
+   "expect": "trap"
+  },
+  {
+   "method": "mint",
+   "contract": "toky.tst",
+   "args": "{\"to\":\"buyer1.tst\",\"amt\":\"100000000000000000000000000000\"}",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "mint",
+   "contract": "toky.tst",
+   "args": "{\"to\":\"buyer2.tst\",\"amt\":\"100000000000000000000000000000\"}",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "mint",
+   "contract": "toky.tst",
+   "args": "{\"to\":\"trader.tst\",\"amt\":\"100000000000000000000000000000\"}",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "ft_transfer_call",
+   "contract": "toky.tst",
+   "args": "{\"receiver_id\":\"curve.tst\",\"amount\":\"500000000000000000000000\",\"msg\":\"{\\\"a\\\":\\\"buy\\\"}\"}",
+   "as": "buyer1.tst",
+   "expect": "used:500000000000000000000000"
+  },
+  {
+   "method": "state",
+   "contract": "curve.tst",
+   "args": "{}",
+   "view": true,
+   "expect": ":r:500000000000000000000000"
+  },
+  {
+   "method": "ft_balance_of",
+   "contract": "curve.tst",
+   "args": "{\"account_id\":\"buyer1.tst\"}",
+   "view": true,
+   "expect": "16393442622950819672131147"
+  },
+  {
+   "method": "sell",
+   "contract": "curve.tst",
+   "args": "{\"t\":\"1000000000000000000000\"}",
+   "as": "buyer1.tst",
+   "expect": "sell-ok"
+  },
+  {
+   "method": "state",
+   "contract": "curve.tst",
+   "args": "{}",
+   "view": true,
+   "expect": ":r:499968991698191773505031"
+  },
+  {
+   "method": "ft_transfer_call",
+   "contract": "toky.tst",
+   "args": "{\"receiver_id\":\"curve.tst\",\"amount\":\"600000000000000000000000\",\"msg\":\"{\\\"a\\\":\\\"buy\\\"}\"}",
+   "as": "buyer2.tst",
+   "expect": "used:600000000000000000000000"
+  },
+  {
+   "method": "state",
+   "contract": "curve.tst",
+   "args": "{}",
+   "view": true,
+   "expect": ":r:1099968991698191773505031"
+  },
+  {
+   "method": "graduate",
+   "contract": "curve.tst",
+   "args": "{}",
+   "as": "trader.tst",
+   "expect": "grad-ok"
+  },
+  {
+   "method": "state",
+   "contract": "curve.tst",
+   "args": "{}",
+   "view": true,
+   "expect": ":grad:1"
+  },
+  {
+   "method": "ft_transfer_call",
+   "contract": "toky.tst",
+   "args": "{\"receiver_id\":\"curve.tst\",\"amount\":\"1000000000000000000000\",\"msg\":\"{\\\"a\\\":\\\"buy\\\"}\"}",
+   "as": "buyer2.tst",
+   "expect": "used:0"
+  },
+  {
+   "method": "sell",
+   "contract": "curve.tst",
+   "args": "{\"t\":\"1\"}",
+   "as": "buyer1.tst",
+   "expect": "trap"
+  },
+  {
+   "method": "graduate",
+   "contract": "curve.tst",
+   "args": "{}",
+   "as": "trader.tst",
+   "expect": "trap"
+  },
+  {
+   "method": "ft_transfer_call",
+   "contract": "toky.tst",
+   "args": "{\"receiver_id\":\"pool.tst\",\"amount\":\"2000000000000000000000\",\"msg\":\"{\\\"a\\\":\\\"swap\\\",\\\"mo\\\":\\\"1\\\"}\"}",
+   "as": "trader.tst",
+   "expect": "ok"
+  },
+  {
+   "method": "ft_balance_of",
+   "contract": "curve.tst",
+   "args": "{\"account_id\":\"trader.tst\"}",
+   "view": true,
+   "expect": "1"
+  }
+ ]
+}

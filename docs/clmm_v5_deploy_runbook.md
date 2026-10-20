@@ -146,3 +146,15 @@ LQ cells in [IMIN..IMAX].
 - tests/test_pool_v5_views.rs, test_pool_v5_c2b.rs — views + two-leg mint
 - afp-clmm/v5-kernel/ — Isabelle kernel, OCaml export, mapping doc
 - docs/clmm_v5_auth_audit.md — authority findings A–G
+
+## Bonding-curve launch invariants (added 2026-10-20)
+- Launch pair config is COUPLED: pool `s0` defaults to 2^64 and `6|P` (walk-start cell) is
+  hardcoded to 0 at init — never pass a custom `s0`. The curve's [lo,hi] MUST center the
+  position on the walk start: lo=-8, hi=8 with default s0 (the curve_v1 config). A custom
+  s0 leaves the pool price and walk cell incoherent → every swap sentinel-refunds (used:0).
+- Provision req-solve is telescoped (2× p5-G); per-cell req loops burn 60+ Tgas on-chain.
+- Graduation gas ladder (root → ong1 → ong2 → ong3): 230T / 185T / 100T / 5T — each then
+  forwards its children's attach from its OWN prepaid (THEN LAW). Provision attach 90T.
+- Graduated invariants: buys refund (used:0), sells+graduate trap, no mint verb exists,
+  burn-lock armed in the graduation receipt (lock_secs, get_lock > 0). Post-grad pool swap
+  trades (LQ minted on all [lo,hi] cells from escrow custody).
