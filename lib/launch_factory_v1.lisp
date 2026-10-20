@@ -349,11 +349,10 @@
 ;; run the collect chain. Without this, a sweep that fires before any
 ;; completed onburn transfers 0-amount (CX/CY never written).
 (define (lf-onow)
-  (if (str= (near/predecessor_account_id) (near/current_account_id))
-      (let ((inp (near/input)))
-      (let ((who (json-get-str "r" inp)))
-      (let ((r (near/promise_result 0)))
-        (if (< (str-length r) 6)
+  (let ((inp (near/input)))
+  (let ((who (json-get-str "r" inp)))
+  (let ((r (near/promise_result 0)))
+    (if (< (str-length r) 6)
             (lf-fail "ERR_OWED")
             (let ((ow (str-slice r 5 (str-len r))))
             (let ((cx (lf-fst ow))
@@ -368,7 +367,7 @@
                     (near/promise_return
                       (near/promise_then p (near/current_account_id) "oncx"
                         (json-set "{}" "r" who) "0" 40000000000000))))))))))
-      (lf-fail "ERR_SELF"))))
+      (lf-fail "ERR_SELF")))
 
 ;; ── state — packed view (allowance at current ts) ───────────────────────
 (define (lf-state)
