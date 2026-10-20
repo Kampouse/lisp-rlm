@@ -552,7 +552,16 @@
 ;; Loops return ONE packed string.
 ;;
 ;; walk arm for neg=1 (down): returns "acc|rm" packed, puts P/S.
-(define (p5-swarm-dn s p xbook ybook v feep?)
+;; cap = X out-float (ESCX) for custody swaps, "-1" = uncapped (calc/sim).
+;; NOTE the sentinel: a REAL float of zero ("0") must cap the walk at
+;; nothing — an x1 position has no ESCY at all and p5-bz answers "0", so
+;; "0" must MEAN zero, never "uncapped" (g_x1_unfillable, 2026-10-20).
+;; The walker refuses any cell whose out-leg (dxo) would exceed the
+;; remaining float: it stops at the cell edge and returns the unconsumed
+;; input as rem. Without this, a sweep against insufficient float paid out
+;; more than the pool held — accounting walked, the token transfer bounced
+;; "insufficient", and books went dirty (g_two_sweepup, 2026-10-20).
+(define (p5-swarm-dn s p xbook ybook v feep? cap)
   (let* ((F (if feep? (p5-shr8 v) "0"))
          (v (if feep? (li-sub v F) v))
          (imin (p5-imin))
@@ -574,6 +583,11 @@
                  (gl (p5-G (- pp 1)))
                  (dxo (p5-dxo L ss gl))
                  (dyi (p5-dyi L ss gl)))
+                   (if (and (not (str= cap "-1"))
+                            (> (li-cmp (li-add acc dxo) cap) 0))
+                       (begin (p5-put "6|P" (to-string pp))
+                              (p5-put "6|S" ss)
+                              (str-cat acc (str-cat "|" rm)))
                    (if (< (li-cmp dyi rm) 1)
                        (recur (- pp 1) gl (li-add acc (if (= (li-cmp dyi "0") 0) "0" dxo))
                               (li-sub rm dyi)
@@ -589,7 +603,7 @@
                            (p5-put "6|P" (to-string pp))
                            (p5-put "6|S" s2)
                            (str-cat (li-add acc (p5-dxo L ss s2))
-                                    (str-cat "|" "0")))))))))))
+                                    (str-cat "|" "0"))))))))))))
   (let* ((out (p5-fst res))
          (rmf (p5-snd res))
          (xnew (li-add xbook out))
@@ -612,7 +626,9 @@
           msg)))))
 
 ;; walk arm for neg=0 (up): returns "acc|rm" packed, puts P/S.
-(define (p5-swarm-up s p xbook ybook v feep?)
+;; cap = Y out-float (ESCY) for custody swaps, "-1" = uncapped (calc/sim).
+;; Same float guard as p5-swarm-dn (see the sentinel note there).
+(define (p5-swarm-up s p xbook ybook v feep? cap)
   (let* ((F (if feep? (p5-shr8 v) "0"))
          (v (if feep? (li-sub v F) v))
          (imax (p5-imax))
@@ -634,6 +650,11 @@
                  (gh (p5-G (+ pp 1)))
                  (dy (p5-dy L ss gh))
                  (dx (p5-dx L ss gh)))
+                   (if (and (not (str= cap "-1"))
+                            (> (li-cmp (li-add acc dy) cap) 0))
+                       (begin (p5-put "6|P" (to-string pp))
+                              (p5-put "6|S" ss)
+                              (str-cat acc (str-cat "|" rm)))
                    (if (< (li-cmp dx rm) 1)
                        (recur (+ pp 1) gh (li-add acc (if (= (li-cmp dx "0") 0) "0" dy))
                               (li-sub rm dx)
@@ -643,7 +664,7 @@
                            (p5-put "6|P" (to-string pp))
                            (p5-put "6|S" s2)
                            (str-cat (li-add acc (p5-dy L ss s2))
-                                    (str-cat "|" "0")))))))))))
+                                    (str-cat "|" "0"(str-cat "|" "0")))))))))))))
   (let* ((out (p5-fst res))
          (rmf (p5-snd res))
          (ynew (li-add ybook out))
@@ -690,9 +711,9 @@
         (if (= (li-cmp v "0") 0)
             "swap-zero"
         (if (= neg 1)
-            (p5-swarm-dn s p xbook ybook v 0)
-            (p5-swarm-up s p xbook ybook v 0))))))))))))
-      "ERR_SIM_ONLY"))
+            (p5-swarm-dn s p xbook ybook v 0 "-1")
+            (p5-swarm-up s p xbook ybook v 0 "-1"))))))))))))
+       "ERR_SIM_ONLY"))
 ;; ── custody (arc C2a): swap leg only ───────────────────────────────────
 ;; NEP-141 entry: predecessor must be 6|TOKX or 6|TOKY; msg side-tags the
 ;; operation ("sw"). 6|X/6|Y are flow ledgers (both rise on every swap),
@@ -807,7 +828,7 @@
           (p5-put "6|REM" "D")
           (p5-put "6|ESCX" (li-add (p5-bz "6|ESCX") amt))
           ;; up sells X for Y (fee path)
-          (p5-swarm-up s p xbook ybook amt 1)
+          (p5-swarm-up s p xbook ybook amt 1 (p5-bz "6|ESCY"))
           (p5-leg-decide sender amt "6|X" "6|ESCX" "6|ESCY" ps0 pl0 "6|TOKY" mo)))))))))))
 
 ;; sell Y for X — mirror of p5-swap-x (out-leg from 6|ESCX on 6|TOKX)
@@ -827,7 +848,7 @@
           (p5-put "6|REM" "D")
           (p5-put "6|ESCY" (li-add (p5-bz "6|ESCY") amt))
           ;; down sells Y for X (fee path)
-          (p5-swarm-dn s p xbook ybook amt 1)
+          (p5-swarm-dn s p xbook ybook amt 1 (p5-bz "6|ESCX"))
           (p5-leg-decide sender amt "6|Y" "6|ESCY" "6|ESCX" ps0 pl0 "6|TOKX" mo)))))))))))
 
 ;; shared leg decision — reads 6|OUT/6|REM via bz (v4 pattern: NO
