@@ -479,9 +479,55 @@ pub fn compile_outlayer(source: &str) -> Result<Vec<u8>, String> {
     let resolved = crate::wasm_emit::resolve_modules(source, std::path::Path::new("."))?;
     let exprs = crate::parser::parse_all(&resolved)?;
     let mut exprs = exprs;
+    // TS-lowered defines carry `:: ann* -> ret` advisory annotations (the
+    // NEAR-mode ts_to_lisp_source emits them). The P1 emitter has no `::`
+    // form — strip before desugar (mirrors the P2 path below).
+    for e in exprs.iter_mut() {
+        if let crate::types::LispVal::List(items) = e {
+            if items.len() >= 3 {
+                let is_def =
+                    matches!(&items[0], crate::types::LispVal::Sym(s) if s == "define");
+                let has_ann = matches!(&items[2], crate::types::LispVal::Sym(s) if s == "::");
+                if is_def && has_ann {
+                    items.remove(2); // ::
+                    while items.len() > 3 {
+                        items.remove(2);
+                    }
+                }
+            }
+        }
+    }
     crate::clojure::desugar(&mut exprs);
     let mut em = WasmEmitter::new();
     em.wasi_mode = true;
+    // Pre-scan: register all function names BEFORE emitting any body —
+    // forward references (caller defined before callee) otherwise fail
+    // with "unknown function" (P2 got this pass; P1 never did — found via
+    // exec-b.ts where x402settle calls errOut defined later).
+    for e in &exprs {
+        if let crate::types::LispVal::List(items) = e {
+            if items.len() >= 3 {
+                if let (crate::types::LispVal::Sym(s), crate::types::LispVal::List(sig)) =
+                    (&items[0], &items[1])
+                {
+                    if s == "define" && !sig.is_empty() {
+                        if let crate::types::LispVal::Sym(name) = &sig[0] {
+                            if !em.funcs.iter().any(|f| &f.name == name) {
+                                em.funcs.push(crate::wasm_emit::FuncDef {
+                                    name: name.clone(),
+                                    param_count: sig.len() - 1,
+                                    local_count: 0,
+                                    instrs: Vec::new(),
+                                    local_entries: None,
+                                    custom_type: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     for e in &exprs {
         if let crate::types::LispVal::List(items) = e {
             if items.is_empty() {
