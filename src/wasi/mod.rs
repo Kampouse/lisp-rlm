@@ -1314,14 +1314,24 @@ fn build_p2_with_wasi_http(em: &WasmEmitter) -> Result<Vec<u8>, String> {
                 crate::wasm_emit::WASI_FD_WRITE,
                 layout.user_fn_base + em.funcs.len() as u32 + 2,
             ); // sentinel
-            WasmEmitter::resolve_static_pub_ex(
+            let resolved = WasmEmitter::resolve_static_pub_ex(
                 &f.instrs,
                 &std::collections::HashMap::new(),
                 &name_map,
                 &em.funcs,
                 &ol_map,
                 &std::collections::HashMap::new(),
-            )
+            );
+            if std::env::var("HERMES_DEBUG_HOSTS").is_ok() {
+                for i in &resolved {
+                    if let wasm_encoder::Instruction::Call(idx) = i {
+                        if *idx >= 0xFF00_0000 {
+                            eprintln!("[DBG-P2HTTP] unresolved {} in fn {}", idx, f.name);
+                        }
+                    }
+                }
+            }
+            resolved
         };
 
         let mut fb = Function::new(locals);
@@ -1771,7 +1781,34 @@ fn finish_outlayer_inner(em: &mut WasmEmitter, skip_outlayer: bool) -> Result<Ve
     // Find which NEAR host functions are actually used, so we can emit stubs
     // that delegate to OutLayer equivalents
     let near_host_used: Vec<usize> = {
-        let host_list: Vec<usize> = (0..50).filter(|i| em.host_needed.contains(i)).collect();
+        // DEFENSIVE: some emit paths push host sentinels without calling
+        // need_host (found via exec-b.ts: Call(0xFF000007) = host 7 "input"
+        // reached the stitcher unregistered → unresolved fn idx → wasmtime
+        // "unknown function"). Union what the instructions actually use.
+        for f in &em.funcs {
+            for i in &f.instrs {
+                if let wasm_encoder::Instruction::Call(idx) = i {
+                    // HOST_BASE = 0xFF00_0000 (private in wasm_emit) — same
+                    // literal here; range capped at +128 host slots.
+                    if *idx >= 0xFF00_0000 && *idx < 0xFF00_0000 + 128 {
+                        em.host_needed.insert((*idx - 0xFF00_0000) as usize);
+                    }
+                }
+            }
+        }
+        let host_list: Vec<usize> = (0..128).filter(|i| em.host_needed.contains(i)).collect();
+        if std::env::var("HERMES_DEBUG_HOSTS").is_ok() {
+            eprintln!("[DBG] near_host_used = {:?} ({} hosts)", host_list, host_list.len());
+            for f in &em.funcs {
+                for i in &f.instrs {
+                    if let wasm_encoder::Instruction::Call(idx) = i {
+                        if *idx >= 0xFF00_0000 && *idx < 0xFF02_0000 {
+                            eprintln!("[DBG] stray sentinel {} in fn {}", idx, f.name);
+                        }
+                    }
+                }
+            }
+        }
         host_list
     };
 
@@ -3021,6 +3058,14 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     // (url_ptr,url_len,buf,cap,len_ptr,name_ptr,name_len,val_ptr,val_len) -> (i32 disc)
     let get_with_hdr_type = schnorr_type_base + wasm_import_type_map_c.len() as u32;
     types.ty().function(vec![ValType::I32; 9], vec![ValType::I32]);
+    // NEAR input-host shims (NEAR ABI is i64-typed):
+    // input(i64)->(), register_len()->i64, read_register(i64,i64)->()
+    let in_shim_v = schnorr_type_base + wasm_import_type_map_c.len() as u32 + 1;
+    let in_shim_r = in_shim_v + 1;
+    let in_shim_rr = in_shim_r + 1;
+    types.ty().function(vec![ValType::I64], vec![]);
+    types.ty().function(vec![], vec![ValType::I64]);
+    types.ty().function(vec![ValType::I64, ValType::I64], vec![]);
 
     module.section(&types);
 
@@ -3122,6 +3167,14 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
     }
     // Dynamic-URL GET with runtime request header (sentinel 170)
     functions.function(get_with_hdr_type);
+    // NEAR-input shims (hosts 0/1/7 → stdin): input/register_len/read_register.
+    // Types: input = (i64)->(), register_len = ()->i64, read_register = (i64,i64)->()
+    let input_reg_fn_idx = with_hdr_fn_idx + 1;
+    let reg_len_fn_idx = input_reg_fn_idx + 1;
+    let read_reg_fn_idx = reg_len_fn_idx + 1;
+    functions.function(in_shim_v);          // input: (i64)->()
+    functions.function(user_type_base + 1); // register_len: (i64)->i64
+    functions.function(in_shim_rr);         // read_register: (i64,i64)->()
     module.section(&functions);
 
     // ═══ Memory ═══
@@ -3526,14 +3579,25 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
             }
             ol_map.insert(170, with_hdr_fn_idx);
             ol_map.insert(crate::wasm_emit::MEMCPY_SENTINEL, memcpy_fn_idx);
-            WasmEmitter::resolve_static_pub_ex(
+            // NEAR input hosts → stdin shims (P2-outlayer input = stdin).
+            // host 7 input(reg), 1 register_len(reg), 0 read_register(reg,buf).
+            // NEAR input hosts resolve through the HOST map (not ol_map —
+            // those are HOST_BASE sentinels): input=7, register_len=1,
+            // read_register=0 → stdin shims. P2-outlayer input = stdin.
+            let mut host_map_c: std::collections::HashMap<usize, u32> =
+                std::collections::HashMap::new();
+            host_map_c.insert(7, input_reg_fn_idx);
+            host_map_c.insert(1, reg_len_fn_idx);
+            host_map_c.insert(0, read_reg_fn_idx);
+            let r = WasmEmitter::resolve_static_pub_ex(
                 &f.instrs,
-                &std::collections::HashMap::new(),
+                &host_map_c,
                 &name_map,
                 &em.funcs,
                 &ol_map,
                 &wasm_import_fn_idx_c,
-            )
+            );
+            r
         };
 
         let mut fb = Function::new(locals);
@@ -4088,6 +4152,38 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         let _ = (&probe_name, &probe_val);
         hf.instruction(&Instruction::End);
         codes.function(&hf);
+    }
+
+    // ── NEAR-input shims (hosts 7/1/0 → stdin) ──
+    // P2-outlayer delivers program input via stdin (read in _start into
+    // STDIN_BUF, len at STDIN_LEN). The TS json/string helpers reach for
+    // the NEAR input register (input → register_len → read_register);
+    // map those hosts onto the stdin buffer so the same code runs.
+    {
+        // input(reg: i64) -> (): no-op — register 0 IS the stdin buffer.
+        let mut input_fn = Function::new([]);
+        input_fn.instruction(&Instruction::End);
+        codes.function(&input_fn);
+        // register_len(reg: i64) -> i64: STDIN_LEN (zero-extended).
+        let mut reg_len_fn = Function::new([]);
+        reg_len_fn.instruction(&Instruction::I32Const(STDIN_LEN as i32));
+        reg_len_fn.instruction(&Instruction::I32Load(ma4));
+        reg_len_fn.instruction(&Instruction::I64ExtendI32U);
+        reg_len_fn.instruction(&Instruction::End);
+        codes.function(&reg_len_fn);
+        // read_register(reg: i64, buf: i64) -> (): copy STDIN_BUF → buf.
+        let mut read_reg_fn = Function::new([
+            (1u32, ValType::I32), // local 2: len
+        ]);
+        read_reg_fn.instruction(&Instruction::LocalGet(1));
+        read_reg_fn.instruction(&Instruction::I32WrapI64);
+        read_reg_fn.instruction(&Instruction::I32Const(STDIN_BUF as i32));
+        read_reg_fn.instruction(&Instruction::I32Const(STDIN_LEN as i32));
+        read_reg_fn.instruction(&Instruction::I32Load(ma4));
+        read_reg_fn.instruction(&Instruction::LocalTee(2));
+        read_reg_fn.instruction(&Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+        read_reg_fn.instruction(&Instruction::End);
+        codes.function(&read_reg_fn);
     }
 
     module.section(&codes);
