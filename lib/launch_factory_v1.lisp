@@ -400,8 +400,9 @@
 (export "sweep" lf-sweep)
 
 ;; ── pay — creator sweep-out of the factory's remaining token balance ────
-;; Amount read off-chain (ft_balance_of of this account) and passed in;
-;; creator-only + ph4, and only the creator can benefit.
+;; Amount is a normal input arg (caller reads ft_balance_of via a public
+;; view and passes it); creator-only + ph4, and only the creator can
+;; benefit — the token itself rejects any overdraw.
 (define (lf-pay)
   (let ((inp (near/input)))
   (let ((who (json-get-str "who" inp)))
