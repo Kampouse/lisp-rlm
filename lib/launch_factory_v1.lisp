@@ -184,9 +184,11 @@
       (let ((who (json-get-str "r" inp)))
       (let ((amt (json-get-str "m" inp)))
       (let ((r (near/promise_result 0)))
-        (if (< (str-length r) 1)
+        (if (or (< (str-length r) 1)
+                (not (str= (str-slice r 0 5) "used:"))
+                (str= (str-slice r 5 (str-length r)) "0"))
             (begin
-              (if (str= k "2") (lf-put "LF|PH" "1") (lf-put "LF|PH" "0"))
+              (if (str= k "2") (lf-put "LF|PH" "2") (lf-put "LF|PH" "0"))
               (let ((p (near/promise_batch_create
                          (lf-bz (if (str= k "1") "LF|TOK" "LF|QT")))))
                 (begin
