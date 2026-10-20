@@ -1027,7 +1027,6 @@ fn merge_lib_wasm_multi(
                     &imp.name,
                     wasm_encoder::EntityType::Function(imp.type_idx),
                 );
-
             }
             3 => {
                 imp_sec.import(

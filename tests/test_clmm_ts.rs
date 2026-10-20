@@ -150,7 +150,10 @@ fn clmm_ts_differential_lifecycle() {
     assert!(ok, "ts swap0 failed:\n{out_t}");
     for expect in ["999999", "4294"] {
         assert!(out.contains(expect), "lisp swap0 missing {expect}:\n{out}");
-        assert!(out_t.contains(expect), "ts swap0 missing {expect}:\n{out_t}");
+        assert!(
+            out_t.contains(expect),
+            "ts swap0 missing {expect}:\n{out_t}"
+        );
     }
 
     // Pass 3 — swap1: dx_out=1000225266864, new price=214748364804294.
@@ -160,7 +163,10 @@ fn clmm_ts_differential_lifecycle() {
     assert!(ok, "ts swap1 failed:\n{out_t}");
     for expect in ["1000223266888", "2147487942"] {
         assert!(out.contains(expect), "lisp swap1 missing {expect}:\n{out}");
-        assert!(out_t.contains(expect), "ts swap1 missing {expect}:\n{out_t}");
+        assert!(
+            out_t.contains(expect),
+            "ts swap1 missing {expect}:\n{out_t}"
+        );
     }
 
     // Pass 4 — remove + views: liq=600000, sp_at_tick(0)=4294967296,
@@ -171,7 +177,10 @@ fn clmm_ts_differential_lifecycle() {
     assert!(ok, "ts remove failed:\n{out_t}");
     for expect in ["600000", "4294967296", "4295163904"] {
         assert!(out.contains(expect), "lisp remove missing {expect}:\n{out}");
-        assert!(out_t.contains(expect), "ts remove missing {expect}:\n{out_t}");
+        assert!(
+            out_t.contains(expect),
+            "ts remove missing {expect}:\n{out_t}"
+        );
     }
 }
 

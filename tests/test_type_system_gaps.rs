@@ -727,7 +727,10 @@ fn eq_alias_is_rejected_with_hint() {
     assert!(result.is_err(), "== must not be accepted");
     let err = result.unwrap_err();
     assert!(
-        err.contains("==") && (err.contains("did you mean") || err.contains("unknown") || err.contains("not in scope")),
+        err.contains("==")
+            && (err.contains("did you mean")
+                || err.contains("unknown")
+                || err.contains("not in scope")),
         "== rejection should point at the problem: {}",
         err
     );
@@ -739,7 +742,10 @@ fn slash_eq_alias_is_rejected_with_hint() {
     assert!(result.is_err(), "/= must not be accepted");
     let err = result.unwrap_err();
     assert!(
-        err.contains("/=") && (err.contains("did you mean") || err.contains("unknown") || err.contains("not in scope")),
+        err.contains("/=")
+            && (err.contains("did you mean")
+                || err.contains("unknown")
+                || err.contains("not in scope")),
         "/= rejection should point at the problem: {}",
         err
     );
@@ -748,5 +754,9 @@ fn slash_eq_alias_is_rejected_with_hint() {
 #[test]
 fn canonical_eq_ne_still_work() {
     let result = compile_typed(r#"(define (main) (if (and (= 1 1) (!= 2 3)) 1 0))"#);
-    assert!(result.is_ok(), "canonical = and != must keep working: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "canonical = and != must keep working: {:?}",
+        result.err()
+    );
 }

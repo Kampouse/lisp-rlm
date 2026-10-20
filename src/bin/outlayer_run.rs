@@ -190,7 +190,7 @@ fn main() {
                         let body = data[bp..bp + bl].to_vec();
                         let ct = String::from_utf8_lossy(&data[cp..cp + cl]).to_string();
                         eprintln!("🌐 http-post {url} ({ct}, {} bytes)", body.len());
-                        
+
                         let body_path = format!("/tmp/__outlayer_post_body_{}", std::process::id());
                         std::fs::write(&body_path, &body).ok();
                         // Header block: newline-separated "Name: value" lines.

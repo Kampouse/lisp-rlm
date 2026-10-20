@@ -587,9 +587,14 @@ impl WasmEmitter {
                     self.need_host(28);
                 }
             }
-            "near/json_get_int" | "near/json_get_str" | "near/json_get_str_opt"
-            | "near/json_get_u128" | "json-get"
-            | "json-get-str" | "json-get-float" | "json/get" => {
+            "near/json_get_int"
+            | "near/json_get_str"
+            | "near/json_get_str_opt"
+            | "near/json_get_u128"
+            | "json-get"
+            | "json-get-str"
+            | "json-get-float"
+            | "json/get" => {
                 if !self.wasi_mode {
                     self.need_host(7);
                     self.need_host(0);

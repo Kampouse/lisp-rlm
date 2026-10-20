@@ -46,9 +46,7 @@ fn store_is_limb_pure(e: &LispVal, eligible: &HashSet<String>) -> bool {
                 return false;
             };
             match head.as_str() {
-                "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod" => {
-                    items.len() == 3
-                }
+                "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod" => items.len() == 3,
                 // 2026-10-12 (native-chain phase 1): muldiv results are as
                 // pure as any other op result — the 3-arg len-4 form feeds
                 // the limb fast path in emit_u128_op_limb
@@ -56,9 +54,11 @@ fn store_is_limb_pure(e: &LispVal, eligible: &HashSet<String>) -> bool {
                 // 2026-10-12: if-merges of pure arms are pure — both arms
                 // land in the SAME (lo, hi) pair via emit_u128_val's if arm
                 // (the condition itself is NOT stored, so any form is fine)
-                "if" => items.len() == 4
-                    && store_is_limb_pure(&items[2], eligible)
-                    && store_is_limb_pure(&items[3], eligible),
+                "if" => {
+                    items.len() == 4
+                        && store_is_limb_pure(&items[2], eligible)
+                        && store_is_limb_pure(&items[3], eligible)
+                }
                 _ => false,
             }
         }
@@ -126,8 +126,7 @@ impl WasmEmitter {
         // return placed before the demote fixpoint — never again).
         let wrappers = self.src_wrapper_defns.borrow().clone();
         let read_is_hot = |e: &LispVal| -> bool {
-            self.storage_reads_hot
-                && crate::typing::storage_prov::hot_limb_read(e, &wrappers)
+            self.storage_reads_hot && crate::typing::storage_prov::hot_limb_read(e, &wrappers)
         };
         // single fixpoint over the ENRICHED predicate: original limb-purity
         // plus hot literal-key reads as pure atoms (no-op when cold — the
@@ -301,7 +300,8 @@ impl WasmEmitter {
                         "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod" | "u128/muldiv"
                     )
                 ) && (items.len() == 3
-                    || (items.len() == 4 && matches!(items.first(), Some(LispVal::Sym(h)) if h.as_str() == "u128/muldiv"))) =>
+                    || (items.len() == 4
+                        && matches!(items.first(), Some(LispVal::Sym(h)) if h.as_str() == "u128/muldiv"))) =>
             {
                 self.emit_u128_op_limb(items, lo, hi)
             }
@@ -542,7 +542,8 @@ impl WasmEmitter {
                         "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod" | "u128/muldiv"
                     )
                 ) && (items.len() == 3
-                    || (items.len() == 4 && matches!(items.first(), Some(LispVal::Sym(h)) if h.as_str() == "u128/muldiv"))) =>
+                    || (items.len() == 4
+                        && matches!(items.first(), Some(LispVal::Sym(h)) if h.as_str() == "u128/muldiv"))) =>
             {
                 let inner = self.emit_u128_op_limb(items, lo, hi)?;
                 v.extend(inner);

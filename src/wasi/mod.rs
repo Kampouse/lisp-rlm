@@ -2955,7 +2955,8 @@ fn build_combined_p2_core(em: &mut WasmEmitter) -> Result<(Vec<u8>, bool), Strin
         used_ol_indices, bridge_native_post
     );
     let ol_import_base = HTTP_IMPORT_COUNT + 1; // 29
-    let (_ol, ol_sentinel_map, ol_count) = build_filtered_outlayer(&used_ol_indices, ol_import_base);
+    let (_ol, ol_sentinel_map, ol_count) =
+        build_filtered_outlayer(&used_ol_indices, ol_import_base);
 
     // Import layout: HTTP 0..27, get-stdin 28, outlayer 29..29+ol_count,
     // stitched wasm (schnorr_*) env.* imports after that.

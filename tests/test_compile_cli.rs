@@ -32,10 +32,10 @@ fn bin_helper_resolves_under_cargo_target_dir() {
     // inside the ACTIVE target dir, so the suite cannot depend on a stale
     // ./target/release built by some other invocation.
     let dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "./target".into());
-    let resolved = std::fs::canonicalize(env!("CARGO_BIN_EXE_compile"))
-        .expect("cargo-provided bin missing");
-    let base = std::fs::canonicalize(&dir)
-        .unwrap_or_else(|_| std::path::PathBuf::from(dir.clone()));
+    let resolved =
+        std::fs::canonicalize(env!("CARGO_BIN_EXE_compile")).expect("cargo-provided bin missing");
+    let base =
+        std::fs::canonicalize(&dir).unwrap_or_else(|_| std::path::PathBuf::from(dir.clone()));
     assert!(
         resolved.starts_with(&base),
         "resolved {resolved:?} must live under CARGO_TARGET_DIR {dir:?}"

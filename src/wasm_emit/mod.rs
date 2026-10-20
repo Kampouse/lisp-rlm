@@ -57,12 +57,12 @@ use try_catch::TryFrame;
 pub mod call_dict;
 pub mod call_outlayer;
 pub mod call_predicate;
-pub mod write_through;
-pub mod u128_twins;
-pub mod u128_storage;
 pub mod compile;
 pub mod int_emit;
+pub mod u128_storage;
+pub mod u128_twins;
 pub mod wasm_link;
+pub mod write_through;
 
 // Re-exports: public API lives in compile.rs
 pub use compile::{
@@ -626,7 +626,7 @@ const CACHE_END: u32 = 136_720; // 131080 + 64*88 = 136712, 8-aligned pad
 /// needed since the read cache no longer shadows it).
 pub(crate) const WT_DIRTY_BASE: i64 = 136_720;
 const WT_DIRTY_END: u32 = 136_784; // 136720 + 64
-                                // ── Handle table for memory-safe struct access ──
+                                   // ── Handle table for memory-safe struct access ──
 const HANDLE_COUNT_ADDR: i64 = 48; // 8-byte slot: number of allocated handles
 const HANDLE_TABLE_BASE: i64 = 49152; // base of handle table (1024 entries × 16 bytes = 16KB)
 const MAX_HANDLES: i64 = 1024; // max concurrent allocations
@@ -2182,7 +2182,8 @@ mod json_auto_test {
 
     #[test]
     fn test_json_get_auto_int() {
-        let src = r#"(define (run) (default (near/json_get_int "price") 0)) (export "run" run true)"#;
+        let src =
+            r#"(define (run) (default (near/json_get_int "price") 0)) (export "run" run true)"#;
         let wat = compile_near_to_wat(src).expect("wat");
         assert!(wat.contains("call"), "should emit host calls");
         eprintln!("INT WAT:\n{}", wat);

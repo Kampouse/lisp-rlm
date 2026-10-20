@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="880" viewBox="0 0 1400 880">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#00EC97"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1400" height="880" fill="#0A0A0F"/>
+
+  <text x="48" y="54" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="27" font-weight="700" fill="#E8E8F0">Enter a pool → exit the pool: is the pool the same?</text>
+  <text x="48" y="84" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="15" fill="#9A9AB0">What the machine-checked ladder (afp-clmm) proves about the roundtrip — fees on, not assumed away</text>
+
+  <!-- ============ PANEL 1 : ENTER ============ -->
+  <rect x="48" y="112" width="420" height="452" rx="14" fill="#12121A" stroke="#26263A" stroke-width="1.5"/>
+  <rect x="48" y="112" width="420" height="40" rx="14" fill="#1A1A26"/>
+  <text x="68" y="139" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#00EC97">1 · ENTER — swap in</text>
+
+  <text x="68" y="180" font-family="Menlo, monospace" font-size="12" font-weight="700" fill="#9A9AB0">POOL STATE</text>
+  <text x="68" y="204" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="14" fill="#E8E8F0">price moves to your landing tick</text>
+  <text x="68" y="224" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="14" fill="#E8E8F0">entry legal: guard holds at post state</text>
+
+  <line x1="68" y1="246" x2="448" y2="246" stroke="#26263A" stroke-width="1"/>
+
+  <text x="68" y="274" font-family="Menlo, monospace" font-size="12" font-weight="700" fill="#9A9AB0">FEE BOOK</text>
+
+  <!-- on-grid row -->
+  <text x="68" y="302" font-family="Menlo, monospace" font-size="13" fill="#00EC97">on-grid</text>
+  <rect x="150" y="284" width="64" height="40" rx="7" fill="#1A1A26" stroke="#3A3A52"/>
+  <text x="182" y="310" font-family="Menlo, monospace" font-size="16" fill="#E8E8F0" text-anchor="middle">3</text>
+  <rect x="222" y="284" width="64" height="40" rx="7" fill="#1A1A26" stroke="#3A3A52"/>
+  <text x="254" y="310" font-family="Menlo, monospace" font-size="16" fill="#E8E8F0" text-anchor="middle">5</text>
+  <text x="298" y="310" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13" fill="#9A9AB0">shape unchanged</text>
+
+  <!-- off-grid row -->
+  <text x="68" y="368" font-family="Menlo, monospace" font-size="13" fill="#FFC94A">off-grid</text>
+  <rect x="150" y="350" width="64" height="40" rx="7" fill="#1A1A26" stroke="#3A3A52"/>
+  <text x="182" y="376" font-family="Menlo, monospace" font-size="16" fill="#E8E8F0" text-anchor="middle">3</text>
+  <rect x="222" y="350" width="64" height="40" rx="7" fill="#1A1A26" stroke="#3A3A52"/>
+  <text x="254" y="376" font-family="Menlo, monospace" font-size="16" fill="#E8E8F0" text-anchor="middle">5</text>
+  <path d="M 296 370 L 318 370" stroke="#9A9AB0" stroke-width="1.6" marker-end="url(#arr)"/>
+  <rect x="326" y="350" width="64" height="40" rx="7" fill="#2A2418" stroke="#FFC94A"/>
+  <text x="358" y="376" font-family="Menlo, monospace" font-size="16" fill="#FFC94A" text-anchor="middle">3</text>
+  <rect x="398" y="350" width="64" height="40" rx="7" fill="#1A1A26" stroke="#3A3A52"/>
+  <text x="430" y="376" font-family="Menlo, monospace" font-size="16" fill="#E8E8F0" text-anchor="middle">5</text>
+
+  <text x="68" y="418" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13.5" fill="#FFC94A">landing between ticks inserts a COPY cell —</text>
+  <text x="68" y="438" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13.5" fill="#FFC94A">value below, no new money (sum law: mass grows</text>
+  <text x="68" y="458" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13.5" fill="#FFC94A">by exactly the copied term)</text>
+
+  <text x="68" y="496" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13.5" fill="#9A9AB0">"the book is unchanged" is FALSE — proven</text>
+  <text x="68" y="514" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13.5" fill="#9A9AB0">counterexample [3,5] → [3,3,5]. Honest negative.</text>
+
+  <!-- arrow 1→2 -->
+  <path d="M 472 336 L 486 336" stroke="#00EC97" stroke-width="2.4" marker-end="url(#arr)"/>
+
+  <!-- ============ PANEL 2 : WHILE IN ============ -->
+  <rect x="490" y="112" width="420" height="452" rx="14" fill="#12121A" stroke="#26263A" stroke-width="1.5"/>
+  <rect x="490" y="112" width="420" height="40" rx="14" fill="#1A1A26"/>
+  <text x="510" y="139" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#00EC97">2 · WHILE IN — capital deployed</text>
+
+  <text x="510" y="180" font-family="Menlo, monospace" font-size="12" font-weight="700" fill="#9A9AB0">POOL STATE</text>
+  <text x="510" y="204" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="14" fill="#E8E8F0">holding moves nothing:</text>
+  <text x="510" y="224" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="14" fill="#E8E8F0">grid · price · liquidity frozen</text>
+
+  <line x1="510" y1="246" x2="890" y2="246" stroke="#26263A" stroke-width="1"/>
+
+  <text x="510" y="274" font-family="Menlo, monospace" font-size="12" font-weight="700" fill="#9A9AB0">FEE BOOK</text>
+  <text x="510" y="302" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="14" fill="#E8E8F0">accrual — the ONLY thing that ever</text>
+  <text x="510" y="322" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="14" fill="#E8E8F0">changes fees, while capital is in range:</text>
+
+  <rect x="510" y="344" width="64" height="40" rx="7" fill="#1A1A26" stroke="#3A3A52"/>
+  <text x="542" y="370" font-family="Menlo, monospace" font-size="16" fill="#E8E8F0" text-anchor="middle">3+Δ</text>
+  <rect x="582" y="344" width="64" height="40" rx="7" fill="#1A1A26" stroke="#3A3A52"/>
+  <text x="614" y="370" font-family="Menlo, monospace" font-size="16" fill="#E8E8F0" text-anchor="middle">3</text>
+  <rect x="654" y="344" width="64" height="40" rx="7" fill="#1A1A26" stroke="#3A3A52"/>
+  <text x="686" y="370" font-family="Menlo, monospace" font-size="16" fill="#E8E8F0" text-anchor="middle">5</text>
+  <text x="730" y="370" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13" fill="#00EC97">Δ = real growth</text>
+
+  <text x="510" y="418" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13.5" fill="#9A9AB0">reindexing can't mint claims: the inserted copy</text>
+  <text x="510" y="436" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13.5" fill="#9A9AB0">cell never pays, never charges (values travel,</text>
+  <text x="510" y="454" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13.5" fill="#9A9AB0">paste-back is exact)</text>
+
+  <text x="510" y="496" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13.5" fill="#9A9AB0">bounded: no strategy beats fee slack by</text>
+  <text x="510" y="514" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13.5" fill="#9A9AB0">&gt; 1 unit per op — and nobody is overcharged</text>
+
+  <!-- arrow 2→3 -->
+  <path d="M 914 336 L 928 336" stroke="#00EC97" stroke-width="2.4" marker-end="url(#arr)"/>
+
+  <!-- ============ PANEL 3 : EXIT ============ -->
+  <rect x="932" y="112" width="420" height="452" rx="14" fill="#12121A" stroke="#26263A" stroke-width="1.5"/>
+  <rect x="932" y="112" width="420" height="40" rx="14" fill="#1A1A26"/>
+  <text x="952" y="139" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#00EC97">3 · EXIT — swap out</text>
+
+  <text x="952" y="180" font-family="Menlo, monospace" font-size="12" font-weight="700" fill="#9A9AB0">POOL STATE</text>
+  <text x="952" y="204" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="14" fill="#00EC97" font-weight="600">restores EXACTLY — bit-identical:</text>
+  <text x="952" y="224" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="14" fill="#E8E8F0">grid · price · liquidity (any history)</text>
+
+  <line x1="952" y1="246" x2="1332" y2="246" stroke="#26263A" stroke-width="1"/>
+
+  <text x="952" y="274" font-family="Menlo, monospace" font-size="12" font-weight="700" fill="#9A9AB0">FEE BOOK</text>
+  <text x="952" y="302" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="14" fill="#E8E8F0">paste-back on exit: the copy cell is</text>
+  <text x="952" y="322" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="14" fill="#E8E8F0">never read → it disappears again:</text>
+
+  <rect x="952" y="344" width="64" height="40" rx="7" fill="#1A1A26" stroke="#3A3A52"/>
+  <text x="984" y="370" font-family="Menlo, monospace" font-size="16" fill="#E8E8F0" text-anchor="middle">3+Δ</text>
+  <rect x="1024" y="344" width="64" height="40" rx="7" fill="#1A1A26" stroke="#3A3A52"/>
+  <text x="1056" y="370" font-family="Menlo, monospace" font-size="16" fill="#E8E8F0" text-anchor="middle">5+Δ'</text>
+  <text x="1100" y="370" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13" fill="#00EC97">original shape + Δ</text>
+
+  <rect x="952" y="404" width="380" height="64" rx="10" fill="#1F1414" stroke="#FF5D5D"/>
+  <text x="972" y="430" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="14" font-weight="700" fill="#FF5D5D">Attacker lane — sandwich attack:</text>
+  <text x="972" y="452" font-family="Menlo, monospace" font-size="13" fill="#E8E8F0">pool + price restored · P&amp;L = 0 − fees ≤ 0</text>
+
+  <text x="952" y="504" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13.5" fill="#9A9AB0">liquidity: withdraw after ANY history legal,</text>
+  <text x="952" y="522" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13.5" fill="#9A9AB0">bounded, overburn impossible, mint∥burn commute</text>
+
+  <!-- ============ VERDICT BAND ============ -->
+  <rect x="48" y="588" width="420" height="150" rx="14" fill="#0F1A14" stroke="#00EC97" stroke-width="1.6"/>
+  <text x="258" y="622" font-family="Menlo, monospace" font-size="13" font-weight="700" fill="#00EC97" text-anchor="middle">GRID · PRICE · LIQUIDITY</text>
+  <text x="258" y="652" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#E8E8F0" text-anchor="middle">bit-identical after in → out</text>
+  <text x="258" y="680" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13" fill="#9A9AB0" text-anchor="middle">swap sequences restore by induction;</text>
+  <text x="258" y="698" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13" fill="#9A9AB0" text-anchor="middle">deposit/withdraw order-independent</text>
+  <text x="258" y="722" font-family="Menlo, monospace" font-size="12" fill="#00EC97" text-anchor="middle">swap_seq · mint_burn_commute</text>
+
+  <rect x="490" y="588" width="420" height="150" rx="14" fill="#0F1A14" stroke="#00EC97" stroke-width="1.6"/>
+  <text x="700" y="622" font-family="Menlo, monospace" font-size="13" font-weight="700" fill="#00EC97" text-anchor="middle">FEE BOOK</text>
+  <text x="700" y="652" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#E8E8F0" text-anchor="middle">only real accrual persists</text>
+  <text x="700" y="680" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13" fill="#9A9AB0" text-anchor="middle">off-grid entry/exit: copy-shift in,</text>
+  <text x="700" y="698" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13" fill="#9A9AB0" text-anchor="middle">exact paste-back out — no mint, no burn</text>
+  <text x="700" y="722" font-family="Menlo, monospace" font-size="12" fill="#00EC97" text-anchor="middle">fee_offgrid_restore · fee_offgrid_sum</text>
+
+  <rect x="932" y="588" width="420" height="150" rx="14" fill="#1F1414" stroke="#FF5D5D" stroke-width="1.6"/>
+  <text x="1142" y="622" font-family="Menlo, monospace" font-size="13" font-weight="700" fill="#FF5D5D" text-anchor="middle">ROUNDTRIP ATTACKER</text>
+  <text x="1142" y="652" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#E8E8F0" text-anchor="middle">nets 0 − fees</text>
+  <text x="1142" y="680" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13" fill="#9A9AB0" text-anchor="middle">fees make the roundtrip negative —</text>
+  <text x="1142" y="698" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="13" fill="#9A9AB0" text-anchor="middle">accrual only punishes the attacker</text>
+  <text x="1142" y="722" font-family="Menlo, monospace" font-size="12" fill="#FF5D5D" text-anchor="middle">fee_profit_window · CLMM_Reachable</text>
+
+  <!-- ============ FOOTER ============ -->
+  <text x="48" y="782" font-family="Menlo, monospace" font-size="12" fill="#6A6A80">anchors: d30573ce swap_seq/refine_eq/sandwich=0 · 15a0913e fee_offgrid_restore (paste-back) · eae60c6e fee_offgrid_sum (copy term)</text>
+  <text x="48" y="804" font-family="Menlo, monospace" font-size="12" fill="#6A6A80">76fefb10 mint_burn_commute/overburn · b15aeb21 fee_profit_window · 626f2355 descent refutation (ascent premise load-bearing)</text>
+  <text x="48" y="826" font-family="Menlo, monospace" font-size="12" fill="#6A6A80">all machine-checked in Isabelle/HOL over the AFP entry (Echenim 2025) · 0 sorries · every number from commit-verified headers</text>
+</svg>

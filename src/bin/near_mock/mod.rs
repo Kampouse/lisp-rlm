@@ -38,9 +38,7 @@ pub(crate) use hosts::{build_env_linker, host_fn};
 // ── mainnet gas/stack instrumentation (finite-wasm, PV155 costs) ──
 // Lifted to the lib (src/instrument.rs): browser compiler + near-mock now
 // share ONE meter, so JS and CLI can never disagree on gas.
-pub(crate) use lisp_rlm_wasm::instrument::{
-    instrument, REMAINING_GAS_EXPORT,
-};
+pub(crate) use lisp_rlm_wasm::instrument::{instrument, REMAINING_GAS_EXPORT};
 
 /// Function-call action fee (execution side, protocol-86): burned by the
 /// receipt itself on mainnet, on top of instruction + host gas.
@@ -447,9 +445,7 @@ pub(crate) fn human_num(s: &str, force_near: bool) -> String {
     // auto when the magnitude is confidently yocto (≥ 0.001 Ⓝ).
     if force_near || n >= 1_000_000_000_000_000_000 {
         let near = n as f64 / 1e24;
-        format!(
-            "{sign}{grouped} (~{short}, ~{near:.4} Ⓝ)"
-        )
+        format!("{sign}{grouped} (~{short}, ~{near:.4} Ⓝ)")
     } else {
         format!("{sign}{grouped} (~{short})")
     }
@@ -1633,9 +1629,8 @@ fn build_promise_hosts(
             };
             // Re-run the callback with the payload as the Successful result
             let payload_bytes = payload.clone().into_bytes();
-            let saved = PROMISE_RESULTS.with(|r| {
-                std::mem::replace(&mut *r.borrow_mut(), vec![Some(payload_bytes)])
-            });
+            let saved = PROMISE_RESULTS
+                .with(|r| std::mem::replace(&mut *r.borrow_mut(), vec![Some(payload_bytes)]));
             let ret = sub_execute(&batch.account, &method, &args_json, &batch.creator, 0);
             PROMISE_RESULTS.with(|r| *r.borrow_mut() = saved);
             // one-shot: consume the persisted yield handle
@@ -1749,11 +1744,18 @@ fn build_promise_hosts(
                     if EXECUTED_PROMISES.with(|e| e.borrow().contains(&jidx)) {
                         mtrace!(
                             "  ⛓ join receipt {} → {}.{} already fired by drain — skip",
-                            jidx, jacct, jmethod
+                            jidx,
+                            jacct,
+                            jmethod
                         );
                         continue;
                     }
-                    mtrace!("  ⛓ join receipt {} → {}.{} (payload-delivered)", jidx, jacct, jmethod);
+                    mtrace!(
+                        "  ⛓ join receipt {} → {}.{} (payload-delivered)",
+                        jidx,
+                        jacct,
+                        jmethod
+                    );
                     // The join callback reads its dep result (the resolved
                     // payload) via promise_result(0) — same as nearcore. The
                     // outlayer wraps execution results in an envelope
@@ -1762,9 +1764,7 @@ fn build_promise_hosts(
                     // the live-chain promise_return flattening.
                     let join_result = serde_json::from_str::<serde_json::Value>(&payload)
                         .ok()
-                        .and_then(|v| {
-                            v["output"]["Text"].as_str().map(|s| s.to_string())
-                        })
+                        .and_then(|v| v["output"]["Text"].as_str().map(|s| s.to_string()))
                         .unwrap_or_else(|| payload.clone());
                     let saved = PROMISE_RESULTS.with(|r| {
                         std::mem::replace(

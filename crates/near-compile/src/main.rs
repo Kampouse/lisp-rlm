@@ -2006,10 +2006,7 @@ fn run_project_test(dir: Option<&str>) {
             }
         }
         if !scenarios.is_empty() {
-            println!(
-                "scenarios: {} passed, {} failed",
-                scn_passed, scn_failed
-            );
+            println!("scenarios: {} passed, {} failed", scn_passed, scn_failed);
         }
 
         if total_failed + scn_failed > 0 {
@@ -2082,8 +2079,8 @@ fn run_scenario_file(
 ) -> Result<(), String> {
     // The scenario drives the wasm `do_build` just wrote to config.output.
     let wasm = Path::new(project_dir).join(output_rel);
-    let wasm_abs = fs::canonicalize(&wasm)
-        .map_err(|e| format!("canonicalize {}: {}", wasm.display(), e))?;
+    let wasm_abs =
+        fs::canonicalize(&wasm).map_err(|e| format!("canonicalize {}: {}", wasm.display(), e))?;
     let contract_acct = if account.is_empty() {
         "contract.test.near".to_string()
     } else {
@@ -2092,16 +2089,12 @@ fn run_scenario_file(
 
     // Inject hermetic defaults unless the scenario declares its own:
     // manifest (contract account → wasm path) and a per-run state file.
-    let raw = fs::read_to_string(scn)
-        .map_err(|e| format!("read {}: {}", scn.display(), e))?;
-    let mut spec: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("parse {}: {}", scn.display(), e))?;
+    let raw = fs::read_to_string(scn).map_err(|e| format!("read {}: {}", scn.display(), e))?;
+    let mut spec: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("parse {}: {}", scn.display(), e))?;
     if spec.get("manifest").is_none() {
-        spec["manifest"] = serde_json::Value::String(format!(
-            "{}={}",
-            contract_acct,
-            wasm_abs.display()
-        ));
+        spec["manifest"] =
+            serde_json::Value::String(format!("{}={}", contract_acct, wasm_abs.display()));
     }
     let pid = std::process::id();
     let scn_name = scn
@@ -2115,10 +2108,9 @@ fn run_scenario_file(
     }
 
     let wrapped = std::env::temp_dir().join(format!("near-compile-scn-{}-{}.json", pid, scn_name));
-    let wrapped_json = serde_json::to_string_pretty(&spec)
-        .map_err(|e| format!("serialize scenario: {}", e))?;
-    fs::write(&wrapped, wrapped_json)
-        .map_err(|e| format!("write {}: {}", wrapped.display(), e))?;
+    let wrapped_json =
+        serde_json::to_string_pretty(&spec).map_err(|e| format!("serialize scenario: {}", e))?;
+    fs::write(&wrapped, wrapped_json).map_err(|e| format!("write {}: {}", wrapped.display(), e))?;
 
     let mock = find_near_mock();
     let status = std::process::Command::new(&mock)
@@ -2595,9 +2587,9 @@ fn run_compile(args: &[String]) {
                 // layer the name→line hints for symbols the message renders
                 let located = if let (Some(ts), map) = (ts_src.as_deref(), ts_ident_map.clone()) {
                     match lisp_rlm_wasm::parse_all(&src) {
-                        Ok(exprs) => lisp_rlm_wasm::ts_frontend::locate_form_error(
-                            &exprs, &map, ts, &e,
-                        ),
+                        Ok(exprs) => {
+                            lisp_rlm_wasm::ts_frontend::locate_form_error(&exprs, &map, ts, &e)
+                        }
                         Err(_) => None,
                     }
                 } else {
@@ -2605,7 +2597,10 @@ fn run_compile(args: &[String]) {
                 };
                 match located {
                     Some(loc) => eprintln!("❌ Compile error\n📍 {}", loc),
-                    None => eprintln!("❌ Compile error: {}", augment_with_ts_line(e, &ts_ident_map, ts_src.as_deref().unwrap_or(""))),
+                    None => eprintln!(
+                        "❌ Compile error: {}",
+                        augment_with_ts_line(e, &ts_ident_map, ts_src.as_deref().unwrap_or(""))
+                    ),
                 }
                 std::process::exit(1);
             }

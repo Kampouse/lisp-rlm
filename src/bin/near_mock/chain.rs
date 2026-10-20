@@ -221,8 +221,9 @@ impl ChainBuilder {
 
         let storage: std::collections::HashMap<Vec<u8>, Vec<u8>> = match &self.state_path {
             Some(p) => {
-                let bytes =
-                    std::fs::read(p).ok().and_then(|d| bincode::deserialize(&d).ok());
+                let bytes = std::fs::read(p)
+                    .ok()
+                    .and_then(|d| bincode::deserialize(&d).ok());
                 match bytes {
                     Some(storage) => storage,
                     None if self.storage.is_empty() && !self.allow_new_state => {
@@ -350,7 +351,11 @@ impl MockChain {
     /// account semantics — NOT a host-func; bypasses gas accounting).
     pub fn storage_insert(&self, account: &str, key: &[u8], val: &[u8]) {
         let full = crate::state::prefixed_key(account, key);
-        self.state.lock().unwrap().storage.insert(full, val.to_vec());
+        self.state
+            .lock()
+            .unwrap()
+            .storage
+            .insert(full, val.to_vec());
     }
 
     /// Remove one storage key under an account's partition.

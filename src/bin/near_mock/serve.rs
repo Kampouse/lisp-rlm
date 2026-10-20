@@ -139,13 +139,7 @@ pub(crate) fn run_serve(args: &[String]) -> Result<(), Box<dyn std::error::Error
 
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
-        let _ = handle_conn(
-            &mut stream,
-            &chain,
-            &records,
-            &next_height,
-            &receivers,
-        );
+        let _ = handle_conn(&mut stream, &chain, &records, &next_height, &receivers);
     }
     Ok(())
 }
@@ -200,7 +194,15 @@ fn handle_conn(
     let method = parts.next().unwrap_or("GET").to_string();
     let path = parts.next().unwrap_or("/").to_string();
 
-    let response = route(&method, &path, &body, chain, records, next_height, receivers);
+    let response = route(
+        &method,
+        &path,
+        &body,
+        chain,
+        records,
+        next_height,
+        receivers,
+    );
     write_response(stream, response.0, &response.1)
 }
 
@@ -224,9 +226,7 @@ fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> std::io::R
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 fn route(
@@ -240,7 +240,11 @@ fn route(
 ) -> HttpResp {
     // ── neardata block feed ──
     if method == "GET" && path.starts_with("/v0/block/") {
-        let height: u64 = path.rsplit('/').next().and_then(|h| h.parse().ok()).unwrap_or(0);
+        let height: u64 = path
+            .rsplit('/')
+            .next()
+            .and_then(|h| h.parse().ok())
+            .unwrap_or(0);
         return neardata_block(height, records, receivers);
     }
     // ── coordinator stub ──
@@ -265,10 +269,7 @@ fn route(
     {
         // create → {"request_id":N,"created":false} (false = duplicate, no retry)
         if path == "/executions/create" {
-            return HttpResp(
-                200,
-                r#"{"request_id":0,"created":false}"#.to_string(),
-            );
+            return HttpResp(200, r#"{"request_id":0,"created":false}"#.to_string());
         }
         if path == "/workers/block-cursor" {
             let h = *next_height.lock().unwrap();
@@ -279,8 +280,7 @@ fn route(
     if method == "GET" && path == "/" {
         return HttpResp(
             200,
-            r#"{"service":"near-mock-serve","rpc":"/","neardata":"/v0/block/{h}"}"#
-                .to_string(),
+            r#"{"service":"near-mock-serve","rpc":"/","neardata":"/v0/block/{h}"}"#.to_string(),
         );
     }
     // ── NEAR JSON-RPC ──
@@ -294,7 +294,10 @@ fn route(
             .and_then(|m| m.as_str())
             .unwrap_or("")
             .to_string();
-        let params = parsed.get("params").cloned().unwrap_or(serde_json::Value::Null);
+        let params = parsed
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         let id = parsed.get("id").cloned().unwrap_or(serde_json::json!(0));
         let result = match rpc_method.as_str() {
             "block" => Some(rpc_block(next_height)),
@@ -511,7 +514,7 @@ fn rpc_broadcast_tx_commit(
                     "error": {"name": "HANDLER_ERROR", "code": -32602,
                               "message": "missing signed_tx_base64"}})
                 .to_string(),
-            )
+            );
         }
     };
     let raw = match base64::engine::general_purpose::STANDARD.decode(bytes_b64) {
@@ -532,7 +535,7 @@ fn rpc_broadcast_tx_commit(
             serde_json::json!({"jsonrpc": "2.0", "id": id,
                       "error": {"name": "HANDLER_ERROR", "code": -32602,
                                 "message": "signed tx borsh decode failed"}})
-                .to_string(),
+            .to_string(),
         );
     };
 
@@ -550,7 +553,7 @@ fn rpc_broadcast_tx_commit(
                     "transaction": null,
                     "transaction_outcome": null,
                     "receipts_outcome": []}})
-                .to_string(),
+            .to_string(),
         );
     }
 
@@ -609,16 +612,19 @@ fn rpc_broadcast_tx_commit(
             },
         }));
         if outcome.ok {
-            record_events(chain, records, next_height, &action.receiver_id, &outcome.logs);
+            record_events(
+                chain,
+                records,
+                next_height,
+                &action.receiver_id,
+                &outcome.logs,
+            );
         } else {
             break;
         }
     }
 
-    let tx_hash = bs58_hash(&format!(
-        "mock-tx-{}-{}",
-        decoded.signer_id, decoded.nonce
-    ));
+    let tx_hash = bs58_hash(&format!("mock-tx-{}-{}", decoded.signer_id, decoded.nonce));
     let height = mock_block_height();
     // Persist after every submitted tx — only in --state mode (an in-memory
     // chain has no state_path; save() would just error no-op).
@@ -769,7 +775,9 @@ fn record_events(
 fn webhook_url() -> Option<&'static str> {
     use std::sync::OnceLock;
     static WEBHOOK: OnceLock<Option<String>> = OnceLock::new();
-    WEBHOOK.get_or_init(|| std::env::var("NEAR_MOCK_WEBHOOK").ok()).as_deref()
+    WEBHOOK
+        .get_or_init(|| std::env::var("NEAR_MOCK_WEBHOOK").ok())
+        .as_deref()
 }
 
 /// Minimal HTTP/1.1 POST over TcpStream — no client crate (the server is raw
@@ -804,7 +812,9 @@ fn http_post_json(url: &str, body: &str) -> Result<(), String> {
         "POST {target} HTTP/1.1\r\nHost: {host_port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+    stream
+        .write_all(req.as_bytes())
+        .map_err(|e| e.to_string())?;
     stream.flush().map_err(|e| e.to_string())?;
     let mut resp = Vec::new();
     let _ = stream.read_to_end(&mut resp);
@@ -817,7 +827,10 @@ fn http_post_json(url: &str, body: &str) -> Result<(), String> {
     if ok {
         Ok(())
     } else {
-        Err(format!("webhook responded: {}", head.lines().next().unwrap_or("??")))
+        Err(format!(
+            "webhook responded: {}",
+            head.lines().next().unwrap_or("??")
+        ))
     }
 }
 
@@ -829,8 +842,7 @@ fn neardata_block(
     receivers: &[String],
 ) -> HttpResp {
     let recs = records.lock().unwrap();
-    let matching: Vec<&EventRecord> =
-        recs.iter().filter(|r| r.block_height == height).collect();
+    let matching: Vec<&EventRecord> = recs.iter().filter(|r| r.block_height == height).collect();
     if matching.is_empty() {
         // Prior blocks "exist" but are empty (already consumed); the future
         // is null (block not indexed yet).
@@ -876,15 +888,13 @@ fn neardata_block(
 /// endpoint returns.
 fn extract_execution_request(log: &str) -> Option<String> {
     let idx = log.find("EVENT_JSON:")?;
-    let event: serde_json::Value =
-        serde_json::from_str(&log[idx + "EVENT_JSON:".len()..]).ok()?;
+    let event: serde_json::Value = serde_json::from_str(&log[idx + "EVENT_JSON:".len()..]).ok()?;
     if event.get("event")?.as_str()? != "execution_requested" {
         return None;
     }
     let data0 = event.get("data")?.as_array()?.first()?.clone();
     let data_id: Vec<u8> = serde_json::from_value(data0.get("data_id")?.clone()).ok()?;
-    let rd: serde_json::Value =
-        serde_json::from_str(data0.get("request_data")?.as_str()?).ok()?;
+    let rd: serde_json::Value = serde_json::from_str(data0.get("request_data")?.as_str()?).ok()?;
     let request_id = rd.get("request_id")?.as_u64()?;
     // Coordinator ExecutionRequest shape (api_client.rs:63): the worker needs
     // request_id, data_id (hex), code_source, resource_limits, input_data,
@@ -1054,7 +1064,7 @@ fn decode_signed_tx(raw: &[u8]) -> Option<DecodedTx> {
             }
             4 => {
                 r.u128()?; // Stake { public_key(33? no—) , stake }
-                // StakeAction { public_key: PublicKey, stake: u128 }
+                           // StakeAction { public_key: PublicKey, stake: u128 }
             }
             5 => {
                 // AddKey { public_key, access_key } — pk = tag(1) + data(32)
@@ -1147,7 +1157,11 @@ fn apply_account_semantics(
             // genesis grants every account it learns about); an unknown
             // signer with no record is still an error for DeleteAccount
             // flows only. Mirror lenient mock behavior: grant genesis.
-            chain.storage_insert(&tx.signer_id, b"\x00near-bal", GENESIS_BAL.to_string().as_bytes());
+            chain.storage_insert(
+                &tx.signer_id,
+                b"\x00near-bal",
+                GENESIS_BAL.to_string().as_bytes(),
+            );
             chain.storage_insert(&tx.signer_id, ACCT_EXISTS, b"1");
             GENESIS_BAL
         }

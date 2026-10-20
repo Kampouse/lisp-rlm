@@ -33,7 +33,11 @@ fn ops_spec_wasm_names_exist_in_emitter_surface() {
 fn ops_spec_names_unique() {
     let mut seen = std::collections::HashSet::new();
     for op in OPS_SPEC {
-        assert!(seen.insert(op.name), "duplicate ops_spec entry: {}", op.name);
+        assert!(
+            seen.insert(op.name),
+            "duplicate ops_spec entry: {}",
+            op.name
+        );
     }
 }
 

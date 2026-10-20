@@ -176,4 +176,3 @@ pub fn decode_params_section(wasm: &[u8]) -> Option<Vec<String>> {
     }
     None
 }
-

@@ -31,8 +31,8 @@ fn run_near_mock(src: &str) -> String {
     // exprs-path compilation must emit BYTE-IDENTICAL wasm for every
     // fixture that runs through this helper.
     {
-        let __exprs = lisp_rlm_wasm::parse_all(src)
-            .unwrap_or_else(|e| panic!("parse_all failed: {}", e));
+        let __exprs =
+            lisp_rlm_wasm::parse_all(src).unwrap_or_else(|e| panic!("parse_all failed: {}", e));
         let __wasm2 = lisp_rlm_wasm::compile_near_from_exprs(&__exprs)
             .unwrap_or_else(|e| panic!("compile_near_from_exprs failed: {}", e));
         assert_eq!(
@@ -293,7 +293,9 @@ fn json_get_str_missing_key_returns_empty_exec() {
     // (2) fixed to "" — but that silently broke `??` (d.ts promises
     // `string | null`); (3) FINAL contract: miss → nil, bare to-string
     // renders "nil", `(default x fb)` fires. See the two tests below.
-    let out = run_near_mock(r#"(define (main) (near/log (to-string (default (near/json_get_str "g") nil))))"#);
+    let out = run_near_mock(
+        r#"(define (main) (near/log (to-string (default (near/json_get_str "g") nil))))"#,
+    );
     assert!(
         out.contains("LOG: nil"),
         "missing key must render nil, got: {}",
@@ -304,7 +306,9 @@ fn json_get_str_missing_key_returns_empty_exec() {
 #[test]
 fn json_get_str_missing_key_returns_value_exec() {
     // sanity: present key still returns its value
-    let out = run_near_mock(r#"(define (main) (near/log (to-string (default (near/json_get_str "g") nil))))"#);
+    let out = run_near_mock(
+        r#"(define (main) (near/log (to-string (default (near/json_get_str "g") nil))))"#,
+    );
     let _ = out; // input is "{}" per harness → covered by the empty test
 }
 
@@ -315,7 +319,8 @@ fn json_get_int_missing_key_zero_exec() {
     // harness input "{}" can't do hit-then-miss, so assert the standalone
     // miss → 0 and rely on manual exec for the sequence (verified
     // 2026-08-31: n=5 → 5, m miss → 0, 777 → 777).
-    let out = run_near_mock(r#"(define (main) (near/log_num (default (near/json_get_int "m") 0)))"#);
+    let out =
+        run_near_mock(r#"(define (main) (near/log_num (default (near/json_get_int "m") 0)))"#);
     assert!(
         out.contains("LOG: 0"),
         "missing int key must log 0, got: {}",
@@ -351,7 +356,9 @@ fn json_get_str_missing_fires_nullish_fallback_exec() {
 
 #[test]
 fn to_string_nil_renders_nil_exec() {
-    let out = run_near_mock(r#"(define (main) (near/log (to-string (default (near/json_get_str "g") nil))))"#);
+    let out = run_near_mock(
+        r#"(define (main) (near/log (to-string (default (near/json_get_str "g") nil))))"#,
+    );
     assert!(
         out.contains("LOG: nil"),
         "bare miss must be visible as nil, got: {}",

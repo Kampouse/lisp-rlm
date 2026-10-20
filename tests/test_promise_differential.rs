@@ -908,8 +908,10 @@ fn deposit_nonzero_parity() {
         r#"(define (run) (near/call "sale.near" "buy" "{}" 30000000000000 "1000000000000000000000000"))"#,
     )
     .unwrap();
-    run_diff(r#"(define (run) (near/promise_create "sale.near" "buy" "{}" "1000" 30000000000000))"#)
-        .unwrap();
+    run_diff(
+        r#"(define (run) (near/promise_create "sale.near" "buy" "{}" "1000" 30000000000000))"#,
+    )
+    .unwrap();
 }
 
 // When a divergence IS found, it must be loud — this self-check documents the

@@ -51,7 +51,8 @@ fn arity_error_skips_earlier_good_call() {
     // occurrences of `len` exist; the bad one is the SECOND `(len` — but the
     // checker reports the FIRST failing call (it aborts at line 3's good call
     // only if it errors; it doesn't — so the failure is line 5's call).
-    let src = "(define (len s p) 42)\n\n(define (g) (len \"a\" \"b\"))\n\n(define (h) (len \"c\"))\n";
+    let src =
+        "(define (len s p) 42)\n\n(define (g) (len \"a\" \"b\"))\n\n(define (h) (len \"c\"))\n";
     let msg = check_and_annotate(src);
     assert_eq!(
         line_of(&msg),

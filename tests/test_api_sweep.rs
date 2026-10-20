@@ -60,18 +60,9 @@ fn compiles_and_runs(name: &str, call: &str) {
 #[test]
 fn sweep_input_reads() {
     // money-safety gate: every param read needs an explicit fallback
-    compiles_and_runs(
-        "json_get_str",
-        r#"(default (near/json_get_str "g") "")"#,
-    );
-    compiles_and_runs(
-        "json_get_int",
-        r#"(default (near/json_get_int "n") 0)"#,
-    );
-    compiles_and_runs(
-        "json_get_arr",
-        r#"(default (near/json_get_arr "a") nil)"#,
-    );
+    compiles_and_runs("json_get_str", r#"(default (near/json_get_str "g") "")"#);
+    compiles_and_runs("json_get_int", r#"(default (near/json_get_int "n") 0)"#);
+    compiles_and_runs("json_get_arr", r#"(default (near/json_get_arr "a") nil)"#);
 }
 
 #[test]
@@ -131,18 +122,27 @@ fn matrix_json_get_str() {
         "LOG: hi"
     );
     // miss → fallback
-    assert_eq!(log_of(r#"(default (near/json_get_str "g") "fb")"#, "{}"), "LOG: fb");
+    assert_eq!(
+        log_of(r#"(default (near/json_get_str "g") "fb")"#, "{}"),
+        "LOG: fb"
+    );
     assert_eq!(
         log_of(r#"(default (near/json_get_str "g") "fb")"#, r#"{"x":1}"#),
         "LOG: fb"
     );
     // pretty-printed JSON (whitespace after colon) must still hit
     assert_eq!(
-        log_of(r#"(default (near/json_get_str "g") "fb")"#, r#"{ "g" : "hi" }"#),
+        log_of(
+            r#"(default (near/json_get_str "g") "fb")"#,
+            r#"{ "g" : "hi" }"#
+        ),
         "LOG: hi"
     );
     // empty input
-    assert_eq!(log_of(r#"(default (near/json_get_str "g") "fb")"#, ""), "LOG: fb");
+    assert_eq!(
+        log_of(r#"(default (near/json_get_str "g") "fb")"#, ""),
+        "LOG: fb"
+    );
 }
 
 #[test]
@@ -167,7 +167,10 @@ fn matrix_json_get_int() {
         log_of(r#"(default (near/json_get_int "n") 0)"#, r#"{"n":-42}"#),
         "LOG: -42"
     );
-    assert_eq!(log_of(r#"(default (near/json_get_int "n") 0)"#, "{}"), "LOG: 0");
+    assert_eq!(
+        log_of(r#"(default (near/json_get_int "n") 0)"#, "{}"),
+        "LOG: 0"
+    );
     // bare-token value ({"by": 5} — no quotes around 5) must parse
     assert_eq!(
         log_of(r#"(default (near/json_get_int "n") 0)"#, r#"{"n":5}"#),
@@ -202,12 +205,18 @@ fn matrix_prefix_and_collision_keys() {
         "LOG: fb"
     );
     assert_eq!(
-        log_of(r#"(default (near/json_get_str "g") "fb")"#, r#"{"a":1,"g2":2}"#),
+        log_of(
+            r#"(default (near/json_get_str "g") "fb")"#,
+            r#"{"a":1,"g2":2}"#
+        ),
         "LOG: fb"
     );
     // key later in the object
     assert_eq!(
-        log_of(r#"(default (near/json_get_str "g") "fb")"#, r#"{"a":1,"g":"late"}"#),
+        log_of(
+            r#"(default (near/json_get_str "g") "fb")"#,
+            r#"{"a":1,"g":"late"}"#
+        ),
         "LOG: late"
     );
 }

@@ -55,8 +55,8 @@ fn run_near_mock(lisp: &str) -> (i32, String, String) {
     // that legitimately FAIL compilation (this file pins address-arg
     // hard-errors) skip the guard — parity is only defined on success.
     if let Ok(__w1) = lisp_rlm_wasm::compile_near(lisp) {
-        let __exprs = lisp_rlm_wasm::parse_all(lisp)
-            .unwrap_or_else(|e| panic!("parse_all failed: {}", e));
+        let __exprs =
+            lisp_rlm_wasm::parse_all(lisp).unwrap_or_else(|e| panic!("parse_all failed: {}", e));
         let __w2 = lisp_rlm_wasm::compile_near_from_exprs(&__exprs)
             .unwrap_or_else(|e| panic!("compile_near_from_exprs failed: {}", e));
         assert_eq!(

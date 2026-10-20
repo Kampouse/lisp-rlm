@@ -665,14 +665,14 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                 || match &a.type_annotation {
                     oxc_ast::ast::TSType::TSTypeReference(r) => {
                         matches!(&r.type_name,
-                            oxc_ast::ast::TSTypeName::IdentifierReference(id)
-                                if matches!(id.name.as_str(), "Yocto" | "Amount" | "Money")
-                                    || MONEY_ALIASES.with(|m| {
-                                        m.borrow().iter().any(|x| *x == id.name.as_str())
-                                    }))
-                }
-                _ => false,
-            };
+                        oxc_ast::ast::TSTypeName::IdentifierReference(id)
+                            if matches!(id.name.as_str(), "Yocto" | "Amount" | "Money")
+                                || MONEY_ALIASES.with(|m| {
+                                    m.borrow().iter().any(|x| *x == id.name.as_str())
+                                }))
+                    }
+                    _ => false,
+                };
             if money {
                 MONEY_ALIASES.with(|m| m.borrow_mut().push(an.to_string()));
             }
@@ -697,9 +697,7 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                             // (`const Q32: U = "4294967296"`) is a PROVABLE
                             // u128 source: the literal is range-checked here
                             // at registration (2026-10-12).
-                            if declarator_ann_is_money(d)
-                                && s.value.parse::<u128>().is_ok()
-                            {
+                            if declarator_ann_is_money(d) && s.value.parse::<u128>().is_ok() {
                                 MONEY_CONSTS.with(|m| m.borrow_mut().push(name.clone()));
                             }
                             Some(Str(s.value.as_str().to_string()))
@@ -907,11 +905,11 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
                         || match &a.type_annotation {
                             oxc_ast::ast::TSType::TSTypeReference(r) => {
                                 matches!(&r.type_name,
-                                    oxc_ast::ast::TSTypeName::IdentifierReference(id)
-                                        if matches!(id.name.as_str(), "Yocto" | "Amount" | "Money")
-                                            || MONEY_ALIASES.with(|m| {
-                                                m.borrow().iter().any(|x| *x == id.name.as_str())
-                                            }))
+                                oxc_ast::ast::TSTypeName::IdentifierReference(id)
+                                    if matches!(id.name.as_str(), "Yocto" | "Amount" | "Money")
+                                        || MONEY_ALIASES.with(|m| {
+                                            m.borrow().iter().any(|x| *x == id.name.as_str())
+                                        }))
                             }
                             _ => false,
                         };
@@ -927,14 +925,16 @@ fn lower_program(p: &Program<'_>) -> Result<Vec<LispVal>, String> {
             s if matches!(
                 s.as_declaration(),
                 Some(Declaration::TSInterfaceDeclaration(_))
-            ) => {
+            ) =>
+            {
                 let iface = match s.as_declaration() {
                     Some(Declaration::TSInterfaceDeclaration(i)) => i,
                     _ => unreachable!(),
                 };
                 let props = literal_props(&iface.body.body);
                 TYPE_ALIASES.with(|m| {
-                    m.borrow_mut().push((iface.id.name.as_str().to_string(), props));
+                    m.borrow_mut()
+                        .push((iface.id.name.as_str().to_string(), props));
                 });
             }
             // Types-only imports from the near module family are ELIDED.
@@ -1156,17 +1156,14 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
                 src_expr: arg,
             });
         } else if names.len() > 1 {
-            return Err(
-                "ts_frontend: only `await near.all([...])` binds multiple names".into(),
-            );
+            return Err("ts_frontend: only `await near.all([...])` binds multiple names".into());
         } else {
             let bind = match &decl.id {
                 oxc_ast::ast::BindingPattern::BindingIdentifier(_) => Bind::Plain,
                 oxc_ast::ast::BindingPattern::ObjectPattern(_) => Bind::Object,
                 _ => {
                     return Err(
-                        "ts_frontend: `await near.call(...)` binds a name or object pattern"
-                            .into(),
+                        "ts_frontend: `await near.call(...)` binds a name or object pattern".into(),
                     )
                 }
             };
@@ -1226,8 +1223,7 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
             await_owner.push((nm.clone(), j));
         }
     }
-    let owner_of =
-        |n: &str| await_owner.iter().find(|(nm, _)| nm == n).map(|(_, j)| *j);
+    let owner_of = |n: &str| await_owner.iter().find(|(nm, _)| nm == n).map(|(_, j)| *j);
     for k in 0..region_stmts.len() {
         let mut reads: Vec<String> = Vec::new();
         let mut assigns: Vec<String> = Vec::new();
@@ -1362,10 +1358,7 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
                             "ts_frontend: near.all element {j} must be near.call(target, method, args, gas, deposit)"
                         ));
                     };
-                    creates.push(to_pcreate(
-                        items,
-                        &format!("near.all element {j}"),
-                    )?);
+                    creates.push(to_pcreate(items, &format!("near.all element {j}"))?);
                 }
                 let joined = list({
                     let mut v = vec![Sym("near/promise_and")];
@@ -1442,7 +1435,10 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
                 Sym("let"),
                 list(vec![
                     list(vec![Sym("__fn_done"), Num(0)]),
-                    list(vec![Sym("__fn_res"), list(vec![Sym("quote"), LispVal::Nil])]),
+                    list(vec![
+                        Sym("__fn_res"),
+                        list(vec![Sym("quote"), LispVal::Nil]),
+                    ]),
                 ]),
                 inner?,
             ]))
@@ -1455,7 +1451,11 @@ fn lower_async_function(f: &TsFunction<'_>) -> Result<Vec<LispVal>, String> {
         let bindings = param_names
             .iter()
             .map(|(n, kind)| {
-                let get = list(vec![Sym("default"), list(vec![Sym("near/json_get_str"), Str(n.clone())]), Str(String::from(""))]);
+                let get = list(vec![
+                    Sym("default"),
+                    list(vec![Sym("near/json_get_str"), Str(n.clone())]),
+                    Str(String::from("")),
+                ]);
                 let v = match kind {
                     1 => list(vec![Sym("str->num"), get]),
                     2 => list(vec![
@@ -1641,16 +1641,13 @@ fn pattern_names(p: &oxc_ast::ast::BindingPattern<'_>) -> Result<Vec<String>, St
                     Some(e) => out.extend(pattern_names(e)?),
                     None => {
                         return Err(
-                            "ts_frontend: near.all bindings cannot have holes (`[a, , b]`)"
-                                .into(),
+                            "ts_frontend: near.all bindings cannot have holes (`[a, , b]`)".into(),
                         )
                     }
                 }
             }
             if let Some(_rest) = &ap.rest {
-                return Err(
-                    "ts_frontend: rest elements unsupported in await bindings".into(),
-                );
+                return Err("ts_frontend: rest elements unsupported in await bindings".into());
             }
             Ok(out)
         }
@@ -1662,11 +1659,7 @@ fn pattern_names(p: &oxc_ast::ast::BindingPattern<'_>) -> Result<Vec<String>, St
 /// READS and bare-identifier ASSIGNMENT/UPDATE targets (recursing through
 /// control flow). Arrow bodies are the lambda's own scope — skipped, same
 /// policy as expr_idents.
-fn stmt_walk_idents(
-    s: &Statement<'_>,
-    reads: &mut Vec<String>,
-    assigns: &mut Vec<String>,
-) {
+fn stmt_walk_idents(s: &Statement<'_>, reads: &mut Vec<String>, assigns: &mut Vec<String>) {
     match s {
         Statement::ExpressionStatement(es) => walk_expr_idents(&es.expression, reads, assigns),
         Statement::VariableDeclaration(vd) => {
@@ -1988,11 +1981,7 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
         .body
         .as_ref()
         .ok_or("ts_frontend: function overloads/declarations unsupported")?;
-    check_return_contract(
-        &name,
-        &body.statements,
-        return_ann_money(f),
-    )?;
+    check_return_contract(&name, &body.statements, return_ann_money(f))?;
     check_money_sinks(&body.statements)?;
 
     // u128-purity registry (clmm bug, 2026-10-11): if every return in this
@@ -2004,12 +1993,11 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
         let mut rets: Vec<&Expression<'_>> = Vec::new();
         stmts_exprs(&body.statements, &mut rets);
         let all_pure = !rets.is_empty()
-            && rets.iter().all(|e| {
-                matches!(e, Expression::AwaitExpression(_)) || expr_is_u128_value(e)
-            });
+            && rets
+                .iter()
+                .all(|e| matches!(e, Expression::AwaitExpression(_)) || expr_is_u128_value(e));
         if all_pure {
-            U128_PURE_FNS
-                .with(|m| m.borrow_mut().insert(name.clone()));
+            U128_PURE_FNS.with(|m| m.borrow_mut().insert(name.clone()));
         }
     }
 
@@ -2037,17 +2025,21 @@ fn lower_function(f: &TsFunction<'_>, exported: bool) -> Result<(String, Vec<Lis
             let bindings = param_names
                 .iter()
                 .map(|(n, kind)| {
-                    let get = list(vec![Sym("default"), list(vec![Sym("near/json_get_str"), Str(n.clone())]), Str(String::from(""))]);
+                    let get = list(vec![
+                        Sym("default"),
+                        list(vec![Sym("near/json_get_str"), Str(n.clone())]),
+                        Str(String::from("")),
+                    ]);
                     let v = match kind {
                         1 => {
                             NUM_PARAM_NAMES.with(|s| s.borrow_mut().push(n.clone()));
                             list(vec![Sym("str->num"), get])
                         }
                         2 => list(vec![
-                        Sym("default"),
-                        list(vec![Sym("near/json_get_arr"), Str(n.clone())]),
-                        Sym("nil"),
-                    ]),
+                            Sym("default"),
+                            list(vec![Sym("near/json_get_arr"), Str(n.clone())]),
+                            Sym("nil"),
+                        ]),
                         _ => get,
                     };
                     list(vec![Sym(n.clone()), v])
@@ -2498,11 +2490,7 @@ fn lower_prefix_around_with_return(
                 if expr_is_stringy(init_e) || expr_is_str_method_call(init_e) {
                     mark_string_local(&name);
                 }
-                check_and_register_money_const(
-                    &name,
-                    declarator_ann_is_money(d),
-                    init_e,
-                )?;
+                check_and_register_money_const(&name, declarator_ann_is_money(d), init_e)?;
                 if expr_has_call(init_e) {
                     // Impure initializer — hoist the binding with a nil dummy
                     // (unifies with any type per the checker), then guard the
@@ -2853,11 +2841,7 @@ fn lower_prefix_around(
                 if expr_is_stringy(init_e) || expr_is_str_method_call(init_e) {
                     mark_string_local(&name);
                 }
-                check_and_register_money_const(
-                    &name,
-                    declarator_ann_is_money(d),
-                    init_e,
-                )?;
+                check_and_register_money_const(&name, declarator_ann_is_money(d), init_e)?;
                 register_shape_fields(d, init_e);
                 bindings.push(list(vec![Sym(name), lower_expr(init_e)?]));
             }
@@ -5438,7 +5422,8 @@ fn init_is_u128_pure(init: &LispVal) -> bool {
             if matches!(
                 head.as_str(),
                 "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod"
-            ) && items.len() == 3 {
+            ) && items.len() == 3
+            {
                 return true;
             }
             // ...and a call to a user fn whose own body returns a
@@ -5488,7 +5473,13 @@ fn expr_is_bigint(e: &Expression<'_>) -> bool {
                 let n = id.name.as_str();
                 if matches!(
                     n,
-                    "u128Add" | "u128Sub" | "u128Mul" | "u128MulDiv" | "u128Div" | "u128Mod" | "u128FromNum"
+                    "u128Add"
+                        | "u128Sub"
+                        | "u128Mul"
+                        | "u128MulDiv"
+                        | "u128Div"
+                        | "u128Mod"
+                        | "u128FromNum"
                 ) {
                     return true;
                 }
@@ -5525,8 +5516,9 @@ fn expr_is_bigint(e: &Expression<'_>) -> bool {
 /// previously-valid mixed shapes.
 fn expr_is_money(e: &Expression<'_>) -> bool {
     match e {
-        Expression::Identifier(id) => MONEY_NAMES
-            .with(|s| s.borrow().iter().any(|x| *x == id.name.as_str())),
+        Expression::Identifier(id) => {
+            MONEY_NAMES.with(|s| s.borrow().iter().any(|x| *x == id.name.as_str()))
+        }
         Expression::ParenthesizedExpression(pe) => expr_is_money(&pe.expression),
         Expression::BinaryExpression(b) => {
             if matches!(b.operator, BinaryOperator::Addition) {
@@ -5567,10 +5559,7 @@ fn expr_is_money(e: &Expression<'_>) -> bool {
 
 /// The gate predicate: BOTH operands money-domain. One-sided money `+`
 /// stays legal (prefix strings: `"total:" + amt` is concat by design).
-fn money_arithmetic<'a, 'b>(
-    l: &Expression<'a>,
-    r: &Expression<'b>,
-) -> bool {
+fn money_arithmetic<'a, 'b>(l: &Expression<'a>, r: &Expression<'b>) -> bool {
     expr_is_money(l) && expr_is_money(r)
 }
 
@@ -5711,10 +5700,7 @@ fn return_ann_money(f: &oxc_ast::ast::Function<'_>) -> bool {
 
 /// Walk a statement slice recursively; invoke `f` on every return argument.
 /// Mirrors stmts_have_deep_return's traversal (blocks, if/else, while, for).
-fn for_each_return_arg(
-    stmts: &[Statement<'_>],
-    f: &mut dyn FnMut(&Expression<'_>),
-) {
+fn for_each_return_arg(stmts: &[Statement<'_>], f: &mut dyn FnMut(&Expression<'_>)) {
     for s in stmts {
         match s {
             Statement::ReturnStatement(r) => {
@@ -5836,11 +5822,7 @@ fn register_await_names(stmts: &[Statement<'_>]) {
                         if let Ok(names) = pattern_names(&d.id) {
                             seed_await_money_names(&ae.argument, &names);
                         }
-                    } else if d
-                        .init
-                        .as_ref()
-                        .is_some_and(|iv| is_json_get_u128_stamp(iv))
-                    {
+                    } else if d.init.as_ref().is_some_and(|iv| is_json_get_u128_stamp(iv)) {
                         // jsonGetU128 custody stamp (2026-10-12): `let v =
                         // near.jsonGetU128("k") ?? "0"` is money at BIRTH —
                         // the read harden-parses, so unlike jsonGetStr this
@@ -5863,11 +5845,7 @@ fn register_await_names(stmts: &[Statement<'_>]) {
                                 MONEY_NAMES.with(|s| s.borrow_mut().push(n));
                             }
                         }
-                    } else if d
-                        .init
-                        .as_ref()
-                        .is_some_and(|iv| is_boundary_stamp(iv))
-                    {
+                    } else if d.init.as_ref().is_some_and(|iv| is_boundary_stamp(iv)) {
                         // Param-boundary stamp: `const amount =
                         // jsonGetStr("amount") ?? STORAGE_MIN` — the author's
                         // custody declaration. LEDGER tier: transferable to
@@ -5880,11 +5858,7 @@ fn register_await_names(stmts: &[Statement<'_>]) {
                                 LEDGER_NAMES.with(|s| s.borrow_mut().push(n));
                             }
                         }
-                    } else if d
-                        .init
-                        .as_ref()
-                        .is_some_and(|iv| is_ledger_read(iv))
-                    {
+                    } else if d.init.as_ref().is_some_and(|iv| is_ledger_read(iv)) {
                         // Ledger tier: `const pn = storageGet(k) ?? ""` —
                         // sink-transferable, NOT arithmetic-sealed.
                         if let Ok(names) = pattern_names(&d.id) {
@@ -5986,19 +5960,19 @@ fn seed_u128_pure_fns_pass(stmts: &[Statement<'_>]) {
         if let Some(rt) = f.return_type.as_ref() {
             if matches!(
                 &rt.type_annotation,
-                TSType::TSNumberKeyword(_) | TSType::TSStringKeyword(_) | TSType::TSBooleanKeyword(_)
+                TSType::TSNumberKeyword(_)
+                    | TSType::TSStringKeyword(_)
+                    | TSType::TSBooleanKeyword(_)
             ) {
                 continue;
             }
         }
         let mut rets: Vec<&Expression<'_>> = Vec::new();
         stmts_exprs(&body.statements, &mut rets);
-        let all_shaped = !rets.is_empty()
-            && rets.iter().all(|e| ret_structurally_u128(e));
+        let all_shaped = !rets.is_empty() && rets.iter().all(|e| ret_structurally_u128(e));
         if all_shaped {
             if let Some(id) = &f.id {
-                U128_PURE_FNS
-                    .with(|m| m.borrow_mut().insert(id.name.as_str().to_string()));
+                U128_PURE_FNS.with(|m| m.borrow_mut().insert(id.name.as_str().to_string()));
             }
         }
     }
@@ -6029,15 +6003,17 @@ fn ret_structurally_u128(e: &Expression<'_>) -> bool {
             if arith {
                 ret_structurally_u128(&b.left) && ret_structurally_u128(&b.right)
             } else {
-                matches!(b.operator,
+                matches!(
+                    b.operator,
                     oxc_ast::ast::BinaryOperator::GreaterThan
-                    | oxc_ast::ast::BinaryOperator::GreaterEqualThan
-                    | oxc_ast::ast::BinaryOperator::LessThan
-                    | oxc_ast::ast::BinaryOperator::LessEqualThan
-                    | oxc_ast::ast::BinaryOperator::Equality
-                    | oxc_ast::ast::BinaryOperator::Inequality
-                    | oxc_ast::ast::BinaryOperator::StrictEquality
-                    | oxc_ast::ast::BinaryOperator::StrictInequality)
+                        | oxc_ast::ast::BinaryOperator::GreaterEqualThan
+                        | oxc_ast::ast::BinaryOperator::LessThan
+                        | oxc_ast::ast::BinaryOperator::LessEqualThan
+                        | oxc_ast::ast::BinaryOperator::Equality
+                        | oxc_ast::ast::BinaryOperator::Inequality
+                        | oxc_ast::ast::BinaryOperator::StrictEquality
+                        | oxc_ast::ast::BinaryOperator::StrictInequality
+                )
             }
         }
         Expression::CallExpression(c) => match &c.callee {
@@ -6054,9 +6030,19 @@ fn ret_structurally_u128(e: &Expression<'_>) -> bool {
                 let n = id.name.as_str();
                 matches!(
                     n,
-                    "u128Add" | "u128Sub" | "u128Mul" | "u128MulDiv" | "u128Div"
-                        | "u128Mod" | "u128FromNum" | "u128FromStr" | "u128Lt" | "u128Gt"
-                        | "u128Eq" | "u128IsZero" | "jsonGetU128"
+                    "u128Add"
+                        | "u128Sub"
+                        | "u128Mul"
+                        | "u128MulDiv"
+                        | "u128Div"
+                        | "u128Mod"
+                        | "u128FromNum"
+                        | "u128FromStr"
+                        | "u128Lt"
+                        | "u128Gt"
+                        | "u128Eq"
+                        | "u128IsZero"
+                        | "jsonGetU128"
                 ) || U128_PURE_FNS.with(|m| m.borrow().contains(n))
             }
             Expression::StaticMemberExpression(sm) => {
@@ -6152,10 +6138,7 @@ fn for_each_stmt_call<'b>(
     f: &mut dyn FnMut(&oxc_ast::ast::CallExpression<'b>),
 ) {
     use oxc_ast::ast::Expression;
-    fn walk_expr<'b>(
-        e: &Expression<'b>,
-        f: &mut dyn FnMut(&oxc_ast::ast::CallExpression<'b>),
-    ) {
+    fn walk_expr<'b>(e: &Expression<'b>, f: &mut dyn FnMut(&oxc_ast::ast::CallExpression<'b>)) {
         match e {
             Expression::CallExpression(c) => {
                 f(c);
@@ -6403,13 +6386,12 @@ fn check_money_sinks(stmts: &[Statement<'_>]) -> Result<(), String> {
         // probe(dx: Yocto) promised money.
         if let Expression::Identifier(id) = &c.callee {
             let fname = id.name.as_str();
-            let money_params: Option<Vec<usize>> = MONEY_PARAM_FNS
-                .with(|m| {
-                    m.borrow()
-                        .iter()
-                        .find(|(k, _)| k == fname)
-                        .map(|(_, idx)| idx.clone())
-                });
+            let money_params: Option<Vec<usize>> = MONEY_PARAM_FNS.with(|m| {
+                m.borrow()
+                    .iter()
+                    .find(|(k, _)| k == fname)
+                    .map(|(_, idx)| idx.clone())
+            });
             if let Some(idxs) = money_params {
                 for &i in &idxs {
                     if let Some(arg) = c.arguments.get(i).and_then(|a| a.as_expression()) {
@@ -6620,10 +6602,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                                 // observable behavior, `??` still fires.
                                 return Ok(list(vec![
                                     Sym("default"),
-                                    list(vec![
-                                        Sym("near/json_get_str"),
-                                        Str(dotted.join(".")),
-                                    ]),
+                                    list(vec![Sym("near/json_get_str"), Str(dotted.join("."))]),
                                     Sym("nil"),
                                 ]));
                             }
@@ -6658,8 +6637,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                         // runtime while compiling clean.) Number-typed
                         // leaf fields keep the auto str->num decode the
                         // old dead-binding arm performed.
-                        if OBJECT_PARAMS
-                            .with(|s| s.borrow().iter().any(|x| x == id.name.as_str()))
+                        if OBJECT_PARAMS.with(|s| s.borrow().iter().any(|x| x == id.name.as_str()))
                         {
                             let dotted: Vec<&str> = path.iter().rev().map(|s| s.as_str()).collect();
                             // (default … "") satisfies the bare-read money
@@ -6669,10 +6647,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                             // Optional arms bypass `get` entirely (_opt /
                             // json_get_int nil-on-miss by design).
                             let raw_get = if dotted.len() == 1 {
-                                list(vec![
-                                    Sym("near/json_get_str"),
-                                    Str(dotted.join(".")),
-                                ])
+                                list(vec![Sym("near/json_get_str"), Str(dotted.join("."))])
                             } else {
                                 let top = dotted[0].to_string();
                                 let rest = dotted[1..].join(".");
@@ -6821,9 +6796,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
                 // u64 fallback).
                 if b.operator == BinaryOperator::Exponential {
                     let exp = match &b.right {
-                        Expression::BigIntLiteral(bl) => {
-                            bl.value.to_string().parse::<u32>().ok()
-                        }
+                        Expression::BigIntLiteral(bl) => bl.value.to_string().parse::<u32>().ok(),
                         Expression::NumericLiteral(nl) => {
                             if nl.value.fract() == 0.0 && nl.value >= 0.0 {
                                 Some(nl.value as u32)
@@ -7697,7 +7670,7 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             if let Expression::StaticMemberExpression(sm2) = &c.callee {
                 if let Expression::StaticMemberExpression(db2) = &sm2.object {
                     if let Expression::Identifier(ns_o) = &db2.object {
-                    if ns_o.name == "near" && db2.property.name.as_str() == "db" {
+                        if ns_o.name == "near" && db2.property.name.as_str() == "db" {
                             let method = sm2.property.name.as_str();
                             let mut db_args = Vec::new();
                             for a in &c.arguments {
@@ -7917,7 +7890,8 @@ fn lower_expr(e: &Expression<'_>) -> Result<LispVal, String> {
             // the argument is bigint-shaped, emit u128/to-i64. Previously
             // Number(r / 10n**18n) fed a tagged u128 limb value into the
             // string parser and __h_u128_parse trapped.
-            if head == "str->num" && c.arguments.len() == 1
+            if head == "str->num"
+                && c.arguments.len() == 1
                 && c.arguments[0].as_expression().is_some_and(expr_is_bigint)
             {
                 head = "u128/to-i64".to_string();
@@ -8714,7 +8688,11 @@ fn param_object_props(p: &FormalParameter<'_>) -> Option<Vec<(String, bool, bool
                     .iter()
                     .find(|(k, ..)| *k == name)
                     .and_then(|(_, props)| {
-                        if props.first().map(|(k, ..)| k == SCALAR_ALIAS_MARK).unwrap_or(false) {
+                        if props
+                            .first()
+                            .map(|(k, ..)| k == SCALAR_ALIAS_MARK)
+                            .unwrap_or(false)
+                        {
                             // scalar alias (`type Money = string`) — a plain
                             // param, not an object shape
                             None
@@ -8778,9 +8756,15 @@ fn alias_props(a: &oxc_ast::ast::TSTypeAliasDeclaration<'_>) -> Vec<(String, boo
         // param_object_props resolves the ref to None (plain str param)
         // instead of kind-3-empty (which used to register a dead
         // object-param binding and corrupt the entry ABI).
-        oxc_ast::ast::TSType::TSStringKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false, false)],
-        oxc_ast::ast::TSType::TSNumberKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false, false)],
-        oxc_ast::ast::TSType::TSBigIntKeyword(_) => vec![(SCALAR_ALIAS_MARK.to_string(), false, false)],
+        oxc_ast::ast::TSType::TSStringKeyword(_) => {
+            vec![(SCALAR_ALIAS_MARK.to_string(), false, false)]
+        }
+        oxc_ast::ast::TSType::TSNumberKeyword(_) => {
+            vec![(SCALAR_ALIAS_MARK.to_string(), false, false)]
+        }
+        oxc_ast::ast::TSType::TSBigIntKeyword(_) => {
+            vec![(SCALAR_ALIAS_MARK.to_string(), false, false)]
+        }
         oxc_ast::ast::TSType::TSTypeLiteral(lit) => literal_props(&lit.members),
         _ => Vec::new(),
     }
@@ -8812,12 +8796,15 @@ fn ts_ann_to_lisp(t: Option<&oxc_ast::ast::TSTypeAnnotation<'_>>) -> Option<&'st
             let money = match &r.type_name {
                 oxc_ast::ast::TSTypeName::IdentifierReference(id) => {
                     matches!(id.name.as_str(), "Yocto" | "Amount" | "Money")
-                        || MONEY_ALIASES
-                            .with(|m| m.borrow().iter().any(|x| *x == id.name.as_str()))
+                        || MONEY_ALIASES.with(|m| m.borrow().iter().any(|x| *x == id.name.as_str()))
                 }
                 _ => false,
             };
-            if money { Some("str") } else { None }
+            if money {
+                Some("str")
+            } else {
+                None
+            }
         }
         // TS booleans are first-class Bool values (2026-09-30): literals
         // lower as Bool, comparisons/str-contains already type Bool, and

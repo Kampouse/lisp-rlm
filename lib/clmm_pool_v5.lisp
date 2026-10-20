@@ -422,6 +422,8 @@
   (if (nil? (near/load-bytes "6|TOKX"))
       (let ((tokx (json-get-str "toka" (near/input)))
             (toky (json-get-str "tokb" (near/input)))
+            ;; bonding-curve graduation account (empty = provision dead)
+            (cv (json-get-str "curve" (near/input)))
             ;; pool PARAMS: fee divisor = 2^fee_shift, boot price = s0.
             ;; Defaults: shift 8 (1/256 ≈ 0.39%), s0 = 2^64 (price 1.0).
             (sh (json-get-str "fee_shift" (near/input)))
@@ -429,6 +431,9 @@
         (begin
           (p5-put "6|TOKX" tokx)
           (p5-put "6|TOKY" toky)
+          (if (not (str= cv ""))
+              (p5-put "6|CURVE" cv)
+              0)
           ;; SHIFT: empty/0 input falls back to 8 via p5-shf — pre-param
           ;; pools (and legacy init callers) keep the ÷256 skim exactly.
           (p5-put "6|SHIFT"
@@ -1080,6 +1085,71 @@
         0)
     (near/return amt)))
 
+;; op "provision" {lo, hi, lock_secs} — bonding-curve graduation mint.
+;; Caller MUST be 6|CURVE (set by the deployer; empty = op is dead, legacy
+;; pools byte-identical). The curve seeded the escrows beforehand (float
+;; X = unsold curve tokens via a:"seed", float Y = real QT reserve);
+;; provision mints LQ d directly FROM that global escrow custody — the
+;; same custody burnc pays out of — sized so req(d) fits per side:
+;;   d = min(ESCX/kx, ESCY/ky), kx/ky = req(1e18 probe) via muldiv
+;; (reqx/reqy are linear in d; floors make d an underestimate ⇒ escrow
+;; remainder stays float for swap out-legs). Bookkeeping = mint-finish
+;; verbatim (LQ += d per cell, FS snapshots from FG, POS += d, FSP = 1,
+;; widen support). Lock: if 6|LOCK is 0/empty and lock_secs > 0, sets
+;; burn-until = now + secs ONCE — a graduated launch's LP cannot be
+;; pulled early even by whoever holds the curve's keys.
+(define (p5-provision)
+  (let ((inp (near/input)))
+  (let ((who (near/predecessor_account_id)))
+    (if (not (str= who (p5-bz "6|CURVE")))
+        (p5-fail "ERR_CURVE")
+        (let ((lo (str->num (json-get-str "lo" inp)))
+              (hi (str->num (json-get-str "hi" inp)))
+              (lk (str->num (json-get-str "lock_secs" inp))))
+          (if (or (< hi lo) (> (- hi lo) 64))
+              (p5-fail "ERR_RANGE")
+              (let ((ga (p5-G lo)))
+              (let ((dp "1000000000000000000"))
+              (let ((kx (p5-reqx lo hi ga dp "0")))
+              (let ((ky (p5-reqy lo hi ga dp "0")))
+                (if (or (= (li-cmp kx "0") 0) (= (li-cmp ky "0") 0))
+                    (p5-fail "ERR_SMALL")
+                    (let ((d1 (u128-muldiv (p5-bz "6|ESCX") dp kx)))
+                    (let ((d2 (u128-muldiv (p5-bz "6|ESCY") dp ky)))
+                    (let ((d (if (< (li-cmp d1 d2) 0) d1 d2)))
+                      (if (not (= (li-cmp d "0") 1))
+                          (p5-fail "ERR_SMALL")
+                          (begin
+                            (loop ((i lo))
+                              (if (> i hi)
+                                  0
+                                  (let ((k (p5-lqkey i)))
+                                    (begin
+                                      (p5-put k (li-add (p5-bz k) d))
+                                      (p5-put (p5-fskey who lo hi i)
+                                              (p5-bz (str-cat "6|FGX:" (to-string i))))
+                                      (p5-put (p5-fskeyy who lo hi i)
+                                              (p5-bz (str-cat "6|FGY:" (to-string i))))
+                                      (recur (+ i 1))))))
+                            (p5-put (p5-poskey who lo hi)
+                                    (li-add (p5-bz (p5-poskey who lo hi)) d))
+                            (p5-put (str-cat "6|FSP:" (str-cat who
+                                      (str-cat ":" (str-cat (to-string lo)
+                                        (str-cat ":" (to-string hi)))))) "1")
+                            (if (< lo (str->num (p5-bz "6|IMIN")))
+                                (p5-put "6|IMIN" (to-string lo))
+                                0)
+                            (if (> hi (str->num (p5-bz "6|IMAX")))
+                                (p5-put "6|IMAX" (to-string hi))
+                                0)
+                            (if (and (> lk 0)
+                                     (= (li-cmp (p5-bz "6|LOCK") "0") 0))
+                                (p5-put "6|LOCK"
+                                        (li-add (near/block_timestamp)
+                                                (to-string lk)))
+                                0)
+                            (str-cat "provision-ok:" d)))))))))))))))))
+
 ;; ft_on_transfer mint/cancel leg (predecessor = a pool token, amount
 ;; validated). msg "c" cancels a pending mint: refund the recorded
 ;; slice via an escrow-backed ft_transfer_call (failure ⇒ p5-pay "mk"
@@ -1585,5 +1655,6 @@
 (export "get_fg" p5-fg)
 (export "grid" grid)
 (export "get_lock" p5-get-lock)
+(export "provision" p5-provision)
 (export "ft_on_transfer" p5-on-transfer)
 (export "pay" p5-pay)

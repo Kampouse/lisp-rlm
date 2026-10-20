@@ -17,7 +17,9 @@ use std::process::Command;
 
 fn compile_bin() -> std::path::PathBuf {
     let dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "./target".into());
-    std::path::PathBuf::from(dir).join("release").join("compile")
+    std::path::PathBuf::from(dir)
+        .join("release")
+        .join("compile")
 }
 
 /// Returns (exit_ok, stderr) for compiling `src`.
@@ -139,7 +141,10 @@ fn storage_money_stamps_flow() {
           (near/log "done"))))))
 "#;
     let (ok, err) = compile_src(src, "stamp");
-    assert!(!ok, "stamped-key read feeding raw arithmetic must be rejected");
+    assert!(
+        !ok,
+        "stamped-key read feeding raw arithmetic must be rejected"
+    );
     assert!(
         err.contains("raw arithmetic on a u128 money value"),
         "got: {err}"
@@ -154,7 +159,10 @@ fn storage_money_stamps_flow() {
           (near/log "paid"))))))
 "#;
     let (ok2, err2) = compile_src(ok_src, "stampok");
-    assert!(ok2, "stamped-key read at a money sink must compile, got: {err2}");
+    assert!(
+        ok2,
+        "stamped-key read at a money sink must compile, got: {err2}"
+    );
 }
 
 #[test]
@@ -182,9 +190,14 @@ fn legal_resource_program_compiles_and_warns_on_dead_callback() {
       (near/promise_return t))))
 "#;
     let (ok2, err2) = compile_src(src2, "deadc");
-    assert!(ok2, "undefined callback must NOT be a hard error (cross-contract ambiguity), got: {err2}");
     assert!(
-        err2.contains("warning:") && err2.contains("never_defined") && err2.contains("MethodNotFound"),
+        ok2,
+        "undefined callback must NOT be a hard error (cross-contract ambiguity), got: {err2}"
+    );
+    assert!(
+        err2.contains("warning:")
+            && err2.contains("never_defined")
+            && err2.contains("MethodNotFound"),
         "undefined callback must produce the dead-receipt warning, got: {err2}"
     );
 }
@@ -272,7 +285,6 @@ fn shadowed_gas_name_stays_unchecked_not_misresolved() {
     );
 }
 
-
 // ---------------------------------------------------------------------------
 // Compile-time gas fill (`(gas default)` → static floor, 2026-10-09).
 //
@@ -355,7 +367,10 @@ fn gas_default_on_remote_account_is_hard_error() {
 "#;
     let (ok, err) = compile_src(src, "fillremote");
     assert!(!ok, "remote-callee default must not compile");
-    assert!(err.contains("(gas default)"), "error must name the form: {err}");
+    assert!(
+        err.contains("(gas default)"),
+        "error must name the form: {err}"
+    );
 }
 
 #[test]
@@ -376,7 +391,12 @@ fn gas_default_local_callback_undefined_is_hard_error() {
 fn explicit_gas_still_overrides_default() {
     // Explicit numeric gas keeps today's semantics exactly (override, no
     // diagnostic when it covers the floor).
-    let bytes = wasm_bytes(CB_1HOST_SRC.replace("(gas default)", "5000000000000").as_str(), "overr");
+    let bytes = wasm_bytes(
+        CB_1HOST_SRC
+            .replace("(gas default)", "5000000000000")
+            .as_str(),
+        "overr",
+    );
     let want = leb128(5_000_000_000_000);
     assert!(
         bytes.windows(want.len()).any(|w| w == want),

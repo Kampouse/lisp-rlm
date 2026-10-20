@@ -307,7 +307,11 @@ export function thr(v: string): string {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        let val = all.lines().rev().find(|l| l.contains('\u{1f4c4}')).unwrap_or(&all);
+        let val = all
+            .lines()
+            .rev()
+            .find(|l| l.contains('\u{1f4c4}'))
+            .unwrap_or(&all);
         assert!(val.contains(want), "thr({v}): {val}");
     }
 }
@@ -356,7 +360,11 @@ export function mutatingLoopKeepsSemantics(): string {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        let val = all.lines().rev().find(|l| l.contains('\u{1f4c4}')).unwrap_or(&all);
+        let val = all
+            .lines()
+            .rev()
+            .find(|l| l.contains('\u{1f4c4}'))
+            .unwrap_or(&all);
         assert!(val.contains(want), "{m}: {val}");
     }
 }

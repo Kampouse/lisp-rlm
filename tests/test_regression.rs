@@ -1049,8 +1049,8 @@ mod near_mock {
         // entrypoint must emit BYTE-IDENTICAL wasm for the same source —
         // a divergence here is the emitter split that once shipped two
         // different contracts from one fixture.
-        let __exprs = lisp_rlm_wasm::parse_all(src)
-            .unwrap_or_else(|e| panic!("parse_all failed: {}", e));
+        let __exprs =
+            lisp_rlm_wasm::parse_all(src).unwrap_or_else(|e| panic!("parse_all failed: {}", e));
         let __wasm2 = lisp_rlm_wasm::compile_near_from_exprs(&__exprs)
             .unwrap_or_else(|e| panic!("compile_near_from_exprs failed: {}", e));
         assert_eq!(

@@ -133,7 +133,6 @@ pub(crate) fn any_hot_read_in(
     }
 }
 
-
 /// Textual substitution of param syms with arg exprs (no capture worry:
 /// wrapper bodies are flat call forms in this analysis).
 fn substitute_syms(e: &LispVal, ps: &[String], args: &[LispVal]) -> LispVal {
@@ -145,12 +144,9 @@ fn substitute_syms(e: &LispVal, ps: &[String], args: &[LispVal]) -> LispVal {
                 e.clone()
             }
         }
-        LispVal::List(items) => LispVal::List(
-            items
-                .iter()
-                .map(|x| substitute_syms(x, ps, args))
-                .collect(),
-        ),
+        LispVal::List(items) => {
+            LispVal::List(items.iter().map(|x| substitute_syms(x, ps, args)).collect())
+        }
         _ => e.clone(),
     }
 }

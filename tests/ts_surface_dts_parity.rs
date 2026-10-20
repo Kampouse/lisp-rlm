@@ -185,9 +185,7 @@ fn near_member_surface_matches_gate() {
                 let name = &l[..paren];
                 if !name.is_empty()
                     && !name.contains(':')
-                    && name
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
                     && name.chars().next().map_or(false, |c| c.is_lowercase())
                 {
                     db_documented.push(name.to_string());
@@ -207,8 +205,7 @@ fn near_member_surface_matches_gate() {
         }
         // Skip lines that belong to the nested db block (they were parsed
         // above); a cheap containment check keeps the main parser honest.
-        if db_block.map_or(false, |dbb| dbb.contains(l)) && l.contains('(') && l.contains(':')
-        {
+        if db_block.map_or(false, |dbb| dbb.contains(l)) && l.contains('(') && l.contains(':') {
             continue;
         }
         if let Some(paren) = l.find('(') {

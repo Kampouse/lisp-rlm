@@ -127,7 +127,9 @@ fn wasm_result(src: &str) -> Result<String, String> {
         if import.module() != "env" || import.name() == "memory" {
             continue;
         }
-        let ExternType::Func(func_ty) = import.ty() else { continue };
+        let ExternType::Func(func_ty) = import.ty() else {
+            continue;
+        };
         let params: Vec<_> = func_ty.params().collect();
         let results: Vec<_> = func_ty.results().collect();
         let ft = FuncType::new(&engine, params, results);
@@ -137,7 +139,9 @@ fn wasm_result(src: &str) -> Result<String, String> {
             }
             Ok(())
         });
-        linker.define(&store, "env", import.name(), stub).map_err(|e| e.to_string())?;
+        linker
+            .define(&store, "env", import.name(), stub)
+            .map_err(|e| e.to_string())?;
     }
     let instance = linker
         .instantiate(&mut store, &module)

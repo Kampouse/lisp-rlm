@@ -50,7 +50,9 @@ fn main() -> anyhow::Result<()> {
     }
 
     let inst = linker.instantiate(&mut store, &module)?;
-    let run = inst.get_typed_func::<(), ()>(&mut store, "run").or_else(|_| inst.get_typed_func::<(), ()>(&mut store, "_run"))?;
+    let run = inst
+        .get_typed_func::<(), ()>(&mut store, "run")
+        .or_else(|_| inst.get_typed_func::<(), ()>(&mut store, "_run"))?;
     run.call(&mut store, ())?;
     let mem = inst.get_memory(&mut store, "memory").unwrap();
     let mut rb = [0u8; 8];

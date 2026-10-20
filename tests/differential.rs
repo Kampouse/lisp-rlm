@@ -53,10 +53,20 @@ struct Fixture {
 
 impl Fixture {
     fn new(label: &'static str, src: &'static str) -> Self {
-        Fixture { label, src, input: "", near: false }
+        Fixture {
+            label,
+            src,
+            input: "",
+            near: false,
+        }
     }
     fn near_with_input(label: &'static str, src: &'static str, input: &'static str) -> Self {
-        Fixture { label, src, input, near: true }
+        Fixture {
+            label,
+            src,
+            input,
+            near: true,
+        }
     }
 }
 
@@ -408,7 +418,9 @@ fn interp_run(src: &str, input: &str) -> Result<LispVal, String> {
             let mut state = EvalState::new();
             // the wasm host serves this payload through the `input`
             // register — the interp reads near_context["input"]
-            state.near_context = state.near_context.update("input".to_string(), LispVal::Str(input));
+            state.near_context = state
+                .near_context
+                .update("input".to_string(), LispVal::Str(input));
             let exprs = parser::parse_all(&src)?;
             let _ = run_program(&exprs, &mut env, &mut state)?;
             run_program(
@@ -446,9 +458,12 @@ impl WasmEngine {
         let mut store = Store::new(&engine, ());
         let mut linker = Linker::new(&engine);
 
-        let fallback_memory =
-            Memory::new(&mut store, MemoryType::new(4, None)).map_err(|e| format!("memory: {e}"))?;
-        if module.imports().any(|i| i.module() == "env" && i.name() == "memory") {
+        let fallback_memory = Memory::new(&mut store, MemoryType::new(4, None))
+            .map_err(|e| format!("memory: {e}"))?;
+        if module
+            .imports()
+            .any(|i| i.module() == "env" && i.name() == "memory")
+        {
             linker
                 .define(&store, "env", "memory", fallback_memory)
                 .map_err(|e| format!("link memory: {e}"))?;
@@ -461,7 +476,9 @@ impl WasmEngine {
             if import.module() != "env" || import.name() == "memory" {
                 continue;
             }
-            let ExternType::Func(func_ty) = import.ty() else { continue };
+            let ExternType::Func(func_ty) = import.ty() else {
+                continue;
+            };
             let params: Vec<ValType> = func_ty.params().collect();
             let results: Vec<ValType> = func_ty.results().collect();
             let ft = FuncType::new(&engine, params.clone(), results.clone());
@@ -469,7 +486,13 @@ impl WasmEngine {
             let payload = payload.clone();
             let ret_bytes = ret_bytes.clone();
             let stub = Func::new(&mut store, ft, move |mut caller, args, ret| {
-                let a = |i: usize| args.get(i).copied().unwrap_or(Val::I64(0)).i64().unwrap_or(0);
+                let a = |i: usize| {
+                    args.get(i)
+                        .copied()
+                        .unwrap_or(Val::I64(0))
+                        .i64()
+                        .unwrap_or(0)
+                };
                 let len = payload.len() as i64;
                 match name.as_str() {
                     "input" => { /* payload written below on read */ }
@@ -522,7 +545,12 @@ impl WasmEngine {
         let memory = instance
             .get_memory(&mut store, "memory")
             .unwrap_or(fallback_memory);
-        Ok(Self { memory, store, instance, ret_bytes })
+        Ok(Self {
+            memory,
+            store,
+            instance,
+            ret_bytes,
+        })
     }
 
     fn run(&mut self, near: bool) -> Result<(), String> {
@@ -592,7 +620,9 @@ fn tv_to_lisp(mem: &[u8], tv: TaggedValue) -> LispVal {
         TaggedValue::Nil => LispVal::Nil,
         TaggedValue::Str { ptr, len } => {
             if ptr >= 0 && len >= 0 && (ptr + len) as usize <= mem.len() {
-                LispVal::Str(String::from_utf8_lossy(&mem[ptr as usize..(ptr + len) as usize]).to_string())
+                LispVal::Str(
+                    String::from_utf8_lossy(&mem[ptr as usize..(ptr + len) as usize]).to_string(),
+                )
             } else {
                 LispVal::Str(format!("<badstr {ptr:#x}/{len}>"))
             }
@@ -701,9 +731,7 @@ fn shared_fixture_differential() {
                         stale_pins.push(f.label.to_string());
                     }
                     matched += 1;
-                } else if let Some((_, want)) =
-                    known.iter().find(|(l, _)| *l == f.label)
-                {
+                } else if let Some((_, want)) = known.iter().find(|(l, _)| *l == f.label) {
                     let (cw, _) = (canon(want.clone()), canon(a.clone()));
                     if canon_str(&cw) == canon_str(&cb) {
                         pinned.push(f.label.to_string());

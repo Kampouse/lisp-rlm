@@ -17,7 +17,9 @@ fn corpus() -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut stack = vec![PathBuf::from("tests"), PathBuf::from("fixtures")];
     while let Some(dir) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in rd.flatten() {
             let p = entry.path();
             if p.is_dir() {
@@ -36,8 +38,14 @@ fn corpus() -> Vec<PathBuf> {
     files
 }
 
-fn assert_deterministic(path: &PathBuf, mode: &str, compile: impl Fn(&str) -> Result<Vec<u8>, String>) {
-    let Ok(src) = std::fs::read_to_string(path) else { return };
+fn assert_deterministic(
+    path: &PathBuf,
+    mode: &str,
+    compile: impl Fn(&str) -> Result<Vec<u8>, String>,
+) {
+    let Ok(src) = std::fs::read_to_string(path) else {
+        return;
+    };
     let first = compile(&src);
     let second = compile(&src);
     match (&first, &second) {
@@ -52,7 +60,8 @@ fn assert_deterministic(path: &PathBuf, mode: &str, compile: impl Fn(&str) -> Re
         }
         (Err(e1), Err(e2)) => {
             assert_eq!(
-                e1, e2,
+                e1,
+                e2,
                 "{mode}: {} produced different errors across runs",
                 path.display()
             );

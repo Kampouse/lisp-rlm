@@ -65,8 +65,7 @@ pub(crate) fn plan_u128_param_twins(exprs: &[LispVal]) -> Vec<TwinUnit> {
                     let Some(fp) = prov.get(name.as_str()) else {
                         continue;
                     };
-                    let ret_limb =
-                        fp.ret == crate::typing::checker::Provenance::Native;
+                    let ret_limb = fp.ret == crate::typing::checker::Provenance::Native;
                     let params: Vec<String> = match sig[1..]
                         .iter()
                         .map(|p| match p {
@@ -81,8 +80,10 @@ pub(crate) fn plan_u128_param_twins(exprs: &[LispVal]) -> Vec<TwinUnit> {
                     let kinds: Vec<bool> = sig[1..]
                         .iter()
                         .map(|p| match p {
-                            LispVal::Sym(pn) => fp.params.get(pn.as_str())
-                                == Some(&crate::typing::checker::Provenance::Native),
+                            LispVal::Sym(pn) => {
+                                fp.params.get(pn.as_str())
+                                    == Some(&crate::typing::checker::Provenance::Native)
+                            }
                             _ => false,
                         })
                         .collect();
@@ -134,7 +135,8 @@ impl WasmEmitter {
                 local_entries: None,
                 custom_type: None,
             });
-            self.u128_twins.insert(u.name.clone(), (idx, u.kinds.clone(), u.ret_limb));
+            self.u128_twins
+                .insert(u.name.clone(), (idx, u.kinds.clone(), u.ret_limb));
         }
     }
 
@@ -150,11 +152,8 @@ impl WasmEmitter {
             let compiled = self.compile_one_twin(u);
             match compiled {
                 Ok((instrs, total, ltm_len)) => {
-                    let entries = Self::group_local_entries(
-                        self.funcs[idx].param_count,
-                        total,
-                        &ltm_len,
-                    );
+                    let entries =
+                        Self::group_local_entries(self.funcs[idx].param_count, total, &ltm_len);
                     self.funcs[idx] = FuncDef {
                         name: format!("__u128_{}", u.name),
                         param_count: self.funcs[idx].param_count,
@@ -163,7 +162,11 @@ impl WasmEmitter {
                         local_entries: Some(entries),
                         custom_type: None,
                     };
-                    eprintln!("⚡ u128 twin: {} ({} native params)", u.name, u.kinds.iter().filter(|&&k| k).count());
+                    eprintln!(
+                        "⚡ u128 twin: {} ({} native params)",
+                        u.name,
+                        u.kinds.iter().filter(|&&k| k).count()
+                    );
                 }
                 Err(e) => {
                     // kill the twin entirely: drop the routing entry so call
@@ -277,7 +280,12 @@ impl WasmEmitter {
             epilogue.push(Instruction::GlobalSet(FP_GLOBAL));
         }
         epilogue.push(Instruction::LocalGet(ret_local));
-        self.u128_parse_call(&mut epilogue, ret_local, crate::wasm_emit::call_u128_str::U128_W, &h);
+        self.u128_parse_call(
+            &mut epilogue,
+            ret_local,
+            crate::wasm_emit::call_u128_str::U128_W,
+            &h,
+        );
         epilogue.push(Instruction::I64Const(0));
         let _ = h;
 
@@ -285,7 +293,11 @@ impl WasmEmitter {
         instrs.append(&mut body_instrs);
         instrs.append(&mut epilogue);
         let instrs = Self::peephole(instrs);
-        Ok((instrs, self.next_local as usize, self.local_type_map.clone()))
+        Ok((
+            instrs,
+            self.next_local as usize,
+            self.local_type_map.clone(),
+        ))
     }
 
     /// Is this expr limb-borne at this call site? (twin-call argument
@@ -342,9 +354,13 @@ impl WasmEmitter {
                         _ => unreachable!(),
                     };
                     v.extend(self.emit_twin_call_raw(&name, &items[1..])?);
-                    v.push(Instruction::I64Const(crate::wasm_emit::call_u128_str::U128_W));
+                    v.push(Instruction::I64Const(
+                        crate::wasm_emit::call_u128_str::U128_W,
+                    ));
                     v.push(Instruction::I64Load(crate::wasm_emit::call_u128_str::ma8()));
-                    v.push(Instruction::I64Const(crate::wasm_emit::call_u128_str::U128_W + 8));
+                    v.push(Instruction::I64Const(
+                        crate::wasm_emit::call_u128_str::U128_W + 8,
+                    ));
                     v.push(Instruction::I64Load(crate::wasm_emit::call_u128_str::ma8()));
                 }
                 _ => unreachable!("sym_limb_arg gated"),

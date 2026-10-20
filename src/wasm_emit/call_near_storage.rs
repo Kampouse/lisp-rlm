@@ -842,7 +842,7 @@ impl WasmEmitter {
                 v.push(Instruction::I64Const(TAG_NIL));
                 Ok(v)
             }
-                        "near/store_num" => {
+            "near/store_num" => {
                 // Numeric storage key: the checker types the key as int and
                 // the interpreter namespaces it as the decimal string
                 // (key_of → to_string). The wasm side serializes the same
@@ -923,7 +923,7 @@ impl WasmEmitter {
                 v.push(Instruction::End);
                 Ok(v)
             }
-"near/has_key" => {
+            "near/has_key" => {
                 let key = self.expr(&a[0])?;
                 let __s = self.local_idx("__s");
                 let mut v = Vec::new();

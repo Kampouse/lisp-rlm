@@ -34,8 +34,8 @@
 //!
 //! The pass never fails: unknown shapes are simply left alone.
 
-use crate::typing::checker::trivial_u128_wrapper_shape;
 use crate::types::LispVal;
+use crate::typing::checker::trivial_u128_wrapper_shape;
 use std::collections::{HashMap, HashSet};
 
 /// Kill/rewrite plan derived from the top-level defines.
@@ -53,8 +53,12 @@ impl WrapperSet {
             if !matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") {
                 continue;
             }
-            let Some(LispVal::List(header)) = items.get(1) else { continue };
-            let Some(LispVal::Sym(name)) = header.first() else { continue };
+            let Some(LispVal::List(header)) = items.get(1) else {
+                continue;
+            };
+            let Some(LispVal::Sym(name)) = header.first() else {
+                continue;
+            };
             let params: Vec<String> = header[1..]
                 .iter()
                 .filter_map(|p| match p {
@@ -63,10 +67,7 @@ impl WrapperSet {
                 })
                 .collect();
             let Some(body) = items.get(2) else { continue };
-            if last
-                .insert(name.clone(), (params, body.clone()))
-                .is_some()
-            {
+            if last.insert(name.clone(), (params, body.clone())).is_some() {
                 dup.insert(name.clone());
             }
         }
@@ -143,7 +144,11 @@ fn any_value_use(e: &LispVal, name: &str, shadowed: &HashSet<String>) -> bool {
                 }
             }
             // head position of a call is not a value use
-            let start = if matches!(items.first(), Some(LispVal::Sym(_))) { 1 } else { 0 };
+            let start = if matches!(items.first(), Some(LispVal::Sym(_))) {
+                1
+            } else {
+                0
+            };
             items[start..]
                 .iter()
                 .any(|x| any_value_use(x, name, &inner))
@@ -317,7 +322,9 @@ pub fn inline_trivial_u128(exprs: &mut [LispVal]) -> usize {
     let names: Vec<String> = ws.fns.keys().cloned().collect();
     let mut live = ws.fns.clone();
     for name in &names {
-        let killed = exprs.iter().any(|e| any_value_use(e, name, &HashSet::new()));
+        let killed = exprs
+            .iter()
+            .any(|e| any_value_use(e, name, &HashSet::new()));
         if killed {
             live.remove(name);
         }
@@ -363,7 +370,11 @@ mod tests {
         let (e, n) = inlined(src);
         assert_eq!(n, 2, "both call sites rewritten");
         let s = format!("{}", e[2]);
-        assert!(s.contains("(u128/muldiv q (u128/add w \"1\") \"2\")"), "nested + arg order: {}", s);
+        assert!(
+            s.contains("(u128/muldiv q (u128/add w \"1\") \"2\")"),
+            "nested + arg order: {}",
+            s
+        );
     }
 
     #[test]

@@ -53,104 +53,103 @@ impl WasmEmitter {
         // non-builtin names. Forward references are safe: the pre-scan in
         // compile_near registers every top-level define name before any
         // body is compiled.
-        let user_owned =
-            self.funcs.iter().any(|f| f.name == op) || self.locals.contains_key(op);
+        let user_owned = self.funcs.iter().any(|f| f.name == op) || self.locals.contains_key(op);
         if !user_owned {
-        // ── u128 builtins (string-based): interpreter semantics on wasm ──
-        // Lowered by call_u128_str (parse → limb math → decimal render) with
-        // hard errors as unreachable traps. The overlapping address-based limb
-        // family in call_u128 keeps the string-semantics names shadowed — the
-        // interpreter ABI is the spec (commit 4b1403e).
-        try_domain!(self.call_u128_str(op, a));
-        // 256-bit string domain (clmm grid math, 2026-10-19)
-        if op.starts_with("u256/") {
-            try_domain!(self.call_u256_str(op, a));
-        }
-        // Legacy address-based limbs: only names that do NOT collide with the
-        // string-based family are reachable (u128/store, u128/load, u128/new,
-        // u128/from_yocto, bigint-*, ...).
-        if !matches!(
-            op,
-            "u128/add"
-                | "u128/sub"
-                | "u128/mul"
-                | "u128/div"
-                | "u128/mod"
-                | "u128/lt"
-                | "u128/gt"
-                | "u128/eq"
-                | "u128/from-i64"
-                | "u128/to-i64"
-                | "u128/is-zero"
-                | "u128/is_zero"
-        ) {
-            try_domain!(self.call_u128(op, a));
-        }
-
-        // ── error: hard error with message (interpreter: Err(msg)) ──
-        // NEAR mode: panic_utf8 with the string content (near-mock surfaces
-        // "PANIC: <msg>" on stderr, nonzero exit). Other modes: unreachable
-        // trap. Non-string args trap without message (documented deviation).
-        if op == "error" {
-            if a.len() != 1 {
-                return Err("error: need 1 arg".into());
+            // ── u128 builtins (string-based): interpreter semantics on wasm ──
+            // Lowered by call_u128_str (parse → limb math → decimal render) with
+            // hard errors as unreachable traps. The overlapping address-based limb
+            // family in call_u128 keeps the string-semantics names shadowed — the
+            // interpreter ABI is the spec (commit 4b1403e).
+            try_domain!(self.call_u128_str(op, a));
+            // 256-bit string domain (clmm grid math, 2026-10-19)
+            if op.starts_with("u256/") {
+                try_domain!(self.call_u256_str(op, a));
             }
-            let av = self.expr(&a[0])?;
-            let va = self.local_idx("__err_v");
-            let mut v = Vec::new();
-            v.extend(av);
-            v.push(Instruction::LocalSet(va));
-            if !self.wasi_mode {
-                self.need_host(27); // panic_utf8
-                v.push(Instruction::LocalGet(va));
-                v.push(Instruction::I64Const(7));
-                v.push(Instruction::I64And);
-                v.push(Instruction::I64Const(TAG_STR));
-                v.push(Instruction::I64Eq);
-                v.push(Instruction::If(BlockType::Result(ValType::I64)));
-                // string: panic_utf8(len, ptr)
-                v.push(Instruction::LocalGet(va));
-                v.push(Instruction::I64Const(TAG_BITS));
-                v.push(Instruction::I64ShrU);
+            // Legacy address-based limbs: only names that do NOT collide with the
+            // string-based family are reachable (u128/store, u128/load, u128/new,
+            // u128/from_yocto, bigint-*, ...).
+            if !matches!(
+                op,
+                "u128/add"
+                    | "u128/sub"
+                    | "u128/mul"
+                    | "u128/div"
+                    | "u128/mod"
+                    | "u128/lt"
+                    | "u128/gt"
+                    | "u128/eq"
+                    | "u128/from-i64"
+                    | "u128/to-i64"
+                    | "u128/is-zero"
+                    | "u128/is_zero"
+            ) {
+                try_domain!(self.call_u128(op, a));
+            }
+
+            // ── error: hard error with message (interpreter: Err(msg)) ──
+            // NEAR mode: panic_utf8 with the string content (near-mock surfaces
+            // "PANIC: <msg>" on stderr, nonzero exit). Other modes: unreachable
+            // trap. Non-string args trap without message (documented deviation).
+            if op == "error" {
+                if a.len() != 1 {
+                    return Err("error: need 1 arg".into());
+                }
+                let av = self.expr(&a[0])?;
+                let va = self.local_idx("__err_v");
+                let mut v = Vec::new();
+                v.extend(av);
                 v.push(Instruction::LocalSet(va));
-                v.push(Instruction::LocalGet(va));
-                v.push(Instruction::I64Const(32));
-                v.push(Instruction::I64ShrU);
-                v.push(Instruction::LocalGet(va));
-                v.push(Instruction::I32WrapI64);
-                v.push(Instruction::I64ExtendI32U);
-                v.push(Self::host_call(27));
-                v.push(Instruction::I64Const(TAG_NIL));
-                v.push(Instruction::Else);
-                v.push(Instruction::Unreachable);
-                v.push(Instruction::End);
-            } else {
-                v.push(Instruction::Unreachable);
+                if !self.wasi_mode {
+                    self.need_host(27); // panic_utf8
+                    v.push(Instruction::LocalGet(va));
+                    v.push(Instruction::I64Const(7));
+                    v.push(Instruction::I64And);
+                    v.push(Instruction::I64Const(TAG_STR));
+                    v.push(Instruction::I64Eq);
+                    v.push(Instruction::If(BlockType::Result(ValType::I64)));
+                    // string: panic_utf8(len, ptr)
+                    v.push(Instruction::LocalGet(va));
+                    v.push(Instruction::I64Const(TAG_BITS));
+                    v.push(Instruction::I64ShrU);
+                    v.push(Instruction::LocalSet(va));
+                    v.push(Instruction::LocalGet(va));
+                    v.push(Instruction::I64Const(32));
+                    v.push(Instruction::I64ShrU);
+                    v.push(Instruction::LocalGet(va));
+                    v.push(Instruction::I32WrapI64);
+                    v.push(Instruction::I64ExtendI32U);
+                    v.push(Self::host_call(27));
+                    v.push(Instruction::I64Const(TAG_NIL));
+                    v.push(Instruction::Else);
+                    v.push(Instruction::Unreachable);
+                    v.push(Instruction::End);
+                } else {
+                    v.push(Instruction::Unreachable);
+                }
+                return Ok(v);
             }
-            return Ok(v);
-        }
 
-        // ── Domain dispatch (each returns Err("__not_handled__") if op doesn't match) ──
-        try_domain!(self.call_core(op, a));
-        try_domain!(self.call_near_storage(op, a));
-        try_domain!(self.call_near_io(op, a));
-        try_domain!(self.call_hof(op, a));
-        try_domain!(self.call_json(op, a));
-        try_domain!(self.call_borsh(op, a));
-        try_domain!(self.call_list(op, a));
-        try_domain!(self.call_near_context(op, a));
-        try_domain!(self.call_near_crypto(op, a));
-        try_domain!(self.call_near_promise(op, a));
-        try_domain!(self.call_near_iter(op, a));
-        try_domain!(self.call_u128(op, a));
-        try_domain!(self.call_fp(op, a));
-        try_domain!(self.call_defi(op, a));
-        try_domain!(self.call_bitwise(op, a));
-        try_domain!(self.call_string(op, a));
-        try_domain!(self.call_string_list(op, a));
-        try_domain!(self.call_outlayer(op, a));
-        try_domain!(self.call_predicate(op, a));
-        try_domain!(self.call_dict(op, a));
+            // ── Domain dispatch (each returns Err("__not_handled__") if op doesn't match) ──
+            try_domain!(self.call_core(op, a));
+            try_domain!(self.call_near_storage(op, a));
+            try_domain!(self.call_near_io(op, a));
+            try_domain!(self.call_hof(op, a));
+            try_domain!(self.call_json(op, a));
+            try_domain!(self.call_borsh(op, a));
+            try_domain!(self.call_list(op, a));
+            try_domain!(self.call_near_context(op, a));
+            try_domain!(self.call_near_crypto(op, a));
+            try_domain!(self.call_near_promise(op, a));
+            try_domain!(self.call_near_iter(op, a));
+            try_domain!(self.call_u128(op, a));
+            try_domain!(self.call_fp(op, a));
+            try_domain!(self.call_defi(op, a));
+            try_domain!(self.call_bitwise(op, a));
+            try_domain!(self.call_string(op, a));
+            try_domain!(self.call_string_list(op, a));
+            try_domain!(self.call_outlayer(op, a));
+            try_domain!(self.call_predicate(op, a));
+            try_domain!(self.call_dict(op, a));
         } // end !user_owned — builtin cascade skipped for shadowing names
 
         // ── 2B hot-write splice: a user wrapper call `(sput "s:out" v)`

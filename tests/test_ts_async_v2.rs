@@ -272,18 +272,36 @@ fn v2_surface_contract() {
 
     // the emitted lisp is the portfolio-fanout DAG, not call-await
     let ir = ts_to_lisp_source(ALL_SRC).expect("lower");
-    assert!(ir.contains("near/promise_and"), "fanout must use promise_and: {ir}");
-    assert!(ir.contains("portfolioBoth__resume"), "one named resume: {ir}");
-    assert!(!ir.contains("call-await"), "v2 never emits call-await: {ir}");
+    assert!(
+        ir.contains("near/promise_and"),
+        "fanout must use promise_and: {ir}"
+    );
+    assert!(
+        ir.contains("portfolioBoth__resume"),
+        "one named resume: {ir}"
+    );
+    assert!(
+        !ir.contains("call-await"),
+        "v2 never emits call-await: {ir}"
+    );
 
     // single await keeps the V1-stable callback name (existing contracts)
     let ir = ts_to_lisp_source(PAY_SRC).expect("lower");
-    assert!(ir.contains("attach__resume"), "single-await resume name: {ir}");
+    assert!(
+        ir.contains("attach__resume"),
+        "single-await resume name: {ir}"
+    );
 
     // multiple awaits → indexed resumes, each exported (on-chain entries)
     let ir = ts_to_lisp_source(SEQ_SRC).expect("lower");
-    assert!(ir.contains("depositTwice__resume0"), "indexed resume 0: {ir}");
-    assert!(ir.contains("depositTwice__resume1"), "indexed resume 1: {ir}");
+    assert!(
+        ir.contains("depositTwice__resume0"),
+        "indexed resume 0: {ir}"
+    );
+    assert!(
+        ir.contains("depositTwice__resume1"),
+        "indexed resume 1: {ir}"
+    );
 }
 
 #[test]
@@ -473,7 +491,10 @@ export async function ok1(user: string): string {
   return "total:" + a;
 }
 "#;
-    assert!(ts_to_lisp_source(src).is_ok(), "one-sided + must stay legal");
+    assert!(
+        ts_to_lisp_source(src).is_ok(),
+        "one-sided + must stay legal"
+    );
 
     // NEGATIVE 2: u128Add is the blessed op — legal.
     let src = r#"
@@ -489,9 +510,12 @@ export async function ok2(user: string): string {
 #[test]
 fn v2_return_contract_money_annotation_is_enforced() {
     let _l = lock(); // compile-only, but keep test-state hygiene
-    // OK: await result returned raw under Promise<Yocto>
+                     // OK: await result returned raw under Promise<Yocto>
     let ok = "export async function f(user: string): Promise<Yocto> { const a = await near.call(\"toka.v2.test.near\", \"ftBalanceRaw\", { who: user }, 20000000000000, \"0\"); return a; }";
-    assert!(ts_to_lisp_source(ok).is_ok(), "raw await return must compile");
+    assert!(
+        ts_to_lisp_source(ok).is_ok(),
+        "raw await return must compile"
+    );
 
     // REJECT: labeled concat under a money annotation — display text is
     // not an amount. This is the exact dishonesty the contract check kills.
@@ -507,7 +531,10 @@ fn v2_return_contract_money_annotation_is_enforced() {
 
     // OK: money-annotated const feeds the return (taint pre-pass)
     let ok2 = "export function h(): Yocto { const d: Yocto = \"5\"; return u128Add(d, d); }";
-    assert!(ts_to_lisp_source(ok2).is_ok(), "money const return must compile");
+    assert!(
+        ts_to_lisp_source(ok2).is_ok(),
+        "money const return must compile"
+    );
 
     // REJECT: money const initialized from a non-u128 source
     let bad3 = "export function h(fn: () => string): string { const d: Yocto = fn(); return d; }";

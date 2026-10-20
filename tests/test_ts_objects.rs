@@ -242,8 +242,14 @@ fn interface_decl_reusable_shape() {
          export function b(x: EscrowArgs): string { return x.buyer; }",
     )
     .expect("interface + two fns must lower");
-    assert!(out.contains("json_get_str_opt \"memo\""), "opt prop -> json_get_str_opt, got:\n{out}");
-    assert!(out.contains("json_get_str \"buyer\""), "required prop stays plain, got:\n{out}");
+    assert!(
+        out.contains("json_get_str_opt \"memo\""),
+        "opt prop -> json_get_str_opt, got:\n{out}"
+    );
+    assert!(
+        out.contains("json_get_str \"buyer\""),
+        "required prop stays plain, got:\n{out}"
+    );
 }
 
 #[test]
@@ -261,8 +267,12 @@ fn interface_optional_numeric_prop() {
          export function f(x: A): number { return x.h ?? 0; }",
     )
     .expect("lower");
-    assert!(out.contains("json_get_int") || out2.contains("json_get_int"),
-        "optional numeric -> json_get_int, got:\n{out}\n--\n{out2}");
-    assert!(!out.contains("str->num") || !out.contains("json_get_str \"h\""),
-        "must not wrap numeric optional in str->num(json_get_str)");
+    assert!(
+        out.contains("json_get_int") || out2.contains("json_get_int"),
+        "optional numeric -> json_get_int, got:\n{out}\n--\n{out2}"
+    );
+    assert!(
+        !out.contains("str->num") || !out.contains("json_get_str \"h\""),
+        "must not wrap numeric optional in str->num(json_get_str)"
+    );
 }

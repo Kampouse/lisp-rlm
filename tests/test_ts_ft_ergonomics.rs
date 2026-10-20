@@ -75,21 +75,9 @@ fn ft_ergonomics_end_to_end() {
     assert!(o.contains("ok"), "init failed: {o}");
 
     // mint 5 then 5 → 10 (object params + db.put + u128Add)
-    let o = run(
-        st,
-        "ftMint",
-        r#"{"to":"alice","amount":"5"}"#,
-        OWNER,
-        false,
-    );
+    let o = run(st, "ftMint", r#"{"to":"alice","amount":"5"}"#, OWNER, false);
     assert!(o.contains("ok"), "mint#1 failed: {o}");
-    let o = run(
-        st,
-        "ftMint",
-        r#"{"to":"alice","amount":"5"}"#,
-        OWNER,
-        false,
-    );
+    let o = run(st, "ftMint", r#"{"to":"alice","amount":"5"}"#, OWNER, false);
     assert!(o.contains("ok"), "mint#2 failed: {o}");
 
     // balance reads back 10 — params.to was LIVE through both mints
@@ -107,7 +95,10 @@ fn ft_ergonomics_end_to_end() {
     );
     assert!(o.contains("ERR_NOT_OWNER"), "no owner assert: {o}");
     let o = run(st, "ftGet", r#"{"to":"eve"}"#, OWNER, true);
-    assert!(o.contains("none"), "eve balance must be nil post-rollback: {o}");
+    assert!(
+        o.contains("none"),
+        "eve balance must be nil post-rollback: {o}"
+    );
 
     // keys: alice + owner under their prefixes (sorted drain loop)
     let o = run(st, "ftKeys", "{}", OWNER, true);
@@ -124,13 +115,7 @@ fn ft_ergonomics_end_to_end() {
 
     // garbage Money traps the u128 boundary and rolls back — the
     // "what if you pass a letter" guarantee is RUNTIME, not types
-    let o = run(
-        st,
-        "ftMint",
-        r#"{"to":"bob","amount":"5x"}"#,
-        OWNER,
-        false,
-    );
+    let o = run(st, "ftMint", r#"{"to":"bob","amount":"5x"}"#, OWNER, false);
     assert!(
         o.contains("trapped") || o.contains("u128"),
         "garbage Money must trap: {o}"

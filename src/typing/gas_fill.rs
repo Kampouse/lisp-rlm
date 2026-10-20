@@ -73,7 +73,8 @@ fn walk_fill(
             }
             return;
         }
-        let head_is_then = matches!(items.first(), Some(LispVal::Sym(s)) if s == "near/promise_then");
+        let head_is_then =
+            matches!(items.first(), Some(LispVal::Sym(s)) if s == "near/promise_then");
         if head_is_then && items.len() == 7 {
             // Exact-locality: the account argument IS (near/current_account_id).
             let local = matches!(

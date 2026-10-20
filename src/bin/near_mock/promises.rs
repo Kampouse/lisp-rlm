@@ -198,10 +198,10 @@ thread_local! {
 pub(crate) fn yield_joins_add(idx: usize) {
     YIELD_JOINS.with(|j| j.borrow_mut().insert(idx));
     if let Some(st) = crate::STATE_ARC.with(|s| s.borrow().clone()) {
-        st.lock().unwrap().storage.insert(
-            format!("\x00yjoin:{}", idx).into_bytes(),
-            b"1".to_vec(),
-        );
+        st.lock()
+            .unwrap()
+            .storage
+            .insert(format!("\x00yjoin:{}", idx).into_bytes(), b"1".to_vec());
     }
 }
 
@@ -247,9 +247,6 @@ pub(crate) fn yield_owner_add(yield_idx: usize) {
     }
 }
 
-
-
-
 /// RAII: record the batch currently executing so promise_yield_create can
 /// attribute a yield to the receipt that created it.
 pub(crate) struct CurrentBatchGuard(());
@@ -269,12 +266,10 @@ impl Drop for CurrentBatchGuard {
 /// joins over a receipt that promise_returns a yield must wait for resolve).
 pub(crate) fn deps_own_open_yield(deps: &[usize]) -> bool {
     YIELD_OWNER.with(|m| !m.borrow().is_empty())
-        && deps.iter().any(|&d| {
-            YIELD_OWNER.with(|m| m.borrow().values().any(|&o| o == d))
-        })
+        && deps
+            .iter()
+            .any(|&d| YIELD_OWNER.with(|m| m.borrow().values().any(|&o| o == d)))
 }
-
-
 
 /// All join indices persisted in state (cross-process view).
 pub(crate) fn persisted_joins() -> Vec<usize> {
@@ -336,7 +331,10 @@ pub(crate) fn joins_on_batch(dep_batch: usize) -> Vec<usize> {
             .copied()
             .filter(|&j| {
                 PROMISE_DAG.with(|d| {
-                    d.borrow().get(j).map(|b| b.deps.contains(&dep_batch)).unwrap_or(false)
+                    d.borrow()
+                        .get(j)
+                        .map(|b| b.deps.contains(&dep_batch))
+                        .unwrap_or(false)
                 })
             })
             .collect()
@@ -348,14 +346,20 @@ pub(crate) fn joins_for_owner_batch(dep_batch: usize) -> Vec<usize> {
     YIELD_JOINS.with(|j| {
         YIELD_OWNER.with(|m| {
             let m = m.borrow();
-            let owned: std::collections::HashSet<usize> =
-                m.iter().filter(|(_, &b)| b == dep_batch).map(|(&y, _)| y).collect();
+            let owned: std::collections::HashSet<usize> = m
+                .iter()
+                .filter(|(_, &b)| b == dep_batch)
+                .map(|(&y, _)| y)
+                .collect();
             j.borrow()
                 .iter()
                 .copied()
                 .filter(|&j| {
                     PROMISE_DAG.with(|d| {
-                        d.borrow().get(j).map(|b| b.deps.iter().any(|d| owned.contains(d))).unwrap_or(false)
+                        d.borrow()
+                            .get(j)
+                            .map(|b| b.deps.iter().any(|d| owned.contains(d)))
+                            .unwrap_or(false)
                     })
                 })
                 .collect()

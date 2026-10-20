@@ -118,8 +118,7 @@ fn sibling_defns_same_binding_name_compiles() {
   (let* ((r1 (a)))
     (b)))
 "#;
-    compile_src(src, "sibling")
-        .expect("sibling defns with same binding name must NOT be flagged");
+    compile_src(src, "sibling").expect("sibling defns with same binding name must NOT be flagged");
 }
 
 #[test]
@@ -171,8 +170,7 @@ fn two_hop_chain_rejected_and_self_recursion_terminates() {
   (let* ((p (near/promise_batch_create "a.test.near")))
     (g p)))
 "#;
-    compile_src(rec, "selfrec")
-        .expect("self-recursive forwarder must terminate and compile");
+    compile_src(rec, "selfrec").expect("self-recursive forwarder must terminate and compile");
 }
 
 // ---------------------------------------------------------------------------

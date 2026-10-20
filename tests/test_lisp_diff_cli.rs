@@ -41,7 +41,10 @@ fn reports_first_divergent_form_and_exits_1() {
         out.status.code()
     );
     assert_eq!(out.status.code(), Some(1), "divergence exit code is 1");
-    assert!(stdout.contains("DIVERGENT"), "stdout must name the divergence:\n{stdout}");
+    assert!(
+        stdout.contains("DIVERGENT"),
+        "stdout must name the divergence:\n{stdout}"
+    );
     // First divergent form only — form 0 agreed, so the report must be
     // about the json-get negative-number form.
     assert!(
@@ -64,7 +67,10 @@ fn identical_program_exits_0() {
     let out = lisp_diff().arg(&f).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(0), "agreeing exit code is 0");
-    assert!(stdout.trim_end().ends_with("IDENTICAL"), "stdout:\n{stdout}");
+    assert!(
+        stdout.trim_end().ends_with("IDENTICAL"),
+        "stdout:\n{stdout}"
+    );
     let _ = std::fs::remove_file(&f);
 }
 

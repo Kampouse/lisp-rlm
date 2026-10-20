@@ -17,7 +17,9 @@ use lisp_rlm_wasm::parser;
 use lisp_rlm_wasm::run_program;
 use lisp_rlm_wasm::tagged_value::{decode, TaggedValue};
 use lisp_rlm_wasm::types::{Env, EvalState, LispVal};
-use wasmtime::{Engine, ExternType, Func, FuncType, Instance, Linker, Memory, Module, Store, Val, ValType};
+use wasmtime::{
+    Engine, ExternType, Func, FuncType, Instance, Linker, Memory, Module, Store, Val, ValType,
+};
 
 const STACK: usize = 512 * 1024 * 1024;
 
@@ -92,7 +94,9 @@ fn wasm_form_result(src: &str) -> Result<LispVal, String> {
         if import.module() != "env" || import.name() == "memory" {
             continue;
         }
-        let ExternType::Func(func_ty) = import.ty() else { continue };
+        let ExternType::Func(func_ty) = import.ty() else {
+            continue;
+        };
         let params: Vec<ValType> = func_ty.params().collect();
         let results: Vec<ValType> = func_ty.results().collect();
         let ft = FuncType::new(&engine, params.clone(), results.clone());

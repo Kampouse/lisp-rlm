@@ -97,15 +97,27 @@ impl WasmEmitter {
         v.push(Instruction::LocalGet(p));
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::I64Const(0)); // i64.store8: [i32 addr, i64 value]
-        v.push(Instruction::I64Store8(wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 }));
+        v.push(Instruction::I64Store8(wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        }));
         v.push(Instruction::LocalGet(p));
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::LocalGet(alo));
-        v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 1, align: 0, memory_index: 0 }));
+        v.push(Instruction::I64Store(wasm_encoder::MemArg {
+            offset: 1,
+            align: 0,
+            memory_index: 0,
+        }));
         v.push(Instruction::LocalGet(p));
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::LocalGet(ahi));
-        v.push(Instruction::I64Store(wasm_encoder::MemArg { offset: 9, align: 0, memory_index: 0 }));
+        v.push(Instruction::I64Store(wasm_encoder::MemArg {
+            offset: 9,
+            align: 0,
+            memory_index: 0,
+        }));
         // pack (ptr, len=17) and TAG it as a real Str — the generic
         // storage_set arm then treats it exactly like any tagged string
         // (assert passes, untag recovers ptr|len<<32, host args come out
@@ -148,7 +160,11 @@ impl WasmEmitter {
         hi: u32,
     ) {
         let h = self.ensure_u128_str_helpers();
-        let ma0 = wasm_encoder::MemArg { offset: 0, align: 0, memory_index: 0 };
+        let ma0 = wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            memory_index: 0,
+        };
         // payload = t >> TAG_BITS; ptr = payload & 0xFFFF_FFFF; len = payload >> 32
         // (untag inline — emit_untag exists but we need the pieces separately)
         let pl = self.local_idx("__b2b_pl");

@@ -33,15 +33,45 @@ use std::path::{Path, PathBuf};
 /// Compile-time special forms handled by BOTH compilers before any builtin
 /// dispatch — parity is not applicable (superset of surface_parity's list).
 const SPECIAL_FORMS: &[&str] = &[
-    "and", "begin", "case", "cond", "default", "defmacro", "define", "delay", "do", "fn", "for",
-    "if", "lambda", "let", "let*", "letrec", "loop", "match", "or", "progn", "quasiquote", "quote",
-    "recur", "set!", "try", "unquote", "unless", "when", "while",
+    "and",
+    "begin",
+    "case",
+    "cond",
+    "default",
+    "defmacro",
+    "define",
+    "delay",
+    "do",
+    "fn",
+    "for",
+    "if",
+    "lambda",
+    "let",
+    "let*",
+    "letrec",
+    "loop",
+    "match",
+    "or",
+    "progn",
+    "quasiquote",
+    "quote",
+    "recur",
+    "set!",
+    "try",
+    "unquote",
+    "unless",
+    "when",
+    "while",
 ];
 
 /// Scanner over-captures: string literals that match the arm regex but are
 /// not ops (schema field name, outlayer context keys). Documented, not ops.
 const SCAN_NOISE: &[&str] = &[
-    "name", "predecessor", "signer", "predecessor_id", "signer_id",
+    "name",
+    "predecessor",
+    "signer",
+    "predecessor_id",
+    "signer_id",
     ":u128", // json-get type-tag literal in call_json.rs, not a builtin name
 ];
 
@@ -366,8 +396,14 @@ const INTERP_ONLY: &[(&str, &str)] = &[
 ];
 
 const WASM_ONLY: &[(&str, &str)] = &[
-    ("json-get-str-esc", "jsonGetStrEsc: unescape+scan over JSON-escaped buffers (wasm memory, 2026-10-14)"),
-    ("json-get-str-esc?", "nil-on-miss jsonGetStrEsc (wasm memory, 2026-10-14)"),
+    (
+        "json-get-str-esc",
+        "jsonGetStrEsc: unescape+scan over JSON-escaped buffers (wasm memory, 2026-10-14)",
+    ),
+    (
+        "json-get-str-esc?",
+        "nil-on-miss jsonGetStrEsc (wasm memory, 2026-10-14)",
+    ),
     ("abort", "wasm test-harness assertion"),
     ("ai-chat", "wasm-run host import (harness only)"),
     ("arr_find", "array-in-linear-memory family (wasm layout)"),
@@ -383,51 +419,126 @@ const WASM_ONLY: &[(&str, &str)] = &[
     ("assert-true", "wasm test-harness assertion"),
     ("base58-decode", "codec over raw byte buffers (wasm memory)"),
     ("base64-encode", "codec over raw byte buffers (wasm memory)"),
-    ("base64url-decode", "codec over raw byte buffers (wasm memory)"),
-    ("bigint-add", "address-based legacy limb family (string-based u128/* is the spec)"),
-    ("bigint-div", "address-based legacy limb family (string-based u128/* is the spec)"),
-    ("bigint-from-str", "address-based legacy limb family (string-based u128/* is the spec)"),
-    ("bigint-mul", "address-based legacy limb family (string-based u128/* is the spec)"),
-    ("bigint-to-str", "address-based legacy limb family (string-based u128/* is the spec)"),
+    (
+        "base64url-decode",
+        "codec over raw byte buffers (wasm memory)",
+    ),
+    (
+        "bigint-add",
+        "address-based legacy limb family (string-based u128/* is the spec)",
+    ),
+    (
+        "bigint-div",
+        "address-based legacy limb family (string-based u128/* is the spec)",
+    ),
+    (
+        "bigint-from-str",
+        "address-based legacy limb family (string-based u128/* is the spec)",
+    ),
+    (
+        "bigint-mul",
+        "address-based legacy limb family (string-based u128/* is the spec)",
+    ),
+    (
+        "bigint-to-str",
+        "address-based legacy limb family (string-based u128/* is the spec)",
+    ),
     ("bit_clr", "raw linear-memory / C-ABI family (wasm layout)"),
     ("bit_get", "raw linear-memory / C-ABI family (wasm layout)"),
     ("bit_set", "raw linear-memory / C-ABI family (wasm layout)"),
-    ("borsh-deserialize", "codec over raw byte buffers (wasm memory)"),
-    ("borsh-serialize", "codec over raw byte buffers (wasm memory)"),
-    ("buf-alloc", "raw linear-memory / C-ABI family (wasm layout)"),
+    (
+        "borsh-deserialize",
+        "codec over raw byte buffers (wasm memory)",
+    ),
+    (
+        "borsh-serialize",
+        "codec over raw byte buffers (wasm memory)",
+    ),
+    (
+        "buf-alloc",
+        "raw linear-memory / C-ABI family (wasm layout)",
+    ),
     ("buf-get", "raw linear-memory / C-ABI family (wasm layout)"),
     ("buf-set!", "raw linear-memory / C-ABI family (wasm layout)"),
     ("byte-at", "raw linear-memory / C-ABI family (wasm layout)"),
-    ("bytes-to-u32", "raw linear-memory / C-ABI family (wasm layout)"),
-    ("case-lambda", "emitter-side compile form or harness hook misread as op (over-capture)"),
+    (
+        "bytes-to-u32",
+        "raw linear-memory / C-ABI family (wasm layout)",
+    ),
+    (
+        "case-lambda",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
     ("clz", "raw linear-memory / C-ABI family (wasm layout)"),
-    ("contract-check-param", "emitter-side compile form or harness hook misread as op (over-capture)"),
-    ("contract-check-return", "emitter-side compile form or harness hook misread as op (over-capture)"),
-    ("contract-wrap", "emitter-side compile form or harness hook misread as op (over-capture)"),
+    (
+        "contract-check-param",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
+    (
+        "contract-check-return",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
+    (
+        "contract-wrap",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
     ("ctz", "raw linear-memory / C-ABI family (wasm layout)"),
-    ("define-values", "emitter-side compile form or harness hook misread as op (over-capture)"),
-    ("delete-file", "emitter-side compile form or harness hook misread as op (over-capture)"),
+    (
+        "define-values",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
+    (
+        "delete-file",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
     ("env/predecessor", "wasm-run host import (harness only)"),
     ("env/signer", "wasm-run host import (harness only)"),
-    ("exact->inexact", "emitter-side compile form or harness hook misread as op (over-capture)"),
-    ("filter-count", "array-in-linear-memory family (wasm layout)"),
-    ("final-var", "emitter-side compile form or harness hook misread as op (over-capture)"),
-    ("fork", "emitter-side compile form or harness hook misread as op (over-capture)"),
+    (
+        "exact->inexact",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
+    (
+        "filter-count",
+        "array-in-linear-memory family (wasm layout)",
+    ),
+    (
+        "final-var",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
+    (
+        "fork",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
     ("fp/div", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
-    ("fp/from_int", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
+    (
+        "fp/from_int",
+        "Q64.64 raw-bit fixed-point (wasm-only domain)",
+    ),
     ("fp/mul", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
     ("fp/one", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
     ("fp/sqrt", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
     ("fp/to_int", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
     ("fp64/add", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
     ("fp64/div", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
-    ("fp64/get_frac", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
-    ("fp64/get_int", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
-    ("fp64/is_zero", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
+    (
+        "fp64/get_frac",
+        "Q64.64 raw-bit fixed-point (wasm-only domain)",
+    ),
+    (
+        "fp64/get_int",
+        "Q64.64 raw-bit fixed-point (wasm-only domain)",
+    ),
+    (
+        "fp64/is_zero",
+        "Q64.64 raw-bit fixed-point (wasm-only domain)",
+    ),
     ("fp64/lt", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
     ("fp64/mul", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
     ("fp64/set", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
-    ("fp64/set_int", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
+    (
+        "fp64/set_int",
+        "Q64.64 raw-bit fixed-point (wasm-only domain)",
+    ),
     ("fp64/sqrt", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
     ("fp64/sub", "Q64.64 raw-bit fixed-point (wasm-only domain)"),
     ("hex-decode", "codec over raw byte buffers (wasm memory)"),
@@ -435,8 +546,14 @@ const WASM_ONLY: &[(&str, &str)] = &[
     ("hof/map", "array-in-linear-memory family (wasm layout)"),
     ("hof/reduce", "array-in-linear-memory family (wasm layout)"),
     ("http-post-dynamic", "wasm-run host import (harness only)"),
-    ("inexact->exact", "emitter-side compile form or harness hook misread as op (over-capture)"),
-    ("int_to_str", "raw linear-memory / C-ABI family (wasm layout)"),
+    (
+        "inexact->exact",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
+    (
+        "int_to_str",
+        "raw linear-memory / C-ABI family (wasm layout)",
+    ),
     ("itoa", "raw linear-memory / C-ABI family (wasm layout)"),
     ("json-bytes-to-str", "wasm JSON register ABI"),
     ("json-extract", "wasm JSON register ABI"),
@@ -445,8 +562,14 @@ const WASM_ONLY: &[(&str, &str)] = &[
     ("json-get-str", "wasm JSON register ABI"),
     ("json-get-str?", "wasm JSON register ABI"),
     ("json-return", "wasm JSON register ABI"),
-    ("let*-values", "emitter-side compile form or harness hook misread as op (over-capture)"),
-    ("let-values", "emitter-side compile form or harness hook misread as op (over-capture)"),
+    (
+        "let*-values",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
+    (
+        "let-values",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
     ("limb-add", "secp256k1 limb-array ops (wasm linear memory)"),
     ("limb-cmp", "secp256k1 limb-array ops (wasm linear memory)"),
     ("limb-get", "secp256k1 limb-array ops (wasm linear memory)"),
@@ -457,134 +580,422 @@ const WASM_ONLY: &[(&str, &str)] = &[
     ("liq_amount0_64", "defi raw-u64 math (wasm-only domain)"),
     ("liq_amount1", "defi raw-u64 math (wasm-only domain)"),
     ("liq_amount1_64", "defi raw-u64 math (wasm-only domain)"),
-    ("llm-batch", "emitter-side compile form or harness hook misread as op (over-capture)"),
+    (
+        "llm-batch",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
     ("load_i64", "raw linear-memory / C-ABI family (wasm layout)"),
     ("malloc", "raw linear-memory / C-ABI family (wasm layout)"),
     ("map-into", "array-in-linear-memory family (wasm layout)"),
-    ("mark-pure", "emitter-side compile form or harness hook misread as op (over-capture)"),
+    (
+        "mark-pure",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
     ("mem-get", "raw linear-memory / C-ABI family (wasm layout)"),
     ("mem-get8", "raw linear-memory / C-ABI family (wasm layout)"),
     ("mem-set!", "raw linear-memory / C-ABI family (wasm layout)"),
-    ("mem-set8!", "raw linear-memory / C-ABI family (wasm layout)"),
-    ("near/assert", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/batch-add-key", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch-call", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch-create-account", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch-deploy", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch-transfer", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch_action_add_key", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch_action_create", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch_action_delete_account", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch_action_delete_key", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch_action_delete_key_full_access", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch_action_delete_key_function_call", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch_action_delete_key_with_access_key", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch_action_deploy_contract", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch_action_function_call", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch_action_stake", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch_action_transfer", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch_commit", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/batch_create", "wasm promise batch ABI (interp aliases near/promise_batch_*)"),
-    ("near/bls12381_g1_multiexp", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/bls12381_g2_multiexp", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/bls12381_map_fp2_to_g2", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/bls12381_map_fp_to_g1", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/bls12381_p1_decompress", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/bls12381_p2_decompress", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/bls12381_p2_sum", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/bls12381_pairing_check", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/call-signed", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/config", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/ecdsa_verify", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/has", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/hmac_sha256", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/json_get_arr", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/json_get_u128", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/kload", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/kstore", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/load-amount", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/log_str", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/predecessor_id", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/require", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/return_json", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/signer_id", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/store-deposit", "near host ABI over registers/raw buffers (wasm-only)"),
-    ("near/transfer-signed", "near host ABI over registers/raw buffers (wasm-only)"),
+    (
+        "mem-set8!",
+        "raw linear-memory / C-ABI family (wasm layout)",
+    ),
+    (
+        "near/assert",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/batch-add-key",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch-call",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch-create-account",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch-deploy",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch-transfer",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch_action_add_key",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch_action_create",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch_action_delete_account",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch_action_delete_key",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch_action_delete_key_full_access",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch_action_delete_key_function_call",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch_action_delete_key_with_access_key",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch_action_deploy_contract",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch_action_function_call",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch_action_stake",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch_action_transfer",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch_commit",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/batch_create",
+        "wasm promise batch ABI (interp aliases near/promise_batch_*)",
+    ),
+    (
+        "near/bls12381_g1_multiexp",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/bls12381_g2_multiexp",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/bls12381_map_fp2_to_g2",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/bls12381_map_fp_to_g1",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/bls12381_p1_decompress",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/bls12381_p2_decompress",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/bls12381_p2_sum",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/bls12381_pairing_check",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/call-signed",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/config",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/ecdsa_verify",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/has",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/hmac_sha256",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/json_get_arr",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/json_get_u128",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/kload",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/kstore",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/load-amount",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/log_str",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/predecessor_id",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/require",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/return_json",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/signer_id",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/store-deposit",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
+    (
+        "near/transfer-signed",
+        "near host ABI over registers/raw buffers (wasm-only)",
+    ),
     ("outlayer/call", "outlayer host service (wasm harness only)"),
-    ("outlayer/context", "outlayer host service (wasm harness only)"),
-    ("outlayer/http-post", "outlayer host service (wasm harness only)"),
-    ("outlayer/json-get", "outlayer host service (wasm harness only)"),
+    (
+        "outlayer/context",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/http-post",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/json-get",
+        "outlayer host service (wasm harness only)",
+    ),
     ("outlayer/raw", "outlayer host service (wasm harness only)"),
-    ("outlayer/rpc-call", "outlayer host service (wasm harness only)"),
-    ("outlayer/send-telegram", "outlayer host service (wasm harness only)"),
-    ("outlayer/sleep-ms", "outlayer host service (wasm harness only)"),
-    ("outlayer/status", "outlayer host service (wasm harness only)"),
-    ("outlayer/storage-delete", "outlayer host service (wasm harness only)"),
-    ("outlayer/storage-get", "outlayer host service (wasm harness only)"),
-    ("outlayer/storage-has", "outlayer host service (wasm harness only)"),
-    ("outlayer/storage-set", "outlayer host service (wasm harness only)"),
-    ("outlayer/str-cat", "outlayer host service (wasm harness only)"),
-    ("outlayer/str-concat", "outlayer host service (wasm harness only)"),
-    ("outlayer/transfer", "outlayer host service (wasm harness only)"),
+    (
+        "outlayer/rpc-call",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/send-telegram",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/sleep-ms",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/status",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/storage-delete",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/storage-get",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/storage-has",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/storage-set",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/str-cat",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/str-concat",
+        "outlayer host service (wasm harness only)",
+    ),
+    (
+        "outlayer/transfer",
+        "outlayer host service (wasm harness only)",
+    ),
     ("outlayer/view", "outlayer host service (wasm harness only)"),
-    ("outlayer/web-search", "outlayer host service (wasm harness only)"),
+    (
+        "outlayer/web-search",
+        "outlayer host service (wasm harness only)",
+    ),
     ("popcnt", "raw linear-memory / C-ABI family (wasm layout)"),
     ("price64_to_tick", "defi raw-u64 math (wasm-only domain)"),
     ("price_to_tick", "defi raw-u64 math (wasm-only domain)"),
     ("ptr-add", "raw linear-memory / C-ABI family (wasm layout)"),
-    ("range-reduce", "array-in-linear-memory family (wasm layout)"),
-    ("rlm", "emitter-side compile form or harness hook misread as op (over-capture)"),
-    ("rlm-calls", "emitter-side compile form or harness hook misread as op (over-capture)"),
-    ("rlm-tokens", "emitter-side compile form or harness hook misread as op (over-capture)"),
-    ("rlm/config", "emitter-side compile form or harness hook misread as op (over-capture)"),
-    ("rlm/format-prompt", "emitter-side compile form or harness hook misread as op (over-capture)"),
-    ("rlm/signature", "emitter-side compile form or harness hook misread as op (over-capture)"),
-    ("rlm/trace", "emitter-side compile form or harness hook misread as op (over-capture)"),
+    (
+        "range-reduce",
+        "array-in-linear-memory family (wasm layout)",
+    ),
+    (
+        "rlm",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
+    (
+        "rlm-calls",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
+    (
+        "rlm-tokens",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
+    (
+        "rlm/config",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
+    (
+        "rlm/format-prompt",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
+    (
+        "rlm/signature",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
+    (
+        "rlm/trace",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
     ("rpc-call", "wasm-run host import (harness only)"),
     ("send-telegram", "wasm-run host import (harness only)"),
-    ("sha256-hash", "raw linear-memory / C-ABI family (wasm layout)"),
-    ("show-context", "emitter-side compile form or harness hook misread as op (over-capture)"),
-    ("show-vars", "emitter-side compile form or harness hook misread as op (over-capture)"),
+    (
+        "sha256-hash",
+        "raw linear-memory / C-ABI family (wasm layout)",
+    ),
+    (
+        "show-context",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
+    (
+        "show-vars",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
     ("sleep-ms", "wasm-run host import (harness only)"),
-    ("storage-clear-all", "mock-storage harness state (wasm test harness)"),
-    ("storage-decrement", "mock-storage harness state (wasm test harness)"),
-    ("storage-delete", "mock-storage harness state (wasm test harness)"),
-    ("storage-get", "mock-storage harness state (wasm test harness)"),
-    ("storage-get-worker", "mock-storage harness state (wasm test harness)"),
-    ("storage-get-worker-from-project", "mock-storage harness state (wasm test harness)"),
-    ("storage-has", "mock-storage harness state (wasm test harness)"),
-    ("storage-increment", "mock-storage harness state (wasm test harness)"),
-    ("storage-list-keys", "mock-storage harness state (wasm test harness)"),
-    ("storage-set", "mock-storage harness state (wasm test harness)"),
-    ("storage-set-if-absent", "mock-storage harness state (wasm test harness)"),
-    ("storage-set-if-equals", "mock-storage harness state (wasm test harness)"),
-    ("storage-set-worker", "mock-storage harness state (wasm test harness)"),
-    ("storage-set-worker-public", "mock-storage harness state (wasm test harness)"),
-    ("store_i64", "raw linear-memory / C-ABI family (wasm layout)"),
+    (
+        "storage-clear-all",
+        "mock-storage harness state (wasm test harness)",
+    ),
+    (
+        "storage-decrement",
+        "mock-storage harness state (wasm test harness)",
+    ),
+    (
+        "storage-delete",
+        "mock-storage harness state (wasm test harness)",
+    ),
+    (
+        "storage-get",
+        "mock-storage harness state (wasm test harness)",
+    ),
+    (
+        "storage-get-worker",
+        "mock-storage harness state (wasm test harness)",
+    ),
+    (
+        "storage-get-worker-from-project",
+        "mock-storage harness state (wasm test harness)",
+    ),
+    (
+        "storage-has",
+        "mock-storage harness state (wasm test harness)",
+    ),
+    (
+        "storage-increment",
+        "mock-storage harness state (wasm test harness)",
+    ),
+    (
+        "storage-list-keys",
+        "mock-storage harness state (wasm test harness)",
+    ),
+    (
+        "storage-set",
+        "mock-storage harness state (wasm test harness)",
+    ),
+    (
+        "storage-set-if-absent",
+        "mock-storage harness state (wasm test harness)",
+    ),
+    (
+        "storage-set-if-equals",
+        "mock-storage harness state (wasm test harness)",
+    ),
+    (
+        "storage-set-worker",
+        "mock-storage harness state (wasm test harness)",
+    ),
+    (
+        "storage-set-worker-public",
+        "mock-storage harness state (wasm test harness)",
+    ),
+    (
+        "store_i64",
+        "raw linear-memory / C-ABI family (wasm layout)",
+    ),
     ("str-ptr", "raw linear-memory / C-ABI family (wasm layout)"),
-    ("str-slice", "raw linear-memory / C-ABI family (wasm layout)"),
-    ("str-to-num", "raw linear-memory / C-ABI family (wasm layout)"),
+    (
+        "str-slice",
+        "raw linear-memory / C-ABI family (wasm layout)",
+    ),
+    (
+        "str-to-num",
+        "raw linear-memory / C-ABI family (wasm layout)",
+    ),
     ("str_cat", "raw linear-memory / C-ABI family (wasm layout)"),
     ("str_eq", "raw linear-memory / C-ABI family (wasm layout)"),
     ("str_len", "raw linear-memory / C-ABI family (wasm layout)"),
-    ("str_to_int", "raw linear-memory / C-ABI family (wasm layout)"),
-    ("string-replace", "wasm-only emitter op (see surface_parity WASM_ONLY_DOCUMENTED for the same class)"),
+    (
+        "str_to_int",
+        "raw linear-memory / C-ABI family (wasm layout)",
+    ),
+    (
+        "string-replace",
+        "wasm-only emitter op (see surface_parity WASM_ONLY_DOCUMENTED for the same class)",
+    ),
     ("strlcat", "raw linear-memory / C-ABI family (wasm layout)"),
     ("strlcpy", "raw linear-memory / C-ABI family (wasm layout)"),
-    ("sub-rlm", "emitter-side compile form or harness hook misread as op (over-capture)"),
+    (
+        "sub-rlm",
+        "emitter-side compile form or harness hook misread as op (over-capture)",
+    ),
     ("tick_to_price", "defi raw-u64 math (wasm-only domain)"),
     ("tick_to_price64", "defi raw-u64 math (wasm-only domain)"),
-    ("tick_to_sqrtPrice64", "defi raw-u64 math (wasm-only domain)"),
+    (
+        "tick_to_sqrtPrice64",
+        "defi raw-u64 math (wasm-only domain)",
+    ),
     ("u128/checked_add", "raw-limb u128 variant (wasm memory)"),
     ("u128/checked_mul", "raw-limb u128 variant (wasm memory)"),
     ("u128/checked_sub", "raw-limb u128 variant (wasm memory)"),
     ("u128/is_zero", "raw-limb u128 variant (wasm memory)"),
     ("u128/load_storage", "raw-limb u128 variant (wasm memory)"),
     ("u128/store_storage", "raw-limb u128 variant (wasm memory)"),
-    ("u32-to-bytes", "raw linear-memory / C-ABI family (wasm layout)"),
+    (
+        "u32-to-bytes",
+        "raw linear-memory / C-ABI family (wasm layout)",
+    ),
     ("vec-push", "array-in-linear-memory family (wasm layout)"),
     ("vec-set!", "array-in-linear-memory family (wasm layout)"),
-    ("vrf-generate", "VRF prove — wasm-emitter crypto, verify-side interp parity only"),
+    (
+        "vrf-generate",
+        "VRF prove — wasm-emitter crypto, verify-side interp parity only",
+    ),
     ("web-search", "wasm-run host import (harness only)"),
 ];
 
@@ -673,7 +1084,11 @@ fn extract_registry() -> BTreeSet<String> {
     let start = src
         .find("pub const BUILTIN_NAMES")
         .expect("BUILTIN_NAMES const");
-    let body = &src[start..src[start..].find("\n];").map(|o| start + o).unwrap_or(src.len())];
+    let body = &src[start
+        ..src[start..]
+            .find("\n];")
+            .map(|o| start + o)
+            .unwrap_or(src.len())];
     let tok = Regex::new(r#""([^"]+)""#).unwrap();
     let mut names = BTreeSet::new();
     for line in body.lines() {
@@ -688,15 +1103,17 @@ fn extract_registry() -> BTreeSet<String> {
 fn extract_typing() -> BTreeSet<String> {
     let src = fs::read_to_string(src_dir().join("typing/types.rs")).unwrap();
     let re = Regex::new(r#"insert_mono\(\s*\n?\s*"([^"]+)""#).unwrap();
-    re.captures_iter(&src)
-        .map(|m| m[1].to_string())
-        .collect()
+    re.captures_iter(&src).map(|m| m[1].to_string()).collect()
 }
 
 /// (c1) bytecode VM dispatch: eval_builtin arms + the near-name matcher.
 fn extract_bytecode() -> BTreeSet<String> {
     let src = fs::read_to_string(src_dir().join("bytecode/mod.rs")).unwrap();
-    let mut names = arm_names(fn_span(&src, "pub fn eval_builtin(").lines().map(|l| l.to_string()));
+    let mut names = arm_names(
+        fn_span(&src, "pub fn eval_builtin(")
+            .lines()
+            .map(|l| l.to_string()),
+    );
     let near = fn_span(&src, "pub fn eval_near_builtin_match");
     let tok = Regex::new(r#""([A-Za-z0-9!$%&*+\-./:<=>?^_]+)""#).unwrap();
     for m in tok.captures_iter(near) {
@@ -723,7 +1140,11 @@ fn extract_dispatch() -> BTreeSet<String> {
     files.sort();
     for f in files {
         let src = fs::read_to_string(&f).unwrap();
-        names.extend(arm_names(fn_span(&src, "pub fn handle(").lines().map(|l| l.to_string())));
+        names.extend(arm_names(
+            fn_span(&src, "pub fn handle(")
+                .lines()
+                .map(|l| l.to_string()),
+        ));
     }
     names
 }

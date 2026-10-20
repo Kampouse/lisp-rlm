@@ -58,9 +58,7 @@ fn run_scenario(dir: &std::path::Path, name: &str, height: u64, steps: &str) -> 
     let scenario = dir.join(format!("sc_{name}.json"));
     std::fs::write(
         &scenario,
-        format!(
-            r#"{{"name": "{name}", "manifest": "{manifest}", "steps": {steps}}}"#
-        ),
+        format!(r#"{{"name": "{name}", "manifest": "{manifest}", "steps": {steps}}}"#),
     )
     .unwrap();
     let out = Command::new("./target/release/near-mock")
@@ -77,7 +75,11 @@ fn run_scenario(dir: &std::path::Path, name: &str, height: u64, steps: &str) -> 
 fn setup(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("twap_idem_{name}_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("twap.wasm"), compile_one(&std::fs::read_to_string("examples/twap.lisp").unwrap())).unwrap();
+    std::fs::write(
+        dir.join("twap.wasm"),
+        compile_one(&std::fs::read_to_string("examples/twap.lisp").unwrap()),
+    )
+    .unwrap();
     std::fs::write(dir.join("pool.wasm"), compile_one(POOL)).unwrap();
     std::fs::write(dir.join("state.bin"), b"").unwrap();
     dir

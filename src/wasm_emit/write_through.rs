@@ -127,7 +127,7 @@ impl WasmEmitter {
         // Block S wraps the whole upsert: the two fallbacks Br out of it and
         // the append path runs at its tail. Early exits: Br(1) (If → S).
         v.push(Instruction::Block(BlockType::Empty)); // S
-        // klen = raw(k) >> 32 ; kptr = (u32)raw(k)
+                                                      // klen = raw(k) >> 32 ; kptr = (u32)raw(k)
         v.push(Instruction::LocalGet(k));
         v.extend(self.emit_untag());
         v.push(Instruction::I64Const(32));
@@ -197,7 +197,7 @@ impl WasmEmitter {
         v.push(Instruction::LocalGet(klen_l));
         v.push(Instruction::I64GeU);
         v.push(Instruction::BrIf(1)); // j >= klen → compared everything
-        // mem8[slot+24+j] vs mem8[kptr+j]
+                                      // mem8[slot+24+j] vs mem8[kptr+j]
         v.push(Instruction::LocalGet(slot_l));
         v.push(Instruction::LocalGet(j_l));
         v.push(Instruction::I64Add);
@@ -226,7 +226,7 @@ impl WasmEmitter {
         v.push(Instruction::Br(0)); // continue E
         v.push(Instruction::End); // E
         v.push(Instruction::End); // D
-        // if eq → update in place, mark dirty, exit scan
+                                  // if eq → update in place, mark dirty, exit scan
         v.push(Instruction::LocalGet(eq_l));
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::If(BlockType::Empty)); // G
@@ -253,8 +253,8 @@ impl WasmEmitter {
         v.push(Instruction::Br(3));
         v.push(Instruction::End); // G
         v.push(Instruction::End); // C (length fast-path arm — close BEFORE
-        // the scan tail so idx++/Br(0) sit directly in Loop B: a Br(0) from
-        // inside C would retarget C itself → infinite loop, the 200Tgas bomb)
+                                  // the scan tail so idx++/Br(0) sit directly in Loop B: a Br(0) from
+                                  // inside C would retarget C itself → infinite loop, the 200Tgas bomb)
         v.push(Instruction::LocalGet(idx_l));
         v.push(Instruction::I64Const(1));
         v.push(Instruction::I64Add);
@@ -262,14 +262,14 @@ impl WasmEmitter {
         v.push(Instruction::Br(0)); // continue B (innermost now — targets B)
         v.push(Instruction::End); // B
         v.push(Instruction::End); // A
-        // found → done (slot updated, dirty)
+                                  // found → done (slot updated, dirty)
         v.push(Instruction::LocalGet(found_l));
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::If(BlockType::Empty)); // H
         v.push(Instruction::Br(1)); // out of Block S (H=0, S=1 → br 1)
         v.push(Instruction::End); // H
-        // ── append new slot at index cnt (table has room — checked above;
-        // no concurrent growth inside one upsert) ──
+                                  // ── append new slot at index cnt (table has room — checked above;
+                                  // no concurrent growth inside one upsert) ──
         v.push(Instruction::I64Const(CACHE_SLOT_BASE));
         v.push(Instruction::LocalGet(cnt_l));
         v.push(Instruction::I64Const(CACHE_STRIDE));
@@ -336,7 +336,7 @@ impl WasmEmitter {
         v.push(Instruction::Br(0));
         v.push(Instruction::End); // N
         v.push(Instruction::End); // M
-        // dirty bit + count++
+                                  // dirty bit + count++
         v.push(Instruction::I32Const(WT_DIRTY_BASE as i32));
         v.push(Instruction::LocalGet(cnt_l));
         v.push(Instruction::I32WrapI64);
@@ -399,7 +399,7 @@ impl WasmEmitter {
         v.push(Instruction::LocalGet(5));
         v.push(Instruction::I64GeU);
         v.push(Instruction::BrIf(1)); // done
-        // d = mem8[WT_DIRTY_BASE + i]
+                                      // d = mem8[WT_DIRTY_BASE + i]
         v.push(Instruction::I32Const(WT_DIRTY_BASE as i32));
         v.push(Instruction::LocalGet(0));
         v.push(Instruction::I32WrapI64);
@@ -407,7 +407,7 @@ impl WasmEmitter {
         v.push(Instruction::I64Load8U(ma0.clone()));
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::If(BlockType::Empty)); // C: dirty
-        // slot = CACHE_SLOT_BASE + i*STRIDE
+                                                   // slot = CACHE_SLOT_BASE + i*STRIDE
         v.push(Instruction::I64Const(CACHE_SLOT_BASE));
         v.push(Instruction::LocalGet(0));
         v.push(Instruction::I64Const(CACHE_STRIDE));
@@ -444,9 +444,9 @@ impl WasmEmitter {
         v.push(Instruction::LocalSet(4));
         // storage_write(klen, kptr, vlen, vptr, 0)
         v.push(Instruction::LocalGet(3)); // klen
-        // kptr = mem64[slot+0] low 32 — LOAD the word, never wrap the slot
-        // address itself (that fed the host the slot-table bytes as the
-        // "key": 136784 LE → "P\x16\x02\x00\x00").
+                                          // kptr = mem64[slot+0] low 32 — LOAD the word, never wrap the slot
+                                          // address itself (that fed the host the slot-table bytes as the
+                                          // "key": 136784 LE → "P\x16\x02\x00\x00").
         v.push(Instruction::LocalGet(1));
         v.push(Instruction::I32WrapI64);
         v.push(Instruction::I64Load(MemArg {

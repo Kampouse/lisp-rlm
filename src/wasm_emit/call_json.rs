@@ -69,8 +69,7 @@ impl WasmEmitter {
                 if a.len() == 1 {
                     return match &a[0] {
                         LispVal::Str(key) => {
-                            let offset_expr =
-                                vec![Instruction::I64Const(STORAGE_U128_BUF as i64)];
+                            let offset_expr = vec![Instruction::I64Const(STORAGE_U128_BUF as i64)];
                             self.json_get_u128(key, offset_expr)
                         }
                         _ => Err("near/json_get_u128 key must be a string literal".into()),
@@ -308,7 +307,12 @@ impl WasmEmitter {
                             Instruction::I64ShrU,
                         ];
                         let call = vec![Instruction::LocalGet(slot)];
-                        v.extend(self.json_get_u128_from(&key, call, JSON_SCAN_BUF, Some(ilen_v))?);
+                        v.extend(self.json_get_u128_from(
+                            &key,
+                            call,
+                            JSON_SCAN_BUF,
+                            Some(ilen_v),
+                        )?);
                         // json_get_u128_from pushes exactly one value on both
                         // paths (hit: re-pushed dst addr; miss: dst addr) —
                         // Drop it; to_str reads the slot local instead.
@@ -865,7 +869,7 @@ impl WasmEmitter {
                         setup.push(Instruction::End);
                         setup.push(Instruction::End);
                         setup.push(Instruction::End); // 8th: close the 'f' If
-                        // buf[w++] = mapped
+                                                      // buf[w++] = mapped
                         setup.push(Instruction::LocalSet(d)); // d now holds mapped byte
                         setup.push(Instruction::I64Const(target_buf));
                         setup.push(Instruction::LocalGet(w));
@@ -878,9 +882,9 @@ impl WasmEmitter {
                         setup.push(Instruction::I64Add);
                         setup.push(Instruction::LocalSet(w));
                         setup.push(Instruction::End); // close if-escape
-                        // plain path: buf[w++] = c; r+=1 — the escape branch
-                        // already advanced r by 2 (or +6 for \u), so the +1
-                        // lives ONLY in this else arm.
+                                                      // plain path: buf[w++] = c; r+=1 — the escape branch
+                                                      // already advanced r by 2 (or +6 for \u), so the +1
+                                                      // lives ONLY in this else arm.
                         setup.push(Instruction::Else);
                         setup.push(Instruction::I64Const(target_buf));
                         setup.push(Instruction::LocalGet(w));
@@ -903,9 +907,8 @@ impl WasmEmitter {
                         // scan length = write cursor w
                         let mut len_for_jg = Vec::new();
                         len_for_jg.push(Instruction::LocalGet(w));
-                        let mut v = self.json_get_from_buf_any(
-                            key, "str", target_buf, &mut len_for_jg,
-                        )?;
+                        let mut v =
+                            self.json_get_from_buf_any(key, "str", target_buf, &mut len_for_jg)?;
                         // ── result handling: identical tail to json-get-str? ──
                         let jgs_tmp2 = self.local_idx("jgs_packed2");
                         let jgs_len = self.local_idx_i32("jgs_len2");

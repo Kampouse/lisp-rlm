@@ -153,7 +153,11 @@ impl WasmEmitter {
     }
 
     fn build_json_get_func(&mut self, any_depth: bool) -> u32 {
-        let fname = if any_depth { "__json_get_any" } else { "__json_get" };
+        let fname = if any_depth {
+            "__json_get_any"
+        } else {
+            "__json_get"
+        };
         if let Some(idx) = self.funcs.iter().position(|f| f.name == fname) {
             return idx as u32;
         }
@@ -2575,10 +2579,10 @@ impl WasmEmitter {
             v.push(Instruction::I64Eq);
             v.push(Instruction::If(BlockType::Empty));
             v.push(Instruction::I64Const(TAG_NIL)); // was raw 0 — which is
-            // indistinguishable from a FOUND numeric 0 (Num(0) also tags to
-            // 0); every (nil? …) guard downstream misfired. 2026-10-07,
-            // with the json-get arg-order unification (interp parity:
-            // miss ⇒ Nil, found-zero ⇒ Num(0)).
+                                                    // indistinguishable from a FOUND numeric 0 (Num(0) also tags to
+                                                    // 0); every (nil? …) guard downstream misfired. 2026-10-07,
+                                                    // with the json-get arg-order unification (interp parity:
+                                                    // miss ⇒ Nil, found-zero ⇒ Num(0)).
             v.push(Instruction::LocalSet(result_l));
             v.push(Instruction::Else);
             // Extract ptr and len
@@ -2657,8 +2661,8 @@ impl WasmEmitter {
                 v.push(Instruction::Br(0));
                 v.push(Instruction::End); // loop
                 v.push(Instruction::End); // block
-                // negate if sign was seen: Select pops (cond, val2, val1)
-                // and yields val1 when cond≠0 — val1 = -int_result
+                                          // negate if sign was seen: Select pops (cond, val2, val1)
+                                          // and yields val1 when cond≠0 — val1 = -int_result
                 v.push(Instruction::LocalGet(int_result));
                 v.push(Instruction::I64Const(0));
                 v.push(Instruction::I64Sub); // 0 - int_result = -int_result

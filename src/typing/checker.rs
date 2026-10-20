@@ -1024,7 +1024,9 @@ fn infer(
                             ":u128" => TcType::Con(TcCon::U128),
                             other => {
                                 return Err(format!(
-                                    "json-get: unknown type param {} (supported: :u128)", other))
+                                    "json-get: unknown type param {} (supported: :u128)",
+                                    other
+                                ))
                             }
                         };
                         if list.len() == 3 || list.len() == 4 {
@@ -1527,163 +1529,164 @@ fn infer_application(
         // to generic env application — the pre-pass scheme carries the
         // user's own signature.
         if !env.is_user_defined(name) {
-        // str-cat: variadic STRINGS-ONLY concat (emitter + interp are
-        // variadic; the old binary Arrow type rejected legal 3+ arg forms
-        // — matches the wasm_emit arm's n-arg single-alloc path).
-        // Non-str args still hard-error (wasm untag assumes TAG_STR).
-        if name == "str-cat" {
-            for arg in args {
-                let t = infer(arg, env, supply, subst)?;
-                if unify(&t, &TcType::Con(TcCon::Str)).is_err() {
-                    return Err("in call (str-cat ...): args must all be str".into());
+            // str-cat: variadic STRINGS-ONLY concat (emitter + interp are
+            // variadic; the old binary Arrow type rejected legal 3+ arg forms
+            // — matches the wasm_emit arm's n-arg single-alloc path).
+            // Non-str args still hard-error (wasm untag assumes TAG_STR).
+            if name == "str-cat" {
+                for arg in args {
+                    let t = infer(arg, env, supply, subst)?;
+                    if unify(&t, &TcType::Con(TcCon::Str)).is_err() {
+                        return Err("in call (str-cat ...): args must all be str".into());
+                    }
                 }
-            }
-            return Ok(TcType::Con(TcCon::Str));
-        }
-        // json-extract-input / json-extract: variadic (1..=8 str keys →
-        // array of raw span strings; the emitter enforces the 8-key cap)
-        if name == "json-extract-input" || name == "json-extract" {
-            if args.is_empty() {
-                return Err(format!("in call ({name} ...): needs at least 1 key"));
-            }
-            for arg in args.iter().skip(if name == "json-extract" { 1 } else { 0 }) {
-                let t = infer(arg, env, supply, subst)?;
-                if unify(&t, &TcType::Con(TcCon::Str)).is_err() {
-                    return Err(format!("in call ({name} ...): keys must be str"));
-                }
-            }
-            return Ok(TcType::Con(TcCon::List(Box::new(TcType::Con(TcCon::Any)))));
-        }
-        // len: POLYMORPHIC — interp accepts BOTH str and list (and any
-        // array-ish value); the env carried two conflicting registrations
-        // (list→int generic at types.rs:800, str-narrow at 1512) so
-        // (len (str-concat "a" "b")) failed the checker while interp ran
-        // it. Found via the source-level differential fuzzer, 2026-09-01.
-        if name == "len" && args.len() == 1 {
-            let t = infer(&args[0], env, supply, subst)?;
-            let el = supply.fresh();
-            let list_t = match el {
-                TcType::Var(vid) => TcType::Con(TcCon::List(Box::new(TcType::Var(vid)))),
-                other => other,
-            };
-            let is_list = unify(&t, &list_t).is_ok();
-            let is_str = unify(&t, &TcType::Con(TcCon::Str)).is_ok();
-            if !is_list && !is_str {
-                return Err(format!(
-                    "in call (len ...): type mismatch: {} ≠ str/list",
-                    t
-                ));
-            }
-            return Ok(TcType::Con(TcCon::Int));
-        }
-        // vec-length: same polymorphic treatment as len — the TS frontend
-        // lowers `.length` (arrays AND strings) to vec-length, the wasm
-        // emitter's `len` arm handles TAG_STR + TAG_ARRAY, and the interp
-        // "length" builtin accepts both. The old list-only Arrow type
-        // rejected `S.length` on any string (surface tour 2, 2026-09-01).
-        if name == "vec-length" && args.len() == 1 {
-            let t = infer(&args[0], env, supply, subst)?;
-            let el = supply.fresh();
-            let list_t = match el {
-                TcType::Var(vid) => TcType::Con(TcCon::List(Box::new(TcType::Var(vid)))),
-                other => other,
-            };
-            let is_list = unify(&t, &list_t).is_ok();
-            let is_str = unify(&t, &TcType::Con(TcCon::Str)).is_ok();
-            if !is_list && !is_str {
-                return Err(format!(
-                    "in call (vec-length ...): type mismatch: {} ≠ str/list",
-                    t
-                ));
-            }
-            return Ok(TcType::Con(TcCon::Int));
-        }
-        if name == "str-concat" || name == "string-append" || name == "str" {
-            for arg in args {
-                let _ = infer(arg, env, supply, subst)?;
-            }
-            return Ok(TcType::Con(TcCon::Str));
-        }
-        // borsh-serialize: variadic (schema_name + field values) → nil
-        if name == "borsh-serialize" {
-            for arg in args {
-                let _ = infer(arg, env, supply, subst)?;
-            }
-            return Ok(TcType::Con(TcCon::Nil));
-        }
-        // borsh-deserialize: (schema_name bytes) → any
-        if name == "borsh-deserialize" {
-            for arg in args {
-                let _ = infer(arg, env, supply, subst)?;
-            }
-            return Ok(TcType::Con(TcCon::Any));
-        }
-        // array: variadic constructor → list of any
-        if name == "array" || name == "list" {
-            for arg in args {
-                let _ = infer(arg, env, supply, subst)?;
-            }
-            return Ok(TcType::Con(TcCon::List(Box::new(TcType::Con(TcCon::Any)))));
-        }
-        // `+` on strings → concat. The interpreter's `+` IS polymorphic
-        // (str+str concatenates; see interp "length" parity and the TS
-        // dialect's `acc + "S"` idiom), but the typing env is num-only —
-        // TS-side string concat that survived lowering (var + var, where a
-        // var is string-typed at runtime) hard-errored "num ≠ str".
-        // Str+str → str; anything else keeps the num arrow.
-        if name == "+" && args.len() == 2 {
-            let tl = infer(&args[0], env, supply, subst)?;
-            let tr = infer(&args[1], env, supply, subst)?;
-            // CONCRETE str only: an unbound type var unifies with Str, which
-            // made `(+ (f) 1)` on a not-yet-bound fn return Str and broke
-            // near/store's num param (test_near_counter regression 2026-09-01).
-            let is_concrete_str = |t: &TcType| matches!(subst.apply(t), TcType::Con(TcCon::Str));
-            let l_str = is_concrete_str(&tl);
-            let r_str = is_concrete_str(&tr);
-            if l_str || r_str {
-                // coerce the non-str side through to-string at runtime is the
-                // emitter's job; here just accept the mix and return str
                 return Ok(TcType::Con(TcCon::Str));
             }
-            // fall through to the env arrow (num → num → num)
-            let su = unify(&subst.apply(&tl), &TcType::Con(TcCon::Num))
-                .map_err(|e| format!("in call (+ ...): {}", e))?;
-            *subst = su.compose(subst.clone());
-            let su2 = unify(&subst.apply(&tr), &TcType::Con(TcCon::Num))
-                .map_err(|e| format!("in call (+ ...): {}", e))?;
-            *subst = su2.compose(subst.clone());
-            return Ok(TcType::Con(TcCon::Num));
-        }
-        // `=` is polymorphic at runtime: numeric eq, string eq, and bool eq
-        // (bools are tagged ints; the interp's `=` compares tagged values).
-        // The typing env is num-only — `(= (deposit-gte 0 0) 1)` (surface
-        // tour 2 ctx fixture, 2026-09-01) errored "bool ≠ int". Accept
-        // same-type pairs of num|str|bool → bool.
-        if name == "=" && args.len() == 2 {
-            let tl = infer(&args[0], env, supply, subst)?;
-            let tr = infer(&args[1], env, supply, subst)?;
-            let tl = subst.apply(&tl);
-            let tr = subst.apply(&tr);
-            for t in [
-                &TcType::Con(TcCon::Num),
-                &TcType::Con(TcCon::Str),
-                &TcType::Con(TcCon::Bool),
-            ] {
-                if unify(&tl, t).is_ok() && unify(&tr, t).is_ok() {
+            // json-extract-input / json-extract: variadic (1..=8 str keys →
+            // array of raw span strings; the emitter enforces the 8-key cap)
+            if name == "json-extract-input" || name == "json-extract" {
+                if args.is_empty() {
+                    return Err(format!("in call ({name} ...): needs at least 1 key"));
+                }
+                for arg in args.iter().skip(if name == "json-extract" { 1 } else { 0 }) {
+                    let t = infer(arg, env, supply, subst)?;
+                    if unify(&t, &TcType::Con(TcCon::Str)).is_err() {
+                        return Err(format!("in call ({name} ...): keys must be str"));
+                    }
+                }
+                return Ok(TcType::Con(TcCon::List(Box::new(TcType::Con(TcCon::Any)))));
+            }
+            // len: POLYMORPHIC — interp accepts BOTH str and list (and any
+            // array-ish value); the env carried two conflicting registrations
+            // (list→int generic at types.rs:800, str-narrow at 1512) so
+            // (len (str-concat "a" "b")) failed the checker while interp ran
+            // it. Found via the source-level differential fuzzer, 2026-09-01.
+            if name == "len" && args.len() == 1 {
+                let t = infer(&args[0], env, supply, subst)?;
+                let el = supply.fresh();
+                let list_t = match el {
+                    TcType::Var(vid) => TcType::Con(TcCon::List(Box::new(TcType::Var(vid)))),
+                    other => other,
+                };
+                let is_list = unify(&t, &list_t).is_ok();
+                let is_str = unify(&t, &TcType::Con(TcCon::Str)).is_ok();
+                if !is_list && !is_str {
+                    return Err(format!(
+                        "in call (len ...): type mismatch: {} ≠ str/list",
+                        t
+                    ));
+                }
+                return Ok(TcType::Con(TcCon::Int));
+            }
+            // vec-length: same polymorphic treatment as len — the TS frontend
+            // lowers `.length` (arrays AND strings) to vec-length, the wasm
+            // emitter's `len` arm handles TAG_STR + TAG_ARRAY, and the interp
+            // "length" builtin accepts both. The old list-only Arrow type
+            // rejected `S.length` on any string (surface tour 2, 2026-09-01).
+            if name == "vec-length" && args.len() == 1 {
+                let t = infer(&args[0], env, supply, subst)?;
+                let el = supply.fresh();
+                let list_t = match el {
+                    TcType::Var(vid) => TcType::Con(TcCon::List(Box::new(TcType::Var(vid)))),
+                    other => other,
+                };
+                let is_list = unify(&t, &list_t).is_ok();
+                let is_str = unify(&t, &TcType::Con(TcCon::Str)).is_ok();
+                if !is_list && !is_str {
+                    return Err(format!(
+                        "in call (vec-length ...): type mismatch: {} ≠ str/list",
+                        t
+                    ));
+                }
+                return Ok(TcType::Con(TcCon::Int));
+            }
+            if name == "str-concat" || name == "string-append" || name == "str" {
+                for arg in args {
+                    let _ = infer(arg, env, supply, subst)?;
+                }
+                return Ok(TcType::Con(TcCon::Str));
+            }
+            // borsh-serialize: variadic (schema_name + field values) → nil
+            if name == "borsh-serialize" {
+                for arg in args {
+                    let _ = infer(arg, env, supply, subst)?;
+                }
+                return Ok(TcType::Con(TcCon::Nil));
+            }
+            // borsh-deserialize: (schema_name bytes) → any
+            if name == "borsh-deserialize" {
+                for arg in args {
+                    let _ = infer(arg, env, supply, subst)?;
+                }
+                return Ok(TcType::Con(TcCon::Any));
+            }
+            // array: variadic constructor → list of any
+            if name == "array" || name == "list" {
+                for arg in args {
+                    let _ = infer(arg, env, supply, subst)?;
+                }
+                return Ok(TcType::Con(TcCon::List(Box::new(TcType::Con(TcCon::Any)))));
+            }
+            // `+` on strings → concat. The interpreter's `+` IS polymorphic
+            // (str+str concatenates; see interp "length" parity and the TS
+            // dialect's `acc + "S"` idiom), but the typing env is num-only —
+            // TS-side string concat that survived lowering (var + var, where a
+            // var is string-typed at runtime) hard-errored "num ≠ str".
+            // Str+str → str; anything else keeps the num arrow.
+            if name == "+" && args.len() == 2 {
+                let tl = infer(&args[0], env, supply, subst)?;
+                let tr = infer(&args[1], env, supply, subst)?;
+                // CONCRETE str only: an unbound type var unifies with Str, which
+                // made `(+ (f) 1)` on a not-yet-bound fn return Str and broke
+                // near/store's num param (test_near_counter regression 2026-09-01).
+                let is_concrete_str =
+                    |t: &TcType| matches!(subst.apply(t), TcType::Con(TcCon::Str));
+                let l_str = is_concrete_str(&tl);
+                let r_str = is_concrete_str(&tr);
+                if l_str || r_str {
+                    // coerce the non-str side through to-string at runtime is the
+                    // emitter's job; here just accept the mix and return str
+                    return Ok(TcType::Con(TcCon::Str));
+                }
+                // fall through to the env arrow (num → num → num)
+                let su = unify(&subst.apply(&tl), &TcType::Con(TcCon::Num))
+                    .map_err(|e| format!("in call (+ ...): {}", e))?;
+                *subst = su.compose(subst.clone());
+                let su2 = unify(&subst.apply(&tr), &TcType::Con(TcCon::Num))
+                    .map_err(|e| format!("in call (+ ...): {}", e))?;
+                *subst = su2.compose(subst.clone());
+                return Ok(TcType::Con(TcCon::Num));
+            }
+            // `=` is polymorphic at runtime: numeric eq, string eq, and bool eq
+            // (bools are tagged ints; the interp's `=` compares tagged values).
+            // The typing env is num-only — `(= (deposit-gte 0 0) 1)` (surface
+            // tour 2 ctx fixture, 2026-09-01) errored "bool ≠ int". Accept
+            // same-type pairs of num|str|bool → bool.
+            if name == "=" && args.len() == 2 {
+                let tl = infer(&args[0], env, supply, subst)?;
+                let tr = infer(&args[1], env, supply, subst)?;
+                let tl = subst.apply(&tl);
+                let tr = subst.apply(&tr);
+                for t in [
+                    &TcType::Con(TcCon::Num),
+                    &TcType::Con(TcCon::Str),
+                    &TcType::Con(TcCon::Bool),
+                ] {
+                    if unify(&tl, t).is_ok() && unify(&tr, t).is_ok() {
+                        return Ok(TcType::Con(TcCon::Bool));
+                    }
+                }
+                // bool ↔ int mix: bools are tagged ints, `(= ok 1)` is a
+                // truthiness probe (surface tour 2 ctx, 2026-09-01)
+                let tl_bool = unify(&tl, &TcType::Con(TcCon::Bool)).is_ok();
+                let tr_bool = unify(&tr, &TcType::Con(TcCon::Bool)).is_ok();
+                if (tl_bool && unify(&tr, &TcType::Con(TcCon::Num)).is_ok())
+                    || (tr_bool && unify(&tl, &TcType::Con(TcCon::Num)).is_ok())
+                {
                     return Ok(TcType::Con(TcCon::Bool));
                 }
+                // mixed/unknown: fall through to the num arrow for a precise error
             }
-            // bool ↔ int mix: bools are tagged ints, `(= ok 1)` is a
-            // truthiness probe (surface tour 2 ctx, 2026-09-01)
-            let tl_bool = unify(&tl, &TcType::Con(TcCon::Bool)).is_ok();
-            let tr_bool = unify(&tr, &TcType::Con(TcCon::Bool)).is_ok();
-            if (tl_bool && unify(&tr, &TcType::Con(TcCon::Num)).is_ok())
-                || (tr_bool && unify(&tl, &TcType::Con(TcCon::Num)).is_ok())
-            {
-                return Ok(TcType::Con(TcCon::Bool));
-            }
-            // mixed/unknown: fall through to the num arrow for a precise error
-        }
         } // end !is_user_defined — hardcoded builtin arms defer to user schemes
     }
 
@@ -1935,11 +1938,13 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
         param_vals: &std::collections::HashMap<(String, usize), Vec<AVal>>,
         global_env: &mut std::collections::HashMap<String, AVal>,
         occurrence: &mut std::collections::HashMap<String, usize>,
-    ) -> (std::collections::HashMap<String, Summary>, std::collections::HashMap<u32, String>) {
+    ) -> (
+        std::collections::HashMap<String, Summary>,
+        std::collections::HashMap<u32, String>,
+    ) {
         let mut summaries: std::collections::HashMap<String, Summary> =
             std::collections::HashMap::new();
-        let mut creators: std::collections::HashMap<u32, String> =
-            std::collections::HashMap::new();
+        let mut creators: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
         let mut next_origin: u32 = 0;
         // Occurrence indices are single-pass source order; reset per pass so
         // fixpoint rounds never inherit (and inflate) the previous round's
@@ -1977,7 +1982,17 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
                 LispVal::Sym(s) => s.as_str(),
                 _ => {
                     for it in &list[1..] {
-                        walkv(it, cur_defn, env, global_env, summary, occurrence, next_origin, creators, defns);
+                        walkv(
+                            it,
+                            cur_defn,
+                            env,
+                            global_env,
+                            summary,
+                            occurrence,
+                            next_origin,
+                            creators,
+                            defns,
+                        );
                     }
                     return AVal::Opaque;
                 }
@@ -1993,12 +2008,18 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
                                 // The binding VALUE is walked (recording any
                                 // uses/edges inside it) AND yields the value.
                                 let v = walkv(
-                                    &bi[1], cur_defn, env, global_env, summary, occurrence,
-                                    next_origin, creators, defns,
+                                    &bi[1],
+                                    cur_defn,
+                                    env,
+                                    global_env,
+                                    summary,
+                                    occurrence,
+                                    next_origin,
+                                    creators,
+                                    defns,
                                 );
                                 if let LispVal::Sym(name) = &bi[0] {
-                                    let prev =
-                                        env.insert(name.clone(), v).unwrap_or(AVal::Opaque);
+                                    let prev = env.insert(name.clone(), v).unwrap_or(AVal::Opaque);
                                     saved.push((name.clone(), prev));
                                 }
                             }
@@ -2008,8 +2029,15 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
                 let mut last = AVal::Opaque;
                 for it in &list[2..] {
                     last = walkv(
-                        it, cur_defn, env, global_env, summary, occurrence, next_origin,
-                        creators, defns,
+                        it,
+                        cur_defn,
+                        env,
+                        global_env,
+                        summary,
+                        occurrence,
+                        next_origin,
+                        creators,
+                        defns,
                     );
                 }
                 for (n, v) in saved {
@@ -2024,16 +2052,22 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
                 if let Some(LispVal::List(params)) = list.get(1) {
                     for p in params {
                         if let LispVal::Sym(n) = p {
-                            let prev =
-                                env.insert(n.clone(), AVal::Opaque).unwrap_or(AVal::Opaque);
+                            let prev = env.insert(n.clone(), AVal::Opaque).unwrap_or(AVal::Opaque);
                             saved.push((n.clone(), prev));
                         }
                     }
                 }
                 for it in &list[2..] {
                     walkv(
-                        it, cur_defn, env, global_env, summary, occurrence, next_origin,
-                        creators, defns,
+                        it,
+                        cur_defn,
+                        env,
+                        global_env,
+                        summary,
+                        occurrence,
+                        next_origin,
+                        creators,
+                        defns,
                     );
                 }
                 for (n, v) in saved {
@@ -2056,8 +2090,15 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
                 };
                 for (ai, arg) in list[1..].iter().enumerate() {
                     let v = walkv(
-                        arg, cur_defn, env, global_env, summary, occurrence, next_origin,
-                        creators, defns,
+                        arg,
+                        cur_defn,
+                        env,
+                        global_env,
+                        summary,
+                        occurrence,
+                        next_origin,
+                        creators,
+                        defns,
                     );
                     if consume_args.contains(&ai) {
                         if let AVal::Handle(id) = v {
@@ -2090,8 +2131,15 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
                 let mut vals = Vec::new();
                 for arg in &list[1..] {
                     vals.push(walkv(
-                        arg, cur_defn, env, global_env, summary, occurrence, next_origin,
-                        creators, defns,
+                        arg,
+                        cur_defn,
+                        env,
+                        global_env,
+                        summary,
+                        occurrence,
+                        next_origin,
+                        creators,
+                        defns,
                     ));
                 }
                 summary.calls.push(CallEdge {
@@ -2106,8 +2154,15 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
             if PROMISE_PRODUCERS.contains(&head) {
                 for arg in &list[1..] {
                     walkv(
-                        arg, cur_defn, env, global_env, summary, occurrence, next_origin,
-                        creators, defns,
+                        arg,
+                        cur_defn,
+                        env,
+                        global_env,
+                        summary,
+                        occurrence,
+                        next_origin,
+                        creators,
+                        defns,
                     );
                 }
                 let id = *next_origin;
@@ -2121,8 +2176,15 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
                 let mut vs = Vec::new();
                 for arg in &list[1..] {
                     vs.push(walkv(
-                        arg, cur_defn, env, global_env, summary, occurrence, next_origin,
-                        creators, defns,
+                        arg,
+                        cur_defn,
+                        env,
+                        global_env,
+                        summary,
+                        occurrence,
+                        next_origin,
+                        creators,
+                        defns,
                     ));
                 }
                 return AVal::Tuple(vs);
@@ -2133,8 +2195,15 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
                 && list.len() == 2
             {
                 let v = walkv(
-                    &list[1], cur_defn, env, global_env, summary, occurrence, next_origin,
-                    creators, defns,
+                    &list[1],
+                    cur_defn,
+                    env,
+                    global_env,
+                    summary,
+                    occurrence,
+                    next_origin,
+                    creators,
+                    defns,
                 );
                 return match v {
                     AVal::Tuple(vs) => {
@@ -2154,7 +2223,14 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
             // value is opaque.
             for it in &list[1..] {
                 walkv(
-                    it, cur_defn, env, global_env, summary, occurrence, next_origin, creators,
+                    it,
+                    cur_defn,
+                    env,
+                    global_env,
+                    summary,
+                    occurrence,
+                    next_origin,
+                    creators,
                     defns,
                 );
             }
@@ -2222,8 +2298,7 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
                 }
             }
             // Top-level non-define expression.
-            let mut env: std::collections::HashMap<String, AVal> =
-                std::collections::HashMap::new();
+            let mut env: std::collections::HashMap<String, AVal> = std::collections::HashMap::new();
             let sum = summaries.entry(String::new()).or_default();
             walkv(
                 e,
@@ -2245,10 +2320,8 @@ pub fn check_promise_single_use(source: Option<&str>, exprs: &[LispVal]) -> Resu
     // traversal), so identity is preserved across rounds.
     let mut param_vals: std::collections::HashMap<(String, usize), Vec<AVal>> =
         std::collections::HashMap::new();
-    let mut global_env: std::collections::HashMap<String, AVal> =
-        std::collections::HashMap::new();
-    let mut occurrence: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
+    let mut global_env: std::collections::HashMap<String, AVal> = std::collections::HashMap::new();
+    let mut occurrence: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let (mut summaries, mut creators) =
         pass(exprs, &defns, &param_vals, &mut global_env, &mut occurrence);
     for _round in 0..100 {
@@ -2523,7 +2596,10 @@ fn is_u128_producer(op: &str) -> bool {
 
 /// u128 -> i64 truncators: result leaves the money domain.
 fn is_u128_truncator(op: &str) -> bool {
-    matches!(op, "u128/to-i64" | "u128/to_i64" | "u128/checked_to_i64" | "u128/fit_i64")
+    matches!(
+        op,
+        "u128/to-i64" | "u128/to_i64" | "u128/checked_to_i64" | "u128/fit_i64"
+    )
 }
 
 fn str_as_u128(s: &str) -> bool {
@@ -2594,8 +2670,7 @@ fn collect_gas_consts(
     let mut bound = std::collections::HashSet::new();
     for e in exprs {
         if let LispVal::List(items) = e {
-            if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") && items.len() >= 3
-            {
+            if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") && items.len() >= 3 {
                 match items.get(1) {
                     Some(LispVal::Sym(name)) => {
                         if !defns.contains_key(name) {
@@ -2687,21 +2762,33 @@ fn count_hosts(val: &LispVal, acc: &mut i128) {
                 *acc += 1;
             }
         }
-        let start = if matches!(items.first(), Some(LispVal::Sym(_))) { 1 } else { 0 };
+        let start = if matches!(items.first(), Some(LispVal::Sym(_))) {
+            1
+        } else {
+            0
+        };
         for it in &items[start..] {
             count_hosts(it, acc);
         }
     }
 }
 
-fn collect_callees(val: &LispVal, defns: &std::collections::HashMap<String, usize>, out: &mut std::collections::HashSet<String>) {
+fn collect_callees(
+    val: &LispVal,
+    defns: &std::collections::HashMap<String, usize>,
+    out: &mut std::collections::HashSet<String>,
+) {
     if let LispVal::List(items) = val {
         if let Some(LispVal::Sym(h)) = items.first() {
             if defns.contains_key(h) {
                 out.insert(h.clone());
             }
         }
-        let start = if matches!(items.first(), Some(LispVal::Sym(_))) { 1 } else { 0 };
+        let start = if matches!(items.first(), Some(LispVal::Sym(_))) {
+            1
+        } else {
+            0
+        };
         for it in &items[start..] {
             collect_callees(it, defns, out);
         }
@@ -2781,7 +2868,11 @@ fn count_gas_literals(
                 }
             }
         }
-        let start = if matches!(items.first(), Some(LispVal::Sym(_))) { 1 } else { 0 };
+        let start = if matches!(items.first(), Some(LispVal::Sym(_))) {
+            1
+        } else {
+            0
+        };
         for it in &items[start..] {
             count_gas_literals(it, acc, consts, bound);
         }
@@ -2880,11 +2971,13 @@ fn seed_pass(
     ) -> MVal {
         let list = match val {
             LispVal::List(items) if !items.is_empty() => items,
-            LispVal::Sym(n) => return env
-                .get(n)
-                .or_else(|| global_env.get(n))
-                .cloned()
-                .unwrap_or(MVal::Opaque),
+            LispVal::Sym(n) => {
+                return env
+                    .get(n)
+                    .or_else(|| global_env.get(n))
+                    .cloned()
+                    .unwrap_or(MVal::Opaque)
+            }
             LispVal::Str(s) => {
                 return if str_as_u128(s) {
                     MVal::U128
@@ -2906,8 +2999,7 @@ fn seed_pass(
                         if bi.len() >= 2 {
                             let v = swalk(&bi[1], env, global_env, param_u128, defns);
                             if let LispVal::Sym(n) = &bi[0] {
-                                let prev =
-                                    env.insert(n.clone(), v).unwrap_or(MVal::Opaque);
+                                let prev = env.insert(n.clone(), v).unwrap_or(MVal::Opaque);
                                 saved.push((n.clone(), prev));
                             }
                         }
@@ -2927,7 +3019,11 @@ fn seed_pass(
             let mut ret = MVal::Opaque;
             for a in &list[1..] {
                 let v = swalk(a, env, global_env, param_u128, defns);
-                ret = if ret == MVal::Opaque { v } else { mjoin(ret, v) };
+                ret = if ret == MVal::Opaque {
+                    v
+                } else {
+                    mjoin(ret, v)
+                };
             }
             return ret;
         }
@@ -2978,8 +3074,7 @@ fn seed_pass(
 
     let mut param_u128: std::collections::HashMap<(String, usize), MVal> =
         std::collections::HashMap::new();
-    let mut global_env: std::collections::HashMap<String, MVal> =
-        std::collections::HashMap::new();
+    let mut global_env: std::collections::HashMap<String, MVal> = std::collections::HashMap::new();
     for e in exprs {
         if let LispVal::List(items) = e {
             if matches!(items.first(), Some(LispVal::Sym(s)) if s == "define") {
@@ -2989,13 +3084,8 @@ fn seed_pass(
                             // (define name value)
                             if items.len() >= 3 {
                                 let mut env = std::collections::HashMap::new();
-                                let v = swalk(
-                                    &items[2],
-                                    &mut env,
-                                    &global_env,
-                                    &mut param_u128,
-                                    defns,
-                                );
+                                let v =
+                                    swalk(&items[2], &mut env, &global_env, &mut param_u128, defns);
                                 global_env.insert(name.clone(), v);
                             }
                         } else {
@@ -3089,7 +3179,11 @@ fn cwalk(
             if v == MVal::U128 {
                 any_u128 = true;
             }
-            ret = if ret == MVal::Opaque { v } else { mjoin(ret, v) };
+            ret = if ret == MVal::Opaque {
+                v
+            } else {
+                mjoin(ret, v)
+            };
         }
         if any_u128 {
             cx.errs.push(format!(
@@ -3287,8 +3381,7 @@ fn cwalk(
                 // host op in the callback's transitive same-program closure.
                 let mut memo = std::collections::HashMap::new();
                 let mut stack = Vec::new();
-                let hosts =
-                    hosts_closure_of(mname, cx.bodies, cx.defns, &mut memo, &mut stack);
+                let hosts = hosts_closure_of(mname, cx.bodies, cx.defns, &mut memo, &mut stack);
                 let cb_floor = CB_FLOOR_BASE + hosts * CB_FLOOR_PER_HOST;
                 if let Some(LispVal::Num(n)) = list.get(6) {
                     let attached = *n as i128;
@@ -3372,7 +3465,13 @@ pub fn check_resource_flow(source: Option<&str>, exprs: &[LispVal]) -> Result<()
                                 }
                             }
                             for b in &items[2..] {
-                                cwalk(b, &mut env, &mut std::collections::HashMap::new(), &mut cx, name);
+                                cwalk(
+                                    b,
+                                    &mut env,
+                                    &mut std::collections::HashMap::new(),
+                                    &mut cx,
+                                    name,
+                                );
                             }
                         } else if items.len() >= 3 {
                             // (define name value)
@@ -3387,7 +3486,13 @@ pub fn check_resource_flow(source: Option<&str>, exprs: &[LispVal]) -> Result<()
             }
             // top-level non-define
             let mut env = std::collections::HashMap::new();
-            cwalk(e, &mut env, &mut std::collections::HashMap::new(), &mut cx, "");
+            cwalk(
+                e,
+                &mut env,
+                &mut std::collections::HashMap::new(),
+                &mut cx,
+                "",
+            );
         }
     }
 
@@ -3427,7 +3532,6 @@ pub fn check_resource_flow(source: Option<&str>, exprs: &[LispVal]) -> Result<()
     }
 }
 
-
 fn label_of_occ(
     op_lines: &std::collections::HashMap<&str, Vec<usize>>,
     op: &str,
@@ -3464,7 +3568,6 @@ fn render_sites_occ(
         })
         .collect()
 }
-
 
 pub fn type_check_program(exprs: &[LispVal], near: bool) -> Result<(), String> {
     let mut env = if near {
@@ -4224,8 +4327,8 @@ pub(crate) fn trivial_u128_wrapper_shape(
     };
     let op = head.as_str();
     let expected = match op {
-        "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod" | "u128/lt"
-        | "u128/gt" | "u128/eq" => 2,
+        "u128/add" | "u128/sub" | "u128/mul" | "u128/div" | "u128/mod" | "u128/lt" | "u128/gt"
+        | "u128/eq" => 2,
         "u128/muldiv" => 3,
         _ => return None,
     };
@@ -4294,14 +4397,16 @@ fn prov_of(
                     | "u128/muldiv" => Native,
                     // predicates leave the u128 domain (tagged bool)
                     "u128/lt" | "u128/gt" | "u128/eq" => Stringly,
-                    "u128/from-i64" | "u128/from_i64" | "u128/from_yocto"
-                    | "u128/from-yocto" | "u128/new" => Native,
+                    "u128/from-i64" | "u128/from_i64" | "u128/from_yocto" | "u128/from-yocto"
+                    | "u128/new" => Native,
                     // Native births at the ABI edge
                     "near/attached_deposit_u128" => Native,
                     // typed json reads: (json-get :u128 ...) — the type
                     // param is a ':'-prefixed Sym in this dialect
                     "json-get" | "json_get" => {
-                        let typed = args.iter().any(|a| matches!(a, LispVal::Sym(k) if k == ":u128"));
+                        let typed = args
+                            .iter()
+                            .any(|a| matches!(a, LispVal::Sym(k) if k == ":u128"));
                         if typed {
                             Native
                         } else {
@@ -4548,10 +4653,8 @@ pub fn u128_param_provenance(
     for name in &order {
         native.insert(name.clone(), vec![true; defns[name].0.len()]);
     }
-    let mut rets: std::collections::HashMap<String, Provenance> = order
-        .iter()
-        .map(|n| (n.clone(), Native))
-        .collect();
+    let mut rets: std::collections::HashMap<String, Provenance> =
+        order.iter().map(|n| (n.clone(), Native)).collect();
     for _round in 0..100 {
         // Kleene round: everything reads the SNAPSHOT (rets_prev), commits
         // at round end — clean iteration to the greatest fixpoint
@@ -4673,7 +4776,11 @@ fn prov_walk_bindings(
                                             // binding VALUE see the env from
                                             // earlier bindings only
                                             prov_walk_bindings(
-                                                &p[1], env, locals, defns, rets,
+                                                &p[1],
+                                                env,
+                                                locals,
+                                                defns,
+                                                rets,
                                                 demote.as_deref_mut(),
                                             );
                                         }
@@ -4698,7 +4805,12 @@ fn prov_walk_bindings(
                             env.insert(n.clone(), pv);
                             locals.insert(n.clone(), pv);
                             prov_walk_bindings(
-                                &items[2], env, locals, defns, rets, demote.as_deref_mut(),
+                                &items[2],
+                                env,
+                                locals,
+                                defns,
+                                rets,
+                                demote.as_deref_mut(),
                             );
                         }
                     }
@@ -4728,7 +4840,12 @@ fn prov_walk_bindings(
                         }
                         for sub in &items[1..] {
                             prov_walk_bindings(
-                                sub, env, locals, defns, rets, demote.as_deref_mut(),
+                                sub,
+                                env,
+                                locals,
+                                defns,
+                                rets,
+                                demote.as_deref_mut(),
                             );
                         }
                     }
