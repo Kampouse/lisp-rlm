@@ -250,12 +250,12 @@
                           (near/promise_batch_action_function_call p "burn"
                             (json-set (json-set (json-set "{}"
                               "d" d) "a" (lf-bz "LF|A")) "b" (lf-bz "LF|B"))
-                            "0" (lf-bond 40000000000000))
+                            "0" (lf-bond 99000000000000))
                           (near/promise_return
                             (near/promise_then p (near/current_account_id)
                               "onburn"
                               (json-set (json-set "{}" "r" who) "d" d)
-                              "0" 35000000000000))))))))))))))
+                              "0" 98000000000000))))))))))))))
 
 ;; ── onburn — burnc succeeded: owed = backing + tranche fees ─────────────
 ;; Failure ⇒ restore BUR (the wd receipt that wrote it already committed).
@@ -277,10 +277,10 @@
                 (let ((p (near/promise_batch_create (lf-bz "LF|POOL"))))
                   (begin
                     (near/promise_batch_action_function_call p "collect"
-                      (json-set "{}" "t" "X") "0" (lf-bond 9000000000000))
+                      (json-set "{}" "t" "X") "0" (lf-bond 60000000000000))
                     (near/promise_return
                       (near/promise_then p (near/current_account_id) "oncx"
-                        (json-set "{}" "r" who) "0" (lf-bond 10000000000000)))))))))))))
+                        (json-set "{}" "r" who) "0" (lf-bond 2000000000000)))))))))))))
       (lf-fail "ERR_SELF"))
 
 ;; ── oncx — claim X paid the factory ⇒ fire claim Y ──────────────────────
@@ -293,10 +293,10 @@
             (let ((p (near/promise_batch_create (lf-bz "LF|POOL"))))
               (begin
                 (near/promise_batch_action_function_call p "collect"
-                  (json-set "{}" "t" "Y") "0" (lf-bond 7000000000000))
+                  (json-set "{}" "t" "Y") "0" (lf-bond 15000000000000))
                 (near/promise_return
                   (near/promise_then p (near/current_account_id) "oncy"
-                    (json-set "{}" "r" who) "0" 12000000000000)))))))
+                    (json-set "{}" "r" who) "0" (lf-bond 3000000000000))))))))
       (lf-fail "ERR_SELF")))
 
 ;; ── oncy — claim Y paid ⇒ forward backing+fees of both sides to the creator
@@ -312,11 +312,11 @@
                 (near/promise_batch_action_function_call px "ft_transfer"
                   (json-set (json-set "{}" "receiver_id" who)
                             "amount" (lf-bz "LF|CX"))
-                  "0" (lf-bond 3500000000000))
+                  "0" (lf-bond 4500000000000))
                 (near/promise_batch_action_function_call py "ft_transfer"
                   (json-set (json-set "{}" "receiver_id" who)
                             "amount" (lf-bz "LF|CY"))
-                  "0" (lf-bond 2200000000000))
+                  "0" (lf-bond 2000000000000))
                 (lf-put "LF|CX" "0")
                 (lf-put "LF|CY" "0")
                 (near/promise_return
@@ -341,10 +341,10 @@
         (let ((p (near/promise_batch_create (lf-bz "LF|POOL"))))
           (begin
             (near/promise_batch_action_function_call p "collect"
-              (json-set "{}" "t" "X") "0" (lf-bond 9000000000000))
+              (json-set "{}" "t" "X") "0" (lf-bond 60000000000000))
             (near/promise_return
               (near/promise_then p (near/current_account_id) "oncx"
-                (json-set "{}" "r" who) "0" (lf-bond 10000000000000))))))))
+                (json-set "{}" "r" who) "0" (lf-bond 2000000000000))))))))
 
 ;; ── state — packed view (allowance at current ts) ───────────────────────
 (define (lf-state)
