@@ -894,6 +894,9 @@ fn extract_panic(raw: &str) -> Option<String> {
 /// walks via `e.chain().skip(1)`. wasmtime::Error doesn't impl std Error.
 fn error_chain(e: &wasmtime::Error) -> String {
     let mut s = e.to_string();
+    if let Some(t) = e.downcast_ref::<wasmtime::Trap>() {
+        s.push_str(&format!("\n[trap_code: {:?}]", t));
+    }
     for c in e.chain().skip(1) {
         s.push('\n');
         s.push_str(&c.to_string());
@@ -2929,7 +2932,10 @@ pub(crate) fn run_scenario_opts(
                 }
             }
             Err(e) => {
-                println!("❌ trap: {}", e);
+                let tc = e.downcast_ref::<wasmtime::Trap>()
+                    .map(|t| format!(" {:?}", t))
+                    .unwrap_or_default();
+                println!("❌ trap:[{}] {} | chain: {}", tc, e, error_chain(&e));
                 step_failed = true;
             }
         }

@@ -52,10 +52,13 @@
 ;; and burnc owe. Mint = TWO legs (X/Y arrive in separate receipts):
 ;; msg "m:d:a:b" — leg 1 attaches EXACTLY its side's req (no refund path
 ;; exists for leg-1 excess), records 6|PM:<who> = "S:a:b:d:req" and
-;; escrows req; leg 2 attaches ≥ req, matches side+a+b+d, escrows its
-;; req, completes (exact op-mint core) and refunds excess via used.
+;; escrows req QUARANTINED in 6|ESCMX/6|ESCMY (outside the shared float,
+;; so burns/claims/swaps can never pay out of pending-mint custody); leg
+;; 2 attaches ≥ req, matches side+a+b+d, escrows its req in the float,
+;; moves leg 1's slice into the float as position backing, completes
+;; (exact op-mint core) and refunds excess via used.
 ;; msg "c" cancels: plain ft_transfer of the RECORDED slice, PM cleared +
-;; escrow drained only in the p5-pay "mk" success branch (failure leaves
+;; ESCM drained only in the p5-pay "mk" success branch (failure leaves
 ;; pending+escrow intact for retry). Burn = op "burnc" (authority +
 ;; per-cell LQ guard + exact op-burn core; owed ledgers = req capped at
 ;; the escrow float) + op "claim" {t} per token: owed zeroed + escrow
@@ -999,9 +1002,11 @@
 ;; legs charge and burnc refunds; leg 1 attaches EXACTLY its side's req
 ;; (its excess could never ride a refund); leg 2 attaches ≥ req,
 ;; excess refunded via its chain result; cancel msg "c" attaches 0):
-;;   leg 1 records 6|PM:<sender> = "<X|Y>:a:b:d" and escrows d on its
-;;   side; leg 2 matches a/b and the opposite side, requires ≥ req,
-;;   completes the position (exact op-mint core). Both sides' REQUIRED
+;;   leg 1 records 6|PM:<sender> = "<X|Y>:a:b:d" and escrows req on its
+;;   side QUARANTINED in 6|ESCM<side> (never swappable/burnable float);
+;;   leg 2 matches a/b and the opposite side, requires ≥ req, and
+;;   completes the position (exact op-mint core), moving leg 1's slice
+;;   into the float as backing. Both sides' REQUIRED
 ;;   slices stay escrowed — burn claims pay req back (same closed form,
 ;;   so custody is symmetric; swap PnL lives in the books, not custody).
 ;;   Mismatch / short / re-entry / bad shape ⇒ p5-fail
@@ -1217,7 +1222,7 @@
           (if (or (str= rec "") (str= rec "0"))
               (near/return amt)
               (let ((esc (p5-fld rec 4 58)))   ;; recorded escrow slice
-              (let ((ek1 (str-cat "6|ESC" (str-slice rec 0 1))))
+              (let ((ek1 (str-cat "6|ESCM" (str-slice rec 0 1))))
                 (begin
                   ;; cancel: refund the recorded slice via plain ft_transfer
                   ;; (a 0-amount ft_transfer_call moves nothing). State is
@@ -1291,13 +1296,17 @@
                                 (begin
                                   (p5-put ek (li-add (p5-bz ek) req))
                                   (p5-mint-finish sender d a b (li-sub amt req))))
-                              (let ((ek (if toky? "6|ESCY" "6|ESCX")))
+                              (let ((ek (if toky? "6|ESCMY" "6|ESCMX")))
                                 (begin
                                   (p5-put (str-cat "6|PM:" sender)
                                     (str-cat (if toky? "Y" "X")
                                       (str-cat ":" (str-cat (to-string a)
                                         (str-cat ":" (str-cat (to-string b)
                                           (str-cat ":" (str-cat d (str-cat ":" req)))))))))
+                                  ;; pending-mint custody is QUARANTINED in
+                                  ;; ESCM: the shared float (ESC) must never
+                                  ;; hold it, so burns, claims and swaps can
+                                  ;; never pay out of a pending mint's money
                                   (p5-put ek (li-add (p5-bz ek) req))
                                   (near/return (li-sub amt req)))))))))
                     ;; SECOND leg: opposite side, same a/b (d must match
@@ -1319,8 +1328,20 @@
                                 (p5-put (if toky? "6|ESCY" "6|ESCX")
                                   (li-add (p5-bz (if toky? "6|ESCY" "6|ESCX"))
                                           req))
+                                ;; release leg 1's quarantined custody: its
+                                ;; slice becomes this position's backing in
+                                ;; the shared float (byte 88 = X, 89 = Y)
+                                (let ((m1 (if (= (byte-at rec 0) 88)
+                                              "6|ESCMX" "6|ESCMY")))
+                                (let ((e1 (if (= (byte-at rec 0) 88)
+                                              "6|ESCX" "6|ESCY")))
+                                  (begin
+                                    (p5-put m1 (li-sub (p5-bz m1)
+                                                       (p5-fld rec 4 58)))
+                                    (p5-put e1 (li-add (p5-bz e1)
+                                                       (p5-fld rec 4 58)))))
                                 (p5-mint-finish sender d a b
-                                  (li-sub amt req))))))))))))))))))
+                                  (li-sub amt req)))))))))))))))))))
 
 ;; op "burnc" {d,a,b} — custody burn: authority + exact op-burn core,
 ;; then owed ledgers from the required-amount closed forms. 6|RX/6|RY
@@ -1389,8 +1410,8 @@
           ;; those.
           (p5-put "6|FWX" fx)
           (p5-put "6|FWY" fy)
-        (let ((cx (p5-req-cap (li-add rx fx) "6|ESCX")))
-        (let ((cy (p5-req-cap (li-add ry fy) "6|ESCY")))
+        (let ((cx (p5-req-cap (li-add rx fx) (p5-float-net-x))))
+        (let ((cy (p5-req-cap (li-add ry fy) (p5-float-net-y))))
         (let ((kx (str-cat "6|OWX:" who))
               (ky (str-cat "6|OWY:" who)))
           (begin
@@ -1401,12 +1422,25 @@
             (str-cat "burnc-ok:" (str-cat cx (str-cat ":" cy))))))))))))))))))))
 
 
-;; required-amount custody: owed = min(req, escrow float) — insolvency
+;; required-amount custody: owed = min(req, free float) — insolvency
 ;; guard only. req is token-denominated (same closed form at mint and
-;; burn), so no unit scaling.
-(define (p5-req-cap req ekey)
-  (let ((e (p5-bz ekey)))
-    (if (< (li-cmp req e) 1) req e)))
+;; burn), so no unit scaling. Free float = escrow minus ALREADY-RECORDED
+;; owed (6|OWTX/6|OWTY are senior claims: first burn to record is first
+;; paid, so Σ owed ≤ escrow is an invariant and every claim is fully
+;; backed). Pending-mint custody is quarantined in 6|ESCMX/6|ESCMY
+;; (never part of the shared float), so burns, claims and swap walkers
+;; can never pay out of a pending mint's money.
+(define (p5-float-net-x)
+  (let ((e (p5-bz "6|ESCX")))
+  (let ((r (p5-bz "6|OWTX")))
+    (if (< (li-cmp r e) 1) (li-sub e r) "0"))))
+(define (p5-float-net-y)
+  (let ((e (p5-bz "6|ESCY")))
+  (let ((r (p5-bz "6|OWTY")))
+    (if (< (li-cmp r e) 1) (li-sub e r) "0"))))
+
+(define (p5-req-cap req net)
+  (if (< (li-cmp req net) 1) req net))
 
 ;; op "req" {d,a,b} — the required-amount closed form (S-independent:
 ;; pure cell-edge chaining from G(a)); mint legs attach these exactly.
@@ -1465,22 +1499,20 @@
         "not-registered"
     (if (= (li-cmp v "0") 0)
         "no-owed"
-    ;; payout stock check (2026-10-18): the float and the input book are
-    ;; the same pool-side token stock (a swap out-leg moves X float->book),
-    ;; so cover = esc + book. Shortfall is reclassified book->float before
-    ;; the debit; a failed payout restores owed + esc symmetrically (pay
-    ;; cx/cy), leaving the reclassification in place - stock-neutral.
-    ;; Underfunded stock (refund legs can dip it) => refuse, retry after
-    ;; refill - burnc's solvency guard makes this rare.
-    (if (< (li-cmp (li-add (p5-bz e) (p5-bz ib)) v) 0)
+    ;; payout stock check: pay only what the float actually backs. The
+    ;; 6|X/6|Y books are FLOW LEDGERS (walker intake/PnL bookings), not
+    ;; token stock — funding a payout from them (the 2026-10-18
+    ;; reclassification) let claims pay more than the pool held (party
+    ;; sim: balance fell below the escrow books). Shortfall is a PARTIAL
+    ;; payout: the unpaid remainder stays owed for retry after refill; a
+    ;; failed payout restores owed + esc symmetrically (pay cx/cy).
+    (let ((v2 (if (< (li-cmp (p5-bz e) v) 1) (p5-bz e) v)))
+    (if (= (li-cmp v2 "0") 0)
         "underfunded"
         (begin
-          (if (< (li-cmp (p5-bz e) v) 0)
-              (begin
-                (p5-put ib (li-sub (p5-bz ib) (li-sub v (p5-bz e))))
-                (p5-put e v))
-              0)
-          (p5-put w "0")
+          ;; leave the unpaid remainder owed on the owner's ledger
+          (p5-put w (li-sub v v2))
+          (let ((v v2))
           (p5-put e (li-sub (p5-bz e) v))
           (let ((p (near/promise_batch_create (p5-bz tkey))))
             (begin
@@ -1496,7 +1528,7 @@
                     (json-set "{}" "k" k) "r" who) "o" v)
                     "w" w) "e" e)
                   "0" 5000000000000))
-              "claim-sent")))))))))))
+              "claim-sent")))))))))))))
 
 (define (p5-claim)
   (let ((who (near/predecessor_account_id)))

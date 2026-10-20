@@ -445,8 +445,11 @@ def run_case(c):
         # exactly — recoverable by completing leg 2 / re-minting).
         has_pm = not zeroish(st, "pool.tst", "6|PM:alice.tst") and \
             g(st, "pool.tst", "6|PM:alice.tst") != "0"
-        escx = int(g(st, "pool.tst", "6|ESCX") or 0)
-        escy = int(g(st, "pool.tst", "6|ESCY") or 0)
+        # pending-mint custody is quarantined in ESCM (outside the float)
+        escx = int(g(st, "pool.tst", "6|ESCX") or 0) + \
+            int(g(st, "pool.tst", "6|ESCMX") or 0)
+        escy = int(g(st, "pool.tst", "6|ESCY") or 0) + \
+            int(g(st, "pool.tst", "6|ESCMY") or 0)
         for (acct, k) in st:
             if k.startswith("6|POS:") and not c.get("expect_pos"):
                 fails.append(f"{cid}: unexpected {k}={st[(acct,k)][:30]}")

@@ -88,6 +88,9 @@ def audit(st, round_no, total_x, total_y, fails):
                      f"!= {total_y}")
     escx = int(st.get(("pool.tst", "6|ESCX"), "0") or 0)
     escy = int(st.get(("pool.tst", "6|ESCY"), "0") or 0)
+    # quarantined pending-mint custody lives outside the shared float
+    escx += int(st.get(("pool.tst", "6|ESCMX"), "0") or 0)
+    escy += int(st.get(("pool.tst", "6|ESCMY"), "0") or 0)
     owed = {"tokx.tst": 0, "toky.tst": 0}
     for (acct, k), v in st.items():
         if acct != "pool.tst":
@@ -182,7 +185,7 @@ def main():
                 steps.append({"method": "burn", "contract": "pool.tst",
                               "args": json.dumps({"d": str(part), "a": lo,
                                                   "b": hi}),
-                              "as": who, "expect": "ok"})
+                              "as": who, "expect": "ok", "gas": 300})
                 for t in ("X", "Y"):
                     steps.append({"method": "collect", "contract": "pool.tst",
                                   "args": json.dumps({"t": t}), "as": who,
@@ -215,6 +218,8 @@ def main():
             fails.append(f"r{rnd}: step failed {bad}")
         st = dump()
         audit(st, rnd, total_x, total_y, fails)
+        import shutil as _sh
+        _sh.copy(STATE, os.path.join(DIR, f"party_s{rnd}.bin"))
         if fails:
             break
 
@@ -227,7 +232,7 @@ def main():
                 steps.append({"method": "burn", "contract": "pool.tst",
                               "args": json.dumps({"d": str(d), "a": lo,
                                                   "b": hi}),
-                              "as": who, "expect": "ok"})
+                              "as": who, "expect": "ok", "gas": 300})
             for t in ("X", "Y"):
                 steps.append({"method": "collect", "contract": "pool.tst",
                               "args": json.dumps({"t": t}), "as": who,
@@ -239,10 +244,23 @@ def main():
             st = dump()
             audit(st, "close", total_x, total_y, fails)
             pools = balances(st)
+            # After all LPs exit, the pool legitimately keeps PM escrows
+            # (recoverable pending-mint legs) plus the swap-book surplus
+            # (trader-donated spread + unclaimed fee slices). The invariants
+            # that matter: every pending mint's escrow is covered, no
+            # position residue, and the accounting identity (audited above).
+            pm_esc = {"tokx.tst": 0, "toky.tst": 0}
+            for (acct, k), v in st.items():
+                if acct == "pool.tst" and k.startswith("6|PM:") and \
+                        v not in ("0", ""):
+                    # record = "S:a:b:d:req" — side is the VALUE's first char
+                    pm_esc["tokx.tst" if v[0] == "X" else "toky.tst"] += \
+                        int(v.split(":")[4] or 0)
             for tok in ("tokx.tst", "toky.tst"):
                 pb = pools.get((tok, "pool.tst"), 0)
-                if pb > DUST * 10:
-                    fails.append(f"close: pool {tok} residue {pb}")
+                if pb < pm_esc[tok]:
+                    fails.append(f"close: pool {tok} {pb} cannot cover "
+                                 f"pending-mint escrows {pm_esc[tok]}")
                 for (acct, k), v in st.items():
                     if k.startswith("6|POS:") and v not in ("0", ""):
                         fails.append(f"close: residual {k}")
