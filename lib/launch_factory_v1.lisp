@@ -339,11 +339,36 @@
         (lf-fail "ERR_AUTH")
         (let ((p (near/promise_batch_create (lf-bz "LF|POOL"))))
           (begin
-            (near/promise_batch_action_function_call p "collect"
-              (json-set "{}" "t" "X") "0" (lf-bond 267000000000000))
+            (near/promise_batch_action_function_call p "get_owed"
+              (json-set "{}" "who" (near/current_account_id)) "0" 5000000000000)
             (near/promise_return
-              (near/promise_then p (near/current_account_id) "oncx"
-                (json-set "{}" "r" who) "0" 40000000000000)))))))
+              (near/promise_then p (near/current_account_id) "onow"
+                (json-set "{}" "r" who) "0" 80000000000000)))))))
+
+;; ── onow — sweep stage 2: credit CX/CY from the pool's live owed, then
+;; run the collect chain. Without this, a sweep that fires before any
+;; completed onburn transfers 0-amount (CX/CY never written).
+(define (lf-onow)
+  (if (str= (near/predecessor_account_id) (near/current_account_id))
+      (let ((inp (near/input)))
+      (let ((who (json-get-str "r" inp)))
+      (let ((r (near/promise_result 0)))
+        (if (< (str-length r) 6)
+            (lf-fail "ERR_OWED")
+            (let ((ow (str-slice r 5 (str-len r))))
+            (let ((cx (lf-fst ow))
+                  (cy (lf-snd ow)))
+              (begin
+                (lf-put "LF|CX" cx)
+                (lf-put "LF|CY" cy)
+                (let ((p (near/promise_batch_create (lf-bz "LF|POOL"))))
+                  (begin
+                    (near/promise_batch_action_function_call p "collect"
+                      (json-set "{}" "t" "X") "0" (lf-bond 47000000000000))
+                    (near/promise_return
+                      (near/promise_then p (near/current_account_id) "oncx"
+                        (json-set "{}" "r" who) "0" 40000000000000))))))))))
+      (lf-fail "ERR_SELF"))))
 
 ;; ── state — packed view (allowance at current ts) ───────────────────────
 (define (lf-state)
@@ -365,6 +390,7 @@
 (export "init" lf-init)
 (export "reg" lf-reg)
 (export "ft_on_transfer" lf-seed)
+(export "onow" lf-onow)
 (export "onleg" lf-onleg)
 (export "onref" lf-onref)
 (export "wd" lf-wd)
