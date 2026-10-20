@@ -398,4 +398,25 @@
 (export "oncy" lf-oncy)
 (export "onfin" lf-onfin)
 (export "sweep" lf-sweep)
+
+;; ── pay — creator sweep-out of the factory's remaining token balance ────
+;; Amount read off-chain (ft_balance_of of this account) and passed in;
+;; creator-only + ph4, and only the creator can benefit.
+(define (lf-pay)
+  (let ((inp (near/input)))
+  (let ((who (json-get-str "who" inp)))
+  (let ((t (json-get-str "t" inp)))
+  (let ((amt (json-get-str "amt" inp)))
+    (if (not (and (str= (near/predecessor_account_id) (lf-bz "LF|CRE"))
+                  (str= (lf-bz "LF|PH") "4")))
+        (lf-fail "ERR_AUTH")
+        (let ((p (near/promise_batch_create
+                   (if (str= t "X") (lf-bz "LF|TOK") (lf-bz "LF|QT")))))
+          (begin
+            (near/promise_batch_action_function_call p "ft_transfer"
+              (json-set (json-set "{}" "receiver_id" who) "amount" amt)
+              "0" 10000000000000)
+            "pay-ok"))))))))
+(export "pay" lf-pay)
+
 (export "state" lf-state #t)
