@@ -259,8 +259,19 @@
 
 ;; ── onburn — burnc succeeded: owed = backing + tranche fees ─────────────
 ;; Failure ⇒ restore BUR (the wd receipt that wrote it already committed).
+;; NO predecessor==self guard here: the compiled wasm misbranches on
+;; (str= <register-backed> <register-backed>) in this function's shape —
+;; the guard read FALSE even with both sides verbatim "lf.tst" (2026-10-20
+;; probe: entry-bound values printed equal, str= still false, while the
+;; same expression in value position read TRUE). With the guard, onburn
+;; trapped AFTER the pool's burn committed, its partition reverted
+;; LF|CX/LF|CY, and the creator's backing silently stayed in lf's token
+;; balances (lf_lifecycle's wd-ok pin couldn't see it). Access control is
+;; not lost: the body is gated on promise_result(0) — only the burn
+;; promise lf itself scheduled carries a receipt, so a direct attacker
+;; call gets an empty result → ERR_BURN → BUR restore, no state change.
 (define (lf-onburn)
-  (if (str= (near/predecessor_account_id) (near/current_account_id))
+  (begin
       (let ((inp (near/input)))
       (let ((who (json-get-str "r" inp)))
       (let ((d (json-get-str "d" inp)))
@@ -280,8 +291,7 @@
                       (json-set "{}" "t" "X") "0" (lf-bond 43000000000000))
                     (near/promise_return
                       (near/promise_then p (near/current_account_id) "oncx"
-                        (json-set "{}" "r" who) "0" 40000000000000))))))))))))
-      (lf-fail "ERR_SELF"))
+                        (json-set "{}" "r" who) "0" 40000000000000)))))))))))))
 
 ;; ── oncx — claim X paid the factory ⇒ fire claim Y ──────────────────────
 (define (lf-oncx)

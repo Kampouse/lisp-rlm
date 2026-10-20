@@ -1025,6 +1025,33 @@
                    (li-add acc (p5-dy d s (p5-G (+ i 1))))
                    acc))))
 
+;; FULL-RANGE folds (no price gate) — the BURN side of the ledger. The
+;; gated forms above answer "what would a FRESH position cost right
+;; now"; an EXISTING position's honest owed is its full-range form
+;; capped at the float:
+;;   · no sweep ⇒ float == the gated mint charge ≤ full form ⇒ the cap
+;;     pays back exactly what went in.
+;;   · swept (price crossed the range) ⇒ the swept side's float left
+;;     for the swapper, but the OTHER float holds the conversion
+;;     proceeds (the swapper's intake) — the full-range form on that
+;;     side reaches them, so the position exits whole. With the gated
+;;     form here the proceeds strand in escrow (observed: 8.0e22 Y
+;;     unclaimable after the lf_lifecycle sweep).
+;; Conservation by construction: owed ≤ float, and the float only ever
+;; holds mint charges + swap intakes − payouts − claims. Multi-LP: the
+;; float is shared, so concurrent positions exit pro-rata-ish (first
+;; claimer bounded by the shared float) — same class as any shared
+;; escrow; the custody/launchpad pool has a single position.
+(define (p5-rxa i b s d acc)
+  (if (> i b) acc
+      (p5-rxa (+ i 1) b (p5-G (+ i 1)) d
+              (li-add acc (p5-dx d s (p5-G (+ i 1)))))))
+
+(define (p5-rya i b s d acc)
+  (if (> i b) acc
+      (p5-rya (+ i 1) b (p5-G (+ i 1)) d
+              (li-add acc (p5-dy d s (p5-G (+ i 1)))))))
+
 ;; accruef fold (Aggregate_Accrual verbatim): owed_fee =
 ;; Σ (FG_i − FS_i) × d >> 64 — per-cell floor ⇒ under-credit only.
 ;; Then FS_i ← FG_i: the residual position earns from current growth.
@@ -1305,8 +1332,8 @@
            0)
         (p5-fail "ERR_LIQ")
     (let ((ga (p5-G a)))
-    (let ((rx (p5-reqx a b ga d nil)))
-    (let ((ry (p5-reqy a b ga d "0")))
+    (let ((rx (p5-rxa a b ga d "0")))
+    (let ((ry (p5-rya a b ga d "0")))
       (begin
         (p5-put "6|RX" rx)
         (p5-put "6|RY" ry)

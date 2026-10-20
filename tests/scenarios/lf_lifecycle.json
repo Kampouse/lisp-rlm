@@ -158,6 +158,20 @@
    "args": "{\"account_id\":\"trader.tst\"}",
    "view": true,
    "expect": "9"
+  },
+  {
+   "method": "ft_balance_of",
+   "contract": "toky.tst",
+   "args": "{\"account_id\":\"creator.tst\"}",
+   "as": "owner.test.near",
+   "expect": "99999585095533905924644548096"
+  },
+  {
+   "method": "ft_balance_of",
+   "contract": "toky.tst",
+   "args": "{\"account_id\":\"pool.tst\"}",
+   "as": "owner.test.near",
+   "expect": "79657599625073175466"
   }
  ]
 }
