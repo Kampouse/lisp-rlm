@@ -32,6 +32,13 @@
 (define (f-new)
   (begin (near/store-bytes "own" (near/predecessor_account_id)) (near/return "ok")))
 
+;; renounce — owner burns the mint key. Irreversible: "own" is the ONLY
+;; writer gate of f-mint and nothing can set it again (new is once-ever).
+(define (f-renounce)
+  (if (str= (near/predecessor_account_id) (bz "own"))
+      (begin (near/store-bytes "own" "") (near/return "renounced"))
+      (near/return "not-owner")))
+
 (define (f-mint)
   (let ((inp (near/input)))
     (if (str= (near/predecessor_account_id) (bz "own"))
@@ -106,6 +113,7 @@
 
 (export "new" f-new)
 (export "mint" f-mint)
+(export "renounce" f-renounce)
 (export "ft_balance_of" f-balance true)
 (export "ft_transfer" f-transfer)
 (export "ft_transfer_call" f-transfer-call)

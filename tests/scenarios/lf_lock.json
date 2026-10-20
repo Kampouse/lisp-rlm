@@ -1,0 +1,25 @@
+{
+  "name": "lf-lock",
+  "manifest": "pool.tst=/tmp/lf-mock/pool.wasm,tokx.tst=/tmp/lf-mock/ft.wasm,toky.tst=/tmp/lf-mock/ft.wasm",
+  "steps": [
+    {"method": "new", "contract": "tokx.tst", "args": "{}", "as": "owner.test.near", "expect": "ok"},
+    {"method": "new", "contract": "toky.tst", "args": "{}", "as": "owner.test.near", "expect": "ok"},
+
+    {"method": "mint", "contract": "tokx.tst", "args": "{\"to\":\"creator.tst\",\"amt\":\"100000000000000000000000000000\"}", "as": "owner.test.near", "expect": "ok"},
+    {"method": "mint", "contract": "toky.tst", "args": "{\"to\":\"creator.tst\",\"amt\":\"100000000000000000000000000000\"}", "as": "owner.test.near", "expect": "ok"},
+    {"method": "renounce", "contract": "tokx.tst", "args": "{}", "as": "owner.test.near", "expect": "renounced"},
+    {"method": "mint", "contract": "tokx.tst", "args": "{\"to\":\"creator.tst\",\"amt\":\"1\"}", "as": "owner.test.near", "expect": "not-owner"},
+
+    {"method": "init", "contract": "pool.tst", "args": "{\"toka\":\"tokx.tst\",\"tokb\":\"toky.tst\",\"lock_secs\":\"3600\"}", "as": "owner.test.near", "expect": "init-ok"},
+
+    {"method": "register", "contract": "pool.tst", "args": "{\"who\":\"creator.tst\"}", "as": "creator.tst", "expect": "reg-ok"},
+    {"method": "ft_transfer_call", "contract": "tokx.tst", "args": "{\"receiver_id\":\"pool.tst\",\"amount\":\"1000000000000000000000000\",\"msg\":\"{\\\"a\\\":\\\"mint\\\",\\\"lo\\\":1,\\\"hi\\\":8,\\\"d\\\":\\\"1000000000000000000000000\\\"}\"}", "as": "creator.tst", "expect": "ok"},
+    {"method": "ft_transfer_call", "contract": "toky.tst", "args": "{\"receiver_id\":\"pool.tst\",\"amount\":\"1000000000000000000000000\",\"msg\":\"{\\\"a\\\":\\\"mint\\\",\\\"lo\\\":1,\\\"hi\\\":8,\\\"d\\\":\\\"1000000000000000000000000\\\"}\"}", "as": "creator.tst", "expect": "ok"},
+
+    {"method": "burn", "contract": "pool.tst", "args": "{\"d\":\"1000000000000000000000000\",\"a\":\"1\",\"b\":\"8\"}", "as": "creator.tst", "expect": "trap"},
+
+    {"advance": 7200},
+
+    {"method": "burn", "contract": "pool.tst", "args": "{\"d\":\"1000000000000000000000000\",\"a\":\"1\",\"b\":\"8\"}", "as": "creator.tst", "expect": "burnc-ok:"}
+  ]
+}

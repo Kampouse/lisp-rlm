@@ -435,6 +435,16 @@
                   (if (= (str->num sh) 0) "" (if (< (str->num sh) 41) sh "")))
           ;; s0 = boot price; empty ⇒ 2^64 (price 1.0)
           (p5-put "6|S" (if (= (str-len s0) 0) "18446744073709551616" s0))
+          ;; LP lock: lock_secs (duration) ⇒ burn-until = init_now + secs.
+          ;; Empty/0 = unlocked. Set ONCE at init — immutable afterwards;
+          ;; a launch pool's LP cannot pull liquidity before the lock even
+          ;; if every key it owns is compromised (enforcement is HERE, in
+          ;; the pool, not in a factory promise).
+          (p5-put "6|LOCK"
+                  (let ((secs (str->num (json-get-str "lock_secs" (near/input)))))
+                    (if (> secs 0)
+                        (li-add (near/block_timestamp) (to-string secs))
+                        "0")))
           (p5-put "6|P" "0")
           (p5-put "6|X" "0")
           (p5-put "6|Y" "0")
@@ -1184,6 +1194,11 @@
          (d (json-get-str "d" inp))
          (a (str->num (json-get-str "a" inp)))
          (b (str->num (json-get-str "b" inp))))
+    ;; LP lock: no burn, not even partial, before the unlock time. Checked
+    ;; FIRST so the answer never depends on range/liquidity validity.
+    (if (and (> (li-cmp (p5-bz "6|LOCK") "0") 0)
+             (< (li-cmp (near/block_timestamp) (p5-bz "6|LOCK")) 0))
+        (p5-fail "ERR_LOCKED")
     (if (or (< b a)
             (> (- b a) 64)
             (not (= (p5-num-ok? d) "1"))
@@ -1249,7 +1264,7 @@
             (p5-put ky (li-add (p5-bz ky) cy))
             (p5-put "6|OWTX" (li-add (p5-bz "6|OWTX") cx))
             (p5-put "6|OWTY" (li-add (p5-bz "6|OWTY") cy))
-            (str-cat "burnc-ok:" (str-cat cx (str-cat ":" cy)))))))))))))))))))
+            (str-cat "burnc-ok:" (str-cat cx (str-cat ":" cy))))))))))))))))))))
 
 
 ;; required-amount custody: owed = min(req, escrow float) — insolvency
@@ -1528,6 +1543,10 @@
 ;; harness door: gross ops + raw-key reads, SIMSWAP-gated. Prod answers
 ;; "sim-only" -- public ABI = verb exports + ft_on_transfer msgs.
 (define (grid) (p5-G (str->num (json-get-str "i" (near/input)))))
+;; ── get_lock — burn-until (ns), "0" = unlocked ──────────────────────────
+(define (p5-get-lock)
+  (near/return (p5-bz "6|LOCK")))
+
 (define (p5-exec)
   (let ((op (json-get-str "op" (near/input))))
     (if (str= (p5-bz "6|SIMSWAP") "1")
@@ -1565,5 +1584,6 @@
 (export "get_escrow" p5-escrow)
 (export "get_fg" p5-fg)
 (export "grid" grid)
+(export "get_lock" p5-get-lock)
 (export "ft_on_transfer" p5-on-transfer)
 (export "pay" p5-pay)
