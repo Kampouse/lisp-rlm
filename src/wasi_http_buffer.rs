@@ -689,14 +689,17 @@ pub fn emit_http_get_with_header_v2(
     func.instruction(&Instruction::I32Add);
     func.instruction(&lg(17));
     func.instruction(&st(4));
-    // fields.set(fields, name=buf+62K/name_len, entry=buf+63.5K, COUNT=1)
+    // fields.set(fields, name=buf+62K/name_len, entry=buf+32256, COUNT=1)
+    // NOTE: entry list must point AT the (val_ptr,val_len) pair just
+    // stored at buf+32256 — passing a different offset reads garbage
+    // (observed: header value arrives EMPTY at the server).
     func.instruction(&lg(5));
     func.instruction(&lg(2));
     func.instruction(&cst(32768));
     func.instruction(&Instruction::I32Add);
     func.instruction(&lg(21));
     func.instruction(&lg(2));
-    func.instruction(&cst(33536));
+    func.instruction(&cst(32256));
     func.instruction(&Instruction::I32Add);
     func.instruction(&cst(1)); // list COUNT: 1 entry
     func.instruction(&cst(SCRATCH_WRITE_RESULT));
