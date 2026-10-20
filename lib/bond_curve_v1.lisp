@@ -165,7 +165,7 @@
               (near/promise_return
                 (near/promise_then p (near/current_account_id)
                   "ong1"
-                  "{}" "0" 5000000000000))
+                  "{}" "0" 160000000000000))
               "graduating:")))))
 
 ;; ong1 — stage 2: seed the real QT reserve via the quote token's own
@@ -181,10 +181,10 @@
                         "receiver_id" (c-bz "C|POOL"))
                         "amount" (c-bz "C|R"))
                         "msg" "{\"a\":\"seed\"}")
-            "0" 30000000000000)
+            "0" 80000000000000)
           (near/promise_return
             (near/promise_then q (near/current_account_id)
-              "ong2" "{}" "0" 5000000000000))
+              "ong2" "{}" "0" 70000000000000))
           "seedy:"))))
 
 ;; ong2 — stage 3: mint the graduated LP position from the seeded escrow

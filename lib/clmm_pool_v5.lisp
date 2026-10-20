@@ -1109,9 +1109,10 @@
           (if (or (< hi lo) (> (- hi lo) 64))
               (p5-fail "ERR_RANGE")
               (let ((ga (p5-G lo)))
-              (let ((dp "1000000000000000000"))
-              (let ((kx (p5-reqx lo hi ga dp "0")))
-              (let ((ky (p5-reqy lo hi ga dp "0")))
+              (let ((gb (p5-G hi)))
+              (let ((dp "1000000000000000000000000000000"))
+              (let ((kx (u128-muldiv dp (li-sub gb ga) (u128-muldiv ga gb "1"))))
+              (let ((ky (u128-muldiv dp (li-sub gb ga) "18446744073709551616")))
                 (if (or (= (li-cmp kx "0") 0) (= (li-cmp ky "0") 0))
                     (p5-fail "ERR_SMALL")
                     (let ((d1 (u128-muldiv (p5-bz "6|ESCX") dp kx)))
@@ -1148,7 +1149,7 @@
                                         (li-add (near/block_timestamp)
                                                 (to-string lk)))
                                 0)
-                            (str-cat "provision-ok:" d)))))))))))))))))
+                            (str-cat "provision-ok:" d))))))))))))))))))
 
 ;; ft_on_transfer mint/cancel leg (predecessor = a pool token, amount
 ;; validated). msg "c" cancels a pending mint: refund the recorded
