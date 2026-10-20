@@ -1,0 +1,70 @@
+{
+ "name": "onesided-mint",
+ "manifest": "pool.tst=/tmp/lf-mock/pool.wasm,tokx.tst=/tmp/lf-mock/ft.wasm,toky.tst=/tmp/lf-mock/ft.wasm",
+ "state": "tests/scenarios/state.bin",
+ "steps": [
+  {
+   "method": "new",
+   "contract": "tokx.tst",
+   "args": "{}",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "new",
+   "contract": "toky.tst",
+   "args": "{}",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "init",
+   "contract": "pool.tst",
+   "args": "{\"toka\":\"tokx.tst\",\"tokb\":\"toky.tst\"}",
+   "as": "owner.test.near",
+   "expect": "init-ok"
+  },
+  {
+   "method": "mint",
+   "contract": "tokx.tst",
+   "args": "{\"to\":\"creator.tst\",\"amt\":\"100000000000000000000000000000\"}",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "mint",
+   "contract": "toky.tst",
+   "args": "{\"to\":\"trader.tst\",\"amt\":\"100000000000000000000000000000\"}",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "ft_transfer_call",
+   "contract": "tokx.tst",
+   "as": "creator.tst",
+   "args": "{\"receiver_id\": \"pool.tst\", \"amount\": \"10000000000000000000000000\", \"msg\": \"{\\\"a\\\": \\\"mint\\\", \\\"d\\\": \\\"1000000000000000000000000\\\", \\\"lo\\\": 2, \\\"hi\\\": 16, \\\"one\\\": \\\"1\\\"}\"}",
+   "expect": "ok"
+  },
+  {
+   "method": "get_positions",
+   "contract": "pool.tst",
+   "args": "{\"who\":\"creator.tst\"}",
+   "view": true,
+   "expect": "pos:2:16:1000000000000000000000000"
+  },
+  {
+   "method": "ft_transfer_call",
+   "contract": "toky.tst",
+   "as": "trader.tst",
+   "args": "{\"receiver_id\": \"pool.tst\", \"amount\": \"10000000000000000000000000\", \"msg\": \"{\\\"a\\\": \\\"mint\\\", \\\"d\\\": \\\"1000000000000000000000000\\\", \\\"lo\\\": -16, \\\"hi\\\": -2, \\\"one\\\": \\\"1\\\"}\"}",
+   "expect": "ok"
+  },
+  {
+   "method": "get_positions",
+   "contract": "pool.tst",
+   "args": "{\"who\":\"trader.tst\"}",
+   "view": true,
+   "expect": "pos:-16:-2:1000000000000000000000000"
+  }
+ ]
+}

@@ -1221,26 +1221,37 @@
                     (let ((req (if toky?
                                    (p5-reqy a b ga d "0")
                                    (p5-reqx a b ga d "0"))))
-                      ;; C3: ≥ req (was EXACT). The on-chain req view can
-                      ;; diverge from the enforcer's fold (proven live:
-                      ;; view said 8.4978…427, enforcer 8.4978…338 — a
-                      ;; chain-vs-mock gap in a non-gated path), and an
-                      ;; EXACT gate turned that into a user-facing
-                      ;; ERR_EXACT wall. Over-attach refunds through the
-                      ;; same resolve path leg 2 uses (ft2 resolve reads
-                      ;; this call's return; pm-success records req, the
-                      ;; excess rides `used`).
+                    ;; ONE-SIDED MINT: when the OTHER side's req = 0 this leg
+                    ;; IS the whole mint — escrow + finish now. The old path
+                    ;; always waited for a second leg, so a zero-skipped
+                    ;; x-only/y-only deposit recorded itself and never
+                    ;; finished (frontend surfaces it as a rejected leg).
+                    (let ((other (if toky?
+                                     (p5-reqx a b ga d "0")
+                                     (p5-reqy a b ga d "0"))))
                       (if (< (li-cmp amt req) 0)
                           (p5-fail "ERR_SHORT")
-                          (let ((ek (if toky? "6|ESCY" "6|ESCX")))
-                            (begin
-                              (p5-put (str-cat "6|PM:" sender)
-                                (str-cat (if toky? "Y" "X")
-                                  (str-cat ":" (str-cat (to-string a)
-                                    (str-cat ":" (str-cat (to-string b)
-                                      (str-cat ":" (str-cat d (str-cat ":" req)))))))))
-                              (p5-put ek (li-add (p5-bz ek) req))
-                              (near/return (li-sub amt req)))))))
+                          ;; Auto-finish ONLY on an explicit one-sided flag:
+                          ;; the factory's split seed legs are ALSO one-sided
+                          ;; by the req gate (range split around price) and
+                          ;; must keep the two-leg protocol — inferring from
+                          ;; other=0 hijacked its first leg (lf-lifecycle
+                          ;; regression: escrow booked, legs mispaired).
+                          (if (and (str= other "0")
+                                   (str= "1" (json-get-str "one" (json-get-str "msg" (near/input)))))
+                              (let ((ek (if toky? "6|ESCY" "6|ESCX")))
+                                (begin
+                                  (p5-put ek (li-add (p5-bz ek) req))
+                                  (p5-mint-finish sender d a b (li-sub amt req))))
+                              (let ((ek (if toky? "6|ESCY" "6|ESCX")))
+                                (begin
+                                  (p5-put (str-cat "6|PM:" sender)
+                                    (str-cat (if toky? "Y" "X")
+                                      (str-cat ":" (str-cat (to-string a)
+                                        (str-cat ":" (str-cat (to-string b)
+                                          (str-cat ":" (str-cat d (str-cat ":" req)))))))))
+                                  (p5-put ek (li-add (p5-bz ek) req))
+                                  (near/return (li-sub amt req)))))))))
                     ;; SECOND leg: opposite side, same a/b (d must match
                     ;; too — field 3 — else the two legs split escrow)
                     (if (not (and (= (byte-at rec 0)
@@ -1314,27 +1325,24 @@
         (let ((fx (p5-feefold who a b d "X")))
         (let ((fy (p5-feefold who a b d "Y")))
         (begin
-          ;; owed-total solvency guard (2026-10-18): owed += req+fees must
-          ;; stay within the pool's per-side holdings (esc float + input
-          ;; book - a swap's out-leg moves X from float to book, so the
-          ;; float ALONE is the wrong backing; the old req-cap silently
-          ;; shorted LPs on exactly that case). 6|OWTX/TY are the per-side
-          ;; owed totals; claim success drains them pro-rata.
-          (if (or (< (li-cmp (li-sub (li-add (p5-bz "6|ESCX")
-                                          (p5-bz "6|X"))
-                                   (p5-bz "6|OWTX"))
-                             (li-add rx fx)) 0)
-                  (< (li-cmp (li-sub (li-add (p5-bz "6|ESCY")
-                                          (p5-bz "6|Y"))
-                                   (p5-bz "6|OWTY"))
-                             (li-add ry fy)) 0))
-              (p5-fail "ERR_FLOAT")
-              0)
+          ;; owed = req + fees, CAPPED at the per-side escrow float.
+          ;; The req forms are provide-forms at the CURRENT price: after
+          ;; a sweep the swept side's backing has genuinely left the
+          ;; pool (sold to the swapper), so the form can exceed the
+          ;; float. The old fail-hard (ERR_FLOAT, 2026-10-18) stranded
+          ;; the position — the burn trapped and NOTHING could move;
+          ;; the one-sided gate (4691a29f) removed the 2x provision
+          ;; slack that masked this. No book term in the backing: the
+          ;; 6|X/6|Y book entries are out-legs already debited from the
+          ;; escrow at initiation, so counting them double-counts (the
+          ;; mock settles receipts in-DAG; an lp claim then "paid" from
+          ;; money that was gone and zeroed the owed). The return
+          ;; carries the PAID amounts — the caller forwards exactly
+          ;; those.
           (p5-put "6|FWX" fx)
           (p5-put "6|FWY" fy)
-        ;; owed = required + fees (float room pre-checked above)
-        (let ((cx (li-add rx fx)))
-        (let ((cy (li-add ry fy)))
+        (let ((cx (p5-req-cap (li-add rx fx) "6|ESCX")))
+        (let ((cy (p5-req-cap (li-add ry fy) "6|ESCY")))
         (let ((kx (str-cat "6|OWX:" who))
               (ky (str-cat "6|OWY:" who)))
           (begin
