@@ -271,7 +271,14 @@
 ;; promise lf itself scheduled carries a receipt, so a direct attacker
 ;; call gets an empty result → ERR_BURN → BUR restore, no state change.
 (define (lf-onburn)
-  (begin
+  ;; value-position host calls + let-bound compare: the direct
+  ;; branch-position (str= host host) shape misbranches in this function
+  ;; (operands verbatim equal; the same expression reads TRUE in value
+  ;; position — repro'd 2026-10-20 against lf_lifecycle; minimal probes
+  ;; pass, this function's shape does not. Compiler ticket open.)
+  (let ((pred (near/predecessor_account_id)) (curr (near/current_account_id)))
+  (if (str= pred curr)
+      (begin
       (let ((inp (near/input)))
       (let ((who (json-get-str "r" inp)))
       (let ((d (json-get-str "d" inp)))
@@ -291,7 +298,8 @@
                       (json-set "{}" "t" "X") "0" (lf-bond 43000000000000))
                     (near/promise_return
                       (near/promise_then p (near/current_account_id) "oncx"
-                        (json-set "{}" "r" who) "0" 40000000000000)))))))))))))
+                        (json-set "{}" "r" who) "0" 40000000000000))))))))))))
+      (lf-fail "ERR_SELF"))))
 
 ;; ── oncx — claim X paid the factory ⇒ fire claim Y ──────────────────────
 (define (lf-oncx)
