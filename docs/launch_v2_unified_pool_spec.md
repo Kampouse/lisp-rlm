@@ -32,6 +32,15 @@ one liquidity profile.
 
 ## Mechanics (all existing pool semantics, nothing new on the pool)
 
+- **Measured polarity (2026-10-21, `launch_profile_matrix.py`)**: the
+  pool's tick-P walks UP on toka-in. So the launched token is TOKB
+  (asks at negative ticks), QT = TOKA; a QT-in buy walks P down into the
+  asks (economic price up), and the QT it leaves becomes the bid stack.
+- **Boot straddle is MANDATORY**: at init P sits in a liquidity gap and
+  EVERY swap refunds — nothing to walk against. Init = two-sided seed
+  straddle at P0 (creator QT = the initial floor) + ask segments above.
+  The boot's QT side IS the launch's first floor — creator-funded, which
+  collapses the "honest V" debate into a visible, real deposit.
 - Buy: swap QT→token. QT fills the cells behind the walk → bid stack grows
   upward. Raise-to-date = Σ QT in bid cells (readable from custody escrow).
 - Sell: swap token→QT out of the bid stack. Early sellers at P0 with no QT
