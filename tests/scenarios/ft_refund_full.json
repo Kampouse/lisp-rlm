@@ -1,0 +1,63 @@
+{
+ "name": "ft refund-dance: on_transfer returns FULL amount \u2192 resolve must re-credit sender",
+ "manifest": "pool.tst=/tmp/lf-mock/pool.wasm,tokn.tst=/tmp/lf-mock/ft.wasm,wnear.tst=/tmp/lf-mock/wnear.wasm",
+ "state": "/tmp/lf-mock/refund-state.bin",
+ "steps": [
+  {
+   "method": "new",
+   "contract": "tokn.tst",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "new",
+   "contract": "wnear.tst",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "init",
+   "contract": "pool.tst",
+   "as": "owner.test.near",
+   "args": "{\"toka\":\"tokn.tst\",\"tokb\":\"wnear.tst\"}",
+   "expect": "init-ok"
+  },
+  {
+   "method": "storage_deposit",
+   "contract": "wnear.tst",
+   "as": "trader.tst",
+   "attach": "1000000000000000000000",
+   "expect": "ok"
+  },
+  {
+   "method": "ft_balance_of",
+   "contract": "wnear.tst",
+   "args": "{\"account_id\":\"trader.tst\"}",
+   "view": true,
+   "expect": "1000000000000000000000"
+  },
+  {
+   "method": "ft_transfer_call",
+   "contract": "wnear.tst",
+   "as": "trader.tst",
+   "args": "{\"receiver_id\":\"pool.tst\",\"amount\":\"500000000000000000000\",\"msg\":\"{\\\"a\\\":\\\"swap\\\"}\"}",
+   "expect": "used:0"
+  },
+  {
+   "method": "ft_balance_of",
+   "contract": "wnear.tst",
+   "args": "{\"account_id\":\"trader.tst\"}",
+   "view": true,
+   "expect": "1000000000000000000000",
+   "note": "THE BUG: live testnet left trader debited 500 \u2014 refund lost"
+  },
+  {
+   "method": "ft_balance_of",
+   "contract": "wnear.tst",
+   "args": "{\"account_id\":\"pool.tst\"}",
+   "view": true,
+   "expect": "0",
+   "note": "pool must not keep the refund slice"
+  }
+ ]
+}

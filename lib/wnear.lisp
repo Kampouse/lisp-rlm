@@ -118,8 +118,16 @@
         (let ((amt (json-get-str "amount" inp)))
           (let ((res (near/promise_result 0)))
             (let ((refund (if (< (str-length res) 1) amt res)))
-              (begin (add-bal sender refund)
+              (begin (near/log (str-cat "RS sender:[" sender) )
+                     (near/log (str-cat "RS recv:[" recv "]"))
+                     (near/log (str-cat "RS amt:[" amt "]"))
+                     (near/log (str-cat "RS res:[" res "]"))
+                     (near/log (str-cat "RS bal-sender(pre):[" (bal sender) "]"))
+                     (near/log (str-cat "RS bal-recv(pre):[" (bal recv) "]"))
+                     (add-bal sender refund)
+                     (near/log (str-cat "RS bal-sender(post):[" (bal sender) "]"))
                      (sub-bal recv refund)
+                     (near/log (str-cat "RS bal-recv(post):[" (bal recv) "]"))
                      (near/return (str-cat "used:" (li-sub amt refund)))))))))))
 
 ;; NEP-141 metadata: owner-set JSON under "md" (set_metadata post-deploy —
