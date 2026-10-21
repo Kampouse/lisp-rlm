@@ -118,9 +118,38 @@
                      (sub-bal recv refund)
                      (near/return (str-cat "used:" (li-sub amt refund)))))))))))
 
+;; NEP-141 metadata: owner-set JSON under "md" (set_metadata post-deploy —
+;; `new` must never touch live balances); fallback = QT defaults.
+(define (f-metadata)
+  (let ((md (bz "md")))
+    (near/return (if (< (str-length md) 3)
+        "{\"spec\":\"ft-1.0.0\",\"name\":\"QT\",\"symbol\":\"QT\",\"decimals\":15,\"icon\":\"\"}"
+        md))))
+
+(define (f-set-metadata)
+  (let ((inp (near/input)))
+    (if (str= (near/predecessor_account_id) (bz "own"))
+        (begin (near/store-bytes "md" inp) (near/return "ok"))
+        (near/return "not-owner"))))
+
+;; NEP-141 storage_deposit on a registration-free ledger: the attached
+;; deposit credits the caller's (or account_id's) balance directly.
+(define (f-storage-deposit)
+  (let ((dep (near/attached_deposit_u128)))
+    (let ((who (json-get-str "account_id" (near/input))))
+      (let ((who (if (< (str-length who) 1) (near/predecessor_account_id) who)))
+        (if (= (li-cmp dep "0") 0)
+            (near/return (bal who))
+            (begin (add-bal who dep)
+                   (near/store-bytes "sup" (li-add (bz "sup") dep))
+                   (near/return "ok")))))))
+
 (export "new" f-new)
 (export "mint" f-mint)
 (export "claim" f-claim true)
+(export "ft_metadata" f-metadata true)
+(export "set_metadata" f-set-metadata)
+(export "storage_deposit" f-storage-deposit)
 (export "ft_balance_of" f-balance true)
 (export "ft_transfer" f-transfer)
 (export "ft_transfer_call" f-transfer-call)
