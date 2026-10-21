@@ -474,7 +474,7 @@
           (begin
             ;; pointwise: LQ i += d for a ≤ i ≤ b
             (loop ((i a))
-              (if (or (> i b) (> i 10)) 0
+              (if (> i b) 0
                   (let ((k (p5-lqkey i)))
                     (begin
                       (p5-put k (li-add (p5-bz k) d))
@@ -1320,7 +1320,7 @@
                         (let ((ga (p5-G a)))
                         (let ((req (if toky?
                                        (p5-reqy a b ga d "0")
-                                       (p5-reqx a b ga d nil))))
+                                       (p5-reqx a b ga d "0"))))
                           (if (< (li-cmp amt req) 0)
                               (p5-fail "ERR_SHORT")
                               (begin
@@ -1450,7 +1450,7 @@
   (let ((a (str->num (json-get-str "a" inp))))
   (let ((b (str->num (json-get-str "b" inp))))
     (let ((ga (p5-G a)))
-      (str-cat "rx:" (str-cat (p5-reqx a b ga d nil)
+      (str-cat "rx:" (str-cat (p5-reqx a b ga d "0")
                  (str-cat ":ry:" (p5-reqy a b ga d "0"))))))))))
 
 ;; op "reg" { } — self-registration gate for claim payouts. NEP-141
