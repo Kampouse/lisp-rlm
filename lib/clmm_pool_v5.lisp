@@ -1422,6 +1422,38 @@
             (str-cat "burnc-ok:" (str-cat cx (str-cat ":" cy))))))))))))))))))))
 
 
+;; op "harvest" {a,b} — fold pending fees to owed WITHOUT burning. Same
+;; accruef fold as burnc over the FULL position d (fees = Σ (FG−FS)×d >>
+;; 64, FS←FG read-before-write), credited capped at the per-side free
+;; float; position principal untouched: no LQ/POS writes, no req term,
+;; no lock gate (nothing moves but fee ownership). If the float is short,
+;; the un-credited remainder is forfeited by the FS reset (same
+;; pool-favoring semantics as burnc's cap — insolvency is pro-rata by
+;; claim order).
+(define (p5-harvest)
+  (let* ((who (near/predecessor_account_id))
+         (inp (near/input))
+         (a (str->num (json-get-str "a" inp)))
+         (b (str->num (json-get-str "b" inp))))
+    (if (or (< b a) (> (- b a) 64))
+        (p5-fail "ERR_RANGE")
+    (let ((d (p5-bz (p5-poskey who a b))))
+    (if (not (= (li-cmp d "0") 1))
+        (p5-fail "ERR_AUTH")
+    (let ((fx (p5-feefold who a b d "X")))
+    (let ((fy (p5-feefold who a b d "Y")))
+      (begin
+        (let ((cx (p5-req-cap fx (p5-float-net-x))))
+        (let ((cy (p5-req-cap fy (p5-float-net-y))))
+        (let ((kx (str-cat "6|OWX:" who))
+              (ky (str-cat "6|OWY:" who)))
+          (begin
+            (p5-put kx (li-add (p5-bz kx) cx))
+            (p5-put ky (li-add (p5-bz ky) cy))
+            (p5-put "6|OWTX" (li-add (p5-bz "6|OWTX") cx))
+            (p5-put "6|OWTY" (li-add (p5-bz "6|OWTY") cy))
+            (str-cat "harvest-ok:" (str-cat cx (str-cat ":" cy)))))))))))))))
+
 ;; required-amount custody: owed = min(req, free float) — insolvency
 ;; guard only. req is token-denominated (same closed form at mint and
 ;; burn), so no unit scaling. Free float = escrow minus ALREADY-RECORDED
@@ -1720,6 +1752,7 @@
     (if (str= op "mint") (p5-mint)
     (if (str= op "burn") (p5-burn)
     (if (str= op "burnc") (p5-burnc)
+    (if (str= op "harvest") (p5-harvest)
     (if (str= op "claim") (p5-claim)
     (if (str= op "req") (p5-req)
     (if (str= op "swap") (p5-swap)
@@ -1733,7 +1766,7 @@
     (if (str= op "owed") (p5-owed)
     (if (str= op "positions") (p5-positions)
     (if (str= op "g") (p5-G (str->num (json-get-str "i" (near/input))))
-        "unknown-op")))))))))))))))))
+        "unknown-op"))))))))))))))))))
     "sim-only")))
 ;; public ABI: verb exports + chain-imposed doors (ft_on_transfer
 ;; carries ALL inbound money; pay resolves payout promises).
@@ -1741,6 +1774,7 @@
 (export "init" p5-init)
 (export "burn" p5-burnc)
 (export "collect" p5-claim)
+(export "harvest" p5-harvest)
 (export "register" p5-register)
 (export "position_requirements" p5-req)
 (export "quote" p5-quote)
