@@ -46,7 +46,7 @@
 
 (define (handle input)
   (let ((google-sub (json-get-str "google_sub" input))
-        (action-num (json-get "action_num" input)))
+        (action-num (json-get input "action_num")))
     (if (= (str-len google-sub) 0)
       "{\"status\":\"error\",\"message\":\"missing google_sub\"}"
       (cond

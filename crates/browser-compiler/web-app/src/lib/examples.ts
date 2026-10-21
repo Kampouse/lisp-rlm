@@ -384,7 +384,7 @@ export function ftTransferFrom(from: string, to: string, amount: bigint): string
 ;; Cross-contract view call — queries wrap.near wNEAR balance
 ;; Set the JSON args below to query any account
 (define (query)
-  (let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) 0 0)))
+  (let ((p (near/promise_create "wrap.near" "ft_balance_of" (near/input) "0" 0)))
     (near/promise_result 0)))
 (export "query" query true)`,
   },
@@ -899,6 +899,8 @@ const repoModules = import.meta.glob('../../../../../examples/*.lisp', {
 const REPO_EXAMPLE_TARGETS: Record<string, Example['target']> = {
   'btc_avg.lisp': 'p2',
   'btc_avg_json.lisp': 'p2',
+  'btc_price.lisp': 'p2',
+  'multi_token_prices.lisp': 'p2',
   'wallet_auth.lisp': 'p2',
   'wallet_cex.lisp': 'p2',
   'factory.lisp': 'p1',
@@ -906,7 +908,15 @@ const REPO_EXAMPLE_TARGETS: Record<string, Example['target']> = {
   'wallet-p256.lisp': 'p1',
 };
 
+// Repo examples that are NOT standalone-compilable (depend on lib/ sources
+// the browser compiler has no include mechanism for) are skipped rather
+// than shipped broken into the Error Lens.
+const REPO_EXAMPLE_SKIP = new Set([
+  'clmm_pool_smoke.lisp', // uses clmm-step/u128-muldiv from lib/ — run via afp-clmm harness, not standalone
+]);
+
 const repoExamples: Example[] = Object.entries(repoModules)
+  .filter(([path]) => !REPO_EXAMPLE_SKIP.has(path.split('/').pop()!))
   .map(([path, source]) => {
     const file = path.split('/').pop()!;
     const name = file.replace(/\.lisp$/, '');

@@ -152,7 +152,7 @@
     (str-cat "{\"status\":\"ok\",\"wallets\":[" (scan-wallets sub 0 false "") "]}")))
 
 (define (run input)
-  (let ((action-num (json-get "action_num" input)))
+  (let ((action-num (json-get input "action_num")))
     (cond
       ((= action-num 1) (do-register input))
       ((= action-num 2) (do-balance input))

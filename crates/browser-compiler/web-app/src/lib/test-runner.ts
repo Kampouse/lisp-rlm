@@ -129,3 +129,22 @@ ${setupCode}
   ${testBody})
 `;
 }
+
+/**
+ * Convert a source containing (test "name" body) forms into a plain
+ * compilable program: assert helpers + setup code + one define per test.
+ * Used by the plain compile path (docs viewer, auto-compile on load) so
+ * test-form examples compile anywhere, not just via the Run Tests button.
+ * Sources without (test forms are returned unchanged.
+ */
+export function toCompilableTestSource(source: string): string {
+  if (!/\(\s*test\s+["']/.test(source)) return source;
+  const { setupCode, tests } = parseTests(source);
+  const bodies = tests
+    .map((t, i) => `(define (run-test-${i + 1})\n  ${t.body})`)
+    .join('\n');
+  return `${ASSERT_HELPERS}
+${setupCode}
+${bodies}
+`;
+}

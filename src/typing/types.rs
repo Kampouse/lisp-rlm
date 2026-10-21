@@ -1086,6 +1086,14 @@ impl TcEnv {
             );
         }
 
+        // abort : nil — universal trap, both modes. Emitter lowers plain
+        // (abort) to WASM Unreachable in every target (call_near_io.rs,
+        // no host import), but it only reached scope via near_wildcard —
+        // pure-mode (abort) failed "not in scope", breaking the playground
+        // test-system assert helpers. Same pattern as print/println above.
+        // Found via the Tests example, 2026-10-21.
+        env.insert_mono("abort".to_string(), TcType::Arrow(vec![], Box::new(TcType::Con(TcCon::Nil))));
+
         // Conversions
         // assert : bool → nil
         env.insert_mono(

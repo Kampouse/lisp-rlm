@@ -6,6 +6,7 @@ import { p256 } from '@noble/curves/nist.js';
 import { annotateErrorLines } from './errorLines.ts';
 import { compileViaWorker } from './compileWorkerClient.ts';
 import { feed as feedBuiltins } from './builtins.ts';
+import { toCompilableTestSource } from './test-runner.ts';
 
 let initialized = false;
 let initPromise: Promise<void> | null = null;
@@ -113,6 +114,12 @@ export function compile(source: string, target: CompileTarget, lang: SourceLang 
       if (target !== 'p1') {
         throw new Error(`TS dialect currently supports the P1 (NEAR) target only, got "${target}"`);
       }
+    }
+    // Test-form sources (test-system examples) don't raw-compile — route
+    // them through the test-runner transform so the docs viewer / plain
+    // compile path sees a valid program. No-op for regular sources.
+    if (target === 'pure') {
+      source = toCompilableTestSource(source);
     }
     // 'near' compiles to P1 (the NEAR run happens separately via runNear —
     // see the UI), so the wasm build is identical to 'p1'.
