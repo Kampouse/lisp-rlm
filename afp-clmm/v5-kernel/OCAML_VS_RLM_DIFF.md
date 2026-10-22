@@ -37,3 +37,22 @@
 - Differential fuzz (`tests/test_pool_v5_fuzz.rs`) seeds 1–3 × 40 ops green after latest `p5-view` LQ change.
 - No formal equivalence proof yet between `CLMM_v5_Kernel.thy` and `lib/clmm_pool_v5.lisp`.
 - `afp-clmm/proof/CLMM_Curve.thy` proves a fee-slack law on an abstract 2-cell nat curve, not this exact v5 kernel.
+
+## Oracle currency law (2026-10-22)
+
+The price-bridge renormalization (×2^64 in dx_in/dx_out, cd6ab511) sat in
+the .thy while every ORACLE COPY stayed stale: clmm_v5_quote_opt, the
+python ref, the TS twins. Divergence signature: oracle says the input is
+worthless (0 out, no walk) or walks the whole book (S → 2^127); the
+CONTRACT was right in every case. When a differential fails, FIRST
+rebuild the oracle chain before suspecting the contract:
+
+    cd afp-clmm/v5-kernel
+    isabelle build -D .
+    isabelle export -d . -O . -x 'CLMM_v5_Kernel.CLMM_v5_Kernel:code/clmm_v5_kernel.ocaml' CLMM_v5_Kernel
+    # strip the MULTI-LINE `module X : sig ... end = struct` (regex, not sed)
+    # cat driver.ml >> kernel; ocamlopt -I +str -I $ZARITH str.cmxa zarith.cmxa
+
+TS twins: u256Mul is u128×u128 — renormalize with u256Shl(prod, 64),
+never a second mul; cases beyond 2^256 are outside the surface
+(counted wide_skips; the kernel's 15-limb pipeline is exact there).
