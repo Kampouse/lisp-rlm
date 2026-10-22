@@ -1,0 +1,140 @@
+{
+ "name": "harvest_fees: LP folds pending fees to owed WITHOUT burning \u2014 straddle mint, X and Y swaps accrue FG, harvest credits owed capped at float, principal untouched, claim drains owed to zero",
+ "manifest": "pool.tst=/tmp/lf-mock/pool.wasm,tokx.tst=/tmp/lf-mock/ft.wasm,toky.tst=/tmp/lf-mock/ft.wasm",
+ "state": "tests/scenarios/state.bin",
+ "steps": [
+  {
+   "method": "new",
+   "contract": "tokx.tst",
+   "args": "{}",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "new",
+   "contract": "toky.tst",
+   "args": "{}",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "init",
+   "contract": "pool.tst",
+   "args": "{\"toka\":\"tokx.tst\",\"tokb\":\"toky.tst\"}",
+   "as": "owner.test.near",
+   "expect": "init-ok"
+  },
+  {
+   "method": "mint",
+   "contract": "tokx.tst",
+   "args": "{\"to\":\"creator.tst\",\"amt\":\"100000000000000000000000000000\"}",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "mint",
+   "contract": "toky.tst",
+   "args": "{\"to\":\"creator.tst\",\"amt\":\"100000000000000000000000000000\"}",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "mint",
+   "contract": "tokx.tst",
+   "args": "{\"to\":\"trader.tst\",\"amt\":\"100000000000000000000000000000\"}",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "mint",
+   "contract": "toky.tst",
+   "args": "{\"to\":\"trader.tst\",\"amt\":\"100000000000000000000000000000\"}",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "register",
+   "contract": "pool.tst",
+   "args": "{}",
+   "as": "creator.tst",
+   "expect": "reg-ok"
+  },
+  {
+   "method": "ft_transfer_call",
+   "contract": "tokx.tst",
+   "args": "{\"receiver_id\": \"pool.tst\", \"amount\": \"10000000000000000000000000\", \"msg\": \"{\\\"a\\\": \\\"mint\\\", \\\"d\\\": \\\"1000000000000000000000\\\", \\\"lo\\\": -8, \\\"hi\\\": 8}\"}",
+   "as": "creator.tst",
+   "expect": "ok"
+  },
+  {
+   "method": "ft_transfer_call",
+   "contract": "toky.tst",
+   "args": "{\"receiver_id\": \"pool.tst\", \"amount\": \"10000000000000000000000000\", \"msg\": \"{\\\"a\\\": \\\"mint\\\", \\\"d\\\": \\\"1000000000000000000000\\\", \\\"lo\\\": -8, \\\"hi\\\": 8}\"}",
+   "as": "creator.tst",
+   "expect": "ok"
+  },
+  {
+   "method": "get_positions",
+   "contract": "pool.tst",
+   "args": "{\"who\":\"creator.tst\"}",
+   "as": "creator.tst",
+   "expect": "pos:-8:8:1000000000000000000000"
+  },
+  {
+   "method": "ft_transfer_call",
+   "contract": "tokx.tst",
+   "args": "{\"receiver_id\": \"pool.tst\", \"amount\": \"100000000000000000000000\", \"msg\": \"{\\\"a\\\": \\\"swap\\\", \\\"mo\\\": \\\"1\\\"}\"}",
+   "as": "trader.tst",
+   "expect": "ok"
+  },
+  {
+   "method": "ft_transfer_call",
+   "contract": "toky.tst",
+   "args": "{\"receiver_id\": \"pool.tst\", \"amount\": \"100000000000000000000000\", \"msg\": \"{\\\"a\\\": \\\"swap\\\", \\\"mo\\\": \\\"1\\\"}\"}",
+   "as": "trader.tst",
+   "expect": "ok"
+  },
+  {
+   "method": "harvest",
+   "contract": "pool.tst",
+   "args": "{\"a\":-8,\"b\":8}",
+   "as": "creator.tst",
+   "expect": "harvest-ok:"
+  },
+  {
+   "method": "get_owed",
+   "contract": "pool.tst",
+   "args": "{\"who\":\"creator.tst\"}",
+   "as": "creator.tst",
+   "expect": "owed:"
+  },
+  {
+   "method": "get_positions",
+   "contract": "pool.tst",
+   "args": "{\"who\":\"creator.tst\"}",
+   "as": "creator.tst",
+   "expect": "pos:-8:8:1000000000000000000000"
+  },
+  {
+   "method": "get_state",
+   "contract": "pool.tst",
+   "args": "{}",
+   "as": "creator.tst",
+   "expect": "LQ:-8|1000000000000000000000"
+  },
+  {
+   "method": "collect_both",
+   "contract": "pool.tst",
+   "args": "{}",
+   "as": "creator.tst",
+   "expect": "ok"
+  },
+  {
+   "method": "get_owed",
+   "contract": "pool.tst",
+   "args": "{\"who\":\"creator.tst\"}",
+   "as": "creator.tst",
+   "expect": "owed:0:0"
+  }
+ ]
+}

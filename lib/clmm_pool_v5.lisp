@@ -1569,6 +1569,23 @@
           (p5-claim-one tok who)
           "bad-token"))))
 
+;; op "claim-both" {} — BOTH payout chains from ONE action. Halves the
+;; actions in a harvest approval (register+harvest+claim-both = 3) and
+;; frees ~80T of the 1000T prepaid cap for batching more work in the
+;; same wallet popup. Each leg is an independent p5-claim-one (own
+;; promise chain, own pay callback cx/cy, own owed/esc restore); a
+;; no-owed/underfunded leg reports and leaves the other leg untouched.
+;; The parent action must still carry the attach of BOTH old legs
+;; (~160T) — the two promise chains are unchanged, only the action
+;; count drops.
+(define (p5-claim-both)
+  (let ((who (near/predecessor_account_id)))
+    (if (nil? (near/load-bytes (str-cat "6|REG:" who)))
+        "not-registered"
+        (let ((rx (p5-claim-one "x" who)))
+        (let ((ry (p5-claim-one "y" who)))
+          (str-cat "claim-both:" rx ":" ry))))))
+
 ;; ── views + dispatch ───────────────────────────────────────────────────
 
 (define (p5-get)
@@ -1754,6 +1771,7 @@
     (if (str= op "burnc") (p5-burnc)
     (if (str= op "harvest") (p5-harvest)
     (if (str= op "claim") (p5-claim)
+    (if (str= op "claim-both") (p5-claim-both)
     (if (str= op "req") (p5-req)
     (if (str= op "swap") (p5-swap)
     (if (str= op "quote") (p5-quote)
@@ -1766,7 +1784,7 @@
     (if (str= op "owed") (p5-owed)
     (if (str= op "positions") (p5-positions)
     (if (str= op "g") (p5-G (str->num (json-get-str "i" (near/input))))
-        "unknown-op"))))))))))))))))))
+        "unknown-op")))))))))))))))))))
     "sim-only")))
 ;; public ABI: verb exports + chain-imposed doors (ft_on_transfer
 ;; carries ALL inbound money; pay resolves payout promises).
@@ -1774,6 +1792,7 @@
 (export "init" p5-init)
 (export "burn" p5-burnc)
 (export "collect" p5-claim)
+(export "collect_both" p5-claim-both)
 (export "harvest" p5-harvest)
 (export "register" p5-register)
 (export "position_requirements" p5-req)
