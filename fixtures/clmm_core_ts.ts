@@ -29,7 +29,10 @@ export function tsdyi(L: string, S: string, S2: string): string {
 export function tsdx(L: string, S: string, S2: string): string {
   const d: string = u128Sub(S2, S);
   const ss: string = u256Mul(S, S2);
-  return u256Div(u256Mul(L, d), ss);
+  // price-bridge renormalization (v5-dx!: ×2^64 before the divide). Use
+  // u256Shl, not a second mul: u256Mul is u128×u128 only — the product
+  // L·d can exceed u128 and would truncate.
+  return u256Div(u256Shl(u256Mul(L, d), 64), ss);
 }
 
 // t* — the exact dy-solver constant: ((dy+1)·2^64 − 1) // L.
@@ -44,5 +47,6 @@ export function tstar(dy: string, L: string): string {
 export function tsdxo(L: string, S: string, S2: string): string {
   const d: string = u128Sub(S, S2);
   const ss: string = u256Mul(S, S2);
-  return u256Div(u256Mul(L, d), ss);
+  // price-bridge renormalization (same shl-64 as tsdx)
+  return u256Div(u256Shl(u256Mul(L, d), 64), ss);
 }

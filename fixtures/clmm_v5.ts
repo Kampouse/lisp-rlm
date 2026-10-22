@@ -220,14 +220,16 @@ export class Pool {
   }
 
   // position_requirements verb: legacy {"d","a","b"} → "rx:<rx>:ry:<ry>"
-  // reqx: Σ dx(d, G(i), G(i+1)); reqy: Σ dy(d, G(i), G(i+1))
+  // ONE-SIDED GATE (mirror of p5-reqx/p5-reqy, 2026-10-20): a cell strictly
+  // ABOVE 6|P needs X only; cells ≤ P need Y only; containing cell both.
   positionRequirements(d: string, lo: number, hi: number): string {
+    const P = Number(this.bz("6|P") || "0");
     let sx = BigInt(this.G(lo)); let accx = 0n;
     let sy = BigInt(this.G(lo)); let accy = 0n;
     for (let i = lo; i <= hi; i++) {
       const g1 = this.G(i + 1);
-      accx += BigInt(this.dx(d, sx.toString(), g1.toString()));
-      accy += BigInt(this.dy(d, sy.toString(), g1.toString()));
+      if (i >= P) accx += BigInt(this.dx(d, sx.toString(), g1.toString()));
+      if (i <= P) accy += BigInt(this.dy(d, sy.toString(), g1.toString()));
       sx = g1; sy = g1;
     }
     return "rx:" + accx.toString() + ":ry:" + accy.toString();

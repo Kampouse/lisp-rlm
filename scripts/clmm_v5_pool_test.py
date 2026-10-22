@@ -68,20 +68,21 @@ def dy(L, S, S2):
     return (L * (S2 - S)) >> 64
 
 def dx(L, S, S2):
-    return (L * (S2 - S)) // (S * S2)
+    # renormalized (price-bridge law, thy cd6ab511): real dx/L = (s2−s)/(s·s2)
+    # with s = S/2^64 ⇒ the fixed-point form carries ONE ×2^64
+    return (L * (S2 - S) * TWO64) // (S * S2)
 
 def sfdx(L, S, dxin):
-    """smallest S2 ≥ S with dx(L,S,S2) ≤ dx (exact, mirrors kernel)."""
-    if L == 0:
+    """S_for_dx_in — exact closed form, mirrors the kernel (thy cd6ab511).
+
+    Inverse of the RENORMALIZED dx_in: smallest S2 with dx(L,S,S2) > dxin,
+    i.e. the price after spending exactly dxin x into cell (S -> S2).
+    N = L·S·t64, D = L·t64 − (dx+1)·S; when D ≤ 0 the input exceeds the
+    cell's whole book → 2^127 sentinel (walk hops)."""
+    t64 = 1 << 64
+    if L <= 0 or S <= 0 or L * t64 <= (dxin + 1) * S:
         return 1 << 127
-    lo, hi = S, 1 << 127
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if dx(L, S, mid) <= dxin:
-            hi = mid
-        else:
-            lo = mid + 1
-    return lo
+    return max(S, (L * S * t64 - 1) // (L * t64 - (dxin + 1) * S))
 
 def sfdyi(L, S, dyin):
     """S_for_dy_in: largest S2 ≤ S with dy(L, S2, S) ≤ dyin (up-convention dy).

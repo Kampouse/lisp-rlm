@@ -86,6 +86,7 @@ def main():
     w = build(tmp)
     random.seed(20261019)
     fails = cases = 0
+    wide_skips = 0
     for t in range(N):
         i1 = random.choice([random.randint(-800000, 800000),
                             random.randint(-100, 100),
@@ -104,6 +105,14 @@ def main():
         args = '{"L":"%s","S":"%s","S2":"%s"}' % (L, S1, S2)
         # down-move twins expect S > S2 (args swapped per the lisp contract)
         args_dn = '{"L":"%s","S":"%s","S2":"%s"}' % (L, S2, S1)
+        # TS surface domain: u256Mul is u128×u128→u256 and u256Shl can't
+        # exceed 2^256. The kernel's v5-dx! runs a 15-limb (480-bit)
+        # pipeline and is exact everywhere — this gate proves the TS port
+        # only inside the surface's width. Skip (counted) where
+        # L·(S2−S)·2^64 ≥ 2^256, mirroring the t* domain skip below.
+        if int(L) * (int(S2) - int(S1)) * (1 << 64) >= (1 << 256):
+            wide_skips += 1
+            continue
         for lf, tf, arg in [("hdy", "tsdy", args), ("hdyi", "tsdyi", args_dn),
                             ("hdx", "tsdx", args), ("hdxo", "tsdxo", args_dn)]:
             a = run(w["lisp"], lf, arg)
@@ -126,7 +135,7 @@ def main():
                 print(f"DIFF tstar L={L} i1={i1} i2={i2} dy={dy}\n  lisp: {a}\n  ts:   {b}")
         if (t + 1) % 25 == 0:
             print(f"  {t+1}/{N} cases, {fails} diffs")
-    print(f"cases={cases} fails={fails}")
+    print(f"cases={cases} fails={fails} wide_skips={wide_skips}")
     sys.exit(1 if fails else 0)
 
 

@@ -360,15 +360,20 @@ fn pool_v5_invariants() {
                                 ));
                                 // mint legs complete iff both used the full
                                 // amount (excess refunded otherwise ⇒ pending
-                                // mint, not credited this loop). A user with a
-                                // drained balance fails both legs (contract
-                                // rejects leg 1 before escrow) — skip cleanly.
+                                // mint, not credited this loop). A user with
+                                // a drained balance fails the dry side at the
+                                // token (insufficient) — the other side may
+                                // still execute and refund used:0 (pool keeps
+                                // the PM quarantine, nothing escrowed) — both
+                                // are clean skips.
                                 let full = o1 == format!("used:{rx}") && o2 == format!("used:{ry}");
                                 let neither = o1 == "insufficient" && o2 == "insufficient";
+                                let pending = (o1 == "insufficient" && o2 == "used:0")
+                                    || (o1 == "used:0" && o2 == "insufficient");
                                 if full {
                                     esc_x += rx;
                                     esc_y += ry;
-                                } else if !neither {
+                                } else if !neither && !pending {
                                     panic!("seed {seed} op {i}: mint leg half-moved: {o1} / {o2}");
                                 }
                             }

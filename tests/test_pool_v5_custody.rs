@@ -298,6 +298,18 @@ fn pool_v5_custody_swap_and_reversal() {
     let view_after = m.ret(&m.pool_op("{\"op\":\"view\"}"));
 
     // ── fault path: force the payout receipt to fail ──
+    // alice must fund the TOKY entry leg (ft2 pre-checks sender balance at
+    // ft_transfer_call — NEP-141-correct, added in the RS-logged rebuild) so
+    // the forced failure lands on the POOL's payout receipt, not the entry.
+    assert_eq!(
+        m.ret(&m.cross(
+            "toky.tst",
+            "mint",
+            &format!("{{\"to\":\"alice.tst\",\"amt\":\"{}\"}}", FLOAT * 2),
+            "owner"
+        )),
+        "ok"
+    );
     let used2 = m.ret(&m.cross_fail(
         "toky.tst",
         "ft_transfer_call",
@@ -315,7 +327,8 @@ fn pool_v5_custody_swap_and_reversal() {
     );
     assert_eq!(escrow(&m, "ESCX"), FLOAT + consumed);
     assert_eq!(escrow(&m, "ESCY"), FLOAT - qout);
-    assert_eq!(bal(&m, "toky.tst", "alice.tst"), qout);
+    // entry refunded on reversal ⇒ alice keeps the minted float + happy-path qout
+    assert_eq!(bal(&m, "toky.tst", "alice.tst"), FLOAT * 2 + qout);
 }
 
 /// The near-mock's \u{1f4c4} printer comma-groups digit runs (human_num,

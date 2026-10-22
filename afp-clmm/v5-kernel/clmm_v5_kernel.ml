@@ -1,25 +1,4 @@
-module CLMM_v5_Kernel : sig
-  type int
-  type num
-  type nat
-  val g : int -> int
-  val dx_in : int -> int -> int -> int
-  val dy_in : int -> int -> int -> int
-  val isqrt : int -> int
-  val dx_out : int -> int -> int -> int
-  val dy_out : int -> int -> int -> int
-  val fee_eff : int -> int -> int
-  val s_for_dy_in : int -> int -> int -> int
-  val s_for_dx_in : int -> int -> int -> int
-  val quote_x_in_fee :
-    (int -> int) -> int -> int -> int -> int -> int -> int -> int * (int * int)
-  val quote_y_in_fee :
-    (int -> int) -> int -> int -> int -> int -> int -> int -> int * (int * int)
-  val quote_x_in_gross :
-    (int -> int) -> int -> int -> int -> int -> int -> int -> int * (int * int)
-  val quote_y_in_gross :
-    (int -> int) -> int -> int -> int -> int -> int -> int -> int * (int * int)
-end = struct
+module CLMM_v5_Kernel = struct
 
 type int = Int_of_integer of Z.t;;
 
@@ -199,7 +178,11 @@ let rec minus_int
   k l = Int_of_integer (Z.sub (integer_of_int k) (integer_of_int l));;
 
 let rec dx_in
-  l s s2 = divide_int (times_inta l (minus_int s2 s)) (times_inta s s2);;
+  l s s2 =
+    divide_int
+      (times_inta (times_inta l (minus_int s2 s))
+        (Int_of_integer (Z.of_string "18446744073709551616")))
+      (times_inta s s2);;
 
 let rec dy_in
   l s s2 =
@@ -211,14 +194,16 @@ let rec isqrt
         else int_of_nat (floor_sqrt (nat n)));;
 
 let rec dx_out
-  l s s2 = divide_int (times_inta l (minus_int s s2)) (times_inta s s2);;
+  l s s2 =
+    divide_int
+      (times_inta (times_inta l (minus_int s s2))
+        (Int_of_integer (Z.of_string "18446744073709551616")))
+      (times_inta s s2);;
 
 let rec dy_out
   l s s2 =
     divide_int (times_inta l (minus_int s2 s))
       (Int_of_integer (Z.of_string "18446744073709551616"));;
-
-let rec snd (x1, x2) = x2;;
 
 let rec fee_eff
   v shift =
@@ -257,21 +242,26 @@ let rec walk_dn
                       else (let s2a = s_for_dy_in l s rem in
                              (plus_int acc (dx_out l s s2a), (s2a, p)))))));;
 
-let rec modulo_integer k l = snd (divmod_integer k l);;
-
-let rec modulo_int
-  k l = Int_of_integer (modulo_integer (integer_of_int k) (integer_of_int l));;
-
-let rec equal_int k l = Z.equal (integer_of_int k) (integer_of_int l);;
-
 let rec s_for_dx_in
   l s dx =
-    (if less_eq_int l zero_int || less_eq_int s zero_int then s
-      else (let d = plus_int l (times_inta (plus_int dx one_inta) s) in
-            let n = plus_int (times_inta l s) one_inta in
-            let q = divide_int n d in
-             (if equal_int (modulo_int n d) zero_int then max ord_int s q
-               else max ord_int s (plus_int q one_inta))));;
+    (if less_eq_int l zero_int ||
+          (less_eq_int s zero_int ||
+            less_eq_int
+              (times_inta l
+                (Int_of_integer (Z.of_string "18446744073709551616")))
+              (times_inta (plus_int dx one_inta) s))
+      then Int_of_integer
+             (Z.of_string "340282366920938463463374607431768211456")
+      else max ord_int s
+             (divide_int
+               (minus_int
+                 (times_inta (times_inta l s)
+                   (Int_of_integer (Z.of_string "18446744073709551616")))
+                 one_inta)
+               (minus_int
+                 (times_inta l
+                   (Int_of_integer (Z.of_string "18446744073709551616")))
+                 (times_inta (plus_int dx one_inta) s))));;
 
 let rec walk_up
   lq s p imax fuel acc rem =

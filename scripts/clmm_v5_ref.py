@@ -23,6 +23,7 @@ getcontext().prec = 130          # >> enough for exact floors at |p|<=800k
 
 BASE = Decimal("1.0001")
 F = 64                           # fractional bits of sqrt-price
+TWO64 = 1 << 64                  # fixed-point scale (price-bridge law)
 ONE = 1 << F                     # 2^64 == S at price 1.0
 FEE_TO_PD = {100: 1, 400: 8, 2000: 40, 10000: 200}
 PMAX = 800000
@@ -77,11 +78,14 @@ def dy_out(L: int, S: int, S2: int) -> int:
     return (L * (S2 - S)) >> F
 
 def dx_in(L: int, S: int, S2: int) -> int:
-    return (L * (S2 - S)) // (S * S2)
+    # renormalized (price-bridge law, thy cd6ab511): dx/L = (s2-s)/(s*s2)
+    # in real terms with s=S/t64 ⇒ the fixed-point form carries ONE *t64
+    return (L * (S2 - S) * TWO64) // (S * S2)
 
 def dx_out(L: int, S: int, S2: int) -> int:
-    # x the pool pays when price falls S -> S2:  x = L*(1/S2 - 1/S) Q64.64
-    return (L * (S - S2)) // (S * S2)
+    # x the pool pays when price falls S -> S2:  x = L*(1/S2 - 1/S) — same
+    # renormalization as dx_in (both are real-wei x amounts)
+    return (L * (S - S2) * TWO64) // (S * S2)
 
 def dy_in(L: int, S: int, S2: int) -> int:
     return (L * (S - S2)) >> F
