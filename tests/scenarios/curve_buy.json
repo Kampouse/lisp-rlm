@@ -1,0 +1,90 @@
+{
+ "name": "curve-payable-buy",
+ "manifest": "pool.tst=/tmp/lf-mock/pool.wasm,wnear.tst=/tmp/lf-mock/wnear.wasm,curve.tst=/tmp/lf-mock/curve.wasm",
+ "state": "/tmp/lf-mock/curvebuy-state.bin",
+ "steps": [
+  {
+   "method": "new",
+   "contract": "wnear.tst",
+   "args": "{}",
+   "as": "owner.test.near",
+   "expect": "ok"
+  },
+  {
+   "method": "init",
+   "contract": "pool.tst",
+   "args": "{\"toka\": \"curve.tst\", \"tokb\": \"wnear.tst\", \"lock_secs\": \"3600\", \"cur\": \"1000000\", \"fee_bps\": \"100\", \"proto_bps\": \"50\"}",
+   "as": "owner.test.near",
+   "expect": "init-ok"
+  },
+  {
+   "method": "init",
+   "contract": "curve.tst",
+   "args": "{\"qt\": \"wnear.tst\", \"pool\": \"pool.tst\", \"sup\": \"1000000000000000000000000000\", \"v\": \"30000000000000000000000000\", \"g\": \"1000000000000000000000000\", \"lo\": \"-8\", \"hi\": \"8\", \"lock\": \"86400\"}",
+   "as": "owner.test.near",
+   "expect": "init-ok"
+  },
+  {
+   "method": "graduate",
+   "contract": "curve.tst",
+   "args": "{}",
+   "as": "trader.tst",
+   "expect": "trap"
+  },
+  {
+   "method": "near_deposit",
+   "contract": "wnear.tst",
+   "args": "{}",
+   "as": "buyer1.tst",
+   "attach": "100000000000000000000000000",
+   "expect": "ok"
+  },
+  {
+   "method": "buy",
+   "contract": "curve.tst",
+   "args": "{}",
+   "as": "buyer1.tst",
+   "attach": "10000000000000000000000",
+   "gas": 300,
+   "expect": "bought:"
+  },
+  {
+   "method": "state",
+   "contract": "curve.tst",
+   "expect": ":r:10000000000000000000000"
+  },
+  {
+   "method": "ft_balance_of",
+   "contract": "curve.tst",
+   "args": "{\"account_id\": \"buyer1.tst\"}",
+   "expect": "333222259246917694101966"
+  },
+  {
+   "method": "buy",
+   "contract": "curve.tst",
+   "args": "{}",
+   "as": "buyer2.tst",
+   "attach": "1",
+   "gas": 300,
+   "expect": "bought:"
+  },
+  {
+   "method": "ft_balance_of",
+   "contract": "curve.tst",
+   "args": "{\"account_id\": \"buyer2.tst\"}",
+   "expect": "333"
+  },
+  {
+   "method": "sell",
+   "contract": "curve.tst",
+   "args": "{\"t\": \"1000000000000000000000\"}",
+   "as": "buyer1.tst",
+   "expect": "sell-ok"
+  },
+  {
+   "method": "state",
+   "contract": "curve.tst",
+   "expect": "ok"
+  }
+ ]
+}

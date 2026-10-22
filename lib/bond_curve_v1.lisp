@@ -145,6 +145,110 @@
                 "sell-refunded")))))
       "sell-ok"))
 
+;; ── payable buy — attach q yoctoNEAR directly, no wnear registration ─────
+;; Guards run BEFORE the wrap: graduated / dust / oversell abort
+;; synchronously and the attached deposit refunds automatically (nothing
+;; was scheduled). The wrap (QT.near_deposit) attaches q itself — its own
+;; failure refunds its attachment, and onbuy aborts on an empty result.
+;; onbuy re-runs the credit guards: promise callbacks serialize AFTER any
+;; racing buys/graduate, so a book change between buy and onbuy is caught
+;; there — the wrapped wnear then goes back via ft_transfer, with an
+;; rb:<who> ledger + claim_refund if that transfer dies (unregistered
+;; receiver).
+(define (c-buy)
+  (let ((who (near/predecessor_account_id)))
+  (let ((q (near/attached_deposit_u128)))
+    (if (not (str= (c-bz "C|GRAD") ""))
+        (c-fail "ERR_GRAD")
+        (let ((t (u128-muldiv (c-y) q (li-add (c-x) q))))
+          (if (or (not (= (li-cmp t "0") 1))
+                  (not (= (li-cmp (c-y) t) 1)))
+              (c-fail "ERR_DUST")
+              (let ((p (near/promise_batch_create (c-bz "C|QT"))))
+                (begin
+                  (near/promise_batch_action_function_call p
+                    "near_deposit" "{}" q 10000000000000)
+                  (near/promise_return
+                    (near/promise_then p (near/current_account_id)
+                      "onbuy"
+                      (json-set (json-set "{}" "who" who) "q" q)
+                      "0" 40000000000000))
+                  "buy:"))))))))
+
+;; onbuy — wrap confirmed ⇒ credit. Race re-checks (see c-buy); the
+;; credit order matches c-on-transfer exactly (b:, SOLD, R).
+(define (c-onbuy)
+  (let ((inp (near/input)))
+  (let ((who (json-get-str "who" inp)))
+  (let ((q (json-get-str "q" inp)))
+    (if (< (str-length (near/promise_result 0)) 1)
+        (c-fail "ERR_WRAP")
+        (let ((t (u128-muldiv (c-y) q (li-add (c-x) q))))
+          (if (or (not (str= (c-bz "C|GRAD") ""))
+                  (not (= (li-cmp t "0") 1))
+                  (not (= (li-cmp (c-y) t) 1)))
+              (let ((p (near/promise_batch_create (c-bz "C|QT"))))
+                (begin
+                  (near/promise_batch_action_function_call p
+                    "ft_transfer"
+                    (json-set (json-set "{}" "receiver_id" who)
+                              "amount" q)
+                    "1" 10000000000000)
+                  (near/promise_return
+                    (near/promise_then p (near/current_account_id)
+                      "onref"
+                      (json-set (json-set "{}" "who" who) "q" q)
+                      "0" 5000000000000))
+                  "buy-refunding:"))
+              (begin
+                (c-put (str-cat "b:" who) (li-add (c-bal who) t))
+                (c-put "C|SOLD" (li-add (c-bz "C|SOLD") t))
+                (c-put "C|R" (li-add (c-bz "C|R") q))
+                "bought:"))))))))
+
+;; onref — refund died (receiver unregistered with the QT): park it in
+;; the rb ledger for claim_refund. The wnear stays in the curve's ledger.
+(define (c-onref)
+  (if (< (str-length (near/promise_result 0)) 1)
+      (let ((inp (near/input)))
+        (let ((who (json-get-str "who" inp)))
+          (let ((q (json-get-str "q" inp)))
+            (begin
+              (c-put (str-cat "rb:" who) (li-add (c-bz (str-cat "rb:" who)) q))
+              "refund-parked:"))))
+      "refund-ok"))
+
+;; claim_refund {} — pay a parked refund back (any time, live or frozen).
+(define (c-claim-refund)
+  (let ((who (near/predecessor_account_id)))
+    (let ((q (c-bz (str-cat "rb:" who))))
+      (if (not (= (li-cmp q "0") 1))
+          "no-refund"
+          (let ((p (near/promise_batch_create (c-bz "C|QT"))))
+            (begin
+              (c-put (str-cat "rb:" who) "0")
+              (near/promise_batch_action_function_call p
+                "ft_transfer"
+                (json-set (json-set "{}" "receiver_id" who) "amount" q)
+                "1" 10000000000000)
+              (near/promise_return
+                (near/promise_then p (near/current_account_id)
+                  "onref2"
+                  (json-set (json-set "{}" "who" who) "q" q)
+                  "0" 5000000000000))
+              "refund:"))))))
+
+;; onref2 — claim_refund's transfer died: re-park (retryable forever).
+(define (c-onref2)
+  (if (< (str-length (near/promise_result 0)) 1)
+      (let ((inp (near/input)))
+        (let ((who (json-get-str "who" inp)))
+          (let ((q (json-get-str "q" inp)))
+            (begin
+              (c-put (str-cat "rb:" who) (li-add (c-bz (str-cat "rb:" who)) q))
+              "refund-parked:"))))
+      "refund-ok"))
+
 ;; ── graduate — permissionless, requires R ≥ G, live curve ────────────────
 ;; Stage 1: seed the y float into the pool (direct fn_call on the pool's
 ;; ft_on_transfer — predecessor = curve = the pool's TOKX). Then ong1.
@@ -250,6 +354,11 @@
 (export "quote_sell" c-quote-sell)
 (export "ft_on_transfer" c-on-transfer)
 (export "sell" c-sell)
+(export "buy" c-buy)
+(export "onbuy" c-onbuy)
+(export "onref" c-onref)
+(export "claim_refund" c-claim-refund)
+(export "onref2" c-onref2)
 (export "onsell" c-onsell)
 (export "graduate" c-graduate)
 (export "ong1" c-ong1)
